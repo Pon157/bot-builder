@@ -1,8 +1,11 @@
 
 import asyncio
 import logging
-from typing import Dict, List
+import json
+import os
+from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from aiogram import Bot, Dispatcher, Router, types
 from aiogram.enums import ParseMode
@@ -13,92 +16,147 @@ import uvicorn
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="BotEngine Cloud API")
+DB_FILE = "database.json"
 
-# Хранилище активных инстансов в памяти (в продакшене дополняется БД)
-active_bots: Dict[str, Dict] = {}
+app = FastAPI(title="BotEngine Pro API")
 
-class BotConfig(BaseModel):
+# Разрешаем CORS для фронтенда
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Хранилище в памяти
+bot_configs: List[dict] = []
+active_tasks: Dict[str, asyncio.Task] = {}
+
+class BotConfigModel(BaseModel):
     id: str
-    token: str
+    ownerId: str
     name: str
-    welcome_message: str
+    token: str
+    status: str
+    welcomeMessage: str
     triggers: List[dict]
     buttons: List[dict]
+    adminChatId: Optional[str] = ""
 
-class BroadcastRequest(BaseModel):
-    bot_ids: List[str]
-    message: string
+def save_db():
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(bot_configs, f, ensure_ascii=False, indent=2)
 
-async def bot_worker(config: BotConfig):
-    """Функция-воркер для отдельного бота"""
-    bot = Bot(token=config.token, parse_mode=ParseMode.HTML)
+def load_db():
+    global bot_configs
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            bot_configs = json.load(f)
+
+async def bot_worker(config_id: str):
+    config = next((b for b in bot_configs if b["id"] == config_id), None)
+    if not config: return
+
+    bot = Bot(token=config["token"], parse_mode=ParseMode.HTML)
     dp = Dispatcher()
     router = Router()
 
     @router.message(CommandStart())
     async def cmd_start(message: types.Message):
-        # Формирование клавиатуры из настроек
         kb = []
-        if config.buttons:
+        if config.get("buttons"):
             row = []
-            for btn in config.buttons:
+            for btn in config["buttons"]:
                 row.append(types.KeyboardButton(text=btn['text']))
                 if len(row) == 2:
-                    kb.append(row)
-                    row = []
+                    kb.append(row); row = []
             if row: kb.append(row)
         
         reply_markup = types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True) if kb else None
-        await message.answer(config.welcome_message, reply_markup=reply_markup)
+        await message.answer(config["welcomeMessage"], reply_markup=reply_markup)
 
     @router.message()
     async def handle_all(message: types.Message):
         text = (message.text or "").lower()
-        # Проверка триггеров
-        for trig in config.triggers:
+        for trig in config.get("triggers", []):
             if trig['keyword'].lower() in text:
                 await message.answer(trig['response'])
                 return
-        # Проверка кнопок
-        for btn in config.buttons:
+        for btn in config.get("buttons", []):
             if btn['text'].lower() == text:
                 await message.answer(btn['response'])
                 return
 
     dp.include_router(router)
     try:
-        logger.info(f"Starting bot: {config.name}")
         await dp.start_polling(bot)
     except Exception as e:
-        logger.error(f"Error in bot {config.name}: {e}")
+        logger.error(f"Error in bot {config_id}: {e}")
     finally:
         await bot.session.close()
 
-@app.post("/api/bots/start")
-async def start_bot(config: BotConfig, background_tasks: BackgroundTasks):
-    if config.id in active_bots:
-        raise HTTPException(status_code=400, detail="Bot already running")
+@app.get("/api/bots/{user_id}")
+async def get_bots(user_id: str):
+    return [b for b in bot_configs if b["ownerId"] == user_id]
+
+@app.post("/api/bots/save")
+async def save_bot(bot: BotConfigModel):
+    global bot_configs
+    idx = next((i for i, b in enumerate(bot_configs) if b["id"] == bot.id), -1)
+    if idx >= 0:
+        bot_configs[idx] = bot.dict()
+    else:
+        bot_configs.append(bot.dict())
+    save_db()
+    return {"status": "ok"}
+
+@app.delete("/api/bots/{bot_id}")
+async def delete_bot(bot_id: str):
+    global bot_configs
+    if bot_id in active_tasks:
+        active_tasks[bot_id].cancel()
+        del active_tasks[bot_id]
+    bot_configs = [b for b in bot_configs if b["id"] != bot_id]
+    save_db()
+    return {"status": "deleted"}
+
+@app.post("/api/bots/start/{bot_id}")
+async def start_bot(bot_id: str):
+    if bot_id in active_tasks:
+        return {"status": "already_running"}
     
-    # Запуск бота в фоновом процессе сервера
-    loop = asyncio.get_event_loop()
-    task = loop.create_task(bot_worker(config))
-    active_bots[config.id] = {"task": task, "config": config}
-    return {"status": "started", "bot_id": config.id}
+    config = next((b for b in bot_configs if b["id"] == bot_id), None)
+    if not config: raise HTTPException(status_code=404)
+
+    task = asyncio.create_task(bot_worker(bot_id))
+    active_tasks[bot_id] = task
+    
+    # Обновляем статус в базе
+    for b in bot_configs:
+        if b["id"] == bot_id: b["status"] = "RUNNING"
+    save_db()
+    
+    return {"status": "started"}
 
 @app.post("/api/bots/stop/{bot_id}")
 async def stop_bot(bot_id: str):
-    if bot_id not in active_bots:
-        raise HTTPException(status_code=404, detail="Bot not found")
+    if bot_id in active_tasks:
+        active_tasks[bot_id].cancel()
+        del active_tasks[bot_id]
     
-    active_bots[bot_id]["task"].cancel()
-    del active_bots[bot_id]
+    for b in bot_configs:
+        if b["id"] == bot_id: b["status"] = "IDLE"
+    save_db()
+    
     return {"status": "stopped"}
 
-@app.get("/api/bots/status")
-async def get_statuses():
-    return {bid: "RUNNING" for bid in active_bots}
+@app.on_event("startup")
+async def startup_event():
+    load_db()
+    # Автозапуск ботов, которые должны работать
+    for b in bot_configs:
+        if b.get("status") == "RUNNING":
+            active_tasks[b["id"]] = asyncio.create_task(bot_worker(b["id"]))
 
 if __name__ == "__main__":
-    # Запуск API сервера
     uvicorn.run(app, host="0.0.0.0", port=8000)
