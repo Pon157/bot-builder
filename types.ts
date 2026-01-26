@@ -44,7 +44,7 @@ export interface BotButton {
 
 export interface BotConfig {
   id: string;
-  ownerId: string; // Привязка к владельцу
+  ownerId: string;
   name: string;
   token: string;
   status: BotStatus;
