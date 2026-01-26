@@ -2,7 +2,8 @@
 export enum BotStatus {
   IDLE = 'IDLE',
   RUNNING = 'RUNNING',
-  ERROR = 'ERROR'
+  ERROR = 'ERROR',
+  STARTING = 'STARTING'
 }
 
 export type SubscriptionPlan = 'FREE' | 'PRO' | 'ENTERPRISE';
@@ -27,7 +28,7 @@ export interface TelegramUser {
 export interface MessageLog {
   id: string;
   timestamp: number;
-  type: 'info' | 'error' | 'incoming' | 'outgoing';
+  type: 'info' | 'error' | 'incoming' | 'outgoing' | 'system';
   text: string;
 }
 
@@ -51,14 +52,15 @@ export interface BotConfig {
   description: string;
   adminChatId: string;
   welcomeMessage: string;
-  isSupportBot: boolean;
   logs: MessageLog[];
   connectedUsers: TelegramUser[];
-  actions: any[];
   triggers: BotTrigger[];
   buttons: BotButton[];
-  antiSpam: {
-    enabled: boolean;
-    rateLimit: number; // messages per minute
+  settings: {
+    useTopics: boolean;
+    autoApproveJoin: boolean;
+    forwardToAdmin: boolean;
+    antiSpam: boolean;
+    rateLimit: number;
   };
 }
