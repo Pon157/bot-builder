@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BotConfig, BotStatus, MessageLog, TelegramUser, BotTrigger, BotButton } from '../types';
 import BotConsole from './BotConsole';
+import CodeViewer from './CodeViewer';
 
 interface BotEditorProps {
   bot: BotConfig;
@@ -11,11 +12,21 @@ interface BotEditorProps {
 
 const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
   const [activeTab, setActiveTab] = useState<'settings' | 'advanced' | 'logic' | 'interface' | 'chats' | 'logs'>('settings');
+  const [showDeployment, setShowDeployment] = useState(false);
   const [selectedChatUser, setSelectedChatUser] = useState<number | null>(null);
   const [replyText, setReplyText] = useState('');
   const [lastUpdateId, setLastUpdateId] = useState(0);
   
   const pollingRef = useRef<number | null>(null);
+
+  // Ensure settings exist (safeguard)
+  const settings = bot.settings || {
+    useTopics: false,
+    autoApproveJoin: false,
+    forwardToAdmin: true,
+    antiSpam: true,
+    rateLimit: 15
+  };
 
   const addLog = (text: string, type: MessageLog['type'] = 'info') => {
     const newLog: MessageLog = {
@@ -76,6 +87,10 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
     }
   };
 
+  if (showDeployment) {
+    return <CodeViewer bot={bot} onBack={() => setShowDeployment(false)} />;
+  }
+
   return (
     <div className="space-y-6 md:space-y-8 pb-20 animate-in fade-in duration-500">
       <header className="flex flex-col md:flex-row md:items-center justify-between bg-[#121212] p-6 rounded-3xl border border-zinc-800 gap-4 shadow-xl">
@@ -94,13 +109,21 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
           </div>
         </div>
 
-        <button 
-          onClick={handleLaunch}
-          disabled={bot.status === BotStatus.STARTING}
-          className={`px-8 py-3 rounded-xl font-bold transition-all border ${bot.status === BotStatus.RUNNING ? 'bg-red-500/10 text-red-500 border-red-500/20 hover:bg-red-500/20' : 'bg-blue-600 text-white hover:bg-blue-700 shadow-lg shadow-blue-600/20 border-transparent'}`}
-        >
-          {bot.status === BotStatus.RUNNING ? 'Остановить' : bot.status === BotStatus.STARTING ? 'Запуск...' : 'Активировать'}
-        </button>
+        <div className="flex gap-3">
+          <button 
+            onClick={() => setShowDeployment(true)}
+            className="px-6 py-3 rounded-xl font-bold bg-zinc-800 text-zinc-300 border border-zinc-700 hover:bg-zinc-700 transition-all text-sm"
+          >
+            Деплой на сервер
+          </button>
+          <button 
+            onClick={handleLaunch}
+            disabled={bot.status === BotStatus.STARTING}
+            className={`px-8 py-3 rounded-xl font-bold transition-all border ${bot.status === BotStatus.RUNNING ? 'bg-red-500/10 text-red-500 border-red-500/20 hover:bg-red-500/20' : 'bg-blue-600 text-white hover:bg-blue-700 shadow-lg shadow-blue-600/20 border-transparent'}`}
+          >
+            {bot.status === BotStatus.RUNNING ? 'Остановить' : bot.status === BotStatus.STARTING ? 'Запуск...' : 'Активировать'}
+          </button>
+        </div>
       </header>
 
       <div className="flex overflow-x-auto gap-1 border-b border-zinc-800 pb-px no-scrollbar sticky top-0 bg-[#0a0a0a] z-10 pt-2">
@@ -126,29 +149,29 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         {activeTab === 'settings' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-in slide-in-from-bottom-4 duration-300">
             <section className="bg-[#121212] border border-zinc-800 rounded-3xl p-8 space-y-6">
-              <h2 className="text-xl font-bold text-white flex items-center gap-2">Конфигурация API</h2>
+              <h2 className="text-xl font-bold text-white flex items-center gap-2">API</h2>
               <div className="space-y-4">
                 <div>
-                  <label className="block text-[10px] font-bold text-zinc-500 uppercase mb-2">Telegram Bot Token</label>
+                  <label className="block text-[10px] font-bold text-zinc-500 uppercase mb-2">Token</label>
                   <input 
                     type="password" className="w-full bg-[#0a0a0a] border border-zinc-800 rounded-xl p-4 text-sm text-white font-mono"
                     value={bot.token} onChange={(e) => onUpdate({ ...bot, token: e.target.value })}
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-bold text-zinc-500 uppercase mb-2">ID Администратора (для уведомлений)</label>
+                  <label className="block text-[10px] font-bold text-zinc-500 uppercase mb-2">ID Админа</label>
                   <input 
                     type="text" className="w-full bg-[#0a0a0a] border border-zinc-800 rounded-xl p-4 text-sm text-white"
-                    value={bot.adminChatId} onChange={(e) => onUpdate({ ...bot, adminChatId: e.target.value })} placeholder="123456789"
+                    value={bot.adminChatId} onChange={(e) => onUpdate({ ...bot, adminChatId: e.target.value })}
                   />
                 </div>
               </div>
             </section>
             
             <section className="bg-[#121212] border border-zinc-800 rounded-3xl p-8 space-y-6">
-              <h2 className="text-xl font-bold text-white">Входное сообщение</h2>
+              <h2 className="text-xl font-bold text-white">Приветствие</h2>
               <textarea 
-                className="w-full bg-[#0a0a0a] border border-zinc-800 rounded-xl p-4 text-sm text-white min-h-[150px] focus:ring-1 focus:ring-blue-500"
+                className="w-full bg-[#0a0a0a] border border-zinc-800 rounded-xl p-4 text-sm text-white min-h-[150px]"
                 value={bot.welcomeMessage} onChange={(e) => onUpdate({ ...bot, welcomeMessage: e.target.value })}
               />
             </section>
@@ -157,13 +180,13 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
 
         {activeTab === 'advanced' && (
           <div className="bg-[#121212] border border-zinc-800 rounded-3xl p-8 space-y-8 animate-in fade-in duration-300">
-            <h2 className="text-xl font-bold text-white">Расширенные функции</h2>
+            <h2 className="text-xl font-bold text-white">Дополнительно</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {[
-                { key: 'useTopics', label: 'Поддержка Топиков (Forum)', desc: 'Бот сможет работать в группах с включенными темами.' },
-                { key: 'autoApproveJoin', label: 'Авто-одобрение заявок', desc: 'Автоматически принимать пользователей, вступающих в канал/группу.' },
-                { key: 'forwardToAdmin', label: 'Режим обратной связи', desc: 'Пересылать все сообщения пользователей администратору.' },
-                { key: 'antiSpam', label: 'Анти-спам фильтр', desc: 'Защита от частого нажатия кнопок и флуда.' }
+                { key: 'useTopics', label: 'Поддержка Топиков', desc: 'Бот сможет работать в группах с темами.' },
+                { key: 'autoApproveJoin', label: 'Авто-одобрение', desc: 'Принимать всех в канал автоматически.' },
+                { key: 'forwardToAdmin', label: 'Обратная связь', desc: 'Пересылать сообщения админу.' },
+                { key: 'antiSpam', label: 'Анти-спам', desc: 'Защита от флуда.' }
               ].map(item => (
                 <div key={item.key} className="flex items-start justify-between p-4 bg-zinc-900/50 rounded-2xl border border-zinc-800">
                   <div>
@@ -173,8 +196,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                   <input 
                     type="checkbox" 
                     className="w-5 h-5 rounded border-zinc-700 bg-black text-blue-500"
-                    checked={(bot.settings as any)[item.key]} 
-                    onChange={(e) => onUpdate({ ...bot, settings: { ...bot.settings, [item.key]: e.target.checked } })}
+                    checked={(settings as any)[item.key]} 
+                    onChange={(e) => onUpdate({ ...bot, settings: { ...settings, [item.key]: e.target.checked } })}
                   />
                 </div>
               ))}
@@ -185,8 +208,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         {activeTab === 'logic' && (
           <div className="space-y-4 animate-in slide-in-from-right-4 duration-300">
             <div className="flex items-center justify-between">
-              <h2 className="text-xl font-bold text-white">Авто-ответы по ключевым словам</h2>
-              <button onClick={() => onUpdate({ ...bot, triggers: [...(bot.triggers || []), { keyword: '', response: '' }] })} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold">Добавить триггер</button>
+              <h2 className="text-xl font-bold text-white">Триггеры</h2>
+              <button onClick={() => onUpdate({ ...bot, triggers: [...(bot.triggers || []), { keyword: '', response: '' }] })} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold">Добавить</button>
             </div>
             <div className="grid grid-cols-1 gap-4">
               {(bot.triggers || []).map((t, idx) => (
@@ -194,7 +217,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                    <input className="flex-1 bg-[#0a0a0a] border border-zinc-800 p-3 rounded-lg text-sm" placeholder="Ключевое слово" value={t.keyword} onChange={(e) => {
                      const nt = [...bot.triggers]; nt[idx].keyword = e.target.value; onUpdate({...bot, triggers: nt});
                    }} />
-                   <input className="flex-1 bg-[#0a0a0a] border border-zinc-800 p-3 rounded-lg text-sm" placeholder="Ответ бота" value={t.response} onChange={(e) => {
+                   <input className="flex-1 bg-[#0a0a0a] border border-zinc-800 p-3 rounded-lg text-sm" placeholder="Ответ" value={t.response} onChange={(e) => {
                      const nt = [...bot.triggers]; nt[idx].response = e.target.value; onUpdate({...bot, triggers: nt});
                    }} />
                 </div>
@@ -206,16 +229,16 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         {activeTab === 'interface' && (
           <div className="space-y-4 animate-in slide-in-from-left-4 duration-300">
              <div className="flex items-center justify-between">
-              <h2 className="text-xl font-bold text-white">Меню кнопок (Клавиатура)</h2>
-              <button onClick={() => onUpdate({ ...bot, buttons: [...(bot.buttons || []), { text: '', response: '' }] })} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold">Добавить кнопку</button>
+              <h2 className="text-xl font-bold text-white">Кнопки</h2>
+              <button onClick={() => onUpdate({ ...bot, buttons: [...(bot.buttons || []), { text: '', response: '' }] })} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold">Добавить</button>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                {(bot.buttons || []).map((b, idx) => (
                 <div key={idx} className="bg-[#121212] border border-zinc-800 p-4 rounded-2xl space-y-3">
-                   <input className="w-full bg-[#0a0a0a] border border-zinc-800 p-2 rounded text-sm font-bold" placeholder="Текст на кнопке" value={b.text} onChange={(e) => {
+                   <input className="w-full bg-[#0a0a0a] border border-zinc-800 p-2 rounded text-sm font-bold" placeholder="Текст кнопки" value={b.text} onChange={(e) => {
                      const nb = [...bot.buttons]; nb[idx].text = e.target.value; onUpdate({...bot, buttons: nb});
                    }} />
-                   <textarea className="w-full bg-[#0a0a0a] border border-zinc-800 p-2 rounded text-sm min-h-[60px]" placeholder="Ответ при нажатии" value={b.response} onChange={(e) => {
+                   <textarea className="w-full bg-[#0a0a0a] border border-zinc-800 p-2 rounded text-sm min-h-[60px]" placeholder="Ответ" value={b.response} onChange={(e) => {
                      const nb = [...bot.buttons]; nb[idx].response = e.target.value; onUpdate({...bot, buttons: nb});
                    }} />
                 </div>
@@ -227,7 +250,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         {activeTab === 'chats' && (
            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 h-[600px] animate-in zoom-in-95 duration-300">
              <div className="bg-[#121212] border border-zinc-800 rounded-3xl overflow-hidden flex flex-col">
-               <div className="p-4 border-b border-zinc-800 bg-zinc-900/50 text-[10px] font-bold uppercase text-zinc-500">Пользователи</div>
+               <div className="p-4 border-b border-zinc-800 bg-zinc-900/50 text-[10px] font-bold uppercase text-zinc-500">Юзеры</div>
                <div className="flex-1 overflow-y-auto">
                  {bot.connectedUsers.length === 0 ? <div className="p-8 text-center text-zinc-700 italic">Пока пусто...</div> : bot.connectedUsers.map(user => (
                     <div key={user.id} onClick={() => setSelectedChatUser(user.id)} className={`p-4 border-b border-zinc-800/50 cursor-pointer transition-colors ${selectedChatUser === user.id ? 'bg-blue-600/10 border-l-2 border-l-blue-500' : 'hover:bg-zinc-800/50'}`}>
@@ -240,14 +263,14 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
              <div className="lg:col-span-2 bg-[#121212] border border-zinc-800 rounded-3xl flex flex-col overflow-hidden">
                 {selectedChatUser ? (
                   <div className="flex-1 flex flex-col p-6">
-                    <div className="mb-4 text-sm font-bold text-blue-500 uppercase tracking-widest">Чат с {selectedChatUser}</div>
-                    <div className="flex-1 bg-black/40 rounded-2xl p-4 mb-4 text-xs italic text-zinc-600">Система готова к перехвату сообщений...</div>
+                    <div className="mb-4 text-sm font-bold text-blue-500 uppercase tracking-widest">Чат: {selectedChatUser}</div>
+                    <div className="flex-1 bg-black/40 rounded-2xl p-4 mb-4 text-xs italic text-zinc-600">Система готова...</div>
                     <div className="flex gap-2">
-                       <input className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-sm" placeholder="Введите ответ..." value={replyText} onChange={e => setReplyText(e.target.value)} />
+                       <input className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-sm" placeholder="Ответ..." value={replyText} onChange={e => setReplyText(e.target.value)} />
                        <button className="bg-blue-600 text-white px-6 rounded-xl font-bold">Отправить</button>
                     </div>
                   </div>
-                ) : <div className="flex-1 flex items-center justify-center text-zinc-600 italic">Выберите диалог для ответа</div>}
+                ) : <div className="flex-1 flex items-center justify-center text-zinc-600 italic">Выберите диалог</div>}
              </div>
            </div>
         )}
@@ -256,7 +279,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
       </div>
 
       <footer className="pt-8 border-t border-zinc-800 flex justify-end">
-        <button onClick={() => confirm("Вы уверены?") && onDelete()} className="text-[10px] font-bold text-zinc-600 hover:text-red-500 uppercase tracking-widest">Удалить бота</button>
+        <button onClick={() => confirm("Удалить?") && onDelete()} className="text-[10px] font-bold text-zinc-600 hover:text-red-500 uppercase tracking-widest">Удалить бота</button>
       </footer>
     </div>
   );
