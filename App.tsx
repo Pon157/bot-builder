@@ -17,36 +17,29 @@ const App: React.FC = () => {
   const [selectedBotId, setSelectedBotId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
+  // 1. При загрузке восстанавливаем сессию
   useEffect(() => {
-    const savedUser = localStorage.getItem('botengine_active_user');
+    const savedUser = localStorage.getItem('active_session_user');
     if (savedUser) {
-      setUser(JSON.parse(savedUser));
+      const parsedUser = JSON.parse(savedUser);
+      setUser(parsedUser);
+      // Загружаем только ботов этого пользователя
+      setBots(db.loadUserBots(parsedUser.id));
     }
-    const loadedBots = db.loadBots();
-    
-    // Data Migration: Ensure settings object exists for all bots
-    const migratedBots = loadedBots.map(bot => ({
-      ...bot,
-      settings: bot.settings || {
-        useTopics: false,
-        autoApproveJoin: false,
-        forwardToAdmin: true,
-        antiSpam: true,
-        rateLimit: 15
-      }
-    }));
-    
-    setBots(migratedBots);
   }, []);
 
   const handleLogin = (newUser: User) => {
     setUser(newUser);
-    localStorage.setItem('botengine_active_user', JSON.stringify(newUser));
+    localStorage.setItem('active_session_user', JSON.stringify(newUser));
+    setBots(db.loadUserBots(newUser.id));
+    setActiveTab('dashboard');
   };
 
   const handleLogout = () => {
     setUser(null);
-    localStorage.removeItem('botengine_active_user');
+    localStorage.removeItem('active_session_user');
+    setBots([]);
+    setSelectedBotId(null);
   };
 
   const activeBot = bots.find(b => b.id === selectedBotId) || null;
@@ -56,14 +49,15 @@ const App: React.FC = () => {
     
     const newBot: BotConfig = {
       id: Math.random().toString(36).substr(2, 9),
+      ownerId: user.id,
       name,
       token,
       status: BotStatus.IDLE,
       createdAt: Date.now(),
       usersCount: 0,
-      description: 'Новый инстанс бота',
+      description: 'Автономный инстанс',
       adminChatId: '',
-      welcomeMessage: `Привет! Я — ${name}. Чем могу помочь?`,
+      welcomeMessage: `Привет! Я — ${name}. Отправьте сообщение или воспользуйтесь меню.`,
       logs: [],
       connectedUsers: [],
       triggers: [],
@@ -77,33 +71,28 @@ const App: React.FC = () => {
       }
     };
 
-    const updatedBots = [...bots, newBot];
-    setBots(updatedBots);
-    db.saveBots(updatedBots);
+    const allBots = db.loadAllBots();
+    const updatedAll = [...allBots, newBot];
+    db.saveBots(updatedAll);
+    
+    setBots(db.loadUserBots(user.id));
     setSelectedBotId(newBot.id);
     setActiveTab('editor');
-    
-    const updatedUser = { ...user, botsCreated: updatedBots.length };
-    setUser(updatedUser);
-    localStorage.setItem('botengine_active_user', JSON.stringify(updatedUser));
   };
 
   const updateBot = (updatedBot: BotConfig) => {
-    const newBots = bots.map(b => b.id === updatedBot.id ? updatedBot : b);
-    setBots(newBots);
-    db.saveBots(newBots);
+    const allBots = db.loadAllBots();
+    const updatedAll = allBots.map(b => b.id === updatedBot.id ? updatedBot : b);
+    db.saveBots(updatedAll);
+    setBots(db.loadUserBots(user!.id));
   };
 
   const deleteBot = (id: string) => {
-    const newBots = bots.filter(b => b.id !== id);
-    setBots(newBots);
-    db.saveBots(newBots);
+    const allBots = db.loadAllBots();
+    const updatedAll = allBots.filter(b => b.id !== id);
+    db.saveBots(updatedAll);
+    setBots(db.loadUserBots(user!.id));
     if (selectedBotId === id) setSelectedBotId(null);
-    if (user) {
-      const updatedUser = { ...user, botsCreated: newBots.length };
-      setUser(updatedUser);
-      localStorage.setItem('botengine_active_user', JSON.stringify(updatedUser));
-    }
   };
 
   if (!user) return <Auth onLogin={handleLogin} />;
@@ -131,9 +120,7 @@ const App: React.FC = () => {
             />
           )}
           
-          {activeTab === 'profile' && (
-              <Profile user={user} onUpdateUser={handleLogin} />
-          )}
+          {activeTab === 'profile' && <Profile user={user} onUpdateUser={setUser} />}
 
           {activeTab === 'editor' && activeBot && (
             <BotEditor 
@@ -145,12 +132,7 @@ const App: React.FC = () => {
           
           {activeTab === 'editor' && !activeBot && (
             <div className="flex flex-col items-center justify-center h-[70vh] text-zinc-600">
-              <div className="w-20 h-20 mb-6 bg-zinc-900 rounded-3xl flex items-center justify-center border border-zinc-800">
-                <svg className="w-10 h-10 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-              </div>
-              <p className="text-lg font-medium text-zinc-400">Выберите бота для настройки</p>
+               <p className="text-lg font-medium text-zinc-400">Выберите бота в боковой панели</p>
             </div>
           )}
 
