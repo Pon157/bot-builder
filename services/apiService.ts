@@ -1,10 +1,48 @@
 
-import { BotConfig } from '../types';
+import { BotConfig, User } from '../types';
 
-// Используйте адрес вашего сервера. Если фронтенд и бэкенд на одном хосте, можно оставить относительный путь или указать порт.
-const API_BASE = 'http://localhost:8000/api';
+// Динамически определяем адрес API. Если фронт открыт по IP 72.56.67.123, 
+// то запросы будут уходить на http://72.56.67.123:8000
+const getApiBase = () => {
+  const host = window.location.hostname;
+  return `http://${host}:8000/api`;
+};
+
+const API_BASE = getApiBase();
 
 export const api = {
+  // Auth
+  login: async (email: string, password: string): Promise<User | null> => {
+    try {
+      const response = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      if (!response.ok) return null;
+      return await response.json();
+    } catch (e) {
+      console.error("Auth Error (login):", e);
+      return null;
+    }
+  },
+
+  register: async (userData: any): Promise<User | null> => {
+    try {
+      const response = await fetch(`${API_BASE}/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(userData)
+      });
+      if (!response.ok) return null;
+      return await response.json();
+    } catch (e) {
+      console.error("Auth Error (register):", e);
+      return null;
+    }
+  },
+
+  // Bots
   getBots: async (userId: string): Promise<BotConfig[]> => {
     try {
       const response = await fetch(`${API_BASE}/bots/${userId}`);
