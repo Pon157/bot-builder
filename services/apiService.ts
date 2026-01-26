@@ -1,20 +1,37 @@
 
 import { BotConfig, User } from '../types';
 
-// Динамически определяем адрес API. Если фронт открыт по IP 72.56.67.123, 
-// то запросы будут уходить на http://72.56.67.123:8000
 const getApiBase = () => {
   const host = window.location.hostname;
-  return `http://${host}:8000/api`;
+  const protocol = window.location.protocol;
+  // Если вы заходите через IP, используем его. 
+  // ВАЖНО: Убедитесь, что порт 8000 открыт в фаерволе сервера!
+  return `${protocol}//${host}:8000/api`;
 };
 
 const API_BASE = getApiBase();
 
+// Универсальный fetch с таймаутом
+const fetchWithTimeout = async (url: string, options: any = {}, timeout = 10000) => {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    clearTimeout(id);
+    return response;
+  } catch (error) {
+    clearTimeout(id);
+    throw error;
+  }
+};
+
 export const api = {
-  // Auth
   login: async (email: string, password: string): Promise<User | null> => {
     try {
-      const response = await fetch(`${API_BASE}/auth/login`, {
+      const response = await fetchWithTimeout(`${API_BASE}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
@@ -23,29 +40,31 @@ export const api = {
       return await response.json();
     } catch (e) {
       console.error("Auth Error (login):", e);
-      return null;
+      throw e; // Пробрасываем ошибку для обработки в UI
     }
   },
 
   register: async (userData: any): Promise<User | null> => {
     try {
-      const response = await fetch(`${API_BASE}/auth/register`, {
+      const response = await fetchWithTimeout(`${API_BASE}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(userData)
       });
-      if (!response.ok) return null;
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Registration failed');
+      }
       return await response.json();
     } catch (e) {
       console.error("Auth Error (register):", e);
-      return null;
+      throw e;
     }
   },
 
-  // Bots
   getBots: async (userId: string): Promise<BotConfig[]> => {
     try {
-      const response = await fetch(`${API_BASE}/bots/${userId}`);
+      const response = await fetchWithTimeout(`${API_BASE}/bots/${userId}`);
       if (!response.ok) return [];
       return await response.json();
     } catch (e) {
@@ -56,7 +75,7 @@ export const api = {
 
   saveBot: async (userId: string, bot: BotConfig): Promise<void> => {
     try {
-      await fetch(`${API_BASE}/bots/save`, {
+      await fetchWithTimeout(`${API_BASE}/bots/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(bot)
@@ -68,7 +87,7 @@ export const api = {
 
   deleteBot: async (userId: string, botId: string): Promise<void> => {
     try {
-      await fetch(`${API_BASE}/bots/${botId}`, {
+      await fetchWithTimeout(`${API_BASE}/bots/${botId}`, {
         method: 'DELETE'
       });
     } catch (e) {
@@ -78,7 +97,7 @@ export const api = {
 
   startBotOnServer: async (bot: BotConfig): Promise<boolean> => {
     try {
-      const response = await fetch(`${API_BASE}/bots/start/${bot.id}`, {
+      const response = await fetchWithTimeout(`${API_BASE}/bots/start/${bot.id}`, {
         method: 'POST'
       });
       return response.ok;
@@ -90,7 +109,7 @@ export const api = {
 
   stopBotOnServer: async (botId: string): Promise<boolean> => {
     try {
-      const response = await fetch(`${API_BASE}/bots/stop/${botId}`, {
+      const response = await fetchWithTimeout(`${API_BASE}/bots/stop/${botId}`, {
         method: 'POST'
       });
       return response.ok;
