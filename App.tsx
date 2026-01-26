@@ -18,27 +18,35 @@ const App: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   useEffect(() => {
-    const savedUser = localStorage.getItem('botengine_user');
+    const savedUser = localStorage.getItem('botengine_active_user');
     if (savedUser) {
-        setUser(JSON.parse(savedUser));
+      setUser(JSON.parse(savedUser));
     }
     const loadedBots = db.loadBots();
-    setBots(loadedBots);
+    
+    // Data Migration: Ensure settings object exists for all bots
+    const migratedBots = loadedBots.map(bot => ({
+      ...bot,
+      settings: bot.settings || {
+        useTopics: false,
+        autoApproveJoin: false,
+        forwardToAdmin: true,
+        antiSpam: true,
+        rateLimit: 15
+      }
+    }));
+    
+    setBots(migratedBots);
   }, []);
-
-  useEffect(() => {
-    if (user) {
-        localStorage.setItem('botengine_user', JSON.stringify(user));
-    }
-  }, [user]);
 
   const handleLogin = (newUser: User) => {
     setUser(newUser);
+    localStorage.setItem('botengine_active_user', JSON.stringify(newUser));
   };
 
   const handleLogout = () => {
     setUser(null);
-    localStorage.removeItem('botengine_user');
+    localStorage.removeItem('botengine_active_user');
   };
 
   const activeBot = bots.find(b => b.id === selectedBotId) || null;
@@ -46,12 +54,6 @@ const App: React.FC = () => {
   const handleCreateBot = (name: string, token: string) => {
     if (!user) return;
     
-    if (user.subscription === 'FREE' && bots.length >= 1) {
-        alert("Ограничение бесплатного тарифа: 1 бот. Пожалуйста, обновите тариф.");
-        setActiveTab('profile');
-        return;
-    }
-
     const newBot: BotConfig = {
       id: Math.random().toString(36).substr(2, 9),
       name,
@@ -81,7 +83,9 @@ const App: React.FC = () => {
     setSelectedBotId(newBot.id);
     setActiveTab('editor');
     
-    setUser({ ...user, botsCreated: updatedBots.length });
+    const updatedUser = { ...user, botsCreated: updatedBots.length };
+    setUser(updatedUser);
+    localStorage.setItem('botengine_active_user', JSON.stringify(updatedUser));
   };
 
   const updateBot = (updatedBot: BotConfig) => {
@@ -95,13 +99,17 @@ const App: React.FC = () => {
     setBots(newBots);
     db.saveBots(newBots);
     if (selectedBotId === id) setSelectedBotId(null);
-    if (user) setUser({ ...user, botsCreated: newBots.length });
+    if (user) {
+      const updatedUser = { ...user, botsCreated: newBots.length };
+      setUser(updatedUser);
+      localStorage.setItem('botengine_active_user', JSON.stringify(updatedUser));
+    }
   };
 
   if (!user) return <Auth onLogin={handleLogin} />;
 
   return (
-    <div className="flex h-screen bg-[#0a0a0a] text-zinc-300 overflow-hidden selection:bg-blue-500/30">
+    <div className="flex h-screen bg-[#0a0a0a] text-zinc-300 overflow-hidden">
       <Sidebar 
         activeTab={activeTab} 
         setActiveTab={setActiveTab} 
@@ -124,10 +132,7 @@ const App: React.FC = () => {
           )}
           
           {activeTab === 'profile' && (
-              <Profile 
-                user={user} 
-                onUpdateUser={(u) => setUser(u)} 
-              />
+              <Profile user={user} onUpdateUser={handleLogin} />
           )}
 
           {activeTab === 'editor' && activeBot && (
