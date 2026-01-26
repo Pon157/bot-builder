@@ -24,7 +24,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -36,7 +36,7 @@ active_tasks: Dict[str, asyncio.Task] = {}
 
 class BroadcastModel(BaseModel):
     botIds: List[str]
-    message: string
+    message: str
 
 def save_db():
     with open(DB_FILE, "w", encoding="utf-8") as f:
@@ -48,7 +48,9 @@ def load_db():
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
                 db_content = json.load(f)
-        except: pass
+        except Exception as e:
+            logger.error(f"Error loading DB: {e}")
+            db_content = {"users": [], "bots": []}
 
 def get_keyboard(buttons):
     if not buttons: return None
@@ -70,17 +72,16 @@ async def bot_worker(bot_id: str, token: str):
 
     @router.message(CommandStart())
     async def cmd_start(m: types.Message):
-        # Обновляем конфиг из БД при каждом старте
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
         welcome = config["welcomeMessage"] if config else "Hello!"
-        kb = get_keyboard(config["buttons"]) if config else None
+        kb = get_keyboard(config.get("buttons", [])) if config else None
         
-        # Сохраняем пользователя для рассылки
         if config:
-            user_entry = {"id": m.from_user.id, "name": m.from_user.full_name}
+            user_entry = {"id": m.from_user.id, "first_name": m.from_user.first_name, "username": m.from_user.username}
             if "connectedUsers" not in config: config["connectedUsers"] = []
             if not any(u["id"] == m.from_user.id for u in config["connectedUsers"]):
                 config["connectedUsers"].append(user_entry)
+                config["usersCount"] = len(config["connectedUsers"])
                 save_db()
 
         await m.answer(welcome, reply_markup=kb)
@@ -91,12 +92,10 @@ async def bot_worker(bot_id: str, token: str):
         if not config or not m.text: return
         
         text = m.text.lower()
-        # Проверка кнопок
         for btn in config.get("buttons", []):
             if btn["text"].lower() == text:
                 return await m.answer(btn["response"])
         
-        # Проверка триггеров
         for trig in config.get("triggers", []):
             if trig["keyword"].lower() in text:
                 return await m.answer(trig["response"])
@@ -125,7 +124,7 @@ async def register(user: dict):
 @app.post("/api/auth/login")
 async def login(data: dict):
     user = next((u for u in db_content["users"] if u["email"] == data["email"] and u["password"] == data["password"]), None)
-    if not user: raise HTTPException(status_code=401)
+    if not user: raise HTTPException(status_code=401, detail="Invalid credentials")
     return user
 
 @app.get("/api/bots/{user_id}")
@@ -133,21 +132,34 @@ async def get_bots(user_id: str):
     return [b for b in db_content["bots"] if b["ownerId"] == user_id]
 
 @app.post("/api/bots/save")
-async def save_bot(bot: dict):
+async def save_bot_endpoint(bot: dict):
     idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot["id"]), -1)
-    if idx >= 0: db_content["bots"][idx] = bot
-    else: db_content["bots"].append(bot)
+    if idx >= 0:
+        # Preserve sensitive data if not provided
+        if not bot.get("connectedUsers"):
+            bot["connectedUsers"] = db_content["bots"][idx].get("connectedUsers", [])
+            bot["usersCount"] = len(bot["connectedUsers"])
+        db_content["bots"][idx] = bot
+    else:
+        db_content["bots"].append(bot)
     save_db()
-    # Если бот запущен, перезапускаем задачу, чтобы подхватить новые триггеры
+    
     if bot["id"] in active_tasks:
         await stop_bot(bot["id"])
         await start_bot(bot["id"])
     return {"status": "ok"}
 
+@app.delete("/api/bots/delete/{user_id}/{bot_id}")
+async def delete_bot(user_id: str, bot_id: str):
+    await stop_bot(bot_id)
+    db_content["bots"] = [b for b in db_content["bots"] if not (b["id"] == bot_id and b["ownerId"] == user_id)]
+    save_db()
+    return {"status": "ok"}
+
 @app.post("/api/bots/start/{bot_id}")
 async def start_bot(bot_id: str):
     bot_cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-    if not bot_cfg: raise HTTPException(status_code=404)
+    if not bot_cfg: return {"status": "error", "message": "Bot not found"}
     if bot_id not in active_tasks:
         active_tasks[bot_id] = asyncio.create_task(bot_worker(bot_id, bot_cfg["token"]))
         bot_cfg["status"] = "RUNNING"
@@ -159,30 +171,34 @@ async def stop_bot(bot_id: str):
     if bot_id in active_tasks:
         active_tasks[bot_id].cancel()
         del active_tasks[bot_id]
-        if bot_id in active_bots: del active_bots[bot_id]
+        if bot_id in active_bots:
+            await active_bots[bot_id].session.close()
+            del active_bots[bot_id]
         for b in db_content["bots"]:
             if b["id"] == bot_id: b["status"] = "IDLE"
         save_db()
     return {"status": "ok"}
 
 @app.post("/api/broadcast")
-async def broadcast(data: dict):
+async def broadcast(data: BroadcastModel):
     results = {"success": 0, "failed": 0}
-    for bot_id in data["botIds"]:
+    for bot_id in data.botIds:
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
         if not config or bot_id not in active_bots: continue
         
         bot = active_bots[bot_id]
         for user in config.get("connectedUsers", []):
             try:
-                await bot.send_message(user["id"], data["message"])
+                await bot.send_message(user["id"], data.message)
                 results["success"] += 1
-            except:
+            except Exception as e:
+                logger.error(f"Broadcast error for user {user['id']}: {e}")
                 results["failed"] += 1
     return results
 
 @app.on_event("startup")
-async def startup(): load_db()
+async def startup_event():
+    load_db()
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
