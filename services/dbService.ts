@@ -1,11 +1,11 @@
 
 import { BotConfig } from '../types';
 
-const STORAGE_KEY = 'botengine_pro_v2_db';
+// Версия БД для предотвращения конфликтов со старыми данными
+const STORAGE_KEY = 'botengine_cloud_pro_v5';
 
 export const db = {
   saveBots: (bots: BotConfig[]) => {
-    // Сохраняем всех ботов системы
     localStorage.setItem(STORAGE_KEY, JSON.stringify(bots));
   },
   
@@ -16,6 +16,11 @@ export const db = {
 
   loadUserBots: (userId: string): BotConfig[] => {
     const all = db.loadAllBots();
+    // Изоляция: возвращаем только ботов текущего пользователя
     return all.filter(b => b.ownerId === userId);
+  },
+
+  clearAll: () => {
+    localStorage.removeItem(STORAGE_KEY);
   }
 };
