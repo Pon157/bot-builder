@@ -11,6 +11,7 @@ from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.exceptions import TelegramUnauthorizedError, TelegramNetworkError
 import uvicorn
 
 # Настройка логирования
@@ -29,7 +30,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Хранилище в памяти (синхронизируется с файлом)
+# Хранилище в памяти
 db_content = {"users": [], "bots": []}
 active_bots: Dict[str, Bot] = {}
 active_tasks: Dict[str, asyncio.Task] = {}
@@ -102,9 +103,11 @@ async def bot_worker(bot_id: str, token: str):
 
     dp.include_router(router)
     try:
+        # Принудительно удаляем вебхук перед началом поллинга
+        await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     except Exception as e:
-        logger.error(f"Bot {bot_id} crashed: {e}")
+        logger.error(f"Bot {bot_id} execution error: {e}")
     finally:
         await bot.session.close()
 
@@ -135,7 +138,6 @@ async def get_bots(user_id: str):
 async def save_bot_endpoint(bot: dict):
     idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot["id"]), -1)
     if idx >= 0:
-        # Preserve sensitive data if not provided
         if not bot.get("connectedUsers"):
             bot["connectedUsers"] = db_content["bots"][idx].get("connectedUsers", [])
             bot["usersCount"] = len(bot["connectedUsers"])
@@ -144,6 +146,7 @@ async def save_bot_endpoint(bot: dict):
         db_content["bots"].append(bot)
     save_db()
     
+    # Если бот уже запущен, перезапускаем его с новыми настройками
     if bot["id"] in active_tasks:
         await stop_bot(bot["id"])
         await start_bot(bot["id"])
@@ -159,21 +162,44 @@ async def delete_bot(user_id: str, bot_id: str):
 @app.post("/api/bots/start/{bot_id}")
 async def start_bot(bot_id: str):
     bot_cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-    if not bot_cfg: return {"status": "error", "message": "Bot not found"}
-    if bot_id not in active_tasks:
-        active_tasks[bot_id] = asyncio.create_task(bot_worker(bot_id, bot_cfg["token"]))
-        bot_cfg["status"] = "RUNNING"
-        save_db()
+    if not bot_cfg: 
+        raise HTTPException(status_code=404, detail="Bot not found")
+    
+    if bot_id in active_tasks:
+        return {"status": "ok", "message": "Already running"}
+
+    # Проверка токена перед созданием задачи
+    test_bot = Bot(token=bot_cfg["token"])
+    try:
+        me = await test_bot.get_me()
+        logger.info(f"Starting bot: @{me.username}")
+        await test_bot.session.close()
+    except TelegramUnauthorizedError:
+        await test_bot.session.close()
+        raise HTTPException(status_code=400, detail="Invalid Telegram Token")
+    except Exception as e:
+        await test_bot.session.close()
+        raise HTTPException(status_code=500, detail=f"Connection error: {str(e)}")
+
+    active_tasks[bot_id] = asyncio.create_task(bot_worker(bot_id, bot_cfg["token"]))
+    bot_cfg["status"] = "RUNNING"
+    save_db()
     return {"status": "ok"}
 
 @app.post("/api/bots/stop/{bot_id}")
 async def stop_bot(bot_id: str):
     if bot_id in active_tasks:
         active_tasks[bot_id].cancel()
+        try:
+            await active_tasks[bot_id]
+        except asyncio.CancelledError:
+            pass
         del active_tasks[bot_id]
+        
         if bot_id in active_bots:
             await active_bots[bot_id].session.close()
             del active_bots[bot_id]
+            
         for b in db_content["bots"]:
             if b["id"] == bot_id: b["status"] = "IDLE"
         save_db()
