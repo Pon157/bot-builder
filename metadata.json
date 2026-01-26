@@ -1,0 +1,8 @@
+{
+  "name": "Copy of Copy of BotEngine Pro - No-Code Constructor",
+  "description": "A professional-grade Telegram bot constructor interface that allows users to manage multiple bots, configure automated flows, and generate server-ready Python code.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
