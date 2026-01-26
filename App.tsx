@@ -1,11 +1,10 @@
 
 import React, { useState, useEffect } from 'react';
-import { BotConfig, BotStatus, User, SubscriptionPlan } from './types';
+import { BotConfig, BotStatus, User } from './types';
 import Dashboard from './components/Dashboard';
 import BotEditor from './components/BotEditor';
 import Sidebar from './components/Sidebar';
 import BroadcastManager from './components/BroadcastManager';
-import CodeViewer from './components/CodeViewer';
 import Auth from './components/Auth';
 import Profile from './components/Profile';
 import CreateBotModal from './components/CreateBotModal';
@@ -14,7 +13,7 @@ import { db } from './services/dbService';
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [bots, setBots] = useState<BotConfig[]>([]);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'editor' | 'broadcast' | 'code' | 'profile'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'editor' | 'broadcast' | 'profile'>('dashboard');
   const [selectedBotId, setSelectedBotId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
@@ -22,10 +21,9 @@ const App: React.FC = () => {
     const savedUser = localStorage.getItem('botengine_user');
     if (savedUser) {
         setUser(JSON.parse(savedUser));
-    } else {
-        // Initial mock user if first time
     }
-    setBots(db.loadBots());
+    const loadedBots = db.loadBots();
+    setBots(loadedBots);
   }, []);
 
   useEffect(() => {
@@ -35,13 +33,7 @@ const App: React.FC = () => {
   }, [user]);
 
   const handleLogin = (newUser: User) => {
-    const enrichedUser: User = {
-        ...newUser,
-        subscription: 'FREE',
-        balance: 0,
-        botsCreated: bots.length
-    };
-    setUser(enrichedUser);
+    setUser(newUser);
   };
 
   const handleLogout = () => {
@@ -54,9 +46,8 @@ const App: React.FC = () => {
   const handleCreateBot = (name: string, token: string) => {
     if (!user) return;
     
-    // Subscription Check
     if (user.subscription === 'FREE' && bots.length >= 1) {
-        alert("Free tier is limited to 1 bot. Please upgrade to PRO for more.");
+        alert("Ограничение бесплатного тарифа: 1 бот. Пожалуйста, обновите тариф.");
         setActiveTab('profile');
         return;
     }
@@ -68,16 +59,20 @@ const App: React.FC = () => {
       status: BotStatus.IDLE,
       createdAt: Date.now(),
       usersCount: 0,
-      description: 'Standard support instance',
+      description: 'Новый инстанс бота',
       adminChatId: '',
-      welcomeMessage: `Hello! I am ${name}. How can I help you today?`,
-      isSupportBot: true,
+      welcomeMessage: `Привет! Я — ${name}. Чем могу помочь?`,
       logs: [],
       connectedUsers: [],
-      actions: [],
       triggers: [],
       buttons: [],
-      antiSpam: { enabled: false, rateLimit: 10 }
+      settings: {
+        useTopics: false,
+        autoApproveJoin: false,
+        forwardToAdmin: true,
+        antiSpam: true,
+        rateLimit: 15
+      }
     };
 
     const updatedBots = [...bots, newBot];
@@ -140,7 +135,6 @@ const App: React.FC = () => {
               bot={activeBot} 
               onUpdate={updateBot} 
               onDelete={() => deleteBot(activeBot.id)}
-              onGenerateCode={() => setActiveTab('code')}
             />
           )}
           
@@ -151,15 +145,11 @@ const App: React.FC = () => {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
                 </svg>
               </div>
-              <p className="text-lg font-medium text-zinc-400">Select an instance from the sidebar</p>
+              <p className="text-lg font-medium text-zinc-400">Выберите бота для настройки</p>
             </div>
           )}
 
           {activeTab === 'broadcast' && <BroadcastManager bots={bots} />}
-
-          {activeTab === 'code' && activeBot && (
-            <CodeViewer bot={activeBot} onBack={() => setActiveTab('editor')} />
-          )}
         </div>
       </main>
 
