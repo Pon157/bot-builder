@@ -42,11 +42,18 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
         if (user) {
           onLogin(user);
         } else {
-          setError('Пользователь уже существует или ошибка сервера');
+          setError('Ошибка при создании аккаунта');
         }
       }
-    } catch (err) {
-      setError('Ошибка соединения с сервером');
+    } catch (err: any) {
+      console.error("Auth catch:", err);
+      if (err.name === 'AbortError') {
+        setError('Сервер не отвечает (Таймаут). Проверьте порт 8000 на сервере.');
+      } else if (err.message.includes('fetch')) {
+        setError('Не удалось подключиться к API. Убедитесь, что сервер запущен.');
+      } else {
+        setError(err.message || 'Произошла ошибка при авторизации');
+      }
     } finally {
       setLoading(false);
     }
@@ -64,7 +71,7 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
         </div>
 
         {error && (
-          <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-2xl text-red-500 text-xs text-center font-bold animate-pulse">
+          <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-2xl text-red-500 text-xs text-center font-bold">
             {error}
           </div>
         )}
@@ -100,7 +107,7 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
         </form>
 
         <div className="text-center">
-          <button onClick={() => setIsLogin(!isLogin)} className="text-[10px] text-zinc-600 hover:text-blue-500 font-bold uppercase tracking-widest transition-all">
+          <button onClick={() => { setIsLogin(!isLogin); setError(''); }} className="text-[10px] text-zinc-600 hover:text-blue-500 font-bold uppercase tracking-widest transition-all">
             {isLogin ? "Нет аккаунта? Зарегистрироваться" : 'Уже есть аккаунт? Войти'}
           </button>
         </div>
