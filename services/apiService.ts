@@ -74,11 +74,13 @@ export const api = {
     } catch (e) { console.error("Failed to delete bot"); }
   },
 
-  startBotOnServer: async (bot: BotConfig): Promise<boolean> => {
+  startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
     try {
       const res = await fetchWithTimeout(`${API_BASE}/bots/start/${bot.id}`, { method: 'POST' });
-      return res.ok;
-    } catch (e) { return false; }
+      if (res.ok) return true;
+      const errorData = await res.json();
+      return errorData.detail || "Неизвестная ошибка";
+    } catch (e) { return "Ошибка сети"; }
   },
 
   stopBotOnServer: async (botId: string): Promise<boolean> => {
