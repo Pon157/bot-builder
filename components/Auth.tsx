@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
 import { User } from '../types';
+import { api } from '../services/apiService';
 
 interface AuthProps {
   onLogin: (user: User) => void;
@@ -12,41 +13,42 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setLoading(true);
 
-    // Имитация серверной базы данных в localStorage
-    const usersStr = localStorage.getItem('botengine_v4_users') || '[]';
-    const users: User[] = JSON.parse(usersStr);
-
-    if (isLogin) {
-      const foundUser = users.find(u => u.email === email && u.password === password);
-      if (foundUser) {
-        onLogin(foundUser);
+    try {
+      if (isLogin) {
+        const user = await api.login(email, password);
+        if (user) {
+          onLogin(user);
+        } else {
+          setError('Неверный email или пароль');
+        }
       } else {
-        setError('Неверные учетные данные');
+        const newUser: User = {
+          id: 'user_' + Math.random().toString(36).substr(2, 9),
+          username: username || email.split('@')[0],
+          email: email,
+          password: password,
+          subscription: 'FREE',
+          balance: 0,
+          botsCreated: 0
+        };
+        const user = await api.register(newUser);
+        if (user) {
+          onLogin(user);
+        } else {
+          setError('Пользователь уже существует или ошибка сервера');
+        }
       }
-    } else {
-      if (users.find(u => u.email === email)) {
-        setError('Пользователь уже существует');
-        return;
-      }
-      
-      const newUser: User = {
-        id: 'user_' + Math.random().toString(36).substr(2, 9),
-        username: username || email.split('@')[0],
-        email: email,
-        password: password,
-        subscription: 'FREE',
-        balance: 0,
-        botsCreated: 0
-      };
-      
-      users.push(newUser);
-      localStorage.setItem('botengine_v4_users', JSON.stringify(users));
-      onLogin(newUser);
+    } catch (err) {
+      setError('Ошибка соединения с сервером');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -88,8 +90,12 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
             placeholder="Пароль" 
             value={password} onChange={(e) => setPassword(e.target.value)} 
           />
-          <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-4 rounded-2xl transition-all shadow-lg shadow-blue-600/30 uppercase tracking-widest text-sm mt-4">
-            {isLogin ? 'Авторизоваться' : 'Создать аккаунт'}
+          <button 
+            type="submit" 
+            disabled={loading}
+            className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-black py-4 rounded-2xl transition-all shadow-lg shadow-blue-600/30 uppercase tracking-widest text-sm mt-4"
+          >
+            {loading ? 'Загрузка...' : (isLogin ? 'Авторизоваться' : 'Создать аккаунт')}
           </button>
         </form>
 
