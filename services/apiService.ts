@@ -1,16 +1,9 @@
 
 import { BotConfig, User } from '../types';
 
-const getApiBase = () => {
-  const host = window.location.hostname;
-  const protocol = window.location.protocol;
-  // Если порт 8000 недоступен, проверьте firewall на сервере!
-  return `${protocol}//${host}:8000/api`;
-};
+const API_BASE = `${window.location.protocol}//${window.location.hostname}:8000/api`;
 
-const API_BASE = getApiBase();
-
-const fetchWithTimeout = async (url: string, options: any = {}, timeout = 8000) => {
+const fetchWithTimeout = async (url: string, options: any = {}, timeout = 10000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
@@ -28,9 +21,7 @@ export const api = {
     try {
       const res = await fetchWithTimeout(`${API_BASE}/ping`, { method: 'GET' }, 3000);
       return res.ok;
-    } catch (e) {
-      return false;
-    }
+    } catch (e) { return false; }
   },
 
   login: async (email: string, password: string): Promise<User | null> => {
@@ -39,8 +30,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password })
     });
-    if (!response.ok) return null;
-    return await response.json();
+    return response.ok ? await response.json() : null;
   },
 
   register: async (userData: any): Promise<User | null> => {
@@ -49,11 +39,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(userData)
     });
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw new Error(err.detail || 'Registration failed');
-    }
-    return await response.json();
+    return response.ok ? await response.json() : null;
   },
 
   getBots: async (userId: string): Promise<BotConfig[]> => {
@@ -69,6 +55,13 @@ export const api = {
     });
   },
 
+  // Fix: Added missing deleteBot method used in App.tsx
+  deleteBot: async (userId: string, botId: string): Promise<void> => {
+    await fetchWithTimeout(`${API_BASE}/bots/delete/${userId}/${botId}`, {
+      method: 'DELETE'
+    });
+  },
+
   startBotOnServer: async (bot: BotConfig): Promise<boolean> => {
     const res = await fetchWithTimeout(`${API_BASE}/bots/start/${bot.id}`, { method: 'POST' });
     return res.ok;
@@ -79,7 +72,12 @@ export const api = {
     return res.ok;
   },
 
-  deleteBot: async (userId: string, botId: string): Promise<void> => {
-    await fetchWithTimeout(`${API_BASE}/bots/${botId}`, { method: 'DELETE' });
+  sendBroadcast: async (botIds: string[], message: string): Promise<any> => {
+    const res = await fetchWithTimeout(`${API_BASE}/broadcast`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ botIds, message })
+    });
+    return res.ok ? await res.json() : null;
   }
 };
