@@ -3,6 +3,7 @@ import asyncio
 import logging
 import json
 import os
+import uuid
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,17 +21,31 @@ DB_FILE = "database.json"
 
 app = FastAPI(title="BotEngine Pro API")
 
-# Разрешаем CORS для фронтенда
+# Настройка CORS для работы с любыми IP и портами
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
-# Хранилище в памяти
-bot_configs: List[dict] = []
+# Хранилище
+db_content = {"users": [], "bots": []}
 active_tasks: Dict[str, asyncio.Task] = {}
+
+class UserModel(BaseModel):
+    id: str
+    username: str
+    email: str
+    password: str
+    subscription: str = "FREE"
+    balance: float = 0.0
+    botsCreated: int = 0
+
+class LoginModel(BaseModel):
+    email: str
+    password: str
 
 class BotConfigModel(BaseModel):
     id: str
@@ -45,16 +60,21 @@ class BotConfigModel(BaseModel):
 
 def save_db():
     with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(bot_configs, f, ensure_ascii=False, indent=2)
+        json.dump(db_content, f, ensure_ascii=False, indent=2)
 
 def load_db():
-    global bot_configs
+    global db_content
     if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r", encoding="utf-8") as f:
-            bot_configs = json.load(f)
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if "users" in loaded and "bots" in loaded:
+                    db_content = loaded
+        except Exception as e:
+            logger.error(f"Failed to load DB: {e}")
 
 async def bot_worker(config_id: str):
-    config = next((b for b in bot_configs if b["id"] == config_id), None)
+    config = next((b for b in db_content["bots"] if b["id"] == config_id), None)
     if not config: return
 
     bot = Bot(token=config["token"], parse_mode=ParseMode.HTML)
@@ -95,28 +115,45 @@ async def bot_worker(config_id: str):
     finally:
         await bot.session.close()
 
+# --- AUTH ENDPOINTS ---
+
+@app.post("/api/auth/register")
+async def register(user: UserModel):
+    if any(u["email"] == user.email for u in db_content["users"]):
+        raise HTTPException(status_code=400, detail="User already exists")
+    db_content["users"].append(user.dict())
+    save_db()
+    return user
+
+@app.post("/api/auth/login")
+async def login(data: LoginModel):
+    user = next((u for u in db_content["users"] if u["email"] == data.email and u["password"] == data.password), None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return user
+
+# --- BOT ENDPOINTS ---
+
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
-    return [b for b in bot_configs if b["ownerId"] == user_id]
+    return [b for b in db_content["bots"] if b["ownerId"] == user_id]
 
 @app.post("/api/bots/save")
 async def save_bot(bot: BotConfigModel):
-    global bot_configs
-    idx = next((i for i, b in enumerate(bot_configs) if b["id"] == bot.id), -1)
+    idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot.id), -1)
     if idx >= 0:
-        bot_configs[idx] = bot.dict()
+        db_content["bots"][idx] = bot.dict()
     else:
-        bot_configs.append(bot.dict())
+        db_content["bots"].append(bot.dict())
     save_db()
     return {"status": "ok"}
 
 @app.delete("/api/bots/{bot_id}")
 async def delete_bot(bot_id: str):
-    global bot_configs
     if bot_id in active_tasks:
         active_tasks[bot_id].cancel()
         del active_tasks[bot_id]
-    bot_configs = [b for b in bot_configs if b["id"] != bot_id]
+    db_content["bots"] = [b for b in db_content["bots"] if b["id"] != bot_id]
     save_db()
     return {"status": "deleted"}
 
@@ -124,18 +161,13 @@ async def delete_bot(bot_id: str):
 async def start_bot(bot_id: str):
     if bot_id in active_tasks:
         return {"status": "already_running"}
-    
-    config = next((b for b in bot_configs if b["id"] == bot_id), None)
+    config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
     if not config: raise HTTPException(status_code=404)
-
     task = asyncio.create_task(bot_worker(bot_id))
     active_tasks[bot_id] = task
-    
-    # Обновляем статус в базе
-    for b in bot_configs:
+    for b in db_content["bots"]:
         if b["id"] == bot_id: b["status"] = "RUNNING"
     save_db()
-    
     return {"status": "started"}
 
 @app.post("/api/bots/stop/{bot_id}")
@@ -143,18 +175,15 @@ async def stop_bot(bot_id: str):
     if bot_id in active_tasks:
         active_tasks[bot_id].cancel()
         del active_tasks[bot_id]
-    
-    for b in bot_configs:
+    for b in db_content["bots"]:
         if b["id"] == bot_id: b["status"] = "IDLE"
     save_db()
-    
     return {"status": "stopped"}
 
 @app.on_event("startup")
 async def startup_event():
     load_db()
-    # Автозапуск ботов, которые должны работать
-    for b in bot_configs:
+    for b in db_content["bots"]:
         if b.get("status") == "RUNNING":
             active_tasks[b["id"]] = asyncio.create_task(bot_worker(b["id"]))
 
