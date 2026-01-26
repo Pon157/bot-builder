@@ -14,7 +14,6 @@ export interface User {
   email: string;
   password?: string;
   subscription: SubscriptionPlan;
-  subExpiresAt?: number;
   balance: number;
   botsCreated: number;
 }
@@ -45,6 +44,7 @@ export interface BotButton {
 
 export interface BotConfig {
   id: string;
+  ownerId: string; // Привязка к владельцу
   name: string;
   token: string;
   status: BotStatus;
