@@ -12,6 +12,7 @@ export interface User {
   id: string;
   username: string;
   email: string;
+  password?: string;
   subscription: SubscriptionPlan;
   subExpiresAt?: number;
   balance: number;
