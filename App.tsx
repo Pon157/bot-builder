@@ -8,7 +8,7 @@ import BroadcastManager from './components/BroadcastManager';
 import Auth from './components/Auth';
 import Profile from './components/Profile';
 import CreateBotModal from './components/CreateBotModal';
-import { db } from './services/dbService';
+import { api } from './services/apiService';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -16,22 +16,28 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'editor' | 'broadcast' | 'profile'>('dashboard');
   const [selectedBotId, setSelectedBotId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  // 1. При загрузке восстанавливаем сессию
+  // Загрузка сессии и данных с сервера
   useEffect(() => {
-    const savedUser = localStorage.getItem('active_session_user');
-    if (savedUser) {
-      const parsedUser = JSON.parse(savedUser);
-      setUser(parsedUser);
-      // Загружаем только ботов этого пользователя
-      setBots(db.loadUserBots(parsedUser.id));
-    }
+    const init = async () => {
+      const savedUser = localStorage.getItem('active_session_user');
+      if (savedUser) {
+        const parsedUser = JSON.parse(savedUser);
+        setUser(parsedUser);
+        const serverBots = await api.getBots(parsedUser.id);
+        setBots(serverBots);
+      }
+      setLoading(false);
+    };
+    init();
   }, []);
 
-  const handleLogin = (newUser: User) => {
+  const handleLogin = async (newUser: User) => {
     setUser(newUser);
     localStorage.setItem('active_session_user', JSON.stringify(newUser));
-    setBots(db.loadUserBots(newUser.id));
+    const serverBots = await api.getBots(newUser.id);
+    setBots(serverBots);
     setActiveTab('dashboard');
   };
 
@@ -44,7 +50,7 @@ const App: React.FC = () => {
 
   const activeBot = bots.find(b => b.id === selectedBotId) || null;
 
-  const handleCreateBot = (name: string, token: string) => {
+  const handleCreateBot = async (name: string, token: string) => {
     if (!user) return;
     
     const newBot: BotConfig = {
@@ -55,9 +61,9 @@ const App: React.FC = () => {
       status: BotStatus.IDLE,
       createdAt: Date.now(),
       usersCount: 0,
-      description: 'Автономный инстанс',
+      description: 'Cloud Instance',
       adminChatId: '',
-      welcomeMessage: `Привет! Я — ${name}. Отправьте сообщение или воспользуйтесь меню.`,
+      welcomeMessage: `Добро пожаловать в ${name}!`,
       logs: [],
       connectedUsers: [],
       triggers: [],
@@ -71,34 +77,33 @@ const App: React.FC = () => {
       }
     };
 
-    const allBots = db.loadAllBots();
-    const updatedAll = [...allBots, newBot];
-    db.saveBots(updatedAll);
-    
-    setBots(db.loadUserBots(user.id));
+    await api.saveBot(user.id, newBot);
+    const updatedBots = await api.getBots(user.id);
+    setBots(updatedBots);
     setSelectedBotId(newBot.id);
     setActiveTab('editor');
   };
 
-  const updateBot = (updatedBot: BotConfig) => {
-    const allBots = db.loadAllBots();
-    const updatedAll = allBots.map(b => b.id === updatedBot.id ? updatedBot : b);
-    db.saveBots(updatedAll);
-    setBots(db.loadUserBots(user!.id));
+  const updateBot = async (updatedBot: BotConfig) => {
+    if (!user) return;
+    await api.saveBot(user.id, updatedBot);
+    const updatedBots = await api.getBots(user.id);
+    setBots(updatedBots);
   };
 
-  const deleteBot = (id: string) => {
-    const allBots = db.loadAllBots();
-    const updatedAll = allBots.filter(b => b.id !== id);
-    db.saveBots(updatedAll);
-    setBots(db.loadUserBots(user!.id));
+  const deleteBot = async (id: string) => {
+    if (!user) return;
+    await api.deleteBot(user.id, id);
+    const updatedBots = await api.getBots(user.id);
+    setBots(updatedBots);
     if (selectedBotId === id) setSelectedBotId(null);
   };
 
+  if (loading) return null;
   if (!user) return <Auth onLogin={handleLogin} />;
 
   return (
-    <div className="flex h-screen bg-[#0a0a0a] text-zinc-300 overflow-hidden">
+    <div className="flex h-screen bg-[#0a0a0a] text-zinc-300 overflow-hidden font-sans">
       <Sidebar 
         activeTab={activeTab} 
         setActiveTab={setActiveTab} 
@@ -110,7 +115,7 @@ const App: React.FC = () => {
         onLogout={handleLogout}
       />
       
-      <main className="flex-1 overflow-y-auto p-4 md:p-8 relative">
+      <main className="flex-1 overflow-y-auto p-4 md:p-12 relative no-scrollbar">
         <div className="max-w-6xl mx-auto">
           {activeTab === 'dashboard' && (
             <Dashboard 
@@ -131,8 +136,8 @@ const App: React.FC = () => {
           )}
           
           {activeTab === 'editor' && !activeBot && (
-            <div className="flex flex-col items-center justify-center h-[70vh] text-zinc-600">
-               <p className="text-lg font-medium text-zinc-400">Выберите бота в боковой панели</p>
+            <div className="flex flex-col items-center justify-center h-[60vh] text-zinc-600">
+               <p className="text-lg font-bold text-zinc-500 uppercase tracking-widest">Выберите инстанс из списка</p>
             </div>
           )}
 
