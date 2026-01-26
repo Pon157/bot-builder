@@ -3,9 +3,8 @@ import asyncio
 import logging
 import json
 import os
-import uuid
 from typing import Dict, List, Optional
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from aiogram import Bot, Dispatcher, Router, types
@@ -24,20 +23,20 @@ DB_FILE = "database.json"
 
 app = FastAPI(title="BotEngine Pro API")
 
-# Исправленный CORS: нельзя использовать allow_credentials=True с ["*"]
+# Полная очистка CORS для предотвращения блокировок
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Middleware для логирования всех запросов (поможет понять, доходят ли данные)
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    logger.info(f"Incoming request: {request.method} {request.url}")
+    logger.info(f"REQ: {request.method} {request.url}")
     response = await call_next(request)
-    logger.info(f"Response status: {response.status_code}")
+    logger.info(f"RES: {response.status_code}")
     return response
 
 # Хранилище
@@ -73,7 +72,7 @@ def save_db():
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(db_content, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.error(f"Save DB Error: {e}")
+        logger.error(f"DB Save Error: {e}")
 
 def load_db():
     global db_content
@@ -83,52 +82,30 @@ def load_db():
                 loaded = json.load(f)
                 if isinstance(loaded, dict) and "users" in loaded:
                     db_content = loaded
-                    logger.info(f"DB loaded: {len(db_content['users'])} users, {len(db_content['bots'])} bots")
+                    logger.info("Database loaded successfully")
         except Exception as e:
-            logger.error(f"Load DB Error: {e}")
+            logger.error(f"DB Load Error: {e}")
 
 async def bot_worker(config_id: str):
     config = next((b for b in db_content["bots"] if b["id"] == config_id), None)
     if not config: return
-
-    logger.info(f"Starting worker for bot: {config['name']} ({config_id})")
     bot = Bot(token=config["token"], parse_mode=ParseMode.HTML)
     dp = Dispatcher()
     router = Router()
-
     @router.message(CommandStart())
-    async def cmd_start(message: types.Message):
-        kb = []
-        if config.get("buttons"):
-            row = []
-            for btn in config["buttons"]:
-                row.append(types.KeyboardButton(text=btn['text']))
-                if len(row) == 2: kb.append(row); row = []
-            if row: kb.append(row)
-        reply_markup = types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True) if kb else None
-        await message.answer(config["welcomeMessage"], reply_markup=reply_markup)
-
-    @router.message()
-    async def handle_all(message: types.Message):
-        text = (message.text or "").lower()
-        for trig in config.get("triggers", []):
-            if trig['keyword'].lower() in text:
-                await message.answer(trig['response'])
-                return
-        for btn in config.get("buttons", []):
-            if btn['text'].lower() == text:
-                await message.answer(btn['response'])
-                return
-
+    async def cmd_start(m: types.Message):
+        await m.answer(config["welcomeMessage"])
     dp.include_router(router)
     try:
         await dp.start_polling(bot)
-    except Exception as e:
-        logger.error(f"Polling error in bot {config_id}: {e}")
     finally:
         await bot.session.close()
 
-# --- API ---
+# --- ENDPOINTS ---
+
+@app.get("/api/ping")
+async def ping():
+    return {"status": "online", "version": "1.0.1"}
 
 @app.post("/api/auth/register")
 async def register(user: UserModel):
@@ -152,31 +129,18 @@ async def get_bots(user_id: str):
 @app.post("/api/bots/save")
 async def save_bot(bot: BotConfigModel):
     idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot.id), -1)
-    if idx >= 0:
-        db_content["bots"][idx] = bot.dict()
-    else:
-        db_content["bots"].append(bot.dict())
+    if idx >= 0: db_content["bots"][idx] = bot.dict()
+    else: db_content["bots"].append(bot.dict())
     save_db()
     return {"status": "ok"}
 
-@app.delete("/api/bots/{bot_id}")
-async def delete_bot(bot_id: str):
-    if bot_id in active_tasks:
-        active_tasks[bot_id].cancel()
-        del active_tasks[bot_id]
-    db_content["bots"] = [b for b in db_content["bots"] if b["id"] != bot_id]
-    save_db()
-    return {"status": "deleted"}
-
 @app.post("/api/bots/start/{bot_id}")
 async def start_bot(bot_id: str):
-    if bot_id in active_tasks: return {"status": "already_running"}
-    config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-    if not config: raise HTTPException(status_code=404)
-    active_tasks[bot_id] = asyncio.create_task(bot_worker(bot_id))
-    for b in db_content["bots"]:
-        if b["id"] == bot_id: b["status"] = "RUNNING"
-    save_db()
+    if bot_id not in active_tasks:
+        active_tasks[bot_id] = asyncio.create_task(bot_worker(bot_id))
+        for b in db_content["bots"]:
+            if b["id"] == bot_id: b["status"] = "RUNNING"
+        save_db()
     return {"status": "started"}
 
 @app.post("/api/bots/stop/{bot_id}")
@@ -184,18 +148,14 @@ async def stop_bot(bot_id: str):
     if bot_id in active_tasks:
         active_tasks[bot_id].cancel()
         del active_tasks[bot_id]
-    for b in db_content["bots"]:
-        if b["id"] == bot_id: b["status"] = "IDLE"
-    save_db()
+        for b in db_content["bots"]:
+            if b["id"] == bot_id: b["status"] = "IDLE"
+        save_db()
     return {"status": "stopped"}
 
 @app.on_event("startup")
-async def startup_event():
+async def startup():
     load_db()
-    for b in db_content["bots"]:
-        if b.get("status") == "RUNNING":
-            active_tasks[b["id"]] = asyncio.create_task(bot_worker(b["id"]))
 
 if __name__ == "__main__":
-    logger.info("Starting BotEngine Server on 0.0.0.0:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000)
