@@ -15,7 +15,9 @@ export interface TelegramUser {
   is_banned: boolean;
   is_active: boolean; 
   joined_at: number;
-  last_seen?: number; // Real activity timestamp
+  last_seen?: number;
+  thread_id?: number;
+  warns: number; // Количество предупреждений
 }
 
 export interface StatPoint {
@@ -38,6 +40,7 @@ export interface MessageLog {
   timestamp: number;
   type: 'info' | 'error' | 'incoming' | 'outgoing' | 'system';
   text: string;
+  code?: string;
 }
 
 export interface BotConfig {
@@ -61,6 +64,7 @@ export interface BotConfig {
     forwardToAdmin: boolean;
     antiSpam: boolean;
     showUserInfo: boolean;
+    showUsername: boolean; // Показывать ли юзернейм в инфо
     autoApproveJoin: boolean;
     rateLimit: number;
   };
@@ -75,3 +79,4 @@ export interface User {
   balance: number;
   botsCreated: number;
 }
+
