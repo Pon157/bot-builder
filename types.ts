@@ -6,7 +6,7 @@ export enum BotStatus {
   STARTING = 'STARTING'
 }
 
-// Added SubscriptionPlan type
+// Added SubscriptionPlan type 
 export type SubscriptionPlan = 'FREE' | 'PRO' | 'ENTERPRISE';
 
 export interface TelegramUser {
