@@ -12,32 +12,41 @@ interface BotEditorProps {
 
 const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
   const [activeTab, setActiveTab] = useState<'settings' | 'logic' | 'interface' | 'logs'>('settings');
-  const [isDeploying, setIsDeploying] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const handleToggleServer = async () => {
-    if (bot.status === BotStatus.RUNNING) {
-      await api.stopBotOnServer(bot.id);
-      onUpdate({ ...bot, status: BotStatus.IDLE });
-    } else {
-      setIsDeploying(true);
-      try {
+    setIsProcessing(true);
+    try {
+      if (bot.status === BotStatus.RUNNING) {
+        await api.stopBotOnServer(bot.id);
+        onUpdate({ ...bot, status: BotStatus.IDLE });
+      } else {
         const result = await api.startBotOnServer(bot);
         if (result === true) {
           onUpdate({ ...bot, status: BotStatus.RUNNING });
         } else {
-          alert(`Ошибка запуска: ${result || 'Неизвестная ошибка сервера'}`);
+          alert(`Ошибка: ${result}`);
         }
-      } catch (e) {
-        alert("Критическая ошибка при связи с сервером");
-      } finally {
-        setIsDeploying(false);
       }
+    } catch (e) {
+      alert("Ошибка связи с сервером");
+    } finally {
+      setIsProcessing(false);
     }
   };
 
   const save = async () => {
-    await api.saveBot(bot.ownerId, bot);
-    alert("Настройки сохранены");
+    setIsProcessing(true);
+    try {
+      await api.saveBot(bot.ownerId, bot);
+      // Если бот был запущен, сервер вернет его в RUNNING после рестарта
+      // Но нам нужно обновить локальное состояние из БД через API в идеале
+      alert("Конфигурация обновлена и перезапущена");
+    } catch (e) {
+      alert("Ошибка сохранения");
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   return (
@@ -49,17 +58,26 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
           </div>
           <div>
             <h1 className="text-3xl font-black text-white">{bot.name}</h1>
-            <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">{bot.status}</span>
+            <div className="flex items-center gap-2">
+               <span className={`w-2 h-2 rounded-full ${bot.status === BotStatus.RUNNING ? 'bg-green-500' : 'bg-zinc-600'}`}></span>
+               <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">{bot.status}</span>
+            </div>
           </div>
         </div>
         <div className="flex gap-4">
-           <button onClick={save} className="px-6 py-4 bg-zinc-800 text-white rounded-2xl text-[10px] font-bold uppercase tracking-widest hover:bg-zinc-700">Сохранить</button>
+           <button 
+             onClick={save} 
+             disabled={isProcessing}
+             className="px-6 py-4 bg-zinc-800 text-white rounded-2xl text-[10px] font-bold uppercase tracking-widest hover:bg-zinc-700 disabled:opacity-50"
+           >
+             {isProcessing ? '...' : 'Сохранить'}
+           </button>
            <button 
              onClick={handleToggleServer} 
-             disabled={isDeploying}
-             className={`px-10 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${bot.status === BotStatus.RUNNING ? 'bg-red-500/10 text-red-500' : 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'} ${isDeploying ? 'opacity-50 cursor-wait' : ''}`}
+             disabled={isProcessing}
+             className={`px-10 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${bot.status === BotStatus.RUNNING ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20' : 'bg-blue-600 text-white shadow-lg shadow-blue-600/20 hover:bg-blue-500'} ${isProcessing ? 'opacity-50 cursor-wait' : ''}`}
            >
-             {isDeploying ? 'Обработка...' : (bot.status === BotStatus.RUNNING ? 'Остановить' : 'Запустить')}
+             {isProcessing ? 'Обработка...' : (bot.status === BotStatus.RUNNING ? 'Остановить' : 'Запустить')}
            </button>
         </div>
       </header>
@@ -116,7 +134,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                   <button onClick={() => { const nt = bot.triggers.filter((_, idx) => idx !== i); onUpdate({...bot, triggers: nt}); }} className="text-red-500 font-bold hover:scale-110 transition-transform">×</button>
                </div>
              ))}
-             {bot.triggers.length === 0 && <p className="text-center text-zinc-600 text-sm py-10">Триггеры пока не добавлены</p>}
           </div>
         )}
 
@@ -137,7 +154,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                   <button onClick={() => { const nb = bot.buttons.filter((_, idx) => idx !== i); onUpdate({...bot, buttons: nb}); }} className="text-red-500 font-bold hover:scale-110 transition-transform">×</button>
                </div>
              ))}
-             {bot.buttons.length === 0 && <p className="text-center text-zinc-600 text-sm py-10">Клавиатура пуста</p>}
           </div>
         )}
 
