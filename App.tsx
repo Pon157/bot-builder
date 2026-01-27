@@ -53,6 +53,7 @@ const App: React.FC = () => {
   const handleCreateBot = async (name: string, token: string) => {
     if (!user) return;
     
+    // Fix: Added missing properties to comply with BotConfig type definition
     const newBot: BotConfig = {
       id: Math.random().toString(36).substr(2, 9),
       ownerId: user.id,
@@ -68,12 +69,21 @@ const App: React.FC = () => {
       connectedUsers: [],
       triggers: [],
       buttons: [],
+      stats: {
+        totalMessages: 0,
+        incomingToday: 0,
+        outgoingToday: 0,
+        activeUsers24h: 0,
+        bannedCount: 0,
+        history: []
+      },
       settings: {
         useTopics: false,
         autoApproveJoin: false,
         forwardToAdmin: true,
         antiSpam: true,
-        rateLimit: 15
+        rateLimit: 15,
+        showUserInfo: true
       }
     };
 
