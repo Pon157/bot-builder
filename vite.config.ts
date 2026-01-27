@@ -20,5 +20,23 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    rollupOptions: {
+      external: [
+        'react',
+        'react-dom',
+        'recharts',
+        'lucide-react',
+        '@google/genai'
+      ],
+      output: {
+        globals: {
+          react: 'React',
+          'react-dom': 'ReactDOM',
+          recharts: 'Recharts',
+          'lucide-react': 'Lucide',
+          '@google/genai': 'GoogleGenAI'
+        }
+      }
+    }
   },
 });
