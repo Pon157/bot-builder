@@ -15,6 +15,7 @@ from aiogram.filters import CommandStart
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.exceptions import TelegramUnauthorizedError, TelegramNetworkError, TelegramConflictError
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.default import DefaultBotProperties
 import uvicorn
 
 # Настройка логирования
@@ -32,7 +33,7 @@ class BroadcastModel(BaseModel):
     message: str
 
 def save_db():
-    """Синхронное сохранение БД (вызывается аккуратно)"""
+    """Синхронное сохранение БД"""
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(db_content, f, ensure_ascii=False, indent=2)
@@ -45,6 +46,8 @@ def load_db():
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
                 db_content = json.load(f)
+                if "users" not in db_content: db_content["users"] = []
+                if "bots" not in db_content: db_content["bots"] = []
         except Exception as e:
             logger.error(f"Error loading DB: {e}")
             db_content = {"users": [], "bots": []}
@@ -61,8 +64,6 @@ def add_log(bot_id: str, log_type: str, text: str):
         }
         config["logs"].insert(0, log_entry)
         config["logs"] = config["logs"][:50]
-        # Не сохраняем файл на каждый лог, чтобы не нагружать диск. 
-        # Сохранение произойдет при изменении статуса или конфига.
 
 def get_keyboard(buttons):
     if not buttons: return None
@@ -77,9 +78,14 @@ def get_keyboard(buttons):
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 async def bot_worker(bot_id: str, token: str):
-    """Изолированный воркер для одного бота"""
+    """Изолированный воркер для одного бота (aiogram 3.7+ ready)"""
     session = AiohttpSession()
-    bot = Bot(token=token, session=session, parse_mode=ParseMode.HTML)
+    # В aiogram 3.7+ parse_mode передается через DefaultBotProperties
+    bot = Bot(
+        token=token, 
+        session=session, 
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     dp = Dispatcher()
     router = Router()
 
@@ -110,48 +116,43 @@ async def bot_worker(bot_id: str, token: str):
             if btn["text"].lower() == text:
                 return await m.answer(btn["response"])
         for trig in config.get("triggers", []):
-            if trig["keyword"].lower() in trig["keyword"].lower() in text:
+            if trig["keyword"].lower() in text:
                 return await m.answer(trig["response"])
 
     dp.include_router(router)
     
     try:
-        add_log(bot_id, "info", "Шаг 1: Очистка старых вебхуков...")
+        add_log(bot_id, "info", "Шаг 1: Очистка вебхуков...")
         await bot.delete_webhook(drop_pending_updates=True)
         
-        add_log(bot_id, "info", "Шаг 2: Проверка авторизации...")
+        add_log(bot_id, "info", "Шаг 2: Проверка токена...")
         me = await bot.get_me()
-        add_log(bot_id, "info", f"Шаг 3: Бот @{me.username} готов к работе.")
+        add_log(bot_id, "info", f"Шаг 3: Бот @{me.username} авторизован.")
         
-        add_log(bot_id, "info", "Шаг 4: Запуск прослушивания (Polling)...")
+        add_log(bot_id, "info", "Шаг 4: Запуск Polling...")
         await dp.start_polling(bot, skip_updates=True)
         
     except asyncio.CancelledError:
-        add_log(bot_id, "info", "Процесс бота был принудительно остановлен.")
+        add_log(bot_id, "info", "Бот остановлен системой.")
     except TelegramUnauthorizedError:
-        add_log(bot_id, "error", "Критическая ошибка: Токен недействителен!")
-    except TelegramConflictError:
-        add_log(bot_id, "error", "Ошибка: Обнаружен конфликт сессий. Пожалуйста, подождите 10 секунд.")
+        add_log(bot_id, "error", "Ошибка: Неверный токен!")
     except Exception as e:
-        add_log(bot_id, "error", f"Ошибка воркера: {str(e)}")
-        logger.exception(f"Worker for {bot_id} crashed")
+        add_log(bot_id, "error", f"Ошибка: {str(e)}")
+        logger.error(f"Error in bot {bot_id}: {e}")
     finally:
-        add_log(bot_id, "info", "Сессия закрыта. Бот отключен.")
         await session.close()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     load_db()
-    # Восстановление ботов, которые должны быть запущены
     for b in db_content["bots"]:
         if b.get("status") == "RUNNING":
             active_tasks[b["id"]] = asyncio.create_task(bot_worker(b["id"], b["token"]))
     yield
-    # Shutdown
     for task in active_tasks.values():
         task.cancel()
-    await asyncio.gather(*active_tasks.values(), return_exceptions=True)
+    if active_tasks:
+        await asyncio.gather(*active_tasks.values(), return_exceptions=True)
 
 app = FastAPI(lifespan=lifespan)
 
@@ -174,6 +175,14 @@ async def login(data: dict):
     if not user: raise HTTPException(status_code=401, detail="Invalid credentials")
     return user
 
+@app.post("/api/auth/register")
+async def register(data: dict):
+    if any(u["email"] == data["email"] for u in db_content["users"]):
+        raise HTTPException(status_code=400, detail="User already exists")
+    db_content["users"].append(data)
+    save_db()
+    return data
+
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
     return [b for b in db_content["bots"] if b["ownerId"] == user_id]
@@ -185,7 +194,6 @@ async def save_bot_endpoint(bot: dict):
     
     if idx >= 0:
         was_running = db_content["bots"][idx].get("status") == "RUNNING"
-        # Сохраняем пользователей
         bot["connectedUsers"] = db_content["bots"][idx].get("connectedUsers", [])
         bot["usersCount"] = len(bot["connectedUsers"])
         db_content["bots"][idx] = bot
@@ -195,9 +203,8 @@ async def save_bot_endpoint(bot: dict):
     save_db()
     
     if was_running:
-        add_log(bot["id"], "system", "Перезапуск по требованию (настройки изменены)")
         await stop_bot(bot["id"])
-        await asyncio.sleep(1) # Важная пауза
+        await asyncio.sleep(0.5)
         await start_bot(bot["id"])
         
     return {"status": "ok"}
@@ -207,14 +214,8 @@ async def start_bot(bot_id: str):
     bot_cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
     if not bot_cfg: raise HTTPException(status_code=404, detail="Bot not found")
     
-    # Очистка старых задач
-    if bot_id in active_tasks:
-        if not active_tasks[bot_id].done():
-            active_tasks[bot_id].cancel()
-            try:
-                await asyncio.wait_for(active_tasks[bot_id], timeout=2)
-            except: pass
-        del active_tasks[bot_id]
+    if bot_id in active_tasks and not active_tasks[bot_id].done():
+        return {"status": "already_running"}
 
     active_tasks[bot_id] = asyncio.create_task(bot_worker(bot_id, bot_cfg["token"]))
     bot_cfg["status"] = "RUNNING"
@@ -225,10 +226,7 @@ async def start_bot(bot_id: str):
 async def stop_bot(bot_id: str):
     if bot_id in active_tasks:
         active_tasks[bot_id].cancel()
-        try:
-            await asyncio.wait_for(active_tasks[bot_id], timeout=3)
-        except: pass
-        if bot_id in active_tasks: del active_tasks[bot_id]
+        del active_tasks[bot_id]
             
     for b in db_content["bots"]:
         if b["id"] == bot_id: b["status"] = "IDLE"
@@ -237,13 +235,12 @@ async def stop_bot(bot_id: str):
 
 @app.post("/api/broadcast")
 async def broadcast(data: BroadcastModel):
-    # Упрощенная рассылка через временную сессию
     results = {"success": 0, "failed": 0}
     for bot_id in data.botIds:
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
         if not config: continue
         
-        async with Bot(token=config["token"]).context() as bot:
+        async with Bot(token=config["token"], default=DefaultBotProperties(parse_mode=ParseMode.HTML)) as bot:
             for user in config.get("connectedUsers", []):
                 try:
                     await bot.send_message(user["id"], data.message)
@@ -253,4 +250,4 @@ async def broadcast(data: BroadcastModel):
     return results
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
