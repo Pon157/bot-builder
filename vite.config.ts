@@ -24,6 +24,7 @@ export default defineConfig({
       external: [
         'react',
         'react-dom',
+        'react-dom/client',
         'recharts',
         'lucide-react',
         '@google/genai'
@@ -32,6 +33,7 @@ export default defineConfig({
         globals: {
           react: 'React',
           'react-dom': 'ReactDOM',
+          'react-dom/client': 'ReactDOM',
           recharts: 'Recharts',
           'lucide-react': 'Lucide',
           '@google/genai': 'GoogleGenAI'
