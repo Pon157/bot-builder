@@ -24,7 +24,6 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
   ];
 
   const bannedUsers = bot.connectedUsers.filter(u => u.is_banned);
-  const inactiveUsers = bot.connectedUsers.filter(u => !u.is_active && !u.is_banned);
 
   const handleModeration = async (userId: number, action: 'unban' | 'warn' | 'unwarn') => {
     const updatedUsers = bot.connectedUsers.map(u => {
@@ -36,8 +35,9 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
       return u;
     });
     
-    await api.saveBot(bot.ownerId, { ...bot, connectedUsers: updatedUsers });
-    // Note: Parent component handles state update via polling
+    // Explicitly update the bot configuration on the server
+    const updatedBot = { ...bot, connectedUsers: updatedUsers };
+    await api.saveBot(bot.ownerId, updatedBot);
   };
 
   return (
@@ -46,7 +46,7 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
         {[
           { label: 'Всего пользователей', value: bot.usersCount, color: 'text-white', icon: Users },
           { label: 'Активно (24ч)', value: stats.activeUsers24h, color: 'text-green-500', icon: Activity },
-          { label: 'Забанено', value: stats.bannedCount, color: 'text-red-500', icon: Ban },
+          { label: 'Забанено', value: bot.connectedUsers.filter(u => u.is_banned).length, color: 'text-red-500', icon: Ban },
           { label: 'Предупреждения', value: bot.connectedUsers.reduce((a,b) => a + (b.warns || 0), 0), color: 'text-yellow-500', icon: AlertTriangle },
         ].map((stat, i) => (
           <div key={i} className="bg-[#111] border border-zinc-800 p-6 rounded-3xl relative overflow-hidden group">
@@ -60,12 +60,7 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
       </div>
 
       <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem]">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h3 className="text-sm font-bold text-white uppercase tracking-widest">Активность сообщений</h3>
-            <p className="text-[10px] text-zinc-500 font-medium">Статистика за последние 7 дней</p>
-          </div>
-        </div>
+        <h3 className="text-sm font-bold text-white uppercase tracking-widest mb-8">Активность сообщений</h3>
         <div className="h-[300px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={chartData}>
@@ -82,7 +77,7 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
               <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
               <XAxis dataKey="date" stroke="#444" fontSize={10} tickLine={false} axisLine={false} />
               <YAxis stroke="#444" fontSize={10} tickLine={false} axisLine={false} />
-              <Tooltip contentStyle={{ backgroundColor: '#111', border: '1px solid #333', borderRadius: '12px', fontSize: '12px' }} itemStyle={{ fontWeight: 'bold' }} />
+              <Tooltip contentStyle={{ backgroundColor: '#111', border: '1px solid #333', borderRadius: '12px', fontSize: '12px' }} />
               <Area type="monotone" dataKey="incoming" stroke="#3b82f6" fillOpacity={1} fill="url(#colorIn)" strokeWidth={3} />
               <Area type="monotone" dataKey="outgoing" stroke="#a855f7" fillOpacity={1} fill="url(#colorOut)" strokeWidth={2} />
             </AreaChart>
@@ -95,28 +90,22 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
           <div className="p-6 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/20">
             <h3 className="text-xs font-bold text-white uppercase flex items-center gap-2">
               <Users className="w-4 h-4 text-blue-500" />
-              Последние активные
+              Активные пользователи
             </h3>
           </div>
           <div className="flex-1 max-h-[400px] overflow-y-auto no-scrollbar">
-            {bot.connectedUsers.filter(u => u.is_active && !u.is_banned).length === 0 ? (
-              <div className="p-20 text-center text-[10px] font-bold text-zinc-700 uppercase">Нет активных пользователей</div>
+            {bot.connectedUsers.filter(u => !u.is_banned).length === 0 ? (
+              <div className="p-20 text-center text-[10px] font-bold text-zinc-700 uppercase">Нет данных</div>
             ) : (
-              bot.connectedUsers
-                .filter(u => u.is_active && !u.is_banned)
-                .sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0))
-                .map(u => (
+              bot.connectedUsers.filter(u => !u.is_banned).map(u => (
                 <div key={u.id} className="p-4 flex items-center justify-between hover:bg-zinc-800/30 border-b border-zinc-900/50 last:border-0 transition-colors">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-blue-600/10 text-blue-500 flex items-center justify-center text-xs font-bold">{u.first_name[0]}</div>
-                    <div>
-                      <p className="text-sm font-bold text-white">{u.first_name}</p>
-                      <p className="text-[10px] text-zinc-500">ID: {u.id} {u.warns > 0 && <span className="text-yellow-500 ml-2 font-black">Warns: {u.warns}</span>}</p>
-                    </div>
+                  <div>
+                    <p className="text-sm font-bold text-white">{u.first_name}</p>
+                    <p className="text-[10px] text-zinc-500">ID: {u.id} {u.warns > 0 && <span className="text-yellow-500 ml-2">Warns: {u.warns}</span>}</p>
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={() => handleModeration(u.id, 'warn')} className="p-2 bg-yellow-500/10 text-yellow-500 rounded-lg hover:bg-yellow-500/20 transition-all"><AlertTriangle className="w-3.5 h-3.5" /></button>
-                    <button onClick={() => handleModeration(u.id, 'unwarn')} className="p-2 bg-blue-500/10 text-blue-500 rounded-lg hover:bg-blue-500/20 transition-all"><ShieldCheck className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => handleModeration(u.id, 'warn')} className="p-2 bg-yellow-500/10 text-yellow-500 rounded-lg hover:bg-yellow-500/20"><AlertTriangle className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => handleModeration(u.id, 'unwarn')} className="p-2 bg-blue-500/10 text-blue-500 rounded-lg hover:bg-blue-500/20"><ShieldCheck className="w-3.5 h-3.5" /></button>
                   </div>
                 </div>
               ))
@@ -128,21 +117,18 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
           <div className="p-6 border-b border-zinc-800 bg-red-950/10">
             <h3 className="text-xs font-bold text-red-500 uppercase flex items-center gap-2">
               <Ban className="w-4 h-4" />
-              Ограничения доступа
+              Черный список
             </h3>
           </div>
           <div className="flex-1 max-h-[400px] overflow-y-auto no-scrollbar">
             {bannedUsers.length === 0 ? (
-              <div className="p-20 text-center text-[10px] font-bold text-zinc-700 uppercase">Черный список пуст</div>
+              <div className="p-20 text-center text-[10px] font-bold text-zinc-700 uppercase">Пусто</div>
             ) : (
               bannedUsers.map(u => (
                 <div key={u.id} className="p-4 flex items-center justify-between bg-red-500/5 border-b border-red-500/10">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-red-500/10 text-red-500 flex items-center justify-center text-xs font-bold">{u.first_name[0]}</div>
-                    <div>
-                      <p className="text-sm font-bold text-white">{u.first_name}</p>
-                      <p className="text-[10px] text-zinc-500">ID: {u.id}</p>
-                    </div>
+                  <div>
+                    <p className="text-sm font-bold text-white">{u.first_name}</p>
+                    <p className="text-[10px] text-zinc-500">ID: {u.id}</p>
                   </div>
                   <button onClick={() => handleModeration(u.id, 'unban')} className="text-[8px] font-black uppercase text-red-500 hover:underline">Разблокировать</button>
                 </div>
