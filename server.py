@@ -3,6 +3,7 @@ import asyncio
 import logging
 import json
 import os
+import time
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,10 +12,10 @@ from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.exceptions import TelegramUnauthorizedError, TelegramNetworkError
+from aiogram.exceptions import TelegramUnauthorizedError, TelegramNetworkError, TelegramConflictError
 import uvicorn
 
-# Настройка логирования
+# Настройка логирования для терминала
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("BotEngine")
 
@@ -53,6 +54,20 @@ def load_db():
             logger.error(f"Error loading DB: {e}")
             db_content = {"users": [], "bots": []}
 
+def add_log(bot_id: str, type: str, text: str):
+    config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
+    if config:
+        if "logs" not in config: config["logs"] = []
+        log_entry = {
+            "id": str(time.time()),
+            "timestamp": int(time.time() * 1000),
+            "type": type,
+            "text": text
+        }
+        config["logs"].insert(0, log_entry)
+        config["logs"] = config["logs"][:50] # Храним только последние 50 записей
+        save_db()
+
 def get_keyboard(buttons):
     if not buttons: return None
     rows = []
@@ -77,12 +92,15 @@ async def bot_worker(bot_id: str, token: str):
         welcome = config["welcomeMessage"] if config else "Hello!"
         kb = get_keyboard(config.get("buttons", [])) if config else None
         
+        add_log(bot_id, "incoming", f"Команда /start от {m.from_user.full_name}")
+        
         if config:
             user_entry = {"id": m.from_user.id, "first_name": m.from_user.first_name, "username": m.from_user.username}
             if "connectedUsers" not in config: config["connectedUsers"] = []
             if not any(u["id"] == m.from_user.id for u in config["connectedUsers"]):
                 config["connectedUsers"].append(user_entry)
                 config["usersCount"] = len(config["connectedUsers"])
+                add_log(bot_id, "system", f"Новый пользователь: {m.from_user.full_name}")
                 save_db()
 
         await m.answer(welcome, reply_markup=kb)
@@ -92,23 +110,37 @@ async def bot_worker(bot_id: str, token: str):
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
         if not config or not m.text: return
         
+        add_log(bot_id, "incoming", f"Сообщение: {m.text} (от {m.from_user.full_name})")
+        
         text = m.text.lower()
+        # Проверка кнопок
         for btn in config.get("buttons", []):
             if btn["text"].lower() == text:
+                add_log(bot_id, "outgoing", f"Ответ на кнопку: {btn['response']}")
                 return await m.answer(btn["response"])
         
+        # Проверка триггеров
         for trig in config.get("triggers", []):
             if trig["keyword"].lower() in text:
+                add_log(bot_id, "outgoing", f"Ответ на триггер '{trig['keyword']}': {trig['response']}")
                 return await m.answer(trig["response"])
 
     dp.include_router(router)
+    
     try:
-        # Принудительно удаляем вебхук перед началом поллинга
+        add_log(bot_id, "info", "Запуск polling...")
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
+    except TelegramConflictError:
+        add_log(bot_id, "error", "Конфликт: запущен другой экземпляр этого бота!")
+        logger.error(f"Conflict error for bot {bot_id}")
     except Exception as e:
-        logger.error(f"Bot {bot_id} execution error: {e}")
+        add_log(bot_id, "error", f"Критический сбой: {str(e)}")
+        logger.error(f"Bot {bot_id} crashed: {e}")
     finally:
+        for b in db_content["bots"]:
+            if b["id"] == bot_id: b["status"] = "IDLE"
+        save_db()
         await bot.session.close()
 
 # API Endpoints
@@ -146,8 +178,8 @@ async def save_bot_endpoint(bot: dict):
         db_content["bots"].append(bot)
     save_db()
     
-    # Если бот уже запущен, перезапускаем его с новыми настройками
     if bot["id"] in active_tasks:
+        add_log(bot["id"], "system", "Настройки изменены. Перезапуск...")
         await stop_bot(bot["id"])
         await start_bot(bot["id"])
     return {"status": "ok"}
@@ -162,24 +194,21 @@ async def delete_bot(user_id: str, bot_id: str):
 @app.post("/api/bots/start/{bot_id}")
 async def start_bot(bot_id: str):
     bot_cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-    if not bot_cfg: 
-        raise HTTPException(status_code=404, detail="Bot not found")
+    if not bot_cfg: raise HTTPException(status_code=404, detail="Bot not found")
     
-    if bot_id in active_tasks:
+    if bot_id in active_tasks and not active_tasks[bot_id].done():
         return {"status": "ok", "message": "Already running"}
 
-    # Проверка токена перед созданием задачи
+    # Проверка токена
     test_bot = Bot(token=bot_cfg["token"])
     try:
         me = await test_bot.get_me()
-        logger.info(f"Starting bot: @{me.username}")
+        add_log(bot_id, "info", f"Токен проверен: @{me.username}")
         await test_bot.session.close()
-    except TelegramUnauthorizedError:
-        await test_bot.session.close()
-        raise HTTPException(status_code=400, detail="Invalid Telegram Token")
     except Exception as e:
         await test_bot.session.close()
-        raise HTTPException(status_code=500, detail=f"Connection error: {str(e)}")
+        add_log(bot_id, "error", f"Ошибка проверки токена: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Ошибка токена: {str(e)}")
 
     active_tasks[bot_id] = asyncio.create_task(bot_worker(bot_id, bot_cfg["token"]))
     bot_cfg["status"] = "RUNNING"
@@ -190,6 +219,7 @@ async def start_bot(bot_id: str):
 async def stop_bot(bot_id: str):
     if bot_id in active_tasks:
         active_tasks[bot_id].cancel()
+        add_log(bot_id, "info", "Остановка бота пользователем...")
         try:
             await active_tasks[bot_id]
         except asyncio.CancelledError:
@@ -213,13 +243,14 @@ async def broadcast(data: BroadcastModel):
         if not config or bot_id not in active_bots: continue
         
         bot = active_bots[bot_id]
+        add_log(bot_id, "system", f"Начало рассылки: {data.message[:20]}...")
         for user in config.get("connectedUsers", []):
             try:
                 await bot.send_message(user["id"], data.message)
                 results["success"] += 1
             except Exception as e:
-                logger.error(f"Broadcast error for user {user['id']}: {e}")
                 results["failed"] += 1
+        add_log(bot_id, "system", f"Рассылка завершена. Успешно: {results['success']}")
     return results
 
 @app.on_event("startup")
