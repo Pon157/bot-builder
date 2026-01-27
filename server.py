@@ -60,9 +60,9 @@ def load_db():
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
-                # Ensure structure
                 db_content["users"] = loaded.get("users", [])
                 db_content["bots"] = loaded.get("bots", [])
+                logger.info(f"Database loaded: {len(db_content['users'])} users, {len(db_content['bots'])} bots")
         except Exception as e: 
             logger.error(f"Load DB Error: {e}")
             db_content = {"users": [], "bots": []}
@@ -227,7 +227,7 @@ async def ping(): return {"status": "online"}
 
 @app.post("/api/auth/register")
 async def register(user: UserBase):
-    load_db()
+    # load_db() is redundant here as db_content is in memory
     if any(u["email"] == user.email for u in db_content["users"]):
         raise HTTPException(status_code=400, detail="User already exists")
     db_content["users"].append(user.dict())
@@ -236,7 +236,7 @@ async def register(user: UserBase):
 
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
-    load_db()
+    # Search in memory for speed
     user = next((u for u in db_content["users"] if u["email"] == req.email and u["password"] == req.password), None)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -246,7 +246,7 @@ async def login(req: LoginRequest):
 
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
-    load_db()
+    # No load_db() here. Polling is now very lightweight.
     return [b for b in db_content["bots"] if b["ownerId"] == user_id]
 
 @app.post("/api/bots/save")
