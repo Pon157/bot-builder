@@ -27,6 +27,10 @@ db_content = {"users": [], "bots": []}
 active_tasks: Dict[str, asyncio.Task] = {}
 active_bots: Dict[str, Bot] = {}
 
+class BroadcastRequest(BaseModel):
+    botIds: List[str]
+    message: str
+
 def save_db():
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
@@ -45,7 +49,7 @@ def add_bot_log(bot_id: str, log_type: str, text: str, code: str = None):
     bot = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
     if not bot: return
     log_entry = {"id": str(time.time()), "timestamp": int(time.time() * 1000), "type": log_type, "text": text, "code": code}
-    bot["logs"].insert(0, log_entry)
+    bot.setdefault("logs", []).insert(0, log_entry)
     bot["logs"] = bot["logs"][:100]
     save_db()
 
@@ -82,10 +86,10 @@ async def bot_worker(bot_id: str, token: str):
     async def cmd_start(m: Message):
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
         if not config: return
-        user = next((u for u in config["connectedUsers"] if u["id"] == m.from_user.id), None)
+        user = next((u for u in config.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
         if not user:
             user = {"id": m.from_user.id, "first_name": m.from_user.first_name, "username": m.from_user.username, "joined_at": int(time.time()), "is_banned": False, "is_active": True, "warns": 0}
-            config["connectedUsers"].append(user)
+            config.setdefault("connectedUsers", []).append(user)
             config["usersCount"] = len(config["connectedUsers"])
             add_bot_log(bot_id, "system", f"New user: {m.from_user.full_name}")
             save_db()
@@ -98,12 +102,10 @@ async def bot_worker(bot_id: str, token: str):
         if str(m.chat.id) != str(config.get("adminChatId")): return
         
         target_id = None
-        # Try finding in the thread context first
         if m.message_thread_id:
-            user = next((u for u in config["connectedUsers"] if u.get("thread_id") == m.message_thread_id), None)
+            user = next((u for u in config.get("connectedUsers", []) if u.get("thread_id") == m.message_thread_id), None)
             if user: target_id = user["id"]
         
-        # Then try reply regex
         if not target_id and m.reply_to_message:
             match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
             if match: target_id = int(match.group(1))
@@ -114,7 +116,7 @@ async def bot_worker(bot_id: str, token: str):
 
         if not target_id: return await m.reply("Could not determine User ID.")
         
-        user = next((u for u in config["connectedUsers"] if u["id"] == target_id), None)
+        user = next((u for u in config.get("connectedUsers", []) if u["id"] == target_id), None)
         if not user: return await m.reply("User not found in DB.")
         
         cmd = m.text.split()[0].lower()
@@ -133,34 +135,25 @@ async def bot_worker(bot_id: str, token: str):
         admin_id = config.get("adminChatId")
         if not admin_id: return
 
-        # ADMIN AS RESPONDENT
         if str(m.chat.id) == str(admin_id):
-            if m.text and m.text.startswith("/"): return # Don't forward commands
-            
+            if m.text and m.text.startswith("/"): return
             target_id = None
-            # Context A: Inside a Topic
             if m.message_thread_id:
-                user = next((u for u in config["connectedUsers"] if u.get("thread_id") == m.message_thread_id), None)
+                user = next((u for u in config.get("connectedUsers", []) if u.get("thread_id") == m.message_thread_id), None)
                 if user: target_id = user["id"]
-            
-            # Context B: Replying in regular chat
             if not target_id and m.reply_to_message:
                 match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
                 if match: target_id = int(match.group(1))
-
             if target_id:
                 try:
                     await bot.copy_message(chat_id=target_id, from_chat_id=m.chat.id, message_id=m.message_id)
                     update_bot_stats(bot_id, "outgoing")
-                except Exception as e:
-                    await m.reply(f"Error sending to user: {e}")
+                except Exception as e: await m.reply(f"Error: {e}")
             return
 
-        # USER AS SENDER
-        user = next((u for u in config["connectedUsers"] if u["id"] == m.from_user.id), None)
+        user = next((u for u in config.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
         if not user or user["is_banned"]: return
 
-        # Check Triggers/Buttons (Text only)
         if m.text:
             text_low = m.text.lower()
             for btn in config.get("buttons", []):
@@ -170,8 +163,8 @@ async def bot_worker(bot_id: str, token: str):
                 if trig.get("keyword") and trig["keyword"].lower() in text_low:
                     return await m.answer(trig.get("response", "...")), update_bot_stats(bot_id, "outgoing")
 
-        # Forwarding to Admin (With all media support)
         use_topics = config.get("settings", {}).get("useTopics", False)
+        target_thread = None
         if use_topics:
             if not user.get("thread_id"):
                 try:
@@ -182,25 +175,15 @@ async def bot_worker(bot_id: str, token: str):
                     if config["settings"].get("showUsername") and m.from_user.username:
                         info += f"User: @{m.from_user.username}\n"
                     await bot.send_message(admin_id, info, message_thread_id=user["thread_id"])
-                except Exception as e:
-                    add_bot_log(bot_id, "error", f"Topic error: {e}", "TOPIC_ERROR")
-                    use_topics = False
+                except Exception: use_topics = False
+            target_thread = user.get("thread_id")
 
-            target_thread = user.get("thread_id") if use_topics else None
-            try:
-                await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=target_thread)
-                update_bot_stats(bot_id, "incoming")
-            except Exception as e:
-                add_bot_log(bot_id, "error", f"Forward fail: {e}")
-        else:
-            try:
-                # Regular mode: send ID header then the media/message
-                info = f"📩 <b>ID: {m.from_user.id}</b>\nName: {m.from_user.full_name}"
-                await bot.send_message(admin_id, info)
-                await bot.copy_message(admin_id, m.chat.id, m.message_id)
-                update_bot_stats(bot_id, "incoming")
-            except Exception as e:
-                add_bot_log(bot_id, "error", f"Forward fail: {e}")
+        try:
+            if not use_topics:
+                await bot.send_message(admin_id, f"📩 <b>ID: {m.from_user.id}</b>\nName: {m.from_user.full_name}")
+            await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=target_thread)
+            update_bot_stats(bot_id, "incoming")
+        except Exception as e: add_bot_log(bot_id, "error", f"Forward fail: {e}")
 
     dp.include_router(router)
     try:
@@ -211,21 +194,36 @@ async def bot_worker(bot_id: str, token: str):
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+@app.post("/api/broadcast")
+async def broadcast(req: BroadcastRequest):
+    success = 0
+    failed = 0
+    for bot_id in req.botIds:
+        bot_instance = active_bots.get(bot_id)
+        if not bot_instance: continue
+        config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
+        if not config: continue
+        for user in config.get("connectedUsers", []):
+            if user["is_banned"]: continue
+            try:
+                await bot_instance.send_message(user["id"], req.message)
+                success += 1
+                update_bot_stats(bot_id, "outgoing")
+            except Exception: failed += 1
+    return {"success": success, "failed": failed}
+
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
     load_db()
     return [b for b in db_content["bots"] if b["ownerId"] == user_id]
 
 @app.post("/api/bots/save")
-async def save_bot(bot_data: dict):
+async def save_bot_endpoint(bot_data: dict):
     idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_data["id"]), -1)
     if idx >= 0:
-        # Transfer runtime state to new data
-        if not bot_data.get("logs"):
-            bot_data["logs"] = db_content["bots"][idx].get("logs", [])
+        bot_data.setdefault("logs", db_content["bots"][idx].get("logs", []))
         db_content["bots"][idx] = bot_data
-    else:
-        db_content["bots"].append(bot_data)
+    else: db_content["bots"].append(bot_data)
     save_db()
     return {"status": "ok"}
 
@@ -244,6 +242,7 @@ async def stop_bot(bot_id: str):
     if bot_id in active_tasks:
         active_tasks[bot_id].cancel()
         del active_tasks[bot_id]
+    if bot_id in active_bots: del active_bots[bot_id]
     for b in db_content["bots"]:
         if b["id"] == bot_id: b["status"] = "IDLE"
     save_db()
