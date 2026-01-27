@@ -27,10 +27,6 @@ db_content = {"users": [], "bots": []}
 active_tasks: Dict[str, asyncio.Task] = {}
 active_bots: Dict[str, Bot] = {}
 
-class BroadcastModel(BaseModel):
-    botIds: List[str]
-    message: str
-
 def save_db():
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
@@ -67,12 +63,11 @@ def get_keyboard(config: dict):
     if not buttons: return None
     kb_buttons = []
     row = []
-    for i, btn in enumerate(buttons):
-        if not btn.get("text"): continue
-        row.append(KeyboardButton(text=btn["text"]))
-        if len(row) == 2:
-            kb_buttons.append(row)
-            row = []
+    for btn in buttons:
+        if btn.get("text"):
+            row.append(KeyboardButton(text=btn["text"]))
+            if len(row) == 2:
+                kb_buttons.append(row); row = []
     if row: kb_buttons.append(row)
     return ReplyKeyboardMarkup(keyboard=kb_buttons, resize_keyboard=True)
 
@@ -95,9 +90,7 @@ async def bot_worker(bot_id: str, token: str):
             add_bot_log(bot_id, "system", f"New user: {m.from_user.full_name}")
             save_db()
         if user["is_banned"]: return
-        
-        kb = get_keyboard(config)
-        await m.answer(config.get("welcomeMessage", "Welcome!"), reply_markup=kb)
+        await m.answer(config.get("welcomeMessage", "Welcome!"), reply_markup=get_keyboard(config))
 
     @router.message(Command("ban", "unban", "warn", "unwarn"))
     async def admin_moderation(m: Message):
@@ -105,35 +98,33 @@ async def bot_worker(bot_id: str, token: str):
         if str(m.chat.id) != str(config.get("adminChatId")): return
         
         target_id = None
-        if m.reply_to_message:
-            text_to_search = m.reply_to_message.text or m.reply_to_message.caption or ""
-            match = re.search(r"ID: (\d+)", text_to_search)
-            if match: target_id = int(match.group(1))
+        # Try finding in the thread context first
+        if m.message_thread_id:
+            user = next((u for u in config["connectedUsers"] if u.get("thread_id") == m.message_thread_id), None)
+            if user: target_id = user["id"]
         
+        # Then try reply regex
+        if not target_id and m.reply_to_message:
+            match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
+            if match: target_id = int(match.group(1))
+            
         if not target_id:
             parts = m.text.split()
             if len(parts) > 1 and parts[1].isdigit(): target_id = int(parts[1])
-            
-        if not target_id: return await m.reply("Reply to info message or use: /cmd [id]")
+
+        if not target_id: return await m.reply("Could not determine User ID.")
         
         user = next((u for u in config["connectedUsers"] if u["id"] == target_id), None)
-        if not user: return await m.reply("User not found in database.")
+        if not user: return await m.reply("User not found in DB.")
         
-        cmd = m.text.split()[0].replace("/", "")
-        if cmd == "ban": 
-            user["is_banned"] = True
-            await m.reply(f"🚫 User {target_id} banned.")
-        elif cmd == "unban": 
-            user["is_banned"] = False
-            await m.reply(f"✅ User {target_id} unbanned.")
-        elif cmd == "warn": 
-            user["warns"] = user.get("warns", 0) + 1
-            await m.reply(f"⚠️ User {target_id} warned ({user['warns']}).")
-        elif cmd == "unwarn": 
-            user["warns"] = max(0, user.get("warns", 0) - 1)
-            await m.reply(f"🛡️ User {target_id} unwarned ({user['warns']}).")
+        cmd = m.text.split()[0].lower()
+        if "/ban" in cmd: user["is_banned"] = True
+        elif "/unban" in cmd: user["is_banned"] = False
+        elif "/warn" in cmd: user["warns"] = user.get("warns", 0) + 1
+        elif "/unwarn" in cmd: user["warns"] = max(0, user.get("warns", 0) - 1)
         
         save_db()
+        await m.reply(f"Action {cmd} applied to user {target_id}")
 
     @router.message()
     async def handle_msg(m: Message):
@@ -142,92 +133,83 @@ async def bot_worker(bot_id: str, token: str):
         admin_id = config.get("adminChatId")
         if not admin_id: return
 
-        # 1. Check if Admin is replying
-        if str(m.chat.id) == str(admin_id) and m.reply_to_message:
-            text_to_search = m.reply_to_message.text or m.reply_to_message.caption or ""
-            target_id_match = re.search(r"ID: (\d+)", text_to_search)
-            if target_id_match:
-                target_id = int(target_id_match.group(1))
+        # ADMIN AS RESPONDENT
+        if str(m.chat.id) == str(admin_id):
+            if m.text and m.text.startswith("/"): return # Don't forward commands
+            
+            target_id = None
+            # Context A: Inside a Topic
+            if m.message_thread_id:
+                user = next((u for u in config["connectedUsers"] if u.get("thread_id") == m.message_thread_id), None)
+                if user: target_id = user["id"]
+            
+            # Context B: Replying in regular chat
+            if not target_id and m.reply_to_message:
+                match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
+                if match: target_id = int(match.group(1))
+
+            if target_id:
                 try:
                     await bot.copy_message(chat_id=target_id, from_chat_id=m.chat.id, message_id=m.message_id)
                     update_bot_stats(bot_id, "outgoing")
-                except TelegramForbiddenError:
-                    add_bot_log(bot_id, "error", f"User {target_id} blocked the bot.")
                 except Exception as e:
-                    await m.reply(f"Failed to send: {e}")
+                    await m.reply(f"Error sending to user: {e}")
             return
 
-        # 2. Handle User Messages
+        # USER AS SENDER
         user = next((u for u in config["connectedUsers"] if u["id"] == m.from_user.id), None)
         if not user or user["is_banned"]: return
-        
-        msg_text = m.text or ""
-        
-        # 3. Check Buttons and Triggers FIRST
-        # Buttons
-        for btn in config.get("buttons", []):
-            if btn.get("text") and btn["text"].lower() == msg_text.lower():
-                await m.answer(btn.get("response", "No response configured."))
-                update_bot_stats(bot_id, "outgoing")
-                return
-        
-        # Triggers
-        for trig in config.get("triggers", []):
-            if trig.get("keyword") and trig["keyword"].lower() in msg_text.lower():
-                await m.answer(trig.get("response", "No response configured."))
-                update_bot_stats(bot_id, "outgoing")
-                return
 
-        # 4. Forwarding (Feedback Mode)
+        # Check Triggers/Buttons (Text only)
+        if m.text:
+            text_low = m.text.lower()
+            for btn in config.get("buttons", []):
+                if btn.get("text") and btn["text"].lower() == text_low:
+                    return await m.answer(btn.get("response", "...")), update_bot_stats(bot_id, "outgoing")
+            for trig in config.get("triggers", []):
+                if trig.get("keyword") and trig["keyword"].lower() in text_low:
+                    return await m.answer(trig.get("response", "...")), update_bot_stats(bot_id, "outgoing")
+
+        # Forwarding to Admin (With all media support)
         use_topics = config.get("settings", {}).get("useTopics", False)
-        
         if use_topics:
             if not user.get("thread_id"):
                 try:
-                    topic = await bot.create_forum_topic(admin_id, f"{m.from_user.first_name} ({m.from_user.id})")
+                    topic = await bot.create_forum_topic(admin_id, f"{m.from_user.first_name} [{m.from_user.id}]")
                     user["thread_id"] = topic.message_thread_id
                     save_db()
-                    
                     info = f"👤 <b>New Client</b>\nID: <code>{m.from_user.id}</code>\n"
                     if config["settings"].get("showUsername") and m.from_user.username:
                         info += f"User: @{m.from_user.username}\n"
-                    info += f"Name: {m.from_user.full_name}\n"
-                    info += "—" * 10
                     await bot.send_message(admin_id, info, message_thread_id=user["thread_id"])
                 except Exception as e:
-                    if "forum is disabled" in str(e).lower():
-                        add_bot_log(bot_id, "error", "Forum is disabled in admin chat.", "TOPIC_ERROR")
-                        use_topics = False 
-                    else: logger.error(f"Topic Error: {e}")
-            
+                    add_bot_log(bot_id, "error", f"Topic error: {e}", "TOPIC_ERROR")
+                    use_topics = False
+
+            target_thread = user.get("thread_id") if use_topics else None
             try:
-                await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=user.get("thread_id"))
+                await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=target_thread)
                 update_bot_stats(bot_id, "incoming")
             except Exception as e:
-                add_bot_log(bot_id, "error", f"Forward error: {e}")
+                add_bot_log(bot_id, "error", f"Forward fail: {e}")
         else:
-            # Info block to identify user for direct reply
-            info = f"📩 <b>ID: {m.from_user.id}</b> ({m.from_user.full_name})\n"
             try:
+                # Regular mode: send ID header then the media/message
+                info = f"📩 <b>ID: {m.from_user.id}</b>\nName: {m.from_user.full_name}"
                 await bot.send_message(admin_id, info)
                 await bot.copy_message(admin_id, m.chat.id, m.message_id)
                 update_bot_stats(bot_id, "incoming")
             except Exception as e:
-                add_bot_log(bot_id, "error", f"Forward error: {e}")
+                add_bot_log(bot_id, "error", f"Forward fail: {e}")
 
     dp.include_router(router)
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot, skip_updates=True)
-    except Exception as e:
-        add_bot_log(bot_id, "error", f"Bot stopped: {e}")
     finally: await session.close()
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-@app.get("/api/ping")
-async def ping(): return {"status": "online"}
 
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
@@ -235,14 +217,12 @@ async def get_bots(user_id: str):
     return [b for b in db_content["bots"] if b["ownerId"] == user_id]
 
 @app.post("/api/bots/save")
-async def save_bot_endpoint(bot_data: dict):
+async def save_bot(bot_data: dict):
     idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_data["id"]), -1)
     if idx >= 0:
-        # Crucial fix: Don't overwrite connectedUsers if they are provided in bot_data
-        # This allows the UI to effectively unban users.
-        old_logs = db_content["bots"][idx].get("logs", [])
+        # Transfer runtime state to new data
         if not bot_data.get("logs"):
-            bot_data["logs"] = old_logs
+            bot_data["logs"] = db_content["bots"][idx].get("logs", [])
         db_content["bots"][idx] = bot_data
     else:
         db_content["bots"].append(bot_data)
@@ -252,7 +232,7 @@ async def save_bot_endpoint(bot_data: dict):
 @app.post("/api/bots/start/{bot_id}")
 async def start_bot(bot_id: str):
     bot_cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-    if not bot_cfg: raise HTTPException(404, "Bot not found")
+    if not bot_cfg: raise HTTPException(404)
     if bot_id in active_tasks: return {"status": "ok"}
     active_tasks[bot_id] = asyncio.create_task(bot_worker(bot_id, bot_cfg["token"]))
     bot_cfg["status"] = "RUNNING"
@@ -264,12 +244,13 @@ async def stop_bot(bot_id: str):
     if bot_id in active_tasks:
         active_tasks[bot_id].cancel()
         del active_tasks[bot_id]
-    if bot_id in active_bots:
-        del active_bots[bot_id]
     for b in db_content["bots"]:
         if b["id"] == bot_id: b["status"] = "IDLE"
     save_db()
     return {"status": "ok"}
+
+@app.get("/api/ping")
+async def ping(): return {"status": "online"}
 
 if __name__ == "__main__":
     load_db()
