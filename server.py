@@ -4,7 +4,7 @@ import logging
 import json
 import os
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,13 +27,14 @@ DB_FILE = "database.json"
 # Хранилище в памяти
 db_content = {"users": [], "bots": []}
 active_tasks: Dict[str, asyncio.Task] = {}
+# Реестр запущенных токенов для предотвращения ConflictError
+running_tokens: Dict[str, str] = {} # token -> bot_id
 
 class BroadcastModel(BaseModel):
     botIds: List[str]
     message: str
 
 def save_db():
-    """Синхронное сохранение БД"""
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(db_content, f, ensure_ascii=False, indent=2)
@@ -78,14 +79,14 @@ def get_keyboard(buttons):
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 async def bot_worker(bot_id: str, token: str):
-    """Изолированный воркер для одного бота (aiogram 3.7+ ready)"""
+    """Изолированный воркер с защитой от конфликтов сессий"""
+    if token in running_tokens and running_tokens[token] != bot_id:
+        add_log(bot_id, "error", "Этот токен уже используется в другом запущенном боте!")
+        return
+
+    running_tokens[token] = bot_id
     session = AiohttpSession()
-    # В aiogram 3.7+ parse_mode передается через DefaultBotProperties
-    bot = Bot(
-        token=token, 
-        session=session, 
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-    )
+    bot = Bot(token=token, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     router = Router()
 
@@ -102,7 +103,6 @@ async def bot_worker(bot_id: str, token: str):
             if not any(u["id"] == m.from_user.id for u in config["connectedUsers"]):
                 config["connectedUsers"].append(user_entry)
                 config["usersCount"] = len(config["connectedUsers"])
-                add_log(bot_id, "system", f"Новый пользователь: {m.from_user.full_name}")
                 save_db()
         await m.answer(welcome, reply_markup=kb)
 
@@ -122,34 +122,40 @@ async def bot_worker(bot_id: str, token: str):
     dp.include_router(router)
     
     try:
-        add_log(bot_id, "info", "Шаг 1: Очистка вебхуков...")
+        add_log(bot_id, "info", "Подготовка сессии...")
+        # Принудительно закрываем старые соединения на сервере Telegram
         await bot.delete_webhook(drop_pending_updates=True)
+        await asyncio.sleep(1) # Пауза для стабильности
         
-        add_log(bot_id, "info", "Шаг 2: Проверка токена...")
         me = await bot.get_me()
-        add_log(bot_id, "info", f"Шаг 3: Бот @{me.username} авторизован.")
-        
-        add_log(bot_id, "info", "Шаг 4: Запуск Polling...")
+        add_log(bot_id, "info", f"Бот @{me.username} запущен.")
         await dp.start_polling(bot, skip_updates=True)
         
     except asyncio.CancelledError:
-        add_log(bot_id, "info", "Бот остановлен системой.")
-    except TelegramUnauthorizedError:
-        add_log(bot_id, "error", "Ошибка: Неверный токен!")
+        add_log(bot_id, "info", "Бот останавливается...")
+    except TelegramConflictError:
+        add_log(bot_id, "error", "Конфликт: обнаружена другая запущенная копия этого бота.")
+        logger.warning(f"Conflict for bot {bot_id}. Cleaning up...")
     except Exception as e:
         add_log(bot_id, "error", f"Ошибка: {str(e)}")
         logger.error(f"Error in bot {bot_id}: {e}")
     finally:
+        if running_tokens.get(token) == bot_id:
+            del running_tokens[token]
         await session.close()
+        add_log(bot_id, "info", "Сессия бота закрыта.")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_db()
+    # Запускаем ботов по одному с задержкой, чтобы избежать шквала запросов
     for b in db_content["bots"]:
         if b.get("status") == "RUNNING":
             active_tasks[b["id"]] = asyncio.create_task(bot_worker(b["id"], b["token"]))
+            await asyncio.sleep(0.5)
     yield
-    for task in active_tasks.values():
+    # Корректное завершение всех задач
+    for bot_id, task in active_tasks.items():
         task.cancel()
     if active_tasks:
         await asyncio.gather(*active_tasks.values(), return_exceptions=True)
@@ -163,8 +169,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# API Endpoints
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
@@ -203,8 +207,9 @@ async def save_bot_endpoint(bot: dict):
     save_db()
     
     if was_running:
+        # Важно: Сначала полностью останавливаем, потом запускаем
         await stop_bot(bot["id"])
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(2) # Даем Telegram время «забыть» старую сессию
         await start_bot(bot["id"])
         
     return {"status": "ok"}
@@ -217,6 +222,10 @@ async def start_bot(bot_id: str):
     if bot_id in active_tasks and not active_tasks[bot_id].done():
         return {"status": "already_running"}
 
+    # Проверка на дубликат токена
+    if bot_cfg["token"] in running_tokens:
+        return {"status": "error", "detail": "Этот токен уже запущен в другой системе"}
+
     active_tasks[bot_id] = asyncio.create_task(bot_worker(bot_id, bot_cfg["token"]))
     bot_cfg["status"] = "RUNNING"
     save_db()
@@ -225,8 +234,16 @@ async def start_bot(bot_id: str):
 @app.post("/api/bots/stop/{bot_id}")
 async def stop_bot(bot_id: str):
     if bot_id in active_tasks:
-        active_tasks[bot_id].cancel()
-        del active_tasks[bot_id]
+        task = active_tasks[bot_id]
+        task.cancel()
+        try:
+            # Ждем завершения задачи максимум 5 секунд
+            await asyncio.wait_for(task, timeout=5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        finally:
+            if bot_id in active_tasks:
+                del active_tasks[bot_id]
             
     for b in db_content["bots"]:
         if b["id"] == bot_id: b["status"] = "IDLE"
@@ -245,7 +262,7 @@ async def broadcast(data: BroadcastModel):
                 try:
                     await bot.send_message(user["id"], data.message)
                     results["success"] += 1
-                except:
+                except Exception:
                     results["failed"] += 1
     return results
 
