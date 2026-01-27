@@ -27,9 +27,26 @@ db_content = {"users": [], "bots": []}
 active_tasks: Dict[str, asyncio.Task] = {}
 active_bots: Dict[str, Bot] = {}
 
+# --- Models ---
+
 class BroadcastRequest(BaseModel):
     botIds: List[str]
     message: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class UserBase(BaseModel):
+    id: str
+    username: str
+    email: str
+    password: str
+    subscription: str
+    balance: float
+    botsCreated: int
+
+# --- DB Core ---
 
 def save_db():
     try:
@@ -42,8 +59,13 @@ def load_db():
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
-                db_content = json.load(f)
-        except Exception as e: logger.error(f"Load DB Error: {e}")
+                loaded = json.load(f)
+                # Ensure structure
+                db_content["users"] = loaded.get("users", [])
+                db_content["bots"] = loaded.get("bots", [])
+        except Exception as e: 
+            logger.error(f"Load DB Error: {e}")
+            db_content = {"users": [], "bots": []}
 
 def add_bot_log(bot_id: str, log_type: str, text: str, code: str = None):
     bot = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
@@ -61,6 +83,8 @@ def update_bot_stats(bot_id: str, stat_type: str):
     if stat_type == "incoming": bot["stats"]["incomingToday"] += 1
     else: bot["stats"]["outgoingToday"] += 1
     save_db()
+
+# --- Bot Engine Logic ---
 
 def get_keyboard(config: dict):
     buttons = config.get("buttons", [])
@@ -191,26 +215,34 @@ async def bot_worker(bot_id: str, token: str):
         await dp.start_polling(bot, skip_updates=True)
     finally: await session.close()
 
+# --- API Endpoints ---
+
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-@app.post("/api/broadcast")
-async def broadcast(req: BroadcastRequest):
-    success = 0
-    failed = 0
-    for bot_id in req.botIds:
-        bot_instance = active_bots.get(bot_id)
-        if not bot_instance: continue
-        config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-        if not config: continue
-        for user in config.get("connectedUsers", []):
-            if user["is_banned"]: continue
-            try:
-                await bot_instance.send_message(user["id"], req.message)
-                success += 1
-                update_bot_stats(bot_id, "outgoing")
-            except Exception: failed += 1
-    return {"success": success, "failed": failed}
+@app.get("/api/ping")
+async def ping(): return {"status": "online"}
+
+# -- Auth --
+
+@app.post("/api/auth/register")
+async def register(user: UserBase):
+    load_db()
+    if any(u["email"] == user.email for u in db_content["users"]):
+        raise HTTPException(status_code=400, detail="User already exists")
+    db_content["users"].append(user.dict())
+    save_db()
+    return user
+
+@app.post("/api/auth/login")
+async def login(req: LoginRequest):
+    load_db()
+    user = next((u for u in db_content["users"] if u["email"] == req.email and u["password"] == req.password), None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return user
+
+# -- Bots --
 
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
@@ -226,6 +258,20 @@ async def save_bot_endpoint(bot_data: dict):
     else: db_content["bots"].append(bot_data)
     save_db()
     return {"status": "ok"}
+
+@app.delete("/api/bots/delete/{user_id}/{bot_id}")
+async def delete_bot(user_id: str, bot_id: str):
+    idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_id and b["ownerId"] == user_id), -1)
+    if idx >= 0:
+        if bot_id in active_tasks:
+            active_tasks[bot_id].cancel()
+            del active_tasks[bot_id]
+        if bot_id in active_bots:
+            del active_bots[bot_id]
+        db_content["bots"].pop(idx)
+        save_db()
+        return {"status": "ok"}
+    raise HTTPException(status_code=404, detail="Bot not found")
 
 @app.post("/api/bots/start/{bot_id}")
 async def start_bot(bot_id: str):
@@ -248,8 +294,23 @@ async def stop_bot(bot_id: str):
     save_db()
     return {"status": "ok"}
 
-@app.get("/api/ping")
-async def ping(): return {"status": "online"}
+@app.post("/api/broadcast")
+async def broadcast(req: BroadcastRequest):
+    success = 0
+    failed = 0
+    for bot_id in req.botIds:
+        bot_instance = active_bots.get(bot_id)
+        if not bot_instance: continue
+        config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
+        if not config: continue
+        for user in config.get("connectedUsers", []):
+            if user["is_banned"]: continue
+            try:
+                await bot_instance.send_message(user["id"], req.message)
+                success += 1
+                update_bot_stats(bot_id, "outgoing")
+            except Exception: failed += 1
+    return {"success": success, "failed": failed}
 
 if __name__ == "__main__":
     load_db()
