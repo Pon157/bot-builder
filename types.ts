@@ -6,40 +6,40 @@ export enum BotStatus {
   STARTING = 'STARTING'
 }
 
+// Added SubscriptionPlan type
 export type SubscriptionPlan = 'FREE' | 'PRO' | 'ENTERPRISE';
-
-export interface User {
-  id: string;
-  username: string;
-  email: string;
-  password?: string;
-  subscription: SubscriptionPlan;
-  balance: number;
-  botsCreated: number;
-}
 
 export interface TelegramUser {
   id: number;
   first_name: string;
   username?: string;
-  last_seen: number;
+  is_banned: boolean;
+  is_active: boolean; // false если юзер сам заблокировал бота
+  joined_at: number;
 }
 
+export interface StatPoint {
+  date: string;
+  incoming: number;
+  outgoing: number;
+}
+
+// Added activeUsers24h to BotStats
+export interface BotStats {
+  totalMessages: number;
+  incomingToday: number;
+  outgoingToday: number;
+  bannedCount: number;
+  history: StatPoint[];
+  activeUsers24h: number;
+}
+
+// Added MessageLog interface for bot console
 export interface MessageLog {
   id: string;
   timestamp: number;
   type: 'info' | 'error' | 'incoming' | 'outgoing' | 'system';
   text: string;
-}
-
-export interface BotTrigger {
-  keyword: string;
-  response: string;
-}
-
-export interface BotButton {
-  text: string;
-  response: string;
 }
 
 export interface BotConfig {
@@ -55,13 +55,25 @@ export interface BotConfig {
   welcomeMessage: string;
   logs: MessageLog[];
   connectedUsers: TelegramUser[];
-  triggers: BotTrigger[];
-  buttons: BotButton[];
+  triggers: any[];
+  buttons: any[];
+  stats: BotStats;
   settings: {
     useTopics: boolean;
-    autoApproveJoin: boolean;
     forwardToAdmin: boolean;
     antiSpam: boolean;
-    rateLimit: number;
+    showUserInfo: boolean;
+    autoApproveJoin: boolean; // Added missing property
+    rateLimit: number; // Added missing property
   };
+}
+
+export interface User {
+  id: string;
+  username: string;
+  email: string;
+  password?: string; // Added optional password for registration
+  subscription: SubscriptionPlan; // Updated to use the type
+  balance: number;
+  botsCreated: number;
 }
