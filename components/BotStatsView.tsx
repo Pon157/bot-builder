@@ -1,8 +1,9 @@
 
 import React from 'react';
-import { BotConfig } from '../types';
+import { BotConfig, TelegramUser } from '../types';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Users, MessageSquare, Ban, Activity, ShieldAlert } from 'lucide-react';
+import { Users, MessageSquare, Ban, Activity, ShieldAlert, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { api } from '../services/apiService';
 
 interface BotStatsViewProps {
   bot: BotConfig;
@@ -23,7 +24,21 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
   ];
 
   const bannedUsers = bot.connectedUsers.filter(u => u.is_banned);
-  const inactiveUsers = bot.connectedUsers.filter(u => !u.is_active && !u.is_banned); // Those who blocked the bot
+  const inactiveUsers = bot.connectedUsers.filter(u => !u.is_active && !u.is_banned);
+
+  const handleModeration = async (userId: number, action: 'unban' | 'warn' | 'unwarn') => {
+    const updatedUsers = bot.connectedUsers.map(u => {
+      if (u.id === userId) {
+        if (action === 'unban') return { ...u, is_banned: false };
+        if (action === 'warn') return { ...u, warns: (u.warns || 0) + 1 };
+        if (action === 'unwarn') return { ...u, warns: Math.max(0, (u.warns || 0) - 1) };
+      }
+      return u;
+    });
+    
+    await api.saveBot(bot.ownerId, { ...bot, connectedUsers: updatedUsers });
+    // Note: Parent component handles state update via polling
+  };
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
@@ -31,8 +46,8 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
         {[
           { label: 'Всего пользователей', value: bot.usersCount, color: 'text-white', icon: Users },
           { label: 'Активно (24ч)', value: stats.activeUsers24h, color: 'text-green-500', icon: Activity },
-          { label: 'Забанено (Админ)', value: stats.bannedCount, color: 'text-red-500', icon: Ban },
-          { label: 'Заблокировали бота', value: inactiveUsers.length, color: 'text-orange-500', icon: ShieldAlert },
+          { label: 'Забанено', value: stats.bannedCount, color: 'text-red-500', icon: Ban },
+          { label: 'Предупреждения', value: bot.connectedUsers.reduce((a,b) => a + (b.warns || 0), 0), color: 'text-yellow-500', icon: AlertTriangle },
         ].map((stat, i) => (
           <div key={i} className="bg-[#111] border border-zinc-800 p-6 rounded-3xl relative overflow-hidden group">
             <stat.icon className="absolute -right-4 -bottom-4 w-24 h-24 text-zinc-900 group-hover:text-zinc-800 transition-colors" />
@@ -49,16 +64,6 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
           <div>
             <h3 className="text-sm font-bold text-white uppercase tracking-widest">Активность сообщений</h3>
             <p className="text-[10px] text-zinc-500 font-medium">Статистика за последние 7 дней</p>
-          </div>
-          <div className="flex gap-4">
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-blue-500"></div>
-              <span className="text-[9px] font-bold text-zinc-400 uppercase">Входящие</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-purple-500"></div>
-              <span className="text-[9px] font-bold text-zinc-400 uppercase">Исходящие</span>
-            </div>
           </div>
         </div>
         <div className="h-[300px] w-full">
@@ -77,10 +82,7 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
               <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
               <XAxis dataKey="date" stroke="#444" fontSize={10} tickLine={false} axisLine={false} />
               <YAxis stroke="#444" fontSize={10} tickLine={false} axisLine={false} />
-              <Tooltip 
-                contentStyle={{ backgroundColor: '#111', border: '1px solid #333', borderRadius: '12px', fontSize: '12px' }}
-                itemStyle={{ fontWeight: 'bold' }}
-              />
+              <Tooltip contentStyle={{ backgroundColor: '#111', border: '1px solid #333', borderRadius: '12px', fontSize: '12px' }} itemStyle={{ fontWeight: 'bold' }} />
               <Area type="monotone" dataKey="incoming" stroke="#3b82f6" fillOpacity={1} fill="url(#colorIn)" strokeWidth={3} />
               <Area type="monotone" dataKey="outgoing" stroke="#a855f7" fillOpacity={1} fill="url(#colorOut)" strokeWidth={2} />
             </AreaChart>
@@ -103,21 +105,18 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
               bot.connectedUsers
                 .filter(u => u.is_active && !u.is_banned)
                 .sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0))
-                .slice(0, 50)
                 .map(u => (
                 <div key={u.id} className="p-4 flex items-center justify-between hover:bg-zinc-800/30 border-b border-zinc-900/50 last:border-0 transition-colors">
                   <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-blue-600/10 text-blue-500 flex items-center justify-center text-xs font-bold">
-                      {u.first_name[0]}
-                    </div>
+                    <div className="w-8 h-8 rounded-full bg-blue-600/10 text-blue-500 flex items-center justify-center text-xs font-bold">{u.first_name[0]}</div>
                     <div>
                       <p className="text-sm font-bold text-white">{u.first_name}</p>
-                      <p className="text-[10px] text-zinc-500">ID: {u.id} • @{u.username || 'n/a'}</p>
+                      <p className="text-[10px] text-zinc-500">ID: {u.id} {u.warns > 0 && <span className="text-yellow-500 ml-2 font-black">Warns: {u.warns}</span>}</p>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <span className="text-[10px] text-green-500 font-bold block">Online</span>
-                    <span className="text-[9px] text-zinc-600">{u.last_seen ? new Date(u.last_seen * 1000).toLocaleTimeString() : 'n/a'}</span>
+                  <div className="flex gap-2">
+                    <button onClick={() => handleModeration(u.id, 'warn')} className="p-2 bg-yellow-500/10 text-yellow-500 rounded-lg hover:bg-yellow-500/20 transition-all"><AlertTriangle className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => handleModeration(u.id, 'unwarn')} className="p-2 bg-blue-500/10 text-blue-500 rounded-lg hover:bg-blue-500/20 transition-all"><ShieldCheck className="w-3.5 h-3.5" /></button>
                   </div>
                 </div>
               ))
@@ -133,39 +132,21 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
             </h3>
           </div>
           <div className="flex-1 max-h-[400px] overflow-y-auto no-scrollbar">
-            {bannedUsers.length === 0 && inactiveUsers.length === 0 ? (
+            {bannedUsers.length === 0 ? (
               <div className="p-20 text-center text-[10px] font-bold text-zinc-700 uppercase">Черный список пуст</div>
             ) : (
-              <>
-                {bannedUsers.map(u => (
-                  <div key={u.id} className="p-4 flex items-center justify-between bg-red-500/5 border-b border-red-500/10">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-full bg-red-500/10 text-red-500 flex items-center justify-center text-xs font-bold">
-                        {u.first_name[0]}
-                      </div>
-                      <div>
-                        <p className="text-sm font-bold text-white">{u.first_name}</p>
-                        <p className="text-[10px] text-zinc-500">ID: {u.id}</p>
-                      </div>
+              bannedUsers.map(u => (
+                <div key={u.id} className="p-4 flex items-center justify-between bg-red-500/5 border-b border-red-500/10">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-red-500/10 text-red-500 flex items-center justify-center text-xs font-bold">{u.first_name[0]}</div>
+                    <div>
+                      <p className="text-sm font-bold text-white">{u.first_name}</p>
+                      <p className="text-[10px] text-zinc-500">ID: {u.id}</p>
                     </div>
-                    <span className="px-2 py-1 bg-red-500 text-white text-[8px] font-black uppercase rounded">BANNED</span>
                   </div>
-                ))}
-                {inactiveUsers.map(u => (
-                  <div key={u.id} className="p-4 flex items-center justify-between bg-orange-500/5 border-b border-orange-500/10">
-                    <div className="flex items-center gap-3 opacity-60">
-                      <div className="w-8 h-8 rounded-full bg-zinc-800 text-zinc-500 flex items-center justify-center text-xs font-bold">
-                        {u.first_name[0]}
-                      </div>
-                      <div>
-                        <p className="text-sm font-bold text-white">{u.first_name}</p>
-                        <p className="text-[10px] text-zinc-500">ID: {u.id}</p>
-                      </div>
-                    </div>
-                    <span className="px-2 py-1 bg-zinc-800 text-zinc-500 text-[8px] font-black uppercase rounded">BLOCKED BOT</span>
-                  </div>
-                ))}
-              </>
+                  <button onClick={() => handleModeration(u.id, 'unban')} className="text-[8px] font-black uppercase text-red-500 hover:underline">Разблокировать</button>
+                </div>
+              ))
             )}
           </div>
         </div>
