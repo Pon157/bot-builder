@@ -6,7 +6,6 @@ export enum BotStatus {
   STARTING = 'STARTING'
 }
 
-// Added SubscriptionPlan type 
 export type SubscriptionPlan = 'FREE' | 'PRO' | 'ENTERPRISE';
 
 export interface TelegramUser {
@@ -14,8 +13,9 @@ export interface TelegramUser {
   first_name: string;
   username?: string;
   is_banned: boolean;
-  is_active: boolean; // false если юзер сам заблокировал бота
+  is_active: boolean; 
   joined_at: number;
+  last_seen?: number; // Real activity timestamp
 }
 
 export interface StatPoint {
@@ -24,7 +24,6 @@ export interface StatPoint {
   outgoing: number;
 }
 
-// Added activeUsers24h to BotStats
 export interface BotStats {
   totalMessages: number;
   incomingToday: number;
@@ -34,7 +33,6 @@ export interface BotStats {
   activeUsers24h: number;
 }
 
-// Added MessageLog interface for bot console
 export interface MessageLog {
   id: string;
   timestamp: number;
@@ -63,8 +61,8 @@ export interface BotConfig {
     forwardToAdmin: boolean;
     antiSpam: boolean;
     showUserInfo: boolean;
-    autoApproveJoin: boolean; // Added missing property
-    rateLimit: number; // Added missing property
+    autoApproveJoin: boolean;
+    rateLimit: number;
   };
 }
 
@@ -72,8 +70,8 @@ export interface User {
   id: string;
   username: string;
   email: string;
-  password?: string; // Added optional password for registration
-  subscription: SubscriptionPlan; // Updated to use the type
+  password?: string;
+  subscription: SubscriptionPlan;
   balance: number;
   botsCreated: number;
 }
