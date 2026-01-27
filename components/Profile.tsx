@@ -103,14 +103,14 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
                     <div className="flex items-center justify-between text-xs">
                         <div>
                             <p className="text-white font-medium">Internal Top-up</p>
-                            <p className="text-zinc-600">May 15, 2024</p>
+                            <p className="text-zinc-600">January 27, 2026</p>
                         </div>
                         <span className="text-green-500 font-bold">+$50.00</span>
                     </div>
                     <div className="flex items-center justify-between text-xs">
                         <div>
                             <p className="text-white font-medium">Free Plan Migration</p>
-                            <p className="text-zinc-600">May 12, 2024</p>
+                            <p className="text-zinc-600">January 27, 2026</p>
                         </div>
                         <span className="text-zinc-500 font-bold">$0.00</span>
                     </div>
