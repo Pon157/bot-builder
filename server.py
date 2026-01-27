@@ -4,31 +4,29 @@ import logging
 import json
 import os
 import time
-from typing import Dict, List, Optional, Set
+import re
+from datetime import datetime
+from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.exceptions import TelegramUnauthorizedError, TelegramNetworkError, TelegramConflictError
+from aiogram.filters import CommandStart, Command
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, Message
+from aiogram.exceptions import TelegramForbiddenError, TelegramConflictError
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.default import DefaultBotProperties
 import uvicorn
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("BotEngine")
 
 DB_FILE = "database.json"
-
-# Хранилище в памяти
 db_content = {"users": [], "bots": []}
 active_tasks: Dict[str, asyncio.Task] = {}
-# Реестр запущенных токенов для предотвращения ConflictError
-running_tokens: Dict[str, str] = {} # token -> bot_id
+active_bots: Dict[str, Bot] = {}
 
 class BroadcastModel(BaseModel):
     botIds: List[str]
@@ -38,8 +36,7 @@ def save_db():
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(db_content, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"Error saving DB: {e}")
+    except Exception as e: logger.error(f"Save DB Error: {e}")
 
 def load_db():
     global db_content
@@ -47,185 +44,135 @@ def load_db():
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
                 db_content = json.load(f)
-                if "users" not in db_content: db_content["users"] = []
-                if "bots" not in db_content: db_content["bots"] = []
-        except Exception as e:
-            logger.error(f"Error loading DB: {e}")
-            db_content = {"users": [], "bots": []}
+        except Exception as e: logger.error(f"Load DB Error: {e}")
 
-def add_log(bot_id: str, log_type: str, text: str):
-    config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-    if config:
-        if "logs" not in config: config["logs"] = []
-        log_entry = {
-            "id": str(time.time()),
-            "timestamp": int(time.time() * 1000),
-            "type": log_type,
-            "text": text
-        }
-        config["logs"].insert(0, log_entry)
-        config["logs"] = config["logs"][:50]
-
-def get_keyboard(buttons):
-    if not buttons: return None
-    rows = []
-    current_row = []
-    for btn in buttons:
-        current_row.append(KeyboardButton(text=btn['text']))
-        if len(current_row) == 2:
-            rows.append(current_row)
-            current_row = []
-    if current_row: rows.append(current_row)
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+def update_bot_stats(bot_id: str, stat_type: str):
+    bot = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
+    if not bot: return
+    
+    if "stats" not in bot:
+        bot["stats"] = {"totalMessages": 0, "incomingToday": 0, "outgoingToday": 0, "bannedCount": 0, "history": []}
+    
+    bot["stats"]["totalMessages"] += 1
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    if stat_type == "incoming": bot["stats"]["incomingToday"] += 1
+    else: bot["stats"]["outgoingToday"] += 1
+    
+    # Update history for charts
+    history = bot["stats"].get("history", [])
+    day_stat = next((h for h in history if h["date"] == today), None)
+    if not day_stat:
+        day_stat = {"date": today, "incoming": 0, "outgoing": 0}
+        history.append(day_stat)
+    
+    day_stat[stat_type] += 1
+    bot["stats"]["history"] = history[-7:] # Keep last 7 days
+    save_db()
 
 async def bot_worker(bot_id: str, token: str):
-    """Изолированный воркер с защитой от конфликтов сессий"""
-    if token in running_tokens and running_tokens[token] != bot_id:
-        add_log(bot_id, "error", "Этот токен уже используется в другом запущенном боте!")
-        return
-
-    running_tokens[token] = bot_id
     session = AiohttpSession()
     bot = Bot(token=token, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    active_bots[bot_id] = bot
     dp = Dispatcher()
     router = Router()
 
     @router.message(CommandStart())
-    async def cmd_start(m: types.Message):
+    async def cmd_start(m: Message):
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-        welcome = config["welcomeMessage"] if config else "Hello!"
-        kb = get_keyboard(config.get("buttons", [])) if config else None
-        add_log(bot_id, "incoming", f"Команда /start от {m.from_user.full_name}")
+        if not config: return
         
-        if config:
-            user_entry = {"id": m.from_user.id, "first_name": m.from_user.first_name, "username": m.from_user.username}
-            if "connectedUsers" not in config: config["connectedUsers"] = []
-            if not any(u["id"] == m.from_user.id for u in config["connectedUsers"]):
-                config["connectedUsers"].append(user_entry)
-                config["usersCount"] = len(config["connectedUsers"])
-                save_db()
-        await m.answer(welcome, reply_markup=kb)
+        user = next((u for u in config["connectedUsers"] if u["id"] == m.from_user.id), None)
+        if not user:
+            user = {"id": m.from_user.id, "first_name": m.from_user.first_name, "username": m.from_user.username, "joined_at": int(time.time()), "is_banned": False, "is_active": True}
+            config["connectedUsers"].append(user)
+            config["usersCount"] = len(config["connectedUsers"])
+            save_db()
+        
+        if user["is_banned"]: return
+        
+        kb = None
+        if config.get("buttons"):
+            rows = [config["buttons"][i:i+2] for i in range(0, len(config["buttons"]), 2)]
+            kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=b["text"]) for b in row] for row in rows], resize_keyboard=True)
+        
+        await m.answer(config.get("welcomeMessage", "Welcome!"), reply_markup=kb)
+
+    @router.message(Command("ban"))
+    async def cmd_ban(m: Message):
+        config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
+        if str(m.chat.id) != str(config.get("adminChatId")): return
+        
+        parts = m.text.split()
+        if len(parts) < 2: return await m.reply("Usage: /ban {user_id}")
+        
+        uid = int(parts[1])
+        user = next((u for u in config["connectedUsers"] if u["id"] == uid), None)
+        if user:
+            user["is_banned"] = True
+            config["stats"]["bannedCount"] = sum(1 for u in config["connectedUsers"] if u["is_banned"])
+            save_db()
+            await m.reply(f"User {uid} has been banned.")
 
     @router.message()
-    async def handle_all(m: types.Message):
+    async def handle_msg(m: Message):
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-        if not config or not m.text: return
-        add_log(bot_id, "incoming", f"Текст: {m.text}")
-        text = m.text.lower()
-        for btn in config.get("buttons", []):
-            if btn["text"].lower() == text:
-                return await m.answer(btn["response"])
-        for trig in config.get("triggers", []):
-            if trig["keyword"].lower() in text:
-                return await m.answer(trig["response"])
+        if not config: return
+        
+        admin_id = config.get("adminChatId")
+        is_admin = str(m.chat.id) == str(admin_id)
+
+        # Reply from Admin to User
+        if is_admin and m.reply_to_message:
+            target_id_match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
+            if target_id_match:
+                target_id = int(target_id_match.group(1))
+                try:
+                    await bot.copy_message(chat_id=target_id, from_chat_id=m.chat.id, message_id=m.message_id)
+                    update_bot_stats(bot_id, "outgoing")
+                except TelegramForbiddenError:
+                    await m.reply("User blocked the bot.")
+                except Exception as e:
+                    await m.reply(f"Error: {e}")
+            return
+
+        # From User to Admin
+        user = next((u for u in config["connectedUsers"] if u["id"] == m.from_user.id), None)
+        if user and user["is_banned"]: return
+
+        if not is_admin and admin_id:
+            info = f"<b>Message from:</b> {m.from_user.full_name}\n<b>ID:</b> <code>{m.from_user.id}</code>\n"
+            if m.from_user.username: info += f"<b>User:</b> @{m.from_user.username}\n"
+            info += "—" * 10
+            
+            try:
+                await bot.send_message(admin_id, info)
+                await bot.copy_message(chat_id=admin_id, from_chat_id=m.chat.id, message_id=m.message_id)
+                update_bot_stats(bot_id, "incoming")
+            except Exception as e: logger.error(f"Forward error: {e}")
 
     dp.include_router(router)
-    
     try:
-        add_log(bot_id, "info", "Подготовка сессии...")
-        # Принудительно закрываем старые соединения на сервере Telegram
         await bot.delete_webhook(drop_pending_updates=True)
-        await asyncio.sleep(1) # Пауза для стабильности
-        
-        me = await bot.get_me()
-        add_log(bot_id, "info", f"Бот @{me.username} запущен.")
         await dp.start_polling(bot, skip_updates=True)
-        
-    except asyncio.CancelledError:
-        add_log(bot_id, "info", "Бот останавливается...")
-    except TelegramConflictError:
-        add_log(bot_id, "error", "Конфликт: обнаружена другая запущенная копия этого бота.")
-        logger.warning(f"Conflict for bot {bot_id}. Cleaning up...")
-    except Exception as e:
-        add_log(bot_id, "error", f"Ошибка: {str(e)}")
-        logger.error(f"Error in bot {bot_id}: {e}")
-    finally:
-        if running_tokens.get(token) == bot_id:
-            del running_tokens[token]
-        await session.close()
-        add_log(bot_id, "info", "Сессия бота закрыта.")
+    except Exception as e: logger.error(f"Bot {bot_id} Error: {e}")
+    finally: await session.close()
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    load_db()
-    # Запускаем ботов по одному с задержкой, чтобы избежать шквала запросов
-    for b in db_content["bots"]:
-        if b.get("status") == "RUNNING":
-            active_tasks[b["id"]] = asyncio.create_task(bot_worker(b["id"], b["token"]))
-            await asyncio.sleep(0.5)
-    yield
-    # Корректное завершение всех задач
-    for bot_id, task in active_tasks.items():
-        task.cancel()
-    if active_tasks:
-        await asyncio.gather(*active_tasks.values(), return_exceptions=True)
-
-app = FastAPI(lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
 
-@app.post("/api/auth/login")
-async def login(data: dict):
-    user = next((u for u in db_content["users"] if u["email"] == data["email"] and u["password"] == data["password"]), None)
-    if not user: raise HTTPException(status_code=401, detail="Invalid credentials")
-    return user
-
-@app.post("/api/auth/register")
-async def register(data: dict):
-    if any(u["email"] == data["email"] for u in db_content["users"]):
-        raise HTTPException(status_code=400, detail="User already exists")
-    db_content["users"].append(data)
-    save_db()
-    return data
-
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
+    load_db()
     return [b for b in db_content["bots"] if b["ownerId"] == user_id]
-
-@app.post("/api/bots/save")
-async def save_bot_endpoint(bot: dict):
-    idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot["id"]), -1)
-    was_running = False
-    
-    if idx >= 0:
-        was_running = db_content["bots"][idx].get("status") == "RUNNING"
-        bot["connectedUsers"] = db_content["bots"][idx].get("connectedUsers", [])
-        bot["usersCount"] = len(bot["connectedUsers"])
-        db_content["bots"][idx] = bot
-    else:
-        db_content["bots"].append(bot)
-    
-    save_db()
-    
-    if was_running:
-        # Важно: Сначала полностью останавливаем, потом запускаем
-        await stop_bot(bot["id"])
-        await asyncio.sleep(2) # Даем Telegram время «забыть» старую сессию
-        await start_bot(bot["id"])
-        
-    return {"status": "ok"}
 
 @app.post("/api/bots/start/{bot_id}")
 async def start_bot(bot_id: str):
     bot_cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-    if not bot_cfg: raise HTTPException(status_code=404, detail="Bot not found")
-    
-    if bot_id in active_tasks and not active_tasks[bot_id].done():
-        return {"status": "already_running"}
-
-    # Проверка на дубликат токена
-    if bot_cfg["token"] in running_tokens:
-        return {"status": "error", "detail": "Этот токен уже запущен в другой системе"}
-
+    if bot_id in active_tasks: return {"status": "ok"}
     active_tasks[bot_id] = asyncio.create_task(bot_worker(bot_id, bot_cfg["token"]))
     bot_cfg["status"] = "RUNNING"
     save_db()
@@ -234,17 +181,8 @@ async def start_bot(bot_id: str):
 @app.post("/api/bots/stop/{bot_id}")
 async def stop_bot(bot_id: str):
     if bot_id in active_tasks:
-        task = active_tasks[bot_id]
-        task.cancel()
-        try:
-            # Ждем завершения задачи максимум 5 секунд
-            await asyncio.wait_for(task, timeout=5.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
-        finally:
-            if bot_id in active_tasks:
-                del active_tasks[bot_id]
-            
+        active_tasks[bot_id].cancel()
+        del active_tasks[bot_id]
     for b in db_content["bots"]:
         if b["id"] == bot_id: b["status"] = "IDLE"
     save_db()
@@ -252,19 +190,26 @@ async def stop_bot(bot_id: str):
 
 @app.post("/api/broadcast")
 async def broadcast(data: BroadcastModel):
-    results = {"success": 0, "failed": 0}
-    for bot_id in data.botIds:
-        config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-        if not config: continue
+    total_sent = 0
+    total_errors = 0
+    for bid in data.botIds:
+        bot = active_bots.get(bid)
+        config = next((b for b in db_content["bots"] if b["id"] == bid), None)
+        if not bot or not config: continue
         
-        async with Bot(token=config["token"], default=DefaultBotProperties(parse_mode=ParseMode.HTML)) as bot:
-            for user in config.get("connectedUsers", []):
-                try:
-                    await bot.send_message(user["id"], data.message)
-                    results["success"] += 1
-                except Exception:
-                    results["failed"] += 1
-    return results
+        for user in config["connectedUsers"]:
+            if user["is_banned"] or not user["is_active"]: continue
+            try:
+                await bot.send_message(user["id"], data.message)
+                total_sent += 1
+                await asyncio.sleep(0.05)
+            except TelegramForbiddenError:
+                user["is_active"] = False
+                total_errors += 1
+            except Exception: total_errors += 1
+    save_db()
+    return {"success": total_sent, "failed": total_errors}
 
 if __name__ == "__main__":
+    load_db()
     uvicorn.run(app, host="0.0.0.0", port=8000)
