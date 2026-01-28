@@ -9,104 +9,81 @@ from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton, CallbackQuery, Message
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    stream=sys.stdout
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', stream=sys.stdout)
 logger = logging.getLogger("LicenseBot")
 
-def get_clean_token():
-    """Загрузка и жесткая очистка токена из всех возможных источников"""
-    token = os.getenv("ADMIN_BOT_TOKEN")
+def load_config():
+    """Принудительное чтение файла .env"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    p = os.path.join(script_dir, '.env')
+    if not os.path.exists(p):
+        p = '/root/bot-builder/bot-builder/.env'
     
-    # Пытаемся прочитать из файла .env напрямую, если в окружении пусто или мусор
-    env_path = '/root/bot-builder/bot-builder/.env'
-    if os.path.exists(env_path):
-        with open(env_path, 'r') as f:
-            for line in f:
-                if line.startswith('ADMIN_BOT_TOKEN='):
-                    token = line.split('=')[1].strip().strip('"').strip("'")
-                    break
+    config = {}
+    if os.path.exists(p):
+        try:
+            with open(p, 'r', encoding='utf-8-sig') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and '=' in line and not line.startswith('#'):
+                        k, v = line.split('=', 1)
+                        val = v.strip().strip('"').strip("'")
+                        if "root/" in val and k == "ADMIN_BOT_TOKEN":
+                            val = val.split("root/")[0].strip()
+                        config[k.strip()] = val
+        except Exception as e:
+            logger.error(f"Error reading .env: {e}")
     
-    if token and "root/" in token:
-        token = token.split("root/")[0].strip()
+    # Резерв из окружения
+    if 'ADMIN_BOT_TOKEN' not in config:
+        config['ADMIN_BOT_TOKEN'] = os.getenv('ADMIN_BOT_TOKEN')
     
-    return token
+    return config
 
-TOKEN = get_clean_token()
-ADMIN_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
-SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
-# Список ID админов, кому разрешено генерировать ключи
-ALLOWED_ADMINS = os.getenv("ADMIN_CHAT_ID", "").split(',')
+CONF = load_config()
+TOKEN = CONF.get('ADMIN_BOT_TOKEN')
+ADMIN_SECRET = CONF.get('ADMIN_SECRET', 'MRAKOTIK')
+SERVER_URL = CONF.get('SERVER_URL', 'http://localhost:8000')
 
-if not TOKEN:
-    logger.critical("❌ КРИТИЧЕСКАЯ ОШИБКА: ADMIN_BOT_TOKEN не найден!")
+if not TOKEN or not isinstance(TOKEN, str) or len(TOKEN) < 10:
+    logger.critical(f"❌ ТОКЕН НЕВАЛИДЕН ИЛИ ОТСУТСТВУЕТ! Найдено: {TOKEN}")
+    print("\n--- ДИАГНОСТИКА ---")
+    print(f"Текущая папка: {os.getcwd()}")
+    print(f"Файлы в папке: {os.listdir('.')}")
+    print("-------------------\n")
     sys.exit(1)
+
+logger.info(f"✅ Токен загружен: {TOKEN[:10]}...")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-def is_admin(user_id: int):
-    if not ALLOWED_ADMINS or ALLOWED_ADMINS == ['']: return True # Если не задано, разрешено всем (для теста)
-    return str(user_id) in [id.strip() for id in ALLOWED_ADMINS]
-
-async def call_api_gen(months: int):
+async def call_api(months: int):
     try:
-        url = f"{SERVER_URL}/api/admin/generate-key"
-        headers = {"x-admin-token": ADMIN_SECRET}
-        r = requests.post(url, json={"months": months}, headers=headers, timeout=10)
-        if r.status_code == 200:
-            return r.json().get("key")
-        return f"Ошибка API: {r.status_code}"
-    except Exception as e:
-        return f"Ошибка подключения: {e}"
+        r = requests.post(f"{SERVER_URL}/api/admin/generate-key", 
+                         json={"months": months}, 
+                         headers={"x-admin-token": ADMIN_SECRET}, timeout=10)
+        return r.json().get("key") if r.status_code == 200 else f"Error {r.status_code}"
+    except Exception as e: return f"Connection error: {e}"
 
 @dp.message(Command("start"))
 async def cmd_start(m: Message):
-    if not is_admin(m.from_user.id):
-        return await m.answer("⛔ У вас нет прав для использования этого бота.")
-    
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔑 1 Месяц", callback_data="buy_1"))
-    builder.row(InlineKeyboardButton(text="🔑 3 Месяца", callback_data="buy_3"))
-    builder.row(InlineKeyboardButton(text="💎 1 Год", callback_data="buy_12"))
-    
-    await m.answer(
-        "👋 <b>Панель управления лицензиями BotEngine</b>\n\n"
-        "Выберите срок действия для генерации нового ключа:",
-        reply_markup=builder.as_markup(),
-        parse_mode="HTML"
-    )
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="🔑 1 Месяц", callback_data="buy_1"))
+    kb.row(InlineKeyboardButton(text="🔑 3 Месяца", callback_data="buy_3"))
+    kb.row(InlineKeyboardButton(text="💎 1 Год", callback_data="buy_12"))
+    await m.answer("👋 Панель генерации ключей:", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("buy_"))
-async def handle_callback(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer("Доступ запрещен", show_alert=True)
-    
+async def handle_cb(cb: CallbackQuery):
     months = int(cb.data.split("_")[1])
-    await cb.message.edit_text(f"⏳ Генерирую ключ на {months} мес...")
-    
-    key = await call_api_gen(months)
-    
-    if key and "BOT-" in key:
-        await cb.message.edit_text(
-            f"✅ <b>Ключ успешно создан!</b>\n\n"
-            f"Срок: <code>{months} месяцев</code>\n"
-            f"Ключ: <code>{key}</code>\n\n"
-            f"<i>Отправьте этот ключ пользователю для активации в панели.</i>",
-            parse_mode="HTML"
-        )
-    else:
-        await cb.message.edit_text(f"❌ <b>Ошибка генерации:</b>\n{key}", parse_mode="HTML")
+    await cb.message.edit_text("⏳ Генерирую...")
+    key = await call_api(months)
+    await cb.message.edit_text(f"✅ Ключ на {months} мес:\n\n<code>{key}</code>", parse_mode="HTML")
 
 async def main():
-    logger.info(f"Бот лицензий запущен (Token: {TOKEN[:10]}...)")
+    logger.info("Бот лицензий запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(main())
