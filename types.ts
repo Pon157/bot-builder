@@ -48,6 +48,7 @@ export interface BotConfig {
   token: string;
   status: BotStatus;
   createdAt: number;
+  licenseExpiresAt: number; // Лицензия теперь тут
   usersCount: number;
   description: string;
   adminChatId: string;
@@ -65,13 +66,14 @@ export interface BotConfig {
   stats: BotStats;
   settings: {
     useTopics: boolean;
-    topicPerRequest: boolean; // Создавать новый топик на каждое обращение
+    topicPerRequest: boolean;
     forwardToAdmin: boolean;
     antiSpam: boolean;
     showUserInfo: boolean;
     showUsername: boolean;
     autoApproveJoin: boolean;
     rateLimit: number;
+    autoBanThreshold: number; // Порог автобана
   };
 }
 
@@ -80,9 +82,9 @@ export interface User {
   username: string;
   email: string;
   password?: string;
-  licenseExpiresAt: number;
-  trialUsed: boolean;
-  activeKey?: string;
   balance: number;
   botsCreated: number;
+  // Added properties to fix missing property errors in Sidebar.tsx and Auth.tsx
+  licenseExpiresAt: number;
+  trialUsed?: boolean;
 }
