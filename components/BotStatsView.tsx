@@ -7,9 +7,10 @@ import { api } from '../services/apiService';
 
 interface BotStatsViewProps {
   bot: BotConfig;
+  onUpdate: (bot: BotConfig) => void;
 }
 
-const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
+const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
   const stats = bot.stats || { 
     totalMessages: 0, 
     incomingToday: 0, 
@@ -35,18 +36,25 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
       return u;
     });
     
-    // Explicitly update the bot configuration on the server
+    // Обновляем локальный стейт через родителя для мгновенного отклика
     const updatedBot = { ...bot, connectedUsers: updatedUsers };
-    await api.saveBot(bot.ownerId, updatedBot);
+    onUpdate(updatedBot);
+    
+    // Сохраняем на сервер в фоне
+    try {
+        await api.saveBot(bot.ownerId, updatedBot);
+    } catch (e) {
+        console.error("Failed to sync moderation state with server");
+    }
   };
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Всего пользователей', value: bot.usersCount, color: 'text-white', icon: Users },
+          { label: 'Всего пользователей', value: bot.connectedUsers.length, color: 'text-white', icon: Users },
           { label: 'Активно (24ч)', value: stats.activeUsers24h, color: 'text-green-500', icon: Activity },
-          { label: 'Забанено', value: bot.connectedUsers.filter(u => u.is_banned).length, color: 'text-red-500', icon: Ban },
+          { label: 'Забанено', value: bannedUsers.length, color: 'text-red-500', icon: Ban },
           { label: 'Предупреждения', value: bot.connectedUsers.reduce((a,b) => a + (b.warns || 0), 0), color: 'text-yellow-500', icon: AlertTriangle },
         ].map((stat, i) => (
           <div key={i} className="bg-[#111] border border-zinc-800 p-6 rounded-3xl relative overflow-hidden group">
@@ -101,11 +109,11 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
                 <div key={u.id} className="p-4 flex items-center justify-between hover:bg-zinc-800/30 border-b border-zinc-900/50 last:border-0 transition-colors">
                   <div>
                     <p className="text-sm font-bold text-white">{u.first_name}</p>
-                    <p className="text-[10px] text-zinc-500">ID: {u.id} {u.warns > 0 && <span className="text-yellow-500 ml-2">Warns: {u.warns}</span>}</p>
+                    <p className="text-[10px] text-zinc-500">ID: {u.id} {u.warns > 0 && <span className="text-yellow-500 ml-2">Варны: {u.warns}</span>}</p>
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={() => handleModeration(u.id, 'warn')} className="p-2 bg-yellow-500/10 text-yellow-500 rounded-lg hover:bg-yellow-500/20"><AlertTriangle className="w-3.5 h-3.5" /></button>
-                    <button onClick={() => handleModeration(u.id, 'unwarn')} className="p-2 bg-blue-500/10 text-blue-500 rounded-lg hover:bg-blue-500/20"><ShieldCheck className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => handleModeration(u.id, 'warn')} className="p-2 bg-yellow-500/10 text-yellow-500 rounded-lg hover:bg-yellow-500/20 transition-all"><AlertTriangle className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => handleModeration(u.id, 'unwarn')} className="p-2 bg-blue-500/10 text-blue-500 rounded-lg hover:bg-blue-500/20 transition-all"><ShieldCheck className="w-3.5 h-3.5" /></button>
                   </div>
                 </div>
               ))
