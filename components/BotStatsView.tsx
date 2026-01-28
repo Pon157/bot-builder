@@ -1,8 +1,9 @@
 
 import React, { useState } from 'react';
 import { BotConfig, TelegramUser } from '../types';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Users, MessageSquare, Ban, Activity, ShieldAlert, ShieldCheck, AlertTriangle, Loader2 } from 'lucide-react';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
+// Added missing ShieldCheck import
+import { Users, UserMinus, Ban, UserCheck, Activity, AlertTriangle, Loader2, TrendingUp, ShieldCheck } from 'lucide-react';
 import { api } from '../services/apiService';
 
 interface BotStatsViewProps {
@@ -13,7 +14,6 @@ interface BotStatsViewProps {
 const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
   const [isSyncing, setIsSyncing] = useState<number | null>(null);
 
-  // Инициализация со строгой проверкой структуры
   const stats = bot.stats || { 
     totalMessages: 0, 
     incomingToday: 0, 
@@ -24,13 +24,30 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
   };
   
   const safeHistory = Array.isArray(stats.history) ? stats.history : [];
-  const chartData = safeHistory.length > 0 ? safeHistory : [
+  
+  // Данные для графика сообщений
+  const msgChartData = safeHistory.length > 0 ? safeHistory : [
     { date: new Date().toLocaleDateString(), incoming: 0, outgoing: 0 }
   ];
 
+  // Данные для графика аудитории (если полей нет в истории, эмулируем для вида)
+  const audienceChartData = safeHistory.map(pt => ({
+    date: pt.date,
+    total: pt.totalUsers || 0,
+    active: pt.activeUsers || 0
+  })).length > 0 ? safeHistory.map(pt => ({
+    date: pt.date,
+    total: pt.totalUsers || 0,
+    active: pt.activeUsers || 0
+  })) : [{ date: '01.01', total: 0, active: 0 }];
+
   const connectedUsers = Array.isArray(bot.connectedUsers) ? bot.connectedUsers : [];
-  const bannedUsers = connectedUsers.filter(u => u && u.is_banned);
-  const activeUsersList = connectedUsers.filter(u => u && !u.is_banned);
+  
+  // Метрики аудитории
+  const totalCount = connectedUsers.length;
+  const bannedCount = connectedUsers.filter(u => u && u.is_banned).length;
+  const blockedByMeCount = connectedUsers.filter(u => u && !u.is_active).length;
+  const netActiveCount = connectedUsers.filter(u => u && u.is_active && !u.is_banned).length;
 
   const handleModeration = async (userId: number, action: 'unban' | 'warn' | 'unwarn' | 'ban') => {
     setIsSyncing(userId);
@@ -63,131 +80,132 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
         await api.saveBot(bot.ownerId, updatedBot);
         onUpdate(updatedBot);
     } catch (e) {
-        console.error(e);
-        alert("Ошибка синхронизации с сервером");
+        alert("Ошибка синхронизации");
     } finally {
         setIsSyncing(null);
     }
   };
 
-  const totalWarns = connectedUsers.reduce((a, b) => a + (b?.warns || 0), 0);
-
   return (
-    <div className="space-y-8 animate-in fade-in duration-500">
+    <div className="space-y-8 animate-in fade-in duration-500 pb-12">
+      {/* Сводные карточки аудитории */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Всего пользователей', value: connectedUsers.length, color: 'text-white', icon: Users },
-          { label: 'Активно (24ч)', value: stats.activeUsers24h || 0, color: 'text-green-500', icon: Activity },
-          { label: 'Забанено', value: bannedUsers.length, color: 'text-red-500', icon: Ban },
-          { label: 'Предупреждения', value: totalWarns, color: 'text-yellow-500', icon: AlertTriangle },
+          { label: 'Всего вступило', value: totalCount, color: 'text-white', icon: Users, sub: 'За все время' },
+          { label: 'Чистая база', value: netActiveCount, color: 'text-emerald-500', icon: UserCheck, sub: 'Живые + Не в бане' },
+          { label: 'Отписались', value: blockedByMeCount, color: 'text-rose-500', icon: UserMinus, sub: 'Заблокировали бота' },
+          { label: 'В черном списке', value: bannedCount, color: 'text-amber-500', icon: Ban, sub: 'Забанены вами' },
         ].map((stat, i) => (
           <div key={i} className="bg-[#111] border border-zinc-800 p-6 rounded-3xl relative overflow-hidden group">
-            <stat.icon className="absolute -right-4 -bottom-4 w-24 h-24 text-zinc-900 group-hover:text-zinc-800 transition-colors" />
+            <stat.icon className="absolute -right-4 -bottom-4 w-20 h-20 text-white/5 group-hover:text-white/10 transition-colors" />
             <div className="relative z-10">
               <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">{stat.label}</p>
-              <p className={`text-3xl font-black ${stat.color}`}>{stat.value}</p>
+              <p className={`text-4xl font-black ${stat.color}`}>{stat.value.toLocaleString()}</p>
+              <p className="text-[9px] text-zinc-600 mt-2 font-medium">{stat.sub}</p>
             </div>
           </div>
         ))}
       </div>
 
-      <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem]">
-        <h3 className="text-sm font-bold text-white uppercase tracking-widest mb-8">Активность сообщений</h3>
-        <div className="h-[300px] w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData}>
-              <defs>
-                <linearGradient id="colorIn" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                </linearGradient>
-                <linearGradient id="colorOut" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#a855f7" stopOpacity={0.1}/>
-                  <stop offset="95%" stopColor="#a855f7" stopOpacity={0}/>
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
-              <XAxis dataKey="date" stroke="#444" fontSize={10} tickLine={false} axisLine={false} />
-              <YAxis stroke="#444" fontSize={10} tickLine={false} axisLine={false} />
-              <Tooltip contentStyle={{ backgroundColor: '#111', border: '1px solid #333', borderRadius: '12px', fontSize: '12px' }} />
-              <Area type="monotone" dataKey="incoming" stroke="#3b82f6" fillOpacity={1} fill="url(#colorIn)" strokeWidth={3} />
-              <Area type="monotone" dataKey="outgoing" stroke="#a855f7" fillOpacity={1} fill="url(#colorOut)" strokeWidth={2} />
-            </AreaChart>
-          </ResponsiveContainer>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* График сообщений */}
+        <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] shadow-2xl">
+          <div className="flex items-center justify-between mb-8">
+            <h3 className="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2">
+                <Activity className="w-4 h-4 text-blue-500" /> Активность (сообщения)
+            </h3>
+          </div>
+          <div className="h-[250px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={msgChartData}>
+                <defs>
+                  <linearGradient id="colorIn" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
+                <XAxis dataKey="date" stroke="#444" fontSize={10} tickLine={false} axisLine={false} />
+                <YAxis stroke="#444" fontSize={10} tickLine={false} axisLine={false} />
+                <Tooltip contentStyle={{ backgroundColor: '#111', border: '1px solid #333', borderRadius: '12px', fontSize: '12px' }} />
+                <Area type="monotone" dataKey="incoming" stroke="#3b82f6" fillOpacity={1} fill="url(#colorIn)" strokeWidth={3} name="Входящие" />
+                <Area type="monotone" dataKey="outgoing" stroke="#a855f7" fillOpacity={0} strokeWidth={2} name="Исходящие" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* График роста аудитории */}
+        <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] shadow-2xl">
+          <div className="flex items-center justify-between mb-8">
+            <h3 className="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-emerald-500" /> Рост аудитории
+            </h3>
+          </div>
+          <div className="h-[250px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={audienceChartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
+                <XAxis dataKey="date" stroke="#444" fontSize={10} tickLine={false} axisLine={false} />
+                <YAxis stroke="#444" fontSize={10} tickLine={false} axisLine={false} />
+                <Tooltip contentStyle={{ backgroundColor: '#111', border: '1px solid #333', borderRadius: '12px', fontSize: '12px' }} />
+                <Line type="stepAfter" dataKey="total" stroke="#fff" strokeWidth={3} dot={false} name="Всего" />
+                <Line type="stepAfter" dataKey="active" stroke="#10b981" strokeWidth={3} dot={false} name="Живые" />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="bg-[#111] border border-zinc-800 rounded-[2.5rem] overflow-hidden flex flex-col">
-          <div className="p-6 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/20">
-            <h3 className="text-xs font-bold text-white uppercase flex items-center gap-2">
-              <Users className="w-4 h-4 text-blue-500" />
-              Активные пользователи
-            </h3>
-          </div>
-          <div className="flex-1 max-h-[400px] overflow-y-auto no-scrollbar">
-            {activeUsersList.length === 0 ? (
-              <div className="p-20 text-center text-[10px] font-bold text-zinc-700 uppercase">Нет данных</div>
-            ) : (
-              activeUsersList.map(u => (
-                <div key={u.id} className="p-4 flex items-center justify-between hover:bg-zinc-800/30 border-b border-zinc-900/50 last:border-0 transition-colors">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-blue-600/20 text-blue-500 flex items-center justify-center text-xs font-black">
-                        {u.first_name?.charAt(0) || "U"}
-                    </div>
-                    <div>
-                        <p className="text-sm font-bold text-white">{u.first_name || "Без имени"}</p>
-                        <p className="text-[10px] text-zinc-500">ID: {u.id} {(u.warns || 0) > 0 && <span className="text-yellow-500 ml-2 font-bold uppercase">Варны: {u.warns}</span>}</p>
-                    </div>
+      {/* Список модерации */}
+      <div className="bg-[#111] border border-zinc-800 rounded-[2.5rem] overflow-hidden">
+        <div className="p-6 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/20">
+          <h3 className="text-xs font-bold text-white uppercase flex items-center gap-2">
+            <Users className="w-4 h-4 text-blue-500" />
+            Управление пользователями
+          </h3>
+          <span className="text-[10px] text-zinc-500 font-mono">LIVE DATABASE</span>
+        </div>
+        <div className="max-h-[500px] overflow-y-auto no-scrollbar">
+          {connectedUsers.length === 0 ? (
+            <div className="p-20 text-center text-[10px] font-bold text-zinc-700 uppercase">Пользователей пока нет</div>
+          ) : (
+            connectedUsers.map(u => (
+              <div key={u.id} className={`p-5 flex items-center justify-between border-b border-zinc-900/50 last:border-0 hover:bg-white/[0.02] transition-colors ${u.is_banned ? 'bg-red-500/[0.03]' : ''}`}>
+                <div className="flex items-center gap-4">
+                  <div className={`w-10 h-10 rounded-2xl flex items-center justify-center text-sm font-black transition-all ${!u.is_active ? 'bg-zinc-800 text-zinc-600' : u.is_banned ? 'bg-amber-500/10 text-amber-500' : 'bg-blue-600/10 text-blue-500'}`}>
+                    {u.first_name?.charAt(0) || "U"}
                   </div>
-                  <div className="flex gap-2">
+                  <div>
+                    <div className="flex items-center gap-2">
+                        <p className="text-sm font-bold text-white">{u.first_name || "Без имени"}</p>
+                        {!u.is_active && <span className="text-[8px] bg-rose-500/10 text-rose-500 px-1.5 py-0.5 rounded font-black uppercase">Blocked Bot</span>}
+                        {u.is_banned && <span className="text-[8px] bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded font-black uppercase">Banned</span>}
+                    </div>
+                    <p className="text-[10px] text-zinc-500 font-mono mt-0.5">ID: {u.id} {u.username && `@${u.username}`} {(u.warns || 0) > 0 && <span className="text-amber-500 ml-2">[{u.warns} WARNS]</span>}</p>
+                  </div>
+                </div>
+                
+                <div className="flex gap-2">
                     {isSyncing === u.id ? (
                         <div className="p-2"><Loader2 className="w-4 h-4 text-zinc-500 animate-spin" /></div>
                     ) : (
                         <>
-                            <button onClick={() => handleModeration(u.id, 'warn')} title="Выдать варн" className="p-2 bg-yellow-500/10 text-yellow-500 rounded-lg hover:bg-yellow-500/20 transition-all"><AlertTriangle className="w-3.5 h-3.5" /></button>
-                            <button onClick={() => handleModeration(u.id, 'unwarn')} title="Снять варн" className="p-2 bg-blue-500/10 text-blue-500 rounded-lg hover:bg-blue-500/20 transition-all"><ShieldCheck className="w-3.5 h-3.5" /></button>
-                            <button onClick={() => handleModeration(u.id, 'ban')} title="Забанить" className="p-2 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500/20 transition-all"><Ban className="w-3.5 h-3.5" /></button>
+                            {u.is_banned ? (
+                                <button onClick={() => handleModeration(u.id, 'unban')} className="text-[9px] font-black uppercase text-emerald-500 bg-emerald-500/10 hover:bg-emerald-500 hover:text-white px-4 py-2 rounded-xl transition-all">Разбанить</button>
+                            ) : (
+                                <>
+                                    <button onClick={() => handleModeration(u.id, 'warn')} title="Выдать варн" className="p-2.5 bg-amber-500/10 text-amber-500 rounded-xl hover:bg-amber-500/20 transition-all"><AlertTriangle className="w-4 h-4" /></button>
+                                    <button onClick={() => handleModeration(u.id, 'unwarn')} title="Снять варн" className="p-2.5 bg-blue-500/10 text-blue-500 rounded-xl hover:bg-blue-500/20 transition-all"><ShieldCheck className="w-4 h-4" /></button>
+                                    <button onClick={() => handleModeration(u.id, 'ban')} title="Забанить" className="p-2.5 bg-rose-500/10 text-rose-500 rounded-xl hover:bg-rose-500/20 transition-all"><Ban className="w-4 h-4" /></button>
+                                </>
+                            )}
                         </>
                     )}
-                  </div>
                 </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        <div className="bg-[#111] border border-zinc-800 rounded-[2.5rem] overflow-hidden flex flex-col">
-          <div className="p-6 border-b border-zinc-800 bg-red-950/10">
-            <h3 className="text-xs font-bold text-red-500 uppercase flex items-center gap-2">
-              <Ban className="w-4 h-4" />
-              Черный список
-            </h3>
-          </div>
-          <div className="flex-1 max-h-[400px] overflow-y-auto no-scrollbar">
-            {bannedUsers.length === 0 ? (
-              <div className="p-20 text-center text-[10px] font-bold text-zinc-700 uppercase">Пусто</div>
-            ) : (
-              bannedUsers.map(u => (
-                <div key={u.id} className="p-4 flex items-center justify-between bg-red-500/5 border-b border-red-500/10">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-red-500/20 text-red-500 flex items-center justify-center text-xs font-black">
-                        {u.first_name?.charAt(0) || "U"}
-                    </div>
-                    <div>
-                        <p className="text-sm font-bold text-white">{u.first_name || "Без имени"}</p>
-                        <p className="text-[10px] text-zinc-500">ID: {u.id} {(u.warns || 0) > 0 && <span className="text-yellow-500/70 ml-2">Варны: {u.warns}</span>}</p>
-                    </div>
-                  </div>
-                  {isSyncing === u.id ? (
-                      <Loader2 className="w-4 h-4 text-zinc-500 animate-spin mr-4" />
-                  ) : (
-                      <button onClick={() => handleModeration(u.id, 'unban')} className="text-[10px] font-black uppercase text-red-500 hover:text-white bg-red-500/10 hover:bg-red-500 px-4 py-2 rounded-xl transition-all">Разблокировать</button>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
+              </div>
+            ))
+          )}
         </div>
       </div>
     </div>
