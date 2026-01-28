@@ -7,45 +7,52 @@ import sys
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - [%(levelname)s] - %(message)s',
     stream=sys.stdout
 )
 logger = logging.getLogger("LicenseBot")
 
-def load_config_manually():
-    """Ручной поиск и загрузка переменных из .env файла"""
-    search_paths = [
+def load_env_robust():
+    """Агрессивный поиск и парсинг .env файла"""
+    possible_paths = [
         os.path.join(os.getcwd(), '.env'),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'),
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'),
+        '/root/bot-builder/bot-builder/.env' # Абсолютный путь как последний шанс
     ]
     
-    config = {}
-    env_found = False
-    
-    for path in search_paths:
+    found_path = None
+    env_vars = {}
+
+    for path in possible_paths:
         if os.path.exists(path):
-            logger.info(f"📂 Нашел .env файл: {path}")
+            found_path = path
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     for line in f:
                         line = line.strip()
                         if not line or line.startswith('#'): continue
                         if '=' in line:
-                            key, value = line.split('=', 1)
-                            config[key.strip()] = value.strip().strip('"').strip("'")
-                env_found = True
+                            k, v = line.split('=', 1)
+                            # Очистка от кавычек и пробелов
+                            clean_v = v.strip().strip('"').strip("'")
+                            env_vars[k.strip()] = clean_v
                 break
             except Exception as e:
-                logger.error(f"Ошибка при чтении .env: {e}")
-                
-    # Переносим в окружение, если нашли
-    for k, v in config.items():
-        os.environ[k] = v
-    return env_found
+                logger.error(f"Ошибка при чтении {path}: {e}")
 
-# Сначала грузим конфиг
-load_config_manually()
+    if found_path:
+        logger.info(f"✅ Файл .env найден по пути: {found_path}")
+        for key, val in env_vars.items():
+            os.environ[key] = val
+            # Вывод для отладки (маскированный)
+            masked_val = f"{val[:5]}...{val[-4:]}" if len(val) > 10 else "***"
+            logger.info(f"🔹 Загружена переменная: {key} = {masked_val}")
+    else:
+        logger.error("❌ Файл .env НЕ НАЙДЕН ни в одной из папок!")
+        logger.error(f"Проверенные пути: {possible_paths}")
+
+load_env_robust()
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -57,26 +64,27 @@ TOKEN = os.getenv("ADMIN_BOT_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 WEB_APP_URL = os.getenv("WEB_APP_URL", "http://localhost:3000") 
 
-# Жесткая проверка токена перед созданием объекта Bot
-if not TOKEN:
-    logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Токен ADMIN_BOT_TOKEN не найден в окружении или .env!")
-    logger.error("Проверьте, что в файле .env есть строка: ADMIN_BOT_TOKEN=ваш_токен")
+# Проверка перед инициализацией
+if TOKEN is None or not TOKEN.strip():
+    print("\n" + "!"*50)
+    print("КРИТИЧЕСКАЯ ОШИБКА: ADMIN_BOT_TOKEN ПУСТОЙ!")
+    print("Скрипт не может найти токен в .env файле.")
+    print(f"Текущая рабочая директория: {os.getcwd()}")
+    print("Убедитесь, что в .env есть: ADMIN_BOT_TOKEN=7123456:ABC...")
+    print("!"*50 + "\n")
     sys.exit(1)
 
-logger.info(f"✅ Токен загружен (начинается на {TOKEN[:5]}...)")
-
 try:
-    bot = Bot(token=TOKEN)
+    bot = Bot(token=TOKEN.strip())
     dp = Dispatcher()
+    logger.info("🤖 Объект Bot успешно создан.")
 except Exception as e:
-    logger.error(f"❌ Ошибка инициализации бота: {e}")
+    logger.error(f"❌ Aiogram не смог принять токен: {e}")
     sys.exit(1)
 
 def generate_key(months: int):
     random_suffix = secrets.token_hex(4).upper()
     return f"BOT-{months}-{random_suffix}"
-
-# --- Клавиатуры ---
 
 def get_main_kb():
     builder = InlineKeyboardBuilder()
@@ -94,8 +102,6 @@ def get_admin_kb(user_id: int):
     )
     builder.row(InlineKeyboardButton(text="❌ Отклонить", callback_data=f"decline_{user_id}"))
     return builder.as_markup()
-
-# --- Обработчики ---
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
@@ -144,8 +150,11 @@ async def confirm_payment(callback: types.CallbackQuery):
         await callback.answer(f"Ошибка: {e}", show_alert=True)
 
 async def main():
-    logger.info("🚀 Бот лицензий запущен и слушает события...")
-    await dp.start_polling(bot)
+    logger.info("🚀 Бот лицензий запущен и начинает опрос серверов Telegram...")
+    try:
+        await dp.start_polling(bot)
+    except Exception as e:
+        logger.error(f"Ошибка при поллинге: {e}")
 
 if __name__ == "__main__":
     try:
