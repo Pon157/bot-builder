@@ -13,6 +13,7 @@ interface BotStatsViewProps {
 const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
   const [isSyncing, setIsSyncing] = useState<number | null>(null);
 
+  // Инициализация со строгой проверкой структуры
   const stats = bot.stats || { 
     totalMessages: 0, 
     incomingToday: 0, 
@@ -22,19 +23,22 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
     activeUsers24h: 0 
   };
   
-  const chartData = stats.history.length > 0 ? stats.history : [
+  const safeHistory = Array.isArray(stats.history) ? stats.history : [];
+  const chartData = safeHistory.length > 0 ? safeHistory : [
     { date: new Date().toLocaleDateString(), incoming: 0, outgoing: 0 }
   ];
 
-  const bannedUsers = (bot.connectedUsers || []).filter(u => u.is_banned);
+  const connectedUsers = Array.isArray(bot.connectedUsers) ? bot.connectedUsers : [];
+  const bannedUsers = connectedUsers.filter(u => u && u.is_banned);
+  const activeUsersList = connectedUsers.filter(u => u && !u.is_banned);
 
   const handleModeration = async (userId: number, action: 'unban' | 'warn' | 'unwarn' | 'ban') => {
     setIsSyncing(userId);
-    // Безопасный доступ к настройкам
-    const threshold = bot.settings?.autoBanThreshold || 0;
+    const settings = bot.settings || { autoBanThreshold: 0 };
+    const threshold = settings.autoBanThreshold || 0;
     
-    const updatedUsers = (bot.connectedUsers || []).map(u => {
-      if (u.id === userId) {
+    const updatedUsers = connectedUsers.map(u => {
+      if (u && u.id === userId) {
         if (action === 'unban') {
           const newWarns = (threshold > 0 && u.warns >= threshold) ? threshold - 1 : u.warns;
           return { ...u, is_banned: false, warns: newWarns };
@@ -47,7 +51,7 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
     });
     
     const finalizedUsers = updatedUsers.map(u => {
-        if (u.id === userId && action === 'warn' && threshold > 0 && u.warns >= threshold) {
+        if (u && u.id === userId && action === 'warn' && threshold > 0 && (u.warns || 0) >= threshold) {
             return { ...u, is_banned: true };
         }
         return u;
@@ -66,14 +70,16 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
     }
   };
 
+  const totalWarns = connectedUsers.reduce((a, b) => a + (b?.warns || 0), 0);
+
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Всего пользователей', value: (bot.connectedUsers || []).length, color: 'text-white', icon: Users },
+          { label: 'Всего пользователей', value: connectedUsers.length, color: 'text-white', icon: Users },
           { label: 'Активно (24ч)', value: stats.activeUsers24h || 0, color: 'text-green-500', icon: Activity },
           { label: 'Забанено', value: bannedUsers.length, color: 'text-red-500', icon: Ban },
-          { label: 'Предупреждения', value: (bot.connectedUsers || []).reduce((a,b) => a + (b.warns || 0), 0), color: 'text-yellow-500', icon: AlertTriangle },
+          { label: 'Предупреждения', value: totalWarns, color: 'text-yellow-500', icon: AlertTriangle },
         ].map((stat, i) => (
           <div key={i} className="bg-[#111] border border-zinc-800 p-6 rounded-3xl relative overflow-hidden group">
             <stat.icon className="absolute -right-4 -bottom-4 w-24 h-24 text-zinc-900 group-hover:text-zinc-800 transition-colors" />
@@ -120,18 +126,18 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
             </h3>
           </div>
           <div className="flex-1 max-h-[400px] overflow-y-auto no-scrollbar">
-            {(bot.connectedUsers || []).filter(u => !u.is_banned).length === 0 ? (
+            {activeUsersList.length === 0 ? (
               <div className="p-20 text-center text-[10px] font-bold text-zinc-700 uppercase">Нет данных</div>
             ) : (
-              (bot.connectedUsers || []).filter(u => !u.is_banned).map(u => (
+              activeUsersList.map(u => (
                 <div key={u.id} className="p-4 flex items-center justify-between hover:bg-zinc-800/30 border-b border-zinc-900/50 last:border-0 transition-colors">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full bg-blue-600/20 text-blue-500 flex items-center justify-center text-xs font-black">
                         {u.first_name?.charAt(0) || "U"}
                     </div>
                     <div>
-                        <p className="text-sm font-bold text-white">{u.first_name}</p>
-                        <p className="text-[10px] text-zinc-500">ID: {u.id} {u.warns > 0 && <span className="text-yellow-500 ml-2 font-bold uppercase">Варны: {u.warns}</span>}</p>
+                        <p className="text-sm font-bold text-white">{u.first_name || "Без имени"}</p>
+                        <p className="text-[10px] text-zinc-500">ID: {u.id} {(u.warns || 0) > 0 && <span className="text-yellow-500 ml-2 font-bold uppercase">Варны: {u.warns}</span>}</p>
                     </div>
                   </div>
                   <div className="flex gap-2">
@@ -169,8 +175,8 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
                         {u.first_name?.charAt(0) || "U"}
                     </div>
                     <div>
-                        <p className="text-sm font-bold text-white">{u.first_name}</p>
-                        <p className="text-[10px] text-zinc-500">ID: {u.id} {u.warns > 0 && <span className="text-yellow-500/70 ml-2">Варны: {u.warns}</span>}</p>
+                        <p className="text-sm font-bold text-white">{u.first_name || "Без имени"}</p>
+                        <p className="text-[10px] text-zinc-500">ID: {u.id} {(u.warns || 0) > 0 && <span className="text-yellow-500/70 ml-2">Варны: {u.warns}</span>}</p>
                     </div>
                   </div>
                   {isSyncing === u.id ? (
