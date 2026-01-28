@@ -46,16 +46,6 @@ class BroadcastRequest(BaseModel):
     botIds: List[str]
     message: str
 
-class UserBase(BaseModel):
-    id: str
-    username: str
-    email: str
-    password: str
-    licenseExpiresAt: int
-    trialUsed: bool
-    balance: float
-    botsCreated: int
-
 def save_db():
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
@@ -75,9 +65,12 @@ def load_db():
             db_content = {"users": [], "bots": [], "issued_keys": []}
 
 def check_license(user_id: str) -> bool:
+    """Безопасная проверка лицензии. Если поля нет - лицензия считается истекшей (0)."""
     user = next((u for u in db_content["users"] if u["id"] == user_id), None)
     if not user: return False
-    return user["licenseExpiresAt"] > (time.time() * 1000)
+    # Используем .get() чтобы не было KeyError
+    expires = user.get("licenseExpiresAt", 0)
+    return expires > (time.time() * 1000)
 
 def add_log(bot_id: str, log_type: str, text: str, code: str = None):
     for b in db_content["bots"]:
@@ -139,11 +132,16 @@ async def bot_worker(bot_cfg: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_db()
+    logger.info("Сервер запускается, проверяем активных ботов...")
     for b in db_content["bots"]:
-        if b.get("status") == "RUNNING" and check_license(b["ownerId"]):
-            active_tasks[b["id"]] = asyncio.create_task(bot_worker(b))
-        elif b.get("status") == "RUNNING":
-            b["status"] = "IDLE"
+        try:
+            if b.get("status") == "RUNNING":
+                if check_license(b["ownerId"]):
+                    active_tasks[b["id"]] = asyncio.create_task(bot_worker(b))
+                else:
+                    b["status"] = "IDLE"
+        except Exception as e:
+            logger.error(f"Ошибка при восстановлении бота {b.get('id')}: {e}")
     save_db()
     yield
 
