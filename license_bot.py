@@ -9,7 +9,7 @@ from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton, CallbackQuery, Message
 
-# --- Инициализация ---
+# --- Инициализация --- 
 BASE_DIR = "/root/bot-builder/bot-builder"
 if os.path.exists(BASE_DIR):
     os.chdir(BASE_DIR)
