@@ -30,20 +30,22 @@ export const api = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
-      });
+      }, 20000);
       if (!response.ok) return null;
       return await response.json();
     } catch (e) { return null; }
   },
 
-  requestVerification: async (email: string): Promise<boolean> => {
+  requestVerification: async (email: string): Promise<boolean | string> => {
     try {
       const res = await fetchWithTimeout(`${API_BASE}/auth/request-verification`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email })
-      });
-      return res.ok;
+      }, 20000);
+      if (res.ok) return true;
+      const data = await res.json();
+      return data.detail || "Error";
     } catch (e) { return false; }
   },
 
@@ -53,19 +55,21 @@ export const api = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
-      });
+      }, 20000);
       return res.ok ? await res.json() : null;
     } catch (e) { return null; }
   },
 
-  forgotPassword: async (email: string): Promise<boolean> => {
+  forgotPassword: async (email: string): Promise<boolean | string> => {
     try {
       const res = await fetchWithTimeout(`${API_BASE}/auth/forgot-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email })
-      });
-      return res.ok;
+      }, 20000);
+      if (res.ok) return true;
+      const data = await res.json();
+      return data.detail || "Error";
     } catch (e) { return false; }
   },
 
@@ -75,7 +79,7 @@ export const api = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
-      });
+      }, 20000);
       return res.ok;
     } catch (e) { return false; }
   },
