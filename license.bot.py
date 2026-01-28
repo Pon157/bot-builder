@@ -2,39 +2,53 @@ import os
 import asyncio
 import logging
 import secrets
+import sys
+
+# Настройка логирования ПЕРЕД загрузкой всего остального
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
+logger = logging.getLogger("LicenseBot")
+
+# Попытка загрузки dotenv
+try:
+    from dotenv import load_dotenv
+    # Проверяем .env в папке со скриптом
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    env_path = os.path.join(script_dir, '.env')
+    
+    if os.path.exists(env_path):
+        load_dotenv(env_path)
+        logger.info(f"✅ Конфигурация загружена из: {env_path}")
+    else:
+        logger.warning(f"⚠️ Файл .env не найден по пути: {env_path}")
+except ImportError:
+    logger.warning("⚠️ Библиотека python-dotenv не установлена. Используются системные переменные.")
+
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton
-
-# Пытаемся загрузить .env
-try:
-    from dotenv import load_dotenv
-    # Явно указываем путь к .env в текущей директории
-    dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
-    if os.path.exists(dotenv_path):
-        load_dotenv(dotenv_path)
-        print(f"✅ Loaded config from {dotenv_path}")
-    else:
-        print(f"⚠️ Warning: .env file not found at {dotenv_path}")
-except ImportError:
-    print("⚠️ Warning: python-dotenv not installed")
 
 # --- Конфигурация ---
 TOKEN = os.getenv("ADMIN_BOT_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 WEB_APP_URL = os.getenv("WEB_APP_URL", "http://localhost:3000") 
 
-if not TOKEN:
-    print("❌ CRITICAL ERROR: ADMIN_BOT_TOKEN is missing!")
-    print("Please ensure your .env file contains ADMIN_BOT_TOKEN=your_token")
-    exit(1)
+if not TOKEN or TOKEN.strip() == "":
+    logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: ADMIN_BOT_TOKEN пустой или не найден!")
+    logger.error("Проверьте, что в файле .env написано: ADMIN_BOT_TOKEN=ваш_токен")
+    sys.exit(1)
 
-logging.basicConfig(level=logging.INFO)
-
-# Инициализируем только если токен есть
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+# Инициализируем бота только если токен прошел проверку
+try:
+    bot = Bot(token=TOKEN)
+    dp = Dispatcher()
+except Exception as e:
+    logger.error(f"❌ Ошибка инициализации бота: {e}")
+    sys.exit(1)
 
 def generate_key(months: int):
     """Генерирует ключ формата BOT-1-ABC12345"""
@@ -79,6 +93,7 @@ async def start(message: types.Message):
 async def process_check_payment(callback: types.CallbackQuery):
     user = callback.from_user
     if not ADMIN_CHAT_ID:
+        logger.error("ADMIN_CHAT_ID не настроен в .env")
         return await callback.answer("❌ Ошибка: Админ не настроен", show_alert=True)
         
     alert_text = (
@@ -93,7 +108,7 @@ async def process_check_payment(callback: types.CallbackQuery):
         await bot.send_message(ADMIN_CHAT_ID, alert_text, parse_mode="Markdown", reply_markup=get_admin_kb(user.id))
         await callback.answer("✅ Уведомление отправлено админам. Ключ придет сюда после проверки.", show_alert=True)
     except Exception as e:
-        logging.error(f"Error sending to admin: {e}")
+        logger.error(f"Error sending to admin: {e}")
         await callback.answer(f"❌ Ошибка отправки админу", show_alert=True)
 
 @dp.callback_query(F.data.startswith("confirm_"))
@@ -128,9 +143,15 @@ async def decline_payment(callback: types.CallbackQuery):
         await callback.message.edit_text(f"❌ Ошибка уведомления юзера.")
 
 async def main():
-    print(f"License Bot process started.")
-    print(f"Config: Admin={ADMIN_CHAT_ID}, WebApp={WEB_APP_URL}")
-    await dp.start_polling(bot)
+    logger.info("🚀 Лицензионный бот запускается...")
+    logger.info(f"⚙️ Config: AdminID={ADMIN_CHAT_ID}, WebApp={WEB_APP_URL}")
+    try:
+        await dp.start_polling(bot)
+    except Exception as e:
+        logger.error(f"Критическая ошибка при поллинге: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Бот остановлен.")
