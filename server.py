@@ -24,6 +24,20 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 import uvicorn
 
+# --- Модели данных (Pydantic) ---
+class VerificationRequest(BaseModel):
+    email: str
+
+class VerifyRegisterRequest(BaseModel):
+    email: str
+    code: str
+    username: str
+    password: str
+
+class BroadcastRequest(BaseModel):
+    botIds: List[str]
+    message: str
+
 # --- Инициализация окружения ---
 def load_env_file():
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
@@ -100,10 +114,10 @@ async def add_bot_log(bot_id: str, log_type: str, text: str):
         "id": str(uuid.uuid4()),
         "timestamp": int(time.time() * 1000),
         "type": log_type,
-        "text": text[:500] # Ограничение длины
+        "text": text[:500]
     }
     logs.insert(0, new_log)
-    config["logs"] = logs[:50] # Храним только 50 последних
+    config["logs"] = logs[:50] 
     await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"config": config})
 
 def format_msg(template: str, m: Message, btn_text: str = "") -> str:
@@ -115,9 +129,11 @@ def format_msg(template: str, m: Message, btn_text: str = "") -> str:
     return res
 
 async def update_bot_stats_db(bot_id: str, direction: str):
-    res = await db.query("bots", params={"id": f"eq.{bot_id}", "select": "stats"})
+    res = await db.query("bots", params={"id": f"eq.{bot_id}", "select": "stats,config"})
     if not res: return
     stats = res[0].get('stats', {})
+    config = res[0].get('config', {})
+    
     if not stats: stats = {"totalMessages": 0, "incomingToday": 0, "outgoingToday": 0, "bannedCount": 0, "history": []}
     
     stats["totalMessages"] = stats.get("totalMessages", 0) + 1
@@ -126,11 +142,22 @@ async def update_bot_stats_db(bot_id: str, direction: str):
     
     today_str = datetime.now().strftime("%d.%m")
     history = stats.get("history", [])
+    
     if not history or history[-1]["date"] != today_str:
-        history.append({"date": today_str, "incoming": 0, "outgoing": 0})
+        history.append({
+            "date": today_str, 
+            "incoming": 0, 
+            "outgoing": 0,
+            "totalUsers": len(config.get("connectedUsers", [])),
+            "activeUsers": len([u for u in config.get("connectedUsers", []) if u.get("is_active") and not u.get("is_banned")])
+        })
     
     if direction == "incoming": history[-1]["incoming"] += 1
     else: history[-1]["outgoing"] += 1
+    
+    history[-1]["totalUsers"] = len(config.get("connectedUsers", []))
+    history[-1]["activeUsers"] = len([u for u in config.get("connectedUsers", []) if u.get("is_active") and not u.get("is_banned")])
+    
     stats["history"] = history[-10:] 
 
     await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"stats": stats})
@@ -167,7 +194,7 @@ async def bot_worker_task(bot_id: str, token: str):
             users.append(user)
             config["connectedUsers"] = users
             await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"config": config})
-            await add_bot_log(bot_id, "info", f"Новый пользователь зарегистрирован: {m.from_user.id}")
+            await add_bot_log(bot_id, "info", f"Новый пользователь: {m.from_user.id}")
         
         btns = config.get("buttons", [])
         rows = [[KeyboardButton(text=b["text"])] for b in btns if b.get("text")]
@@ -202,33 +229,28 @@ async def bot_worker_task(bot_id: str, token: str):
 
         if cmd == "warn":
             target_user["warns"] = target_user.get("warns", 0) + 1
-            txt = f"⚠️ <b>Вам выдано предупреждение!</b>\nВсего: {target_user['warns']}"
-            if threshold > 0: txt += f" / {threshold}"
+            txt = f"⚠️ <b>Предупреждение!</b> Всего: {target_user['warns']}"
             try: await bot.send_message(target_user["id"], txt)
             except: pass
             
             if threshold > 0 and target_user["warns"] >= threshold:
                 target_user["is_banned"] = True
-                try: await bot.send_message(target_user["id"], "🚫 <b>Вы были автоматически заблокированы.</b>")
+                try: await bot.send_message(target_user["id"], "🚫 <b>Авто-бан за варны.</b>")
                 except: pass
-            await m.answer("✅ Варн выдан")
+            await m.answer("✅ Готово")
 
         elif cmd == "unwarn":
             target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
-            try: await bot.send_message(target_user["id"], f"ℹ️ <b>С вас снято предупреждение.</b>")
-            except: pass
-            await m.answer("✅ Варн снят")
+            await m.answer("✅ Снято")
 
         elif cmd == "ban":
             target_user["is_banned"] = True
-            try: await bot.send_message(target_user["id"], "🚫 <b>Заблокированы.</b>")
+            try: await bot.send_message(target_user["id"], "🚫 <b>Бан.</b>")
             except: pass
             await m.answer("✅ Бан")
 
         elif cmd == "unban":
             target_user["is_banned"] = False
-            try: await bot.send_message(target_user["id"], "✅ <b>Разблокированы.</b>")
-            except: pass
             await m.answer("✅ Разбан")
 
         await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"config": config})
@@ -240,7 +262,6 @@ async def bot_worker_task(bot_id: str, token: str):
         config = res[0]['config']
         admin_id = config.get("adminChatId")
 
-        # --- ОБРАБОТКА АДМИНА ---
         if admin_id and str(m.chat.id) == str(admin_id):
             target_id = None
             if m.message_thread_id:
@@ -254,12 +275,11 @@ async def bot_worker_task(bot_id: str, token: str):
                 try:
                     await bot.copy_message(target_id, m.chat.id, m.message_id)
                     await update_bot_stats_db(bot_id, "outgoing")
-                    await add_bot_log(bot_id, "outgoing", f"Ответ админа пользователю {target_id}")
+                    await add_bot_log(bot_id, "outgoing", f"Ответ юзеру {target_id}")
                 except Exception as e:
-                    await add_bot_log(bot_id, "error", f"Ошибка отправки пользователю {target_id}: {e}")
+                    await add_bot_log(bot_id, "error", f"Ошибка отправки {target_id}: {e}")
             return
 
-        # --- ОБРАБОТКА ПОЛЬЗОВАТЕЛЯ ---
         user = next((u for u in config.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
         if not user or user.get("is_banned"): return
 
@@ -269,14 +289,8 @@ async def bot_worker_task(bot_id: str, token: str):
             text_low = m.text.lower()
             for btn in config.get("buttons", []):
                 if btn.get("text") and btn["text"].lower() == text_low:
-                    await add_bot_log(bot_id, "info", f"Нажата кнопка: {btn['text']}")
+                    await add_bot_log(bot_id, "info", f"Кнопка: {btn['text']}")
                     if btn.get("type") == "request" and admin_id:
-                        if config.get("settings", {}).get("useTopics") and not user.get("thread_id"):
-                            try:
-                                t = await bot.create_forum_topic(admin_id, f"{m.from_user.first_name}")
-                                user["thread_id"] = t.message_thread_id
-                                await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"config": config})
-                            except: pass
                         txt = format_msg(btn.get("adminTemplate", "⚡ Обращение: {{button}}"), m, btn["text"])
                         await bot.send_message(admin_id, txt, message_thread_id=user.get("thread_id"))
                     await m.answer(btn.get("response", "Принято!"))
@@ -285,22 +299,14 @@ async def bot_worker_task(bot_id: str, token: str):
             
             for trig in config.get("triggers", []):
                 if trig.get("keyword") and trig["keyword"].lower() in text_low:
-                    await add_bot_log(bot_id, "info", f"Сработал триггер: {trig['keyword']}")
+                    await add_bot_log(bot_id, "info", f"Триггер: {trig['keyword']}")
                     await m.answer(trig.get("response", ""))
                     await update_bot_stats_db(bot_id, "outgoing")
                     return
 
         if admin_id:
-            tid = user.get("thread_id")
-            if config.get("settings", {}).get("useTopics") and not tid:
-                try:
-                    t = await bot.create_forum_topic(admin_id, f"{m.from_user.first_name}")
-                    tid = t.message_thread_id
-                    user["thread_id"] = tid
-                    await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"config": config})
-                except: pass
             try:
-                await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=tid)
+                await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=user.get("thread_id"))
                 await update_bot_stats_db(bot_id, "incoming")
             except: pass
 
@@ -404,7 +410,7 @@ async def stop_bot(bot_id: str):
     if bot_id in active_tasks:
         active_tasks[bot_id].cancel(); del active_tasks[bot_id]
     if bot_id in active_bots:
-        await add_bot_log(bot_id, "system", "Бот остановлен пользователем.")
+        await add_bot_log(bot_id, "system", "Бот остановлен.")
         del active_bots[bot_id]
     return {"status": "ok"}
 
@@ -423,19 +429,6 @@ async def broadcast(req: BroadcastRequest):
                 success += 1
             except: failed += 1
     return {"success": success, "failed": failed}
-
-@app.post("/api/license/activate")
-async def activate_lic(req: dict):
-    bid, key = req['botId'], req['key']
-    key_res = await db.query("issued_keys", params={"key": f"eq.{key}", "used": "is.false"})
-    if not key_res: raise HTTPException(400, "Bad Key")
-    bot_res = await db.query("bots", params={"id": f"eq.{bid}", "select": "license_expires_at"})
-    now = int(time.time() * 1000)
-    current_exp = bot_res[0]['license_expires_at']
-    new_exp = max(current_exp, now) + (key_res[0]['months'] * 30 * 24 * 3600 * 1000)
-    await db.query("bots", method="PATCH", params={"id": f"eq.{bid}"}, json_data={"license_expires_at": new_exp})
-    await db.query("issued_keys", method="PATCH", params={"key": f"eq.{key}"}, json_data={"used": True})
-    return {"status": "ok", "newExpiry": new_exp}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
