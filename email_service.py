@@ -5,12 +5,12 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import logging
 
-# Настройки берутся из .env или используются значения по умолчанию
-GMAIL_USER = os.getenv('GMAIL_EMAIL',)
-GMAIL_PASS = os.getenv('GMAIL_PASSWORD',)
-SMTP_SERVER = os.getenv('SMTP_SERVER',)
+# Настройки берутся ИСКЛЮЧИТЕЛЬНО из .env. Значений по умолчанию для паролей больше нет.
+GMAIL_USER = os.getenv('GMAIL_EMAIL')
+GMAIL_PASS = os.getenv('GMAIL_PASSWORD')
+SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
 
-# Безопасное получение порта с обработкой отсутствующего значения
+# Безопасное получение порта
 raw_port = os.getenv('SMTP_PORT', '587')
 try:
     SMTP_PORT = int(raw_port)
@@ -23,7 +23,7 @@ class EmailService:
     @staticmethod
     def send_email(subject: str, recipient: str, html_content: str):
         if not GMAIL_USER or not GMAIL_PASS:
-            logger.error("❌ Email settings missing (GMAIL_EMAIL or GMAIL_PASSWORD)")
+            logger.error("❌ Email settings missing (GMAIL_EMAIL or GMAIL_PASSWORD in .env)")
             return False
         try:
             msg = MIMEMultipart()
