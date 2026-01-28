@@ -46,6 +46,17 @@ export const api = {
     } catch (e) { return null; }
   },
 
+  activateLicense: async (userId: string, key: string): Promise<any> => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE}/license/activate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, key })
+      });
+      return response.ok ? await response.json() : null;
+    } catch (e) { return null; }
+  },
+
   getBots: async (userId: string): Promise<BotConfig[]> => {
     try {
       const response = await fetchWithTimeout(`${API_BASE}/bots/${userId}`);
@@ -68,7 +79,7 @@ export const api = {
 
   deleteBot: async (userId: string, botId: string): Promise<void> => {
     try {
-      await fetchWithTimeout(`${API_BASE}/bots/delete/${userId}/${botId}`, {
+      await fetchWithTimeout(`${API_BASE}/bots/delete/${botId}`, {
         method: 'DELETE'
       });
     } catch (e) { console.error("Failed to delete bot"); }
