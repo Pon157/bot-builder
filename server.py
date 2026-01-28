@@ -20,65 +20,60 @@ from aiogram.types import Message
 from aiogram.client.default import DefaultBotProperties
 import uvicorn
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', stream=sys.stdout)
-logger = logging.getLogger("BotEngine")
+# 1. ПРИНУДИТЕЛЬНАЯ НАСТРОЙКА ОКРУЖЕНИЯ
+BASE_DIR = "/root/bot-builder/bot-builder"
+if os.path.exists(BASE_DIR):
+    os.chdir(BASE_DIR)
 
-def init_env():
-    """Максимально надежная загрузка переменных окружения"""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    possible_paths = [
-        os.path.join(script_dir, '.env'),
-        '/root/bot-builder/bot-builder/.env',
-        os.path.join(os.getcwd(), '.env')
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
+logger = logging.getLogger("API-Server")
+
+def load_env_bulletproof():
+    """Загрузка .env с проверкой всех возможных аномалий"""
+    paths = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'),
+        os.path.join(BASE_DIR, '.env'),
+        '.env'
     ]
-    
-    loaded = False
-    for p in possible_paths:
+    found = False
+    for p in paths:
         if os.path.exists(p):
-            logger.info(f"🔎 Чтение конфигурации из: {p}")
+            logger.info(f"📂 Загрузка конфигурации из: {p}")
             try:
-                with open(p, 'r', encoding='utf-8-sig') as f: # utf-8-sig убирает невидимый BOM
+                with open(p, 'r', encoding='utf-8-sig') as f:
                     for line in f:
                         line = line.strip()
                         if line and '=' in line and not line.startswith('#'):
-                            key, val = line.split('=', 1)
-                            key = key.strip()
-                            val = val.strip().strip('"').strip("'")
-                            # Фикс для случаев, когда путь приклеился в консоли
+                            k, v = line.split('=', 1)
+                            key = k.strip()
+                            val = v.strip().strip('"').strip("'")
+                            # Очистка на случай багов консоли
                             if "root/" in val and key == "ADMIN_BOT_TOKEN":
                                 val = val.split("root/")[0].strip()
                             os.environ[key] = val
-                loaded = True
+                found = True
                 break
             except Exception as e:
-                logger.error(f"❌ Ошибка чтения {p}: {e}")
+                logger.error(f"❌ Ошибка парсинга {p}: {e}")
+    
+    if not found:
+        logger.warning("⚠️ Файл .env не найден! Используются переменные окружения системы.")
 
-    if not loaded:
-        logger.warning("⚠️ Файл .env не найден в стандартных путях")
+load_env_bulletproof()
 
-init_env()
-
+# Проверка критических переменных
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
+if not os.getenv("ADMIN_BOT_TOKEN"):
+    logger.error("🚨 КРИТИЧЕСКАЯ ОШИБКА: ADMIN_BOT_TOKEN не найден в .env!")
+
+# База данных и глобальные состояния
 DB_FILE = "database.json"
 db_content = {"users": [], "bots": [], "issued_keys": []}
 active_tasks: Dict[str, asyncio.Task] = {}
-active_bots: Dict[str, Bot] = {}
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-class KeyActivationRequest(BaseModel):
-    userId: str
-    key: str
-
-class KeyGenRequest(BaseModel):
-    months: int
-
-class BroadcastRequest(BaseModel):
-    botIds: List[str]
-    message: str
 
 def save_db():
     try:
@@ -109,7 +104,6 @@ async def bot_worker(bot_cfg: dict):
         token = bot_cfg["token"].strip()
         bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
         dp = Dispatcher()
-        active_bots[bot_id] = bot
         
         @dp.message(CommandStart())
         async def _start(m: Message):
@@ -125,7 +119,6 @@ async def bot_worker(bot_cfg: dict):
             admin_id = bot_cfg.get("adminChatId")
             if not admin_id or not check_license(bot_cfg["ownerId"]): return
             
-            # Ответ админа
             if str(m.from_user.id) == str(admin_id) and m.reply_to_message:
                 match = re.search(r"ID: (\d+)", m.reply_to_message.text or "")
                 if match:
@@ -135,7 +128,6 @@ async def bot_worker(bot_cfg: dict):
                     except: pass
                 return
 
-            # Пересылка админу
             if str(m.from_user.id) != str(admin_id):
                 info = f"📩 <b>От {m.from_user.full_name}</b>\nID: {m.from_user.id}\n\n"
                 try:
@@ -147,13 +139,12 @@ async def bot_worker(bot_cfg: dict):
 
         await dp.start_polling(bot)
     except Exception as e:
-        logger.error(f"Бот {bot_id} ошибка: {e}")
-    finally:
-        active_bots.pop(bot_id, None)
+        logger.error(f"Бот {bot_id} упал: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_db()
+    logger.info(f"🚀 Сервер запущен. Пользователей в БД: {len(db_content['users'])}")
     for b in db_content["bots"]:
         if b.get("status") == "RUNNING" and check_license(b["ownerId"]):
             active_tasks[b["id"]] = asyncio.create_task(bot_worker(b))
@@ -162,6 +153,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class KeyGenRequest(BaseModel):
+    months: int
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
@@ -210,9 +208,9 @@ async def stop_bot(bot_id: str):
     return {"status": "ok"}
 
 @app.post("/api/license/activate")
-async def activate_key(req: KeyActivationRequest):
-    u = next((u for u in db_content["users"] if str(u["id"]) == str(req.userId)), None)
-    k = next((k for k in db_content["issued_keys"] if k["key"] == req.key and not k["used"]), None)
+async def activate_key(req: dict):
+    u = next((u for u in db_content["users"] if str(u["id"]) == str(req['userId'])), None)
+    k = next((k for k in db_content["issued_keys"] if k["key"] == req['key'] and not k["used"]), None)
     if not u or not k: raise HTTPException(400)
     now = int(time.time() * 1000)
     u["licenseExpiresAt"] = max(u.get("licenseExpiresAt", now), now) + (k["months"] * 30 * 24 * 3600 * 1000)
