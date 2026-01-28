@@ -32,47 +32,80 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     e.preventDefault();
     setLoading(true);
     setError('');
-    const success = await api.requestVerification(email);
-    if (success) setMode('verify');
-    else setError('Ошибка отправки кода на почту');
+    console.log('Попытка запроса кода на email:', email);
+    try {
+      const success = await api.requestVerification(email);
+      if (success) {
+        console.log('Код успешно запрошен');
+        setMode('verify');
+      } else {
+        console.error('Ошибка: сервер вернул неуспешный статус');
+        setError('Ошибка отправки кода на почту');
+      }
+    } catch (err) {
+      console.error('Сетевая ошибка при запросе кода:', err);
+      setError('Нет связи с сервером');
+    }
     setLoading(false);
   };
 
   const handleVerifyAndRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    const user = await api.verifyAndRegister({ email, code, password, username });
-    if (user) onLogin(user);
-    else setError('Неверный код или ошибка регистрации');
+    console.log('Попытка завершения регистрации:', { email, code, username });
+    try {
+        const user = await api.verifyAndRegister({ email, code, password, username });
+        if (user) {
+            console.log('Регистрация успешна');
+            onLogin(user);
+        } else {
+            setError('Неверный код или ошибка регистрации');
+        }
+    } catch (err) {
+        console.error('Ошибка регистрации:', err);
+        setError('Ошибка сервера');
+    }
     setLoading(false);
   };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    const user = await api.login(email, password);
-    if (user) onLogin(user);
-    else setError('Неверный логин или пароль');
+    try {
+        const user = await api.login(email, password);
+        if (user) onLogin(user);
+        else setError('Неверный логин или пароль');
+    } catch (err) {
+        setError('Ошибка подключения к серверу');
+    }
     setLoading(false);
   };
 
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    const success = await api.forgotPassword(email);
-    if (success) setMode('reset');
-    else setError('Пользователь с таким Email не найден');
+    try {
+        const success = await api.forgotPassword(email);
+        if (success) setMode('reset');
+        else setError('Пользователь с таким Email не найден');
+    } catch (err) {
+        setError('Ошибка сервера');
+    }
     setLoading(false);
   };
 
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    const success = await api.resetPassword({ email, code, newPassword: password });
-    if (success) {
-        alert('Пароль успешно изменен!');
-        setMode('login');
-    } else setError('Неверный код подтверждения');
+    try {
+        const success = await api.resetPassword({ email, code, newPassword: password });
+        if (success) {
+            alert('Пароль успешно изменен!');
+            setMode('login');
+        } else setError('Неверный код подтверждения');
+    } catch (err) {
+        setError('Ошибка сервера');
+    }
     setLoading(false);
   };
 
