@@ -87,7 +87,27 @@ export const api = {
   getBots: async (userId: string): Promise<BotConfig[]> => {
     try {
       const response = await fetchWithTimeout(`${API_BASE}/bots/${userId}`);
-      return response.ok ? await response.json() : [];
+      if (!response.ok) return [];
+      const rows = await response.json();
+      // Распаковываем вложенный config из базы данных во фронтенд-структуру
+      return rows.map((row: any) => ({
+        ...row,
+        ...(row.config || {}),
+        ownerId: row.owner_id, // маппинг змеиного регистра в верблюжий
+        licenseExpiresAt: row.license_expires_at,
+        settings: row.config?.settings || {
+            useTopics: false,
+            topicPerRequest: false,
+            forwardToAdmin: true,
+            antiSpam: true,
+            showUserInfo: true,
+            showUsername: true,
+            autoApproveJoin: false,
+            rateLimit: 15,
+            autoBanThreshold: 0
+        },
+        stats: row.stats || { totalMessages: 0, incomingToday: 0, outgoingToday: 0, activeUsers24h: 0, bannedCount: 0, history: [] }
+      }));
     } catch (e) { return []; }
   },
 
@@ -96,7 +116,10 @@ export const api = {
       await fetchWithTimeout(`${API_BASE}/bots/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(bot)
+        body: JSON.stringify({
+            ...bot,
+            ownerId: userId // гарантируем актуальный ID владельца
+        })
       });
     } catch (e) { console.error("Failed to save bot"); }
   },
