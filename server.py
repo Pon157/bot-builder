@@ -93,7 +93,6 @@ def update_bot_stats(bot_id: str, direction: str):
     save_db()
 
 def is_bot_license_active(bot_config: dict) -> bool:
-    """Проверка лицензии конкретного бота."""
     return int(bot_config.get("licenseExpiresAt", 0)) > int(time.time() * 1000)
 
 active_tasks: Dict[str, asyncio.Task] = {}
@@ -138,7 +137,6 @@ async def bot_worker_task(bot_id: str, token: str):
             if btn.get("text"): rows.append([KeyboardButton(text=btn["text"])])
         kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True) if rows else None
         
-        # Рендерим приветствие с поддержкой тегов
         msg = format_msg(config.get("welcomeMessage", "Привет!"), m)
         await m.answer(msg, reply_markup=kb)
 
@@ -169,7 +167,7 @@ async def bot_worker_task(bot_id: str, token: str):
         user = next((u for u in config.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
         if not user or user.get("is_banned"): return
 
-        # Логика АВТОБАНА
+        # Автобан
         threshold = config.get("settings", {}).get("autoBanThreshold", 0)
         if threshold > 0 and user.get("warns", 0) >= threshold:
             user["is_banned"] = True
@@ -177,44 +175,65 @@ async def bot_worker_task(bot_id: str, token: str):
             save_db()
             return
 
+        # Кнопки
         if m.text:
             low = m.text.lower()
             for btn in config.get("buttons", []):
                 if btn.get("text") and btn["text"].lower() == low:
                     if btn.get("type") == "request" and admin_id:
                         tid = None
-                        if config.get("settings", {}).get("topicPerRequest"):
+                        if config.get("settings", {}).get("topicPerRequest") or config.get("settings", {}).get("useTopics"):
                             try:
-                                t = await bot.create_forum_topic(admin_id, f"Ticket: {m.from_user.id}")
+                                t = await bot.create_forum_topic(admin_id, f"Ticket: {m.from_user.first_name} [{m.from_user.id}]")
                                 tid = t.message_thread_id
-                            except: pass
-                        elif config.get("settings", {}).get("useTopics"): tid = user.get("thread_id")
+                                # Привязываем текущий контекст пользователя к этому тикету
+                                user["thread_id"] = tid
+                                save_db()
+                                await bot.send_message(admin_id, f"👤 Новое обращение через кнопку: <b>{btn['text']}</b>\nID: <code>{m.from_user.id}</code>", message_thread_id=tid)
+                            except Exception as e:
+                                logger.error(f"Failed to create topic: {e}")
                         
                         txt = format_msg(btn.get("adminTemplate", ""), m, btn["text"])
-                        await bot.send_message(admin_id, txt, message_thread_id=tid)
+                        await bot.send_message(admin_id, txt, message_thread_id=user.get("thread_id"))
                     
                     await m.answer(btn.get("response", "Принято"))
                     update_bot_stats(bot_id, "outgoing")
                     return
 
-        # Feedback пересылка
+        # Feedback пересылка (с проверкой на удаление топика)
         if admin_id:
-            tid = None
-            if config.get("settings", {}).get("useTopics"):
-                if not user.get("thread_id"):
-                    try:
-                        t = await bot.create_forum_topic(admin_id, f"{m.from_user.first_name} [{m.from_user.id}]")
-                        user["thread_id"] = t.message_thread_id
-                        save_db()
-                        await bot.send_message(admin_id, f"👤 Новый диалог\nID: <code>{m.from_user.id}</code>", message_thread_id=user["thread_id"])
-                    except: pass
-                tid = user.get("thread_id")
+            tid = user.get("thread_id")
             
-            try:
-                if not tid: await bot.send_message(admin_id, f"📩 Сообщение от ID: {m.from_user.id}")
-                await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=tid)
-                update_bot_stats(bot_id, "incoming")
-            except: pass
+            async def send_with_recovery(target_tid):
+                try:
+                    if not target_tid:
+                        await bot.send_message(admin_id, f"📩 Сообщение от ID: {m.from_user.id}")
+                    await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=target_tid)
+                    update_bot_stats(bot_id, "incoming")
+                    return True
+                except TelegramBadRequest as e:
+                    if "message thread not found" in str(e).lower() or "thread_id" in str(e).lower():
+                        return False # Топик удален
+                    raise e
+
+            # Пытаемся отправить в текущий топик
+            success = await send_with_recovery(tid)
+            
+            # Если топик удален или его не было, но включены топики - создаем новый
+            if not success and (config.get("settings", {}).get("useTopics") or config.get("settings", {}).get("topicPerRequest")):
+                try:
+                    add_bot_log(bot_id, "system", f"Топик для {m.from_user.id} не найден. Пересоздаю...")
+                    t = await bot.create_forum_topic(admin_id, f"{m.from_user.first_name} [{m.from_user.id}]")
+                    user["thread_id"] = t.message_thread_id
+                    save_db()
+                    await bot.send_message(admin_id, f"👤 Диалог возобновлен (старый топик был удален)\nID: <code>{m.from_user.id}</code>", message_thread_id=user["thread_id"])
+                    await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=user["thread_id"])
+                    update_bot_stats(bot_id, "incoming")
+                except Exception as e:
+                    logger.error(f"Re-creation failed: {e}")
+                    # В крайнем случае шлем в основной чат
+                    await bot.send_message(admin_id, f"📩 Сообщение от ID: {m.from_user.id} (ошибка топика)")
+                    await bot.copy_message(admin_id, m.chat.id, m.message_id)
 
     dp.include_router(router)
     try:
