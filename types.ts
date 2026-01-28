@@ -6,8 +6,6 @@ export enum BotStatus {
   STARTING = 'STARTING'
 }
 
-export type SubscriptionPlan = 'FREE' | 'PRO' | 'ENTERPRISE';
-
 export interface TelegramUser {
   id: number;
   first_name: string;
@@ -17,7 +15,7 @@ export interface TelegramUser {
   joined_at: number;
   last_seen?: number;
   thread_id?: number;
-  warns: number; // Количество предупреждений
+  warns: number;
 }
 
 export interface StatPoint {
@@ -64,7 +62,7 @@ export interface BotConfig {
     forwardToAdmin: boolean;
     antiSpam: boolean;
     showUserInfo: boolean;
-    showUsername: boolean; // Показывать ли юзернейм в инфо
+    showUsername: boolean;
     autoApproveJoin: boolean;
     rateLimit: number;
   };
@@ -75,8 +73,9 @@ export interface User {
   username: string;
   email: string;
   password?: string;
-  subscription: SubscriptionPlan;
+  licenseExpiresAt: number; // Timestamp
+  trialUsed: boolean;
+  activeKey?: string;
   balance: number;
   botsCreated: number;
 }
-
