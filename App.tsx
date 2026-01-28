@@ -9,7 +9,7 @@ import Auth from './components/Auth';
 import Profile from './components/Profile';
 import CreateBotModal from './components/CreateBotModal';
 import { api } from './services/apiService';
-import { Lock } from 'lucide-react';
+import { Menu, X } from 'lucide-react';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -17,6 +17,7 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'editor' | 'broadcast' | 'profile'>('dashboard');
   const [selectedBotId, setSelectedBotId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -87,7 +88,7 @@ const App: React.FC = () => {
       token,
       status: BotStatus.IDLE,
       createdAt: Date.now(),
-      licenseExpiresAt: Date.now() + (3 * 24 * 3600 * 1000), // 3 дня триала на нового бота
+      licenseExpiresAt: Date.now() + (3 * 24 * 3600 * 1000),
       usersCount: 0,
       description: 'Cloud Instance',
       adminChatId: '',
@@ -110,17 +111,51 @@ const App: React.FC = () => {
   if (!user) return <Auth onLogin={handleLogin} />;
 
   return (
-    <div className="flex h-screen bg-[#0a0a0a] text-zinc-300 overflow-hidden font-sans">
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} bots={bots} selectedBotId={selectedBotId} setSelectedBotId={setSelectedBotId} onAddBot={() => setIsModalOpen(true)} user={user} onLogout={handleLogout} />
+    <div className="flex h-screen bg-[#0a0a0a] text-zinc-300 overflow-hidden font-sans relative">
+      {/* Mobile Sidebar Overlay */}
+      {isSidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
+
+      <Sidebar 
+        activeTab={activeTab} 
+        setActiveTab={(tab) => { setActiveTab(tab); setIsSidebarOpen(false); }} 
+        bots={bots} 
+        selectedBotId={selectedBotId} 
+        setSelectedBotId={(id) => { setSelectedBotId(id); setActiveTab('editor'); setIsSidebarOpen(false); }} 
+        onAddBot={() => { setIsModalOpen(true); setIsSidebarOpen(false); }} 
+        user={user} 
+        onLogout={handleLogout}
+        isOpen={isSidebarOpen}
+      />
       
-      <main className="flex-1 overflow-y-auto p-4 md:p-12 relative no-scrollbar">
-        <div className="max-w-6xl mx-auto">
-          {activeTab === 'dashboard' && <Dashboard bots={bots} onSelectBot={(id) => { setSelectedBotId(id); setActiveTab('editor'); }} onAddBot={() => setIsModalOpen(true)} />}
-          {activeTab === 'profile' && <Profile user={user} bots={bots} onUpdateBots={setBots} />}
-          {activeTab === 'editor' && activeBot && <BotEditor bot={activeBot} onUpdate={handleUpdateBotLocally} onDelete={() => api.deleteBot(user.id, activeBot.id)} />}
-          {activeTab === 'broadcast' && <BroadcastManager bots={bots} />}
-        </div>
-      </main>
+      <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
+        {/* Mobile Header */}
+        <header className="md:hidden flex items-center justify-between p-4 bg-[#121212] border-b border-zinc-800 shrink-0">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 bg-blue-600 rounded flex items-center justify-center font-bold text-white text-[10px]">BE</div>
+            <span className="font-black text-sm uppercase tracking-wider text-white">BotEngine <span className="text-blue-500">Pro</span></span>
+          </div>
+          <button 
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className="p-2 bg-zinc-800 rounded-lg text-white"
+          >
+            {isSidebarOpen ? <X size={20} /> : <Menu size={20} />}
+          </button>
+        </header>
+
+        <main className="flex-1 overflow-y-auto p-4 md:p-12 no-scrollbar">
+          <div className="max-w-6xl mx-auto">
+            {activeTab === 'dashboard' && <Dashboard bots={bots} onSelectBot={(id) => { setSelectedBotId(id); setActiveTab('editor'); }} onAddBot={() => setIsModalOpen(true)} />}
+            {activeTab === 'profile' && <Profile user={user} bots={bots} onUpdateBots={setBots} />}
+            {activeTab === 'editor' && activeBot && <BotEditor bot={activeBot} onUpdate={handleUpdateBotLocally} onDelete={() => api.deleteBot(user.id, activeBot.id)} />}
+            {activeTab === 'broadcast' && <BroadcastManager bots={bots} />}
+          </div>
+        </main>
+      </div>
 
       <CreateBotModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSubmit={handleCreateBot} />
     </div>
