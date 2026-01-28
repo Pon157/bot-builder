@@ -377,6 +377,29 @@ async def stop_bot(bot_id: str):
         if b["id"] == bot_id: b["status"] = "IDLE"
     save_db(); return {"status": "ok"}
 
+@app.post("/api/broadcast")
+async def broadcast(req: BroadcastRequest):
+    results = {"success": 0, "failed": 0}
+    for bot_id in req.botIds:
+        bot_instance = active_bots.get(bot_id)
+        config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
+        
+        if not bot_instance or not config:
+            continue
+            
+        # Рассылаем всем подписчикам (те, кто нажал /start)
+        subscribers = config.get("subscribers", [])
+        for user_id in subscribers:
+            try:
+                await bot_instance.send_message(user_id, req.message)
+                results["success"] += 1
+                update_bot_stats(bot_id, "outgoing")
+            except Exception as e:
+                logger.error(f"Broadcast failed for user {user_id} on bot {bot_id}: {e}")
+                results["failed"] += 1
+                
+    return results
+
 @app.post("/api/license/activate")
 async def activate(req: ActivateRequest):
     bot_cfg = next((b for b in db_content["bots"] if b["id"] == req.botId), None)
