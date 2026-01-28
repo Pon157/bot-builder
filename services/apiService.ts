@@ -31,37 +31,53 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
       });
-      return response.ok ? await response.json() : null;
-    } catch (e) { return null; }
-  },
-
-  register: async (userData: any): Promise<User | null> => {
-    try {
-      const response = await fetchWithTimeout(`${API_BASE}/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(userData)
-      });
-      return response.ok ? await response.json() : null;
-    } catch (e) { return null; }
-  },
-
-  activateLicense: async (botId: string, key: string): Promise<any> => {
-    try {
-      const response = await fetchWithTimeout(`${API_BASE}/license/activate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ botId, key })
-      });
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.detail || "Activation failed");
-      }
+      if (!response.ok) return null;
       return await response.json();
-    } catch (e: any) { 
-      alert(e.message);
-      return null; 
-    }
+    } catch (e) { return null; }
+  },
+
+  requestVerification: async (email: string): Promise<boolean> => {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/auth/request-verification`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      return res.ok;
+    } catch (e) { return false; }
+  },
+
+  verifyAndRegister: async (data: any): Promise<User | null> => {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/auth/verify-and-register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+      return res.ok ? await res.json() : null;
+    } catch (e) { return null; }
+  },
+
+  forgotPassword: async (email: string): Promise<boolean> => {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      return res.ok;
+    } catch (e) { return false; }
+  },
+
+  resetPassword: async (data: any): Promise<boolean> => {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/auth/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+      return res.ok;
+    } catch (e) { return false; }
   },
 
   getBots: async (userId: string): Promise<BotConfig[]> => {
@@ -113,6 +129,17 @@ export const api = {
         body: JSON.stringify({ botIds, message })
       });
       return res.ok ? await res.json() : null;
+    } catch (e) { return null; }
+  },
+
+  activateLicense: async (botId: string, key: string): Promise<any> => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE}/license/activate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ botId, key })
+      });
+      return response.ok ? await response.json() : null;
     } catch (e) { return null; }
   }
 };
