@@ -23,7 +23,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 import uvicorn
 
-# --- Инициализация окружения ---
+# --- Инициализация окружения --- 
 BASE_DIR = "/root/bot-builder/bot-builder"
 if os.path.exists(BASE_DIR):
     os.chdir(BASE_DIR)
