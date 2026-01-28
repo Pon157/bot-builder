@@ -9,7 +9,7 @@ import Auth from './components/Auth';
 import Profile from './components/Profile';
 import CreateBotModal from './components/CreateBotModal';
 import { api } from './services/apiService';
-import { AlertCircle, X } from 'lucide-react';
+import { AlertCircle, X, ShieldAlert, Lock } from 'lucide-react';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -34,30 +34,30 @@ const App: React.FC = () => {
     init();
   }, []);
 
-  // Poll for logs/errors
+  // Синхронизация данных юзера (лицензии) и ботов
   useEffect(() => {
     if (!user) return;
     const interval = setInterval(async () => {
-      const serverBots = await api.getBots(user.id);
-      
-      // Check for new errors
-      serverBots.forEach(bot => {
-        const lastLog = bot.logs?.[0];
-        if (lastLog?.type === 'error' && lastLog.code === 'TOPIC_ERROR') {
-          if (!toasts.find(t => t.id === lastLog.id)) {
-            setToasts(prev => [...prev, lastLog]);
-            // Auto remove after 10s
-            setTimeout(() => {
-              setToasts(prev => prev.filter(t => t.id !== lastLog.id));
-            }, 10000);
-          }
+      try {
+        const serverBots = await api.getBots(user.id);
+        setBots(serverBots);
+        
+        // Раз в 30 секунд проверяем статус самого юзера (мог активировать ключ в другой вкладке)
+        if (Date.now() % 30000 < 3000) {
+           const allUsers = await fetch(`${window.location.protocol}//${window.location.hostname}:8000/api/auth/login`, {
+             method: 'POST',
+             headers: {'Content-Type': 'application/json'},
+             body: JSON.stringify({email: user.email, password: user.password})
+           }).then(r => r.json());
+           if (allUsers.id) {
+             setUser(allUsers);
+             localStorage.setItem('active_session_user', JSON.stringify(allUsers));
+           }
         }
-      });
-      
-      setBots(serverBots);
-    }, 3000);
+      } catch (e) {}
+    }, 5000);
     return () => clearInterval(interval);
-  }, [user, toasts]);
+  }, [user]);
 
   const handleLogin = async (newUser: User) => {
     setUser(newUser);
@@ -75,9 +75,10 @@ const App: React.FC = () => {
   };
 
   const activeBot = bots.find(b => b.id === selectedBotId) || null;
+  const isExpired = user && user.licenseExpiresAt < Date.now();
 
   const handleCreateBot = async (name: string, token: string) => {
-    if (!user) return;
+    if (!user || isExpired) return;
     const newBot: BotConfig = {
       id: Math.random().toString(36).substr(2, 9),
       ownerId: user.id,
@@ -91,6 +92,7 @@ const App: React.FC = () => {
       welcomeMessage: `Добро пожаловать в ${name}!`,
       logs: [],
       connectedUsers: [],
+      subscribers: [],
       triggers: [],
       buttons: [],
       stats: { totalMessages: 0, incomingToday: 0, outgoingToday: 0, activeUsers24h: 0, bannedCount: 0, history: [] },
@@ -103,21 +105,6 @@ const App: React.FC = () => {
     setActiveTab('editor');
   };
 
-  const updateBot = async (updatedBot: BotConfig) => {
-    if (!user) return;
-    await api.saveBot(user.id, updatedBot);
-    const updatedBots = await api.getBots(user.id);
-    setBots(updatedBots);
-  };
-
-  const deleteBot = async (id: string) => {
-    if (!user) return;
-    await api.deleteBot(user.id, id);
-    const updatedBots = await api.getBots(user.id);
-    setBots(updatedBots);
-    if (selectedBotId === id) setSelectedBotId(null);
-  };
-
   if (loading) return null;
   if (!user) return <Auth onLogin={handleLogin} />;
 
@@ -126,27 +113,29 @@ const App: React.FC = () => {
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} bots={bots} selectedBotId={selectedBotId} setSelectedBotId={setSelectedBotId} onAddBot={() => setIsModalOpen(true)} user={user} onLogout={handleLogout} />
       
       <main className="flex-1 overflow-y-auto p-4 md:p-12 relative no-scrollbar">
-        {/* Toast Overlay */}
-        <div className="fixed top-8 right-8 z-[100] flex flex-col gap-3 max-w-sm w-full">
-          {toasts.map(toast => (
-            <div key={toast.id} className="bg-red-500/10 border border-red-500/20 backdrop-blur-xl p-4 rounded-2xl shadow-2xl animate-in slide-in-from-right-full duration-300 flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <p className="text-xs font-black text-white uppercase tracking-widest mb-1">Критическая ошибка</p>
-                <p className="text-[10px] text-zinc-400 leading-relaxed">{toast.text}</p>
+        {/* Экран блокировки при истечении лицензии */}
+        {isExpired && activeTab !== 'profile' && (
+          <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-md flex items-center justify-center p-6">
+            <div className="max-w-md w-full bg-[#111] border border-red-500/20 rounded-[2.5rem] p-10 text-center shadow-2xl">
+              <div className="w-20 h-20 bg-red-500/10 text-red-500 rounded-3xl flex items-center justify-center mx-auto mb-6">
+                <Lock className="w-10 h-10" />
               </div>
-              <button onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))} className="text-zinc-600 hover:text-white transition-colors">
-                <X className="w-4 h-4" />
+              <h2 className="text-2xl font-black text-white mb-4">Лицензия истекла</h2>
+              <p className="text-zinc-500 text-sm mb-8">Все ваши боты остановлены. Продлите подписку в профиле, чтобы восстановить доступ к панели управления.</p>
+              <button 
+                onClick={() => setActiveTab('profile')}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-4 rounded-2xl transition-all uppercase tracking-widest text-xs"
+              >
+                Перейти к оплате
               </button>
             </div>
-          ))}
-        </div>
+          </div>
+        )}
 
         <div className="max-w-6xl mx-auto">
           {activeTab === 'dashboard' && <Dashboard bots={bots} onSelectBot={(id) => { setSelectedBotId(id); setActiveTab('editor'); }} onAddBot={() => setIsModalOpen(true)} />}
           {activeTab === 'profile' && <Profile user={user} onUpdateUser={setUser} />}
-          {activeTab === 'editor' && activeBot && <BotEditor bot={activeBot} onUpdate={updateBot} onDelete={() => deleteBot(activeBot.id)} />}
-          {activeTab === 'editor' && !activeBot && <div className="flex flex-col items-center justify-center h-[60vh] text-zinc-600"><p className="text-lg font-bold text-zinc-500 uppercase tracking-widest">Выберите инстанс из списка</p></div>}
+          {activeTab === 'editor' && activeBot && <BotEditor bot={activeBot} onUpdate={(b) => api.saveBot(user.id, b)} onDelete={() => api.deleteBot(user.id, activeBot.id)} />}
           {activeTab === 'broadcast' && <BroadcastManager bots={bots} />}
         </div>
       </main>
