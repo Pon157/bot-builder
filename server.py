@@ -24,7 +24,17 @@ from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, Teleg
 import uvicorn
 
 # Импорт сервиса почты
-from email_service import EmailService
+try:
+    from email_service import EmailService
+except ImportError:
+    # Заглушка на случай отсутствия файла
+    class EmailService:
+        @staticmethod
+        def send_verification_code(*args): return False
+        @staticmethod
+        def send_password_reset(*args): return False
+        @staticmethod
+        def send_license_alert(*args): return False
 
 # --- Инициализация окружения ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -119,7 +129,6 @@ async def license_checker_loop():
                 owner = next((u for u in db_content["users"] if str(u["id"]) == str(bot["ownerId"])), None)
                 if not owner or not owner.get("email"): continue
                 
-                # Уведомления за 3 дня и за 1 день
                 if 3 * day_ms >= diff > 2.5 * day_ms:
                     EmailService.send_license_alert(owner["email"], bot["name"], 3)
                 elif day_ms >= diff > 0.5 * day_ms:
@@ -154,7 +163,6 @@ async def bot_worker_task(bot_id: str, token: str):
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
         if not config or not is_bot_license_active(config): return
         
-        # Регистрация пользователя в локальной базе бота
         if "connectedUsers" not in config: config["connectedUsers"] = []
         user = next((u for u in config["connectedUsers"] if u["id"] == m.from_user.id), None)
         if not user:
@@ -229,7 +237,6 @@ async def bot_worker_task(bot_id: str, token: str):
         if not config or not is_bot_license_active(config): return
         admin_id = config.get("adminChatId")
 
-        # Логика АДМИНА (ответы пользователям)
         if admin_id and str(m.chat.id) == str(admin_id):
             target_id = None
             if m.message_thread_id:
@@ -246,17 +253,14 @@ async def bot_worker_task(bot_id: str, token: str):
                 except: pass
             return
 
-        # Логика ЮЗЕРА (кнопки и пересылка админу)
         user = next((u for u in config.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
         if not user or user.get("is_banned"): return
 
-        # Проверка кнопок
         if m.text:
             low = m.text.lower()
             for btn in config.get("buttons", []):
                 if btn.get("text") and btn["text"].lower() == low:
                     if btn.get("type") == "request" and admin_id:
-                        # Создание топика если нужно
                         if config.get("settings", {}).get("useTopics") and not user.get("thread_id"):
                             try:
                                 t = await bot.create_forum_topic(admin_id, f"{m.from_user.first_name} [{m.from_user.id}]")
@@ -271,7 +275,6 @@ async def bot_worker_task(bot_id: str, token: str):
                     update_bot_stats(bot_id, "outgoing")
                     return
 
-        # Просто пересылка админу (Livegram Mode)
         if admin_id:
             tid = user.get("thread_id")
             try:
@@ -280,7 +283,6 @@ async def bot_worker_task(bot_id: str, token: str):
                 await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=tid)
                 update_bot_stats(bot_id, "incoming")
             except:
-                # В случае ошибки топика — шлем в общий чат
                 await bot.copy_message(admin_id, m.chat.id, m.message_id)
 
     dp.include_router(router)
