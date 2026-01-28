@@ -16,6 +16,27 @@ const fetchWithTimeout = async (url: string, options: any = {}, timeout = 10000)
   }
 };
 
+const DEFAULT_SETTINGS = {
+  useTopics: false,
+  topicPerRequest: false,
+  forwardToAdmin: true,
+  antiSpam: true,
+  showUserInfo: true,
+  showUsername: true,
+  autoApproveJoin: false,
+  rateLimit: 15,
+  autoBanThreshold: 0
+};
+
+const DEFAULT_STATS = {
+  totalMessages: 0,
+  incomingToday: 0,
+  outgoingToday: 0,
+  activeUsers24h: 0,
+  bannedCount: 0,
+  history: []
+};
+
 export const api = {
   checkConnection: async (): Promise<boolean> => {
     try {
@@ -89,25 +110,21 @@ export const api = {
       const response = await fetchWithTimeout(`${API_BASE}/bots/${userId}`);
       if (!response.ok) return [];
       const rows = await response.json();
-      // Распаковываем вложенный config из базы данных во фронтенд-структуру
-      return rows.map((row: any) => ({
-        ...row,
-        ...(row.config || {}),
-        ownerId: row.owner_id, // маппинг змеиного регистра в верблюжий
-        licenseExpiresAt: row.license_expires_at,
-        settings: row.config?.settings || {
-            useTopics: false,
-            topicPerRequest: false,
-            forwardToAdmin: true,
-            antiSpam: true,
-            showUserInfo: true,
-            showUsername: true,
-            autoApproveJoin: false,
-            rateLimit: 15,
-            autoBanThreshold: 0
-        },
-        stats: row.stats || { totalMessages: 0, incomingToday: 0, outgoingToday: 0, activeUsers24h: 0, bannedCount: 0, history: [] }
-      }));
+      return rows.map((row: any) => {
+        const config = row.config || {};
+        return {
+          ...row,
+          ...config,
+          ownerId: row.owner_id,
+          licenseExpiresAt: row.license_expires_at,
+          settings: { ...DEFAULT_SETTINGS, ...(config.settings || {}) },
+          stats: { ...DEFAULT_STATS, ...(row.stats || {}) },
+          connectedUsers: config.connectedUsers || [],
+          triggers: config.triggers || [],
+          buttons: config.buttons || [],
+          logs: config.logs || []
+        };
+      });
     } catch (e) { return []; }
   },
 
@@ -118,7 +135,7 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             ...bot,
-            ownerId: userId // гарантируем актуальный ID владельца
+            ownerId: userId
         })
       });
     } catch (e) { console.error("Failed to save bot"); }
