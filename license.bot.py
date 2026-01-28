@@ -17,41 +17,44 @@ logging.basicConfig(
 )
 logger = logging.getLogger("LicenseBot")
 
-def load_env():
-    """Максимально надежная загрузка .env из разных путей для PM2"""
-    # Список возможных путей к .env
-    possible_paths = [
-        os.path.join(os.getcwd(), '.env'),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'),
-        '/root/bot-builder/bot-builder/.env'
-    ]
+def load_env_absolute():
+    """Абсолютно надежный поиск .env файла в директории проекта"""
+    path = '/root/bot-builder/bot-builder/.env'
+    if not os.path.exists(path):
+        # Если не нашли по прямому пути, ищем в текущей папке
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
     
-    found = False
-    for p in possible_paths:
-        if os.path.exists(p):
-            logger.info(f"Загрузка настроек из: {p}")
-            with open(p, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#') and '=' in line:
-                        k, v = line.split('=', 1)
-                        os.environ[k.strip()] = v.strip('"').strip("'").strip()
-            found = True
-            break
-    return found
+    if os.path.exists(path):
+        logger.info(f"Нашел .env по пути: {path}")
+        with open(path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    k, v = line.split('=', 1)
+                    os.environ[k.strip()] = v.strip('"').strip("'").strip()
+        return True
+    return False
 
-# Сначала загружаем окружение
-if not load_env():
-    logger.error("⚠️ ВНИМАНИЕ: Файл .env не найден! Бот может не запуститься.")
+# Загружаем окружение сразу
+load_env_absolute()
 
-# Теперь берем переменные
+# Берем переменные
 TOKEN = os.getenv("ADMIN_BOT_TOKEN")
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "SUPER_SECRET_TOKEN_123")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
 
-# --- Глобальные объекты (создаем только если есть токен) ---
-bot = None
+# Проверка токена ДО инициализации Bot()
+if not TOKEN or len(TOKEN) < 10:
+    logger.critical("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    logger.critical("ОШИБКА: ADMIN_BOT_TOKEN НЕ НАЙДЕН ИЛИ ПУСТОЙ!")
+    logger.critical("Проверь файл /root/bot-builder/bot-builder/.env")
+    logger.critical("Либо выполни: export ADMIN_BOT_TOKEN=твой_токен")
+    logger.critical("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    sys.exit(1)
+
+# Глобальные объекты
+bot = Bot(token=TOKEN.strip())
 dp = Dispatcher()
 
 # --- Вспомогательные функции ---
@@ -68,6 +71,7 @@ async def generate_key_via_api(months: int):
         url = f"{SERVER_URL}/api/admin/generate-key"
         headers = {"x-admin-token": ADMIN_SECRET}
         payload = {"months": months}
+        # Используем современный метод асинхронного запроса
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
             None, 
@@ -98,7 +102,7 @@ async def start(message: types.Message):
 async def handle_gen_key(callback: CallbackQuery):
     if not is_authorized(callback.message): return
     months = int(callback.data.split("_")[1])
-    await callback.answer("⏳...")
+    await callback.answer("Генерация...")
     key = await generate_key_via_api(months)
     if key:
         await callback.message.answer(f"✅ **Ключ создан:**\n`{key}`", parse_mode="Markdown")
@@ -106,14 +110,7 @@ async def handle_gen_key(callback: CallbackQuery):
         await callback.message.answer("❌ Ошибка сервера API. Проверьте server.py")
 
 async def main():
-    global bot
-    if not TOKEN:
-        logger.critical("❌ ТОКЕН НЕ НАЙДЕН! Проверьте ADMIN_BOT_TOKEN в .env")
-        return
-
-    logger.info("Инициализация бота...")
-    bot = Bot(token=TOKEN.strip())
-    logger.info("Бот для лицензий успешно запущен!")
+    logger.info("Бот для лицензий запускает опрос...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
