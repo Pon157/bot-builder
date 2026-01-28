@@ -140,6 +140,64 @@ async def bot_worker_task(bot_id: str, token: str):
         msg = format_msg(config.get("welcomeMessage", "Привет!"), m)
         await m.answer(msg, reply_markup=kb)
 
+    # Модерация командами (в топике)
+    @router.message(Command("warn", "unwarn", "ban", "unban"))
+    async def admin_moderation(m: Message):
+        config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
+        if not config or str(m.chat.id) != str(config.get("adminChatId")): return
+
+        target_user = None
+        # Поиск юзера по thread_id
+        if m.message_thread_id:
+            target_user = next((u for u in config.get("connectedUsers", []) if u.get("thread_id") == m.message_thread_id), None)
+        
+        if not target_user and m.reply_to_message:
+            match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
+            if match:
+                uid = int(match.group(1))
+                target_user = next((u for u in config.get("connectedUsers", []) if u["id"] == uid), None)
+
+        if not target_user:
+            return await m.reply("❌ Пользователь не найден в этом контексте.")
+
+        cmd = m.text.split()[0].replace("/", "").lower()
+        threshold = config.get("settings", {}).get("autoBanThreshold", 0)
+
+        if cmd == "warn":
+            target_user["warns"] = target_user.get("warns", 0) + 1
+            txt = f"⚠️ <b>Вам выдано предупреждение!</b>\nВсего: {target_user['warns']}"
+            if threshold > 0: txt += f" / {threshold}"
+            try: await bot.send_message(target_user["id"], txt)
+            except: pass
+            
+            if threshold > 0 and target_user["warns"] >= threshold:
+                target_user["is_banned"] = True
+                try: await bot.send_message(target_user["id"], "🚫 <b>Вы были автоматически заблокированы (порог варнов).</b>")
+                except: pass
+                await m.answer(f"🔨 Пользователь {target_user['id']} автоматически забанен.")
+            else:
+                await m.answer(f"✅ Варн выдан. Всего: {target_user['warns']}")
+
+        elif cmd == "unwarn":
+            target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
+            try: await bot.send_message(target_user["id"], f"ℹ️ <b>С вас снято предупреждение.</b>\nОсталось: {target_user['warns']}")
+            except: pass
+            await m.answer(f"✅ Варн снят. Осталось: {target_user['warns']}")
+
+        elif cmd == "ban":
+            target_user["is_banned"] = True
+            try: await bot.send_message(target_user["id"], "🚫 <b>Вы были заблокированы администратором.</b>")
+            except: pass
+            await m.answer("✅ Пользователь заблокирован.")
+
+        elif cmd == "unban":
+            target_user["is_banned"] = False
+            try: await bot.send_message(target_user["id"], "✅ <b>Вы были разблокированы администратором!</b>")
+            except: pass
+            await m.answer("✅ Пользователь разблокирован.")
+
+        save_db()
+
     @router.message()
     async def main_handler(m: Message):
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
@@ -167,14 +225,6 @@ async def bot_worker_task(bot_id: str, token: str):
         user = next((u for u in config.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
         if not user or user.get("is_banned"): return
 
-        # Автобан
-        threshold = config.get("settings", {}).get("autoBanThreshold", 0)
-        if threshold > 0 and user.get("warns", 0) >= threshold:
-            user["is_banned"] = True
-            add_bot_log(bot_id, "system", f"Автобан юзера {m.from_user.id} (порог варнов достигнут)")
-            save_db()
-            return
-
         # Кнопки
         if m.text:
             low = m.text.lower()
@@ -186,7 +236,6 @@ async def bot_worker_task(bot_id: str, token: str):
                             try:
                                 t = await bot.create_forum_topic(admin_id, f"Ticket: {m.from_user.first_name} [{m.from_user.id}]")
                                 tid = t.message_thread_id
-                                # Привязываем текущий контекст пользователя к этому тикету
                                 user["thread_id"] = tid
                                 save_db()
                                 await bot.send_message(admin_id, f"👤 Новое обращение через кнопку: <b>{btn['text']}</b>\nID: <code>{m.from_user.id}</code>", message_thread_id=tid)
@@ -200,7 +249,7 @@ async def bot_worker_task(bot_id: str, token: str):
                     update_bot_stats(bot_id, "outgoing")
                     return
 
-        # Feedback пересылка (с проверкой на удаление топика)
+        # Feedback пересылка
         if admin_id:
             tid = user.get("thread_id")
             
@@ -213,25 +262,19 @@ async def bot_worker_task(bot_id: str, token: str):
                     return True
                 except TelegramBadRequest as e:
                     if "message thread not found" in str(e).lower() or "thread_id" in str(e).lower():
-                        return False # Топик удален
+                        return False
                     raise e
 
-            # Пытаемся отправить в текущий топик
             success = await send_with_recovery(tid)
-            
-            # Если топик удален или его не было, но включены топики - создаем новый
             if not success and (config.get("settings", {}).get("useTopics") or config.get("settings", {}).get("topicPerRequest")):
                 try:
-                    add_bot_log(bot_id, "system", f"Топик для {m.from_user.id} не найден. Пересоздаю...")
                     t = await bot.create_forum_topic(admin_id, f"{m.from_user.first_name} [{m.from_user.id}]")
                     user["thread_id"] = t.message_thread_id
                     save_db()
-                    await bot.send_message(admin_id, f"👤 Диалог возобновлен (старый топик был удален)\nID: <code>{m.from_user.id}</code>", message_thread_id=user["thread_id"])
+                    await bot.send_message(admin_id, f"👤 Диалог возобновлен\nID: <code>{m.from_user.id}</code>", message_thread_id=user["thread_id"])
                     await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=user["thread_id"])
                     update_bot_stats(bot_id, "incoming")
                 except Exception as e:
-                    logger.error(f"Re-creation failed: {e}")
-                    # В крайнем случае шлем в основной чат
                     await bot.send_message(admin_id, f"📩 Сообщение от ID: {m.from_user.id} (ошибка топика)")
                     await bot.copy_message(admin_id, m.chat.id, m.message_id)
 
@@ -275,13 +318,47 @@ async def get_bots(user_id: str):
     return res
 
 @app.post("/api/bots/save")
-async def save_bot(bot: dict):
-    idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot["id"]), -1)
+async def save_bot(bot_data: dict):
+    idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_data["id"]), -1)
     if idx >= 0:
         old = db_content["bots"][idx]
-        bot["logs"], bot["connectedUsers"], bot["subscribers"], bot["stats"] = old.get("logs", []), old.get("connectedUsers", []), old.get("subscribers", []), old.get("stats", {})
-        db_content["bots"][idx] = bot
-    else: db_content["bots"].append(bot)
+        
+        # ЛОГИКА МОДЕРАЦИИ ЧЕРЕЗ САЙТ (Уведомления пользователям)
+        threshold = bot_data.get("settings", {}).get("autoBanThreshold", 0)
+        bot_instance = active_bots.get(bot_data["id"])
+        
+        if bot_instance:
+            for new_u in bot_data.get("connectedUsers", []):
+                old_u = next((u for u in old.get("connectedUsers", []) if u["id"] == new_u["id"]), None)
+                if old_u:
+                    # Изменились варны
+                    if new_u.get("warns", 0) > old_u.get("warns", 0):
+                        try:
+                            txt = f"⚠️ <b>Вам выдано предупреждение!</b>\nВсего: {new_u['warns']}"
+                            if threshold > 0: txt += f" / {threshold}"
+                            asyncio.create_task(bot_instance.send_message(new_u["id"], txt))
+                        except: pass
+                    # Понизились варны
+                    elif new_u.get("warns", 0) < old_u.get("warns", 0):
+                        try: asyncio.create_task(bot_instance.send_message(new_u["id"], f"ℹ️ <b>С вас снято предупреждение.</b>\nОсталось: {new_u['warns']}"))
+                        except: pass
+                    
+                    # Изменился статус бана
+                    if new_u.get("is_banned") and not old_u.get("is_banned"):
+                        try: asyncio.create_task(bot_instance.send_message(new_u["id"], "🚫 <b>Вы были заблокированы администратором.</b>"))
+                        except: pass
+                    elif not new_u.get("is_banned") and old_u.get("is_banned"):
+                        try: asyncio.create_task(bot_instance.send_message(new_u["id"], "✅ <b>Вы были разблокированы администратором!</b>"))
+                        except: pass
+
+                # Проверка порога автобана при сохранении
+                if threshold > 0 and new_u.get("warns", 0) >= threshold and not new_u.get("is_banned"):
+                    new_u["is_banned"] = True
+                    try: asyncio.create_task(bot_instance.send_message(new_u["id"], "🚫 <b>Автобан: превышен лимит предупреждений.</b>"))
+                    except: pass
+
+        db_content["bots"][idx] = bot_data
+    else: db_content["bots"].append(bot_data)
     save_db(); return {"status": "ok"}
 
 @app.post("/api/bots/start/{bot_id}")
