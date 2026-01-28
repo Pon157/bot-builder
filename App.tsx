@@ -33,7 +33,6 @@ const App: React.FC = () => {
     init();
   }, []);
 
-  // Фоновое обновление статусов без перезаписи локальных изменений в формах
   useEffect(() => {
     if (!user) return;
     const interval = setInterval(async () => {
@@ -43,13 +42,13 @@ const App: React.FC = () => {
           return prev.map(localBot => {
             const serverBot = serverBots.find(b => b.id === localBot.id);
             if (!serverBot) return localBot;
-            // Обновляем ТОЛЬКО статус и статистику, не трогаем конфиги (кнопки, триггеры)
             return {
               ...localBot,
               status: serverBot.status,
               stats: serverBot.stats,
               usersCount: serverBot.usersCount,
-              connectedUsers: serverBot.connectedUsers
+              connectedUsers: serverBot.connectedUsers,
+              licenseExpiresAt: serverBot.licenseExpiresAt
             };
           });
         });
@@ -78,10 +77,9 @@ const App: React.FC = () => {
   };
 
   const activeBot = bots.find(b => b.id === selectedBotId) || null;
-  const isExpired = user && user.licenseExpiresAt < Date.now();
 
   const handleCreateBot = async (name: string, token: string) => {
-    if (!user || isExpired) return;
+    if (!user) return;
     const newBot: BotConfig = {
       id: Math.random().toString(36).substr(2, 9),
       ownerId: user.id,
@@ -89,6 +87,7 @@ const App: React.FC = () => {
       token,
       status: BotStatus.IDLE,
       createdAt: Date.now(),
+      licenseExpiresAt: Date.now() + (3 * 24 * 3600 * 1000), // 3 дня триала на нового бота
       usersCount: 0,
       description: 'Cloud Instance',
       adminChatId: '',
@@ -99,7 +98,7 @@ const App: React.FC = () => {
       triggers: [],
       buttons: [],
       stats: { totalMessages: 0, incomingToday: 0, outgoingToday: 0, activeUsers24h: 0, bannedCount: 0, history: [] },
-      settings: { useTopics: false, topicPerRequest: false, autoApproveJoin: false, forwardToAdmin: true, antiSpam: true, rateLimit: 15, showUserInfo: true, showUsername: true }
+      settings: { useTopics: false, topicPerRequest: false, autoApproveJoin: false, forwardToAdmin: true, antiSpam: true, rateLimit: 15, showUserInfo: true, showUsername: true, autoBanThreshold: 0 }
     };
     await api.saveBot(user.id, newBot);
     setBots(prev => [...prev, newBot]);
@@ -115,21 +114,9 @@ const App: React.FC = () => {
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} bots={bots} selectedBotId={selectedBotId} setSelectedBotId={setSelectedBotId} onAddBot={() => setIsModalOpen(true)} user={user} onLogout={handleLogout} />
       
       <main className="flex-1 overflow-y-auto p-4 md:p-12 relative no-scrollbar">
-        {isExpired && activeTab !== 'profile' && (
-          <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-md flex items-center justify-center p-6">
-            <div className="max-w-md w-full bg-[#111] border border-red-500/20 rounded-[2.5rem] p-10 text-center shadow-2xl">
-              <div className="w-20 h-20 bg-red-500/10 text-red-500 rounded-3xl flex items-center justify-center mx-auto mb-6">
-                <Lock className="w-10 h-10" />
-              </div>
-              <h2 className="text-2xl font-black text-white mb-4">Лицензия истекла</h2>
-              <button onClick={() => setActiveTab('profile')} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-4 rounded-2xl transition-all uppercase tracking-widest text-xs">Перейти к оплате</button>
-            </div>
-          </div>
-        )}
-
         <div className="max-w-6xl mx-auto">
           {activeTab === 'dashboard' && <Dashboard bots={bots} onSelectBot={(id) => { setSelectedBotId(id); setActiveTab('editor'); }} onAddBot={() => setIsModalOpen(true)} />}
-          {activeTab === 'profile' && <Profile user={user} onUpdateUser={setUser} />}
+          {activeTab === 'profile' && <Profile user={user} bots={bots} onUpdateBots={setBots} />}
           {activeTab === 'editor' && activeBot && <BotEditor bot={activeBot} onUpdate={handleUpdateBotLocally} onDelete={() => api.deleteBot(user.id, activeBot.id)} />}
           {activeTab === 'broadcast' && <BroadcastManager bots={bots} />}
         </div>
