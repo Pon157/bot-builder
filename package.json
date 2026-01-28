@@ -12,7 +12,6 @@
   "dependencies": {
     "react": "19.0.0",
     "react-dom": "19.0.0",
-    "@google/genai": "^1.38.0",
     "recharts": "^2.15.0",
     "lucide-react": "^0.474.0"
   },
@@ -21,6 +20,7 @@
     "@types/react-dom": "19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.7.3",
-    "vite": "^6.0.7"
+    "vite": "^6.0.7",
+    "asyncpg": "^0.29.0"
   }
 }
