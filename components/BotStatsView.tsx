@@ -30,9 +30,15 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
 
   const handleModeration = async (userId: number, action: 'unban' | 'warn' | 'unwarn' | 'ban') => {
     setIsSyncing(userId);
+    const threshold = bot.settings.autoBanThreshold || 0;
+    
     const updatedUsers = bot.connectedUsers.map(u => {
       if (u.id === userId) {
-        if (action === 'unban') return { ...u, is_banned: false };
+        if (action === 'unban') {
+          // Если мы разблокируем, нужно сбросить варны хотя бы на 1 ниже порога, иначе автобан сработает снова при сохранении
+          const newWarns = (threshold > 0 && u.warns >= threshold) ? threshold - 1 : u.warns;
+          return { ...u, is_banned: false, warns: newWarns };
+        }
         if (action === 'ban') return { ...u, is_banned: true };
         if (action === 'warn') return { ...u, warns: (u.warns || 0) + 1 };
         if (action === 'unwarn') return { ...u, warns: Math.max(0, (u.warns || 0) - 1) };
@@ -40,10 +46,9 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
       return u;
     });
     
-    // Проверка порога автобана на фронте для мгновенного визуала
-    const threshold = bot.settings.autoBanThreshold || 0;
+    // Проверка порога автобана (только для действия warn)
     const finalizedUsers = updatedUsers.map(u => {
-        if (u.id === userId && threshold > 0 && u.warns >= threshold) {
+        if (u.id === userId && action === 'warn' && threshold > 0 && u.warns >= threshold) {
             return { ...u, is_banned: true };
         }
         return u;
@@ -52,11 +57,12 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
     const updatedBot = { ...bot, connectedUsers: finalizedUsers };
     
     try {
-        // Сначала сохраняем на сервер
+        // Сохраняем и дожидаемся ответа
         await api.saveBot(bot.ownerId, updatedBot);
-        // Затем обновляем локально (чтобы поллинг в App.tsx не затирал изменения)
+        // Только после успешного сохранения обновляем локальный стейт
         onUpdate(updatedBot);
     } catch (e) {
+        console.error(e);
         alert("Ошибка синхронизации с сервером");
     } finally {
         setIsSyncing(null);
@@ -124,11 +130,11 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
                 <div key={u.id} className="p-4 flex items-center justify-between hover:bg-zinc-800/30 border-b border-zinc-900/50 last:border-0 transition-colors">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full bg-blue-600/20 text-blue-500 flex items-center justify-center text-xs font-black">
-                        {u.first_name.charAt(0)}
+                        {u.first_name?.charAt(0) || "U"}
                     </div>
                     <div>
                         <p className="text-sm font-bold text-white">{u.first_name}</p>
-                        <p className="text-[10px] text-zinc-500">ID: {u.id} {u.warns > 0 && <span className="text-yellow-500 ml-2">Варны: {u.warns}</span>}</p>
+                        <p className="text-[10px] text-zinc-500">ID: {u.id} {u.warns > 0 && <span className="text-yellow-500 ml-2 font-bold uppercase">Варны: {u.warns}</span>}</p>
                     </div>
                   </div>
                   <div className="flex gap-2">
@@ -163,17 +169,17 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
                 <div key={u.id} className="p-4 flex items-center justify-between bg-red-500/5 border-b border-red-500/10">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full bg-red-500/20 text-red-500 flex items-center justify-center text-xs font-black">
-                        {u.first_name.charAt(0)}
+                        {u.first_name?.charAt(0) || "U"}
                     </div>
                     <div>
                         <p className="text-sm font-bold text-white">{u.first_name}</p>
-                        <p className="text-[10px] text-zinc-500">ID: {u.id}</p>
+                        <p className="text-[10px] text-zinc-500">ID: {u.id} {u.warns > 0 && <span className="text-yellow-500/70 ml-2">Варны: {u.warns}</span>}</p>
                     </div>
                   </div>
                   {isSyncing === u.id ? (
                       <Loader2 className="w-4 h-4 text-zinc-500 animate-spin mr-4" />
                   ) : (
-                      <button onClick={() => handleModeration(u.id, 'unban')} className="text-[8px] font-black uppercase text-red-500 hover:underline px-4 py-2">Разблокировать</button>
+                      <button onClick={() => handleModeration(u.id, 'unban')} className="text-[10px] font-black uppercase text-red-500 hover:text-white bg-red-500/10 hover:bg-red-500 px-4 py-2 rounded-xl transition-all">Разблокировать</button>
                   )}
                 </div>
               ))
