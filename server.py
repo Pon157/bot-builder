@@ -23,7 +23,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 import uvicorn
 
-# --- Инициализация окружения --- 
+# --- Инициализация окружения ---
 BASE_DIR = "/root/bot-builder/bot-builder"
 if os.path.exists(BASE_DIR):
     os.chdir(BASE_DIR)
@@ -199,17 +199,27 @@ async def bot_worker(bot_id: str, token: str):
         user = next((u for u in config.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
         if not user or user["is_banned"]: return
 
-        # Кнопки и Триггеры
+        # Кнопки и Тиггеры
         if m.text:
             text_low = m.text.lower()
+            
+            # Проверка кнопок меню
             for btn in config.get("buttons", []):
                 if btn.get("text") and btn["text"].lower() == text_low:
+                    # Если кнопка - обращение, уведомляем админа
+                    if btn.get("type") == "request":
+                        try:
+                            info = f"🆘 <b>Новое обращение!</b>\n👤 От: {m.from_user.full_name}\n🆔 ID: <code>{m.from_user.id}</code>\n📂 Тема: <i>{btn['text']}</i>"
+                            await bot.send_message(admin_id, info)
+                        except: pass
                     return await m.answer(btn.get("response", "...")), update_bot_stats(bot_id, "outgoing")
+            
+            # Проверка триггеров
             for trig in config.get("triggers", []):
                 if trig.get("keyword") and trig["keyword"].lower() in text_low:
                     return await m.answer(trig.get("response", "...")), update_bot_stats(bot_id, "outgoing")
 
-        # Пересылка админу
+        # Пересылка админу (Feedback)
         use_topics = config.get("settings", {}).get("useTopics", False)
         target_thread = None
         if use_topics:
@@ -218,9 +228,9 @@ async def bot_worker(bot_id: str, token: str):
                     topic = await bot.create_forum_topic(admin_id, f"{m.from_user.first_name} [{m.from_user.id}]")
                     user["thread_id"] = topic.message_thread_id
                     save_db()
-                    info = f"👤 <b>New Client</b>\nID: <code>{m.from_user.id}</code>\n"
+                    info = f"👤 <b>Новый диалог</b>\nID: <code>{m.from_user.id}</code>\n"
                     if config["settings"].get("showUsername") and m.from_user.username:
-                        info += f"User: @{m.from_user.username}\n"
+                        info += f"Username: @{m.from_user.username}\n"
                     await bot.send_message(admin_id, info, message_thread_id=user["thread_id"])
                 except Exception: use_topics = False
             target_thread = user.get("thread_id")
@@ -288,9 +298,9 @@ async def save_bot_endpoint(bot_data: dict):
     save_db()
     return {"status": "ok"}
 
-@app.delete("/api/bots/delete/{user_id}/{bot_id}")
-async def delete_bot(user_id: str, bot_id: str):
-    idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_id and str(b["ownerId"]) == str(user_id)), -1)
+@app.delete("/api/bots/delete/{bot_id}")
+async def delete_bot_global(bot_id: str):
+    idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_id), -1)
     if idx >= 0:
         if bot_id in active_tasks:
             active_tasks[bot_id].cancel()
