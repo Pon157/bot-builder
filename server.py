@@ -5,7 +5,8 @@ import json
 import os
 import time
 import re
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,10 +16,9 @@ from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, Message
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
-from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.client.default import DefaultBotProperties
 import uvicorn
 
+# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("BotEngine")
 
@@ -37,12 +37,17 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
+class KeyActivationRequest(BaseModel):
+    userId: str
+    key: str
+
 class UserBase(BaseModel):
     id: str
     username: str
     email: str
     password: str
-    subscription: str
+    licenseExpiresAt: int
+    trialUsed: bool
     balance: float
     botsCreated: int
 
@@ -67,153 +72,105 @@ def load_db():
             logger.error(f"Load DB Error: {e}")
             db_content = {"users": [], "bots": []}
 
-def add_bot_log(bot_id: str, log_type: str, text: str, code: str = None):
+def add_bot_log(bot_id: str, log_type: str, text: str):
     bot = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-    if not bot: return
-    log_entry = {"id": str(time.time()), "timestamp": int(time.time() * 1000), "type": log_type, "text": text, "code": code}
-    bot.setdefault("logs", []).insert(0, log_entry)
-    bot["logs"] = bot["logs"][:100]
-    save_db()
+    if bot:
+        if "logs" not in bot: bot["logs"] = []
+        log_entry = {
+            "id": str(uuid.uuid4()),
+            "timestamp": int(time.time() * 1000),
+            "type": log_type,
+            "text": text
+        }
+        bot["logs"].insert(0, log_entry)
+        bot["logs"] = bot["logs"][:50] # Храним последние 50 логов
 
-def update_bot_stats(bot_id: str, stat_type: str):
-    bot = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-    if not bot: return
-    if "stats" not in bot: bot["stats"] = {"totalMessages": 0, "incomingToday": 0, "outgoingToday": 0, "bannedCount": 0, "history": []}
-    bot["stats"]["totalMessages"] += 1
-    if stat_type == "incoming": bot["stats"]["incomingToday"] += 1
-    else: bot["stats"]["outgoingToday"] += 1
-    save_db()
+# --- Bot Runner Engine ---
 
-# --- Bot Engine Logic ---
-
-def get_keyboard(config: dict):
-    buttons = config.get("buttons", [])
-    if not buttons: return None
-    kb_buttons = []
-    row = []
-    for btn in buttons:
-        if btn.get("text"):
-            row.append(KeyboardButton(text=btn["text"]))
-            if len(row) == 2:
-                kb_buttons.append(row); row = []
-    if row: kb_buttons.append(row)
-    return ReplyKeyboardMarkup(keyboard=kb_buttons, resize_keyboard=True)
-
-async def bot_worker(bot_id: str, token: str):
-    session = AiohttpSession()
-    bot = Bot(token=token, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    active_bots[bot_id] = bot
-    dp = Dispatcher()
-    router = Router()
-
-    @router.message(CommandStart())
-    async def cmd_start(m: Message):
-        config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-        if not config: return
-        user = next((u for u in config.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
-        if not user:
-            user = {"id": m.from_user.id, "first_name": m.from_user.first_name, "username": m.from_user.username, "joined_at": int(time.time()), "is_banned": False, "is_active": True, "warns": 0}
-            config.setdefault("connectedUsers", []).append(user)
-            config["usersCount"] = len(config["connectedUsers"])
-            add_bot_log(bot_id, "system", f"New user: {m.from_user.full_name}")
-            save_db()
-        if user["is_banned"]: return
-        await m.answer(config.get("welcomeMessage", "Welcome!"), reply_markup=get_keyboard(config))
-
-    @router.message(Command("ban", "unban", "warn", "unwarn"))
-    async def admin_moderation(m: Message):
-        config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-        if str(m.chat.id) != str(config.get("adminChatId")): return
-        
-        target_id = None
-        if m.message_thread_id:
-            user = next((u for u in config.get("connectedUsers", []) if u.get("thread_id") == m.message_thread_id), None)
-            if user: target_id = user["id"]
-        
-        if not target_id and m.reply_to_message:
-            match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
-            if match: target_id = int(match.group(1))
-            
-        if not target_id:
-            parts = m.text.split()
-            if len(parts) > 1 and parts[1].isdigit(): target_id = int(parts[1])
-
-        if not target_id: return await m.reply("Could not determine User ID.")
-        
-        user = next((u for u in config.get("connectedUsers", []) if u["id"] == target_id), None)
-        if not user: return await m.reply("User not found in DB.")
-        
-        cmd = m.text.split()[0].lower()
-        if "/ban" in cmd: user["is_banned"] = True
-        elif "/unban" in cmd: user["is_banned"] = False
-        elif "/warn" in cmd: user["warns"] = user.get("warns", 0) + 1
-        elif "/unwarn" in cmd: user["warns"] = max(0, user.get("warns", 0) - 1)
-        
-        save_db()
-        await m.reply(f"Action {cmd} applied to user {target_id}")
-
-    @router.message()
-    async def handle_msg(m: Message):
-        config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-        if not config: return
-        admin_id = config.get("adminChatId")
-        if not admin_id: return
-
-        if str(m.chat.id) == str(admin_id):
-            if m.text and m.text.startswith("/"): return
-            target_id = None
-            if m.message_thread_id:
-                user = next((u for u in config.get("connectedUsers", []) if u.get("thread_id") == m.message_thread_id), None)
-                if user: target_id = user["id"]
-            if not target_id and m.reply_to_message:
-                match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
-                if match: target_id = int(match.group(1))
-            if target_id:
-                try:
-                    await bot.copy_message(chat_id=target_id, from_chat_id=m.chat.id, message_id=m.message_id)
-                    update_bot_stats(bot_id, "outgoing")
-                except Exception as e: await m.reply(f"Error: {e}")
-            return
-
-        user = next((u for u in config.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
-        if not user or user["is_banned"]: return
-
-        if m.text:
-            text_low = m.text.lower()
-            for btn in config.get("buttons", []):
-                if btn.get("text") and btn["text"].lower() == text_low:
-                    return await m.answer(btn.get("response", "...")), update_bot_stats(bot_id, "outgoing")
-            for trig in config.get("triggers", []):
-                if trig.get("keyword") and trig["keyword"].lower() in text_low:
-                    return await m.answer(trig.get("response", "...")), update_bot_stats(bot_id, "outgoing")
-
-        use_topics = config.get("settings", {}).get("useTopics", False)
-        target_thread = None
-        if use_topics:
-            if not user.get("thread_id"):
-                try:
-                    topic = await bot.create_forum_topic(admin_id, f"{m.from_user.first_name} [{m.from_user.id}]")
-                    user["thread_id"] = topic.message_thread_id
-                    save_db()
-                    info = f"👤 <b>New Client</b>\nID: <code>{m.from_user.id}</code>\n"
-                    if config["settings"].get("showUsername") and m.from_user.username:
-                        info += f"User: @{m.from_user.username}\n"
-                    await bot.send_message(admin_id, info, message_thread_id=user["thread_id"])
-                except Exception: use_topics = False
-            target_thread = user.get("thread_id")
-
-        try:
-            if not use_topics:
-                await bot.send_message(admin_id, f"📩 <b>ID: {m.from_user.id}</b>\nName: {m.from_user.full_name}")
-            await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=target_thread)
-            update_bot_stats(bot_id, "incoming")
-        except Exception as e: add_bot_log(bot_id, "error", f"Forward fail: {e}")
-
-    dp.include_router(router)
+async def bot_worker(bot_cfg: dict):
+    bot_id = bot_cfg["id"]
+    token = bot_cfg["token"]
+    
     try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(bot, skip_updates=True)
-    finally: await session.close()
+        bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        dp = Dispatcher()
+        active_bots[bot_id] = bot
+        
+        add_bot_log(bot_id, "info", f"Инициализация инстанса {bot_cfg['name']}...")
+
+        # Клавиатура из настроек
+        def get_main_kb():
+            buttons = bot_cfg.get("buttons", [])
+            if not buttons: return None
+            builder = ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text=btn["text"])] for btn in buttons],
+                resize_keyboard=True
+            )
+            return builder
+
+        @dp.message(CommandStart())
+        async def cmd_start(message: Message):
+            welcome = bot_cfg.get("welcomeMessage", "Привет!")
+            await message.answer(welcome, reply_markup=get_main_kb())
+            add_bot_log(bot_id, "incoming", f"User {message.from_user.id} triggered /start")
+
+        @dp.message()
+        async def handle_all_messages(message: Message):
+            if not message.text: return
+            text = message.text.lower()
+            
+            # 1. Проверка кнопок
+            for btn in bot_cfg.get("buttons", []):
+                if btn["text"].lower() == text:
+                    await message.answer(btn["response"])
+                    add_bot_log(bot_id, "outgoing", f"Ответ на кнопку: {btn['text']}")
+                    return
+
+            # 2. Проверка триггеров
+            for trig in bot_cfg.get("triggers", []):
+                if trig["keyword"].lower() in text:
+                    await message.answer(trig["response"])
+                    add_bot_log(bot_id, "outgoing", f"Сработал триггер: {trig['keyword']}")
+                    return
+
+            # 3. Пересылка админу (Feedback)
+            admin_id = bot_cfg.get("adminChatId")
+            if admin_id and str(message.from_user.id) != str(admin_id):
+                try:
+                    info = f"👤 <b>Сообщение от юзера</b>\nID: <code>{message.from_user.id}</code>\nName: {message.from_user.full_name}\n\n{message.text}"
+                    await bot.send_message(admin_id, info)
+                except: pass
+
+        add_bot_log(bot_id, "info", "Бот успешно запущен и слушает сообщения.")
+        await dp.start_polling(bot)
+        
+    except Exception as e:
+        logger.error(f"Bot {bot_id} Error: {e}")
+        add_bot_log(bot_id, "error", f"Ошибка запуска: {str(e)}")
+        # Обновляем статус в БД
+        for b in db_content["bots"]:
+            if b["id"] == bot_id: b["status"] = "ERROR"
+        save_db()
+    finally:
+        if bot_id in active_bots: del active_bots[bot_id]
+
+# --- License Guard ---
+
+async def license_checker_loop():
+    while True:
+        try:
+            now = int(time.time() * 1000)
+            for bot_cfg in db_content["bots"]:
+                owner = next((u for u in db_content["users"] if u["id"] == bot_cfg["ownerId"]), None)
+                if owner and owner.get("licenseExpiresAt", 0) < now and bot_cfg["id"] in active_tasks:
+                    logger.info(f"License expired for {bot_cfg['id']}")
+                    active_tasks[bot_cfg["id"]].cancel()
+                    del active_tasks[bot_cfg["id"]]
+                    bot_cfg["status"] = "IDLE"
+                    add_bot_log(bot_cfg["id"], "system", "Бот остановлен: срок лицензии истек.")
+            save_db()
+        except Exception as e: logger.error(f"Checker error: {e}")
+        await asyncio.sleep(600)
 
 # --- API Endpoints ---
 
@@ -223,95 +180,97 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
 
-# -- Auth --
-
 @app.post("/api/auth/register")
 async def register(user: UserBase):
-    # load_db() is redundant here as db_content is in memory
     if any(u["email"] == user.email for u in db_content["users"]):
         raise HTTPException(status_code=400, detail="User already exists")
-    db_content["users"].append(user.dict())
+    user_dict = user.dict()
+    db_content["users"].append(user_dict)
     save_db()
-    return user
+    return user_dict
 
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
-    # Search in memory for speed
     user = next((u for u in db_content["users"] if u["email"] == req.email and u["password"] == req.password), None)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not user: raise HTTPException(status_code=401, detail="Invalid credentials")
     return user
 
-# -- Bots --
+@app.post("/api/license/activate")
+async def activate_key(req: KeyActivationRequest):
+    user = next((u for u in db_content["users"] if u["id"] == req.userId), None)
+    if not user: raise HTTPException(404, "Пользователь не найден")
+    match = re.match(r"BOT-(\d+)-(\w+)", req.key.upper())
+    if not match: raise HTTPException(400, "Неверный формат ключа")
+    months = int(match.group(1))
+    now_ms = int(time.time() * 1000)
+    current_expiry = max(user.get("licenseExpiresAt", 0), now_ms)
+    new_expiry = current_expiry + (months * 30 * 24 * 60 * 60 * 1000)
+    user["licenseExpiresAt"] = new_expiry
+    save_db()
+    return {"status": "ok", "newExpiry": new_expiry}
 
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
-    # No load_db() here. Polling is now very lightweight.
     return [b for b in db_content["bots"] if b["ownerId"] == user_id]
 
-@app.post("/api/bots/save")
-async def save_bot_endpoint(bot_data: dict):
-    idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_data["id"]), -1)
-    if idx >= 0:
-        bot_data.setdefault("logs", db_content["bots"][idx].get("logs", []))
-        db_content["bots"][idx] = bot_data
-    else: db_content["bots"].append(bot_data)
-    save_db()
-    return {"status": "ok"}
-
-@app.delete("/api/bots/delete/{user_id}/{bot_id}")
-async def delete_bot(user_id: str, bot_id: str):
-    idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_id and b["ownerId"] == user_id), -1)
-    if idx >= 0:
-        if bot_id in active_tasks:
-            active_tasks[bot_id].cancel()
-            del active_tasks[bot_id]
-        if bot_id in active_bots:
-            del active_bots[bot_id]
-        db_content["bots"].pop(idx)
-        save_db()
-        return {"status": "ok"}
-    raise HTTPException(status_code=404, detail="Bot not found")
-
 @app.post("/api/bots/start/{bot_id}")
-async def start_bot(bot_id: str):
+async def start_bot_endpoint(bot_id: str):
     bot_cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
     if not bot_cfg: raise HTTPException(404)
+    
+    owner = next((u for u in db_content["users"] if u["id"] == bot_cfg["ownerId"]), None)
+    if not owner or owner.get("licenseExpiresAt", 0) < int(time.time() * 1000):
+        raise HTTPException(403, "Лицензия истекла.")
+        
     if bot_id in active_tasks: return {"status": "ok"}
-    active_tasks[bot_id] = asyncio.create_task(bot_worker(bot_id, bot_cfg["token"]))
+    
+    # Запускаем фоновую задачу
+    task = asyncio.create_task(bot_worker(bot_cfg))
+    active_tasks[bot_id] = task
     bot_cfg["status"] = "RUNNING"
     save_db()
     return {"status": "ok"}
 
 @app.post("/api/bots/stop/{bot_id}")
-async def stop_bot(bot_id: str):
+async def stop_bot_endpoint(bot_id: str):
     if bot_id in active_tasks:
         active_tasks[bot_id].cancel()
         del active_tasks[bot_id]
-    if bot_id in active_bots: del active_bots[bot_id]
+    if bot_id in active_bots:
+        await active_bots[bot_id].session.close()
+        del active_bots[bot_id]
+        
     for b in db_content["bots"]:
         if b["id"] == bot_id: b["status"] = "IDLE"
     save_db()
     return {"status": "ok"}
 
+@app.post("/api/bots/save")
+async def save_bot_endpoint(bot_data: dict):
+    idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_data["id"]), -1)
+    if idx >= 0: db_content["bots"][idx] = bot_data
+    else: db_content["bots"].append(bot_data)
+    save_db()
+    return {"status": "ok"}
+
+@app.delete("/api/bots/delete/{bot_id}")
+async def delete_bot_endpoint(bot_id: str):
+    await stop_bot_endpoint(bot_id)
+    db_content["bots"] = [b for b in db_content["bots"] if b["id"] != bot_id]
+    save_db()
+    return {"status": "ok"}
+
 @app.post("/api/broadcast")
-async def broadcast(req: BroadcastRequest):
-    success = 0
-    failed = 0
-    for bot_id in req.botIds:
-        bot_instance = active_bots.get(bot_id)
-        if not bot_instance: continue
-        config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-        if not config: continue
-        for user in config.get("connectedUsers", []):
-            if user["is_banned"]: continue
-            try:
-                await bot_instance.send_message(user["id"], req.message)
-                success += 1
-                update_bot_stats(bot_id, "outgoing")
-            except Exception: failed += 1
+async def broadcast_endpoint(req: BroadcastRequest):
+    success, failed = 0, 0
+    # Эта логика требует отдельной реализации рассылки по базе пользователей каждого бота
     return {"success": success, "failed": failed}
 
-if __name__ == "__main__":
+@app.on_event("startup")
+async def startup_event():
     load_db()
+    asyncio.create_task(license_checker_loop())
+
+if __name__ == "__main__":
+    from aiogram.client.default import DefaultBotProperties
     uvicorn.run(app, host="0.0.0.0", port=8000)
