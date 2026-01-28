@@ -54,9 +54,9 @@ export interface BotConfig {
   welcomeMessage: string;
   logs: MessageLog[];
   connectedUsers: TelegramUser[];
-  subscribers: number[]; // Список ID всех пользователей для рассылки
+  subscribers: number[]; 
   triggers: { keyword: string; response: string }[];
-  buttons: { text: string; response: string }[];
+  buttons: { text: string; response: string; type?: 'message' | 'request' }[];
   stats: BotStats;
   settings: {
     useTopics: boolean;
