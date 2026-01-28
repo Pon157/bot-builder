@@ -56,10 +56,16 @@ export interface BotConfig {
   connectedUsers: TelegramUser[];
   subscribers: number[]; 
   triggers: { keyword: string; response: string }[];
-  buttons: { text: string; response: string; type?: 'message' | 'request' }[];
+  buttons: { 
+    text: string; 
+    response: string; 
+    type?: 'message' | 'request';
+    adminTemplate?: string; 
+  }[];
   stats: BotStats;
   settings: {
     useTopics: boolean;
+    topicPerRequest: boolean; // Создавать новый топик на каждое обращение
     forwardToAdmin: boolean;
     antiSpam: boolean;
     showUserInfo: boolean;
