@@ -116,14 +116,14 @@ async def bot_worker(bot_cfg: dict):
             text = message.text.lower()
             
             for btn in bot_cfg.get("buttons", []):
-                if btn["text"].lower() == text:
-                    await message.answer(btn["response"])
+                if btn.get("text", "").lower() == text:
+                    await message.answer(btn.get("response", "Нет ответа"))
                     add_bot_log(bot_id, "outgoing", f"Ответ на кнопку: {btn['text']}")
                     return
 
             for trig in bot_cfg.get("triggers", []):
-                if trig["keyword"].lower() in text:
-                    await message.answer(trig["response"])
+                if trig.get("keyword", "").lower() in text:
+                    await message.answer(trig.get("response", "Нет ответа"))
                     add_bot_log(bot_id, "outgoing", f"Сработал триггер: {trig['keyword']}")
                     return
 
@@ -140,6 +140,7 @@ async def bot_worker(bot_cfg: dict):
     except Exception as e:
         logger.error(f"Bot {bot_id} Error: {e}")
         add_bot_log(bot_id, "error", f"Ошибка: {str(e)}")
+        # Переключаем статус бота в конфиге
         for b in db_content["bots"]:
             if b["id"] == bot_id: b["status"] = "ERROR"
         save_db()
@@ -152,16 +153,16 @@ async def bot_worker(bot_cfg: dict):
 async def lifespan(app: FastAPI):
     load_db()
     
-    # Фоновая проверка лицензий (раз в 10 минут)
     async def license_checker():
         while True:
             try:
                 now = int(time.time() * 1000)
                 for b in db_content["bots"]:
                     owner = next((u for u in db_content["users"] if u["id"] == b["ownerId"]), None)
-                    # Используем .get() чтобы избежать KeyError
-                    if owner and owner.get("licenseExpiresAt", 0) < now and b["id"] in active_tasks:
-                        logger.info(f"Stopping bot {b['id']} due to expired license")
+                    # Используем .get() для безопасности
+                    expiry = owner.get("licenseExpiresAt", 0) if owner else 0
+                    if expiry < now and b["id"] in active_tasks:
+                        logger.info(f"Stopping bot {b['id']} - license expired")
                         active_tasks[b["id"]].cancel()
                         b["status"] = "IDLE"
             except Exception as e:
@@ -199,7 +200,7 @@ async def activate_key(req: KeyActivationRequest):
     user = next((u for u in db_content["users"] if u["id"] == req.userId), None)
     if not user: raise HTTPException(404)
     match = re.match(r"BOT-(\d+)-(\w+)", req.key.upper())
-    if not match: raise HTTPException(400, "Invalid key")
+    if not match: raise HTTPException(400, "Invalid key format")
     months = int(match.group(1))
     now = int(time.time() * 1000)
     current_expiry = user.get("licenseExpiresAt", now)
@@ -227,8 +228,7 @@ async def stop_bot(bot_id: str):
         active_tasks[bot_id].cancel()
         del active_tasks[bot_id]
     if bot_id in active_bots:
-        try:
-            await active_bots[bot_id].session.close()
+        try: await active_bots[bot_id].session.close()
         except: pass
         del active_bots[bot_id]
     for b in db_content["bots"]:
@@ -250,27 +250,6 @@ async def delete_bot(bot_id: str):
     db_content["bots"] = [b for b in db_content["bots"] if b["id"] != bot_id]
     save_db()
     return {"status": "ok"}
-
-@app.post("/api/broadcast")
-async def broadcast(req: BroadcastRequest):
-    success = 0
-    failed = 0
-    for bot_id in req.botIds:
-        bot_cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-        if not bot_cfg: continue
-        
-        bot_instance = active_bots.get(bot_id)
-        if not bot_instance: continue
-        
-        users = bot_cfg.get("connectedUsers", [])
-        for user in users:
-            try:
-                await bot_instance.send_message(user["id"], req.message)
-                success += 1
-            except Exception as e:
-                logger.error(f"Broadcast error for bot {bot_id}, user {user['id']}: {e}")
-                failed += 1
-    return {"success": success, "failed": failed}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
