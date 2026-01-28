@@ -46,12 +46,12 @@ export const api = {
     } catch (e) { return null; }
   },
 
-  activateLicense: async (userId: string, key: string): Promise<any> => {
+  activateLicense: async (botId: string, key: string): Promise<any> => {
     try {
       const response = await fetchWithTimeout(`${API_BASE}/license/activate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, key })
+        body: JSON.stringify({ botId, key })
       });
       if (!response.ok) {
         const err = await response.json();
