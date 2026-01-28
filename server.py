@@ -42,16 +42,6 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
-class RegisterRequest(BaseModel):
-    id: str
-    username: str
-    email: str
-    password: str
-    licenseExpiresAt: int
-    trialUsed: bool
-    balance: float
-    botsCreated: int
-
 class BroadcastRequest(BaseModel):
     botIds: List[str]
     message: str
@@ -59,7 +49,11 @@ class BroadcastRequest(BaseModel):
 class KeyGenRequest(BaseModel):
     months: int
 
-# --- Ядро Базы Данных ---
+class ActivateRequest(BaseModel):
+    botId: str
+    key: str
+
+# --- БД ---
 db_content = {"users": [], "bots": [], "issued_keys": [], "system_logs": []}
 
 def save_db():
@@ -98,10 +92,9 @@ def update_bot_stats(bot_id: str, direction: str):
     bot["stats"]["incomingToday" if direction == "incoming" else "outgoingToday"] += 1
     save_db()
 
-def is_license_active(owner_id: str) -> bool:
-    user = next((u for u in db_content["users"] if str(u["id"]) == str(owner_id)), None)
-    if not user: return False
-    return int(user.get("licenseExpiresAt", 0)) > int(time.time() * 1000)
+def is_bot_license_active(bot_config: dict) -> bool:
+    """Проверка лицензии конкретного бота."""
+    return int(bot_config.get("licenseExpiresAt", 0)) > int(time.time() * 1000)
 
 active_tasks: Dict[str, asyncio.Task] = {}
 active_bots: Dict[str, Bot] = {}
@@ -125,7 +118,7 @@ async def bot_worker_task(bot_id: str, token: str):
     @router.message(CommandStart())
     async def cmd_start(m: Message):
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-        if not config or not is_license_active(config["ownerId"]): return
+        if not config or not is_bot_license_active(config): return
         
         if "connectedUsers" not in config: config["connectedUsers"] = []
         user = next((u for u in config["connectedUsers"] if u["id"] == m.from_user.id), None)
@@ -133,7 +126,6 @@ async def bot_worker_task(bot_id: str, token: str):
             user = {"id": m.from_user.id, "first_name": m.from_user.first_name, "username": m.from_user.username, "joined_at": int(time.time()), "is_banned": False, "warns": 0, "thread_id": None}
             config["connectedUsers"].append(user)
             config["usersCount"] = len(config["connectedUsers"])
-            add_bot_log(bot_id, "info", f"Новый юзер: {m.from_user.id}")
         
         if "subscribers" not in config: config["subscribers"] = []
         if m.from_user.id not in config["subscribers"]: config["subscribers"].append(m.from_user.id)
@@ -145,12 +137,15 @@ async def bot_worker_task(bot_id: str, token: str):
         for btn in config.get("buttons", []):
             if btn.get("text"): rows.append([KeyboardButton(text=btn["text"])])
         kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True) if rows else None
-        await m.answer(config.get("welcomeMessage", "Привет!"), reply_markup=kb)
+        
+        # Рендерим приветствие с поддержкой тегов
+        msg = format_msg(config.get("welcomeMessage", "Привет!"), m)
+        await m.answer(msg, reply_markup=kb)
 
     @router.message()
     async def main_handler(m: Message):
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-        if not config or not is_license_active(config["ownerId"]): return
+        if not config or not is_bot_license_active(config): return
         admin_id = config.get("adminChatId")
 
         # АДМИН
@@ -173,6 +168,14 @@ async def bot_worker_task(bot_id: str, token: str):
         # ЮЗЕР
         user = next((u for u in config.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
         if not user or user.get("is_banned"): return
+
+        # Логика АВТОБАНА
+        threshold = config.get("settings", {}).get("autoBanThreshold", 0)
+        if threshold > 0 and user.get("warns", 0) >= threshold:
+            user["is_banned"] = True
+            add_bot_log(bot_id, "system", f"Автобан юзера {m.from_user.id} (порог варнов достигнут)")
+            save_db()
+            return
 
         if m.text:
             low = m.text.lower()
@@ -225,7 +228,7 @@ async def bot_worker_task(bot_id: str, token: str):
 async def lifespan(app: FastAPI):
     load_db()
     for b in db_content["bots"]:
-        if b.get("status") == "RUNNING" and is_license_active(b["ownerId"]):
+        if b.get("status") == "RUNNING" and is_bot_license_active(b):
             active_tasks[b["id"]] = asyncio.create_task(bot_worker_task(b["id"], b["token"]))
     yield
     for t in active_tasks.values(): t.cancel()
@@ -237,9 +240,9 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 async def ping(): return {"status": "online"}
 
 @app.post("/api/auth/register")
-async def register(req: RegisterRequest):
-    if any(u["email"] == req.email for u in db_content["users"]): raise HTTPException(400)
-    db_content["users"].append(req.dict()); save_db(); return req
+async def register(req: dict):
+    if any(u["email"] == req["email"] for u in db_content["users"]): raise HTTPException(400)
+    db_content["users"].append(req); save_db(); return req
 
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
@@ -266,7 +269,7 @@ async def save_bot(bot: dict):
 async def start_bot(bot_id: str):
     cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
     if not cfg: raise HTTPException(404)
-    if not is_license_active(cfg["ownerId"]): raise HTTPException(403)
+    if not is_bot_license_active(cfg): raise HTTPException(403, detail="License expired for this bot.")
     if bot_id in active_tasks and not active_tasks[bot_id].done(): return {"status": "ok"}
     active_tasks[bot_id] = asyncio.create_task(bot_worker_task(bot_id, cfg["token"]))
     cfg["status"] = "RUNNING"; save_db(); return {"status": "ok"}
@@ -280,36 +283,16 @@ async def stop_bot(bot_id: str):
         if b["id"] == bot_id: b["status"] = "IDLE"
     save_db(); return {"status": "ok"}
 
-@app.delete("/api/bots/delete/{bot_id}")
-async def delete_bot(bot_id: str):
-    idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_id), -1)
-    if idx >= 0:
-        if bot_id in active_tasks: active_tasks[bot_id].cancel(); del active_tasks[bot_id]
-        db_content["bots"].pop(idx); save_db(); return {"status": "ok"}
-    raise HTTPException(404)
-
-@app.post("/api/broadcast")
-async def broadcast(req: BroadcastRequest):
-    s, f = 0, 0
-    for bid in req.botIds:
-        bot = active_bots.get(bid)
-        cfg = next((b for b in db_content["bots"] if b["id"] == bid), None)
-        if bot and cfg:
-            for uid in cfg.get("subscribers", []):
-                try: await bot.send_message(uid, req.message); s += 1; update_bot_stats(bid, "outgoing")
-                except: f += 1
-                await asyncio.sleep(0.05)
-    return {"success": s, "failed": f}
-
 @app.post("/api/license/activate")
-async def activate(req: dict):
-    u = next((u for u in db_content["users"] if str(u["id"]) == str(req["userId"])), None)
-    k = next((k for k in db_content["issued_keys"] if k["key"] == req["key"] and not k["used"]), None)
-    if not u or not k: raise HTTPException(400)
+async def activate(req: ActivateRequest):
+    bot_cfg = next((b for b in db_content["bots"] if b["id"] == req.botId), None)
+    key_obj = next((k for k in db_content["issued_keys"] if k["key"] == req.key and not k["used"]), None)
+    if not bot_cfg or not key_obj: raise HTTPException(400, detail="Invalid bot or key.")
+    
     now = int(time.time() * 1000)
-    exp = max(u.get("licenseExpiresAt", now), now)
-    u["licenseExpiresAt"] = exp + (k["months"] * 30 * 24 * 3600 * 1000)
-    k["used"] = True; save_db(); return {"status": "ok", "newExpiry": u["licenseExpiresAt"]}
+    exp = max(bot_cfg.get("licenseExpiresAt", now), now)
+    bot_cfg["licenseExpiresAt"] = exp + (key_obj["months"] * 30 * 24 * 3600 * 1000)
+    key_obj["used"] = True; save_db(); return {"status": "ok", "newExpiry": bot_cfg["licenseExpiresAt"]}
 
 @app.post("/api/admin/generate-key")
 async def gen_key(req: KeyGenRequest, x_admin_token: str = Header(None)):
