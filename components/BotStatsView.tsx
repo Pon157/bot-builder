@@ -26,16 +26,16 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
     { date: new Date().toLocaleDateString(), incoming: 0, outgoing: 0 }
   ];
 
-  const bannedUsers = bot.connectedUsers.filter(u => u.is_banned);
+  const bannedUsers = (bot.connectedUsers || []).filter(u => u.is_banned);
 
   const handleModeration = async (userId: number, action: 'unban' | 'warn' | 'unwarn' | 'ban') => {
     setIsSyncing(userId);
-    const threshold = bot.settings.autoBanThreshold || 0;
+    // Безопасный доступ к настройкам
+    const threshold = bot.settings?.autoBanThreshold || 0;
     
-    const updatedUsers = bot.connectedUsers.map(u => {
+    const updatedUsers = (bot.connectedUsers || []).map(u => {
       if (u.id === userId) {
         if (action === 'unban') {
-          // Если мы разблокируем, нужно сбросить варны хотя бы на 1 ниже порога, иначе автобан сработает снова при сохранении
           const newWarns = (threshold > 0 && u.warns >= threshold) ? threshold - 1 : u.warns;
           return { ...u, is_banned: false, warns: newWarns };
         }
@@ -46,7 +46,6 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
       return u;
     });
     
-    // Проверка порога автобана (только для действия warn)
     const finalizedUsers = updatedUsers.map(u => {
         if (u.id === userId && action === 'warn' && threshold > 0 && u.warns >= threshold) {
             return { ...u, is_banned: true };
@@ -57,9 +56,7 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
     const updatedBot = { ...bot, connectedUsers: finalizedUsers };
     
     try {
-        // Сохраняем и дожидаемся ответа
         await api.saveBot(bot.ownerId, updatedBot);
-        // Только после успешного сохранения обновляем локальный стейт
         onUpdate(updatedBot);
     } catch (e) {
         console.error(e);
@@ -73,10 +70,10 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Всего пользователей', value: bot.connectedUsers.length, color: 'text-white', icon: Users },
-          { label: 'Активно (24ч)', value: stats.activeUsers24h, color: 'text-green-500', icon: Activity },
+          { label: 'Всего пользователей', value: (bot.connectedUsers || []).length, color: 'text-white', icon: Users },
+          { label: 'Активно (24ч)', value: stats.activeUsers24h || 0, color: 'text-green-500', icon: Activity },
           { label: 'Забанено', value: bannedUsers.length, color: 'text-red-500', icon: Ban },
-          { label: 'Предупреждения', value: bot.connectedUsers.reduce((a,b) => a + (b.warns || 0), 0), color: 'text-yellow-500', icon: AlertTriangle },
+          { label: 'Предупреждения', value: (bot.connectedUsers || []).reduce((a,b) => a + (b.warns || 0), 0), color: 'text-yellow-500', icon: AlertTriangle },
         ].map((stat, i) => (
           <div key={i} className="bg-[#111] border border-zinc-800 p-6 rounded-3xl relative overflow-hidden group">
             <stat.icon className="absolute -right-4 -bottom-4 w-24 h-24 text-zinc-900 group-hover:text-zinc-800 transition-colors" />
@@ -123,10 +120,10 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
             </h3>
           </div>
           <div className="flex-1 max-h-[400px] overflow-y-auto no-scrollbar">
-            {bot.connectedUsers.filter(u => !u.is_banned).length === 0 ? (
+            {(bot.connectedUsers || []).filter(u => !u.is_banned).length === 0 ? (
               <div className="p-20 text-center text-[10px] font-bold text-zinc-700 uppercase">Нет данных</div>
             ) : (
-              bot.connectedUsers.filter(u => !u.is_banned).map(u => (
+              (bot.connectedUsers || []).filter(u => !u.is_banned).map(u => (
                 <div key={u.id} className="p-4 flex items-center justify-between hover:bg-zinc-800/30 border-b border-zinc-900/50 last:border-0 transition-colors">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full bg-blue-600/20 text-blue-500 flex items-center justify-center text-xs font-black">
