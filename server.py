@@ -173,7 +173,7 @@ async def bot_worker_task(bot_id: str, token: str):
     dp = Dispatcher()
     router = Router()
 
-    await add_bot_log(bot_id, "system", "Инициализация и запуск polling...")
+    await add_bot_log(bot_id, "system", "Бот запущен.")
 
     @router.message(CommandStart())
     async def cmd_start(m: Message):
@@ -224,7 +224,7 @@ async def bot_worker_task(bot_id: str, token: str):
             return await m.reply("❌ Пользователь не найден.")
 
         cmd = m.text.split()[0].replace("/", "").lower()
-        await add_bot_log(bot_id, "system", f"Админ выполнил {cmd} для {target_user['id']}")
+        await add_bot_log(bot_id, "system", f"Админ: {cmd} для {target_user['id']}")
         threshold = config.get("settings", {}).get("autoBanThreshold", 0)
 
         if cmd == "warn":
@@ -235,23 +235,23 @@ async def bot_worker_task(bot_id: str, token: str):
             
             if threshold > 0 and target_user["warns"] >= threshold:
                 target_user["is_banned"] = True
-                try: await bot.send_message(target_user["id"], "🚫 <b>Авто-бан за варны.</b>")
+                try: await bot.send_message(target_user["id"], "🚫 <b>Авто-бан.</b>")
                 except: pass
-            await m.answer("✅ Готово")
+            await m.answer("✅ Варн выдан")
 
         elif cmd == "unwarn":
             target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
-            await m.answer("✅ Снято")
+            await m.answer("✅ Варн снят")
 
         elif cmd == "ban":
             target_user["is_banned"] = True
-            try: await bot.send_message(target_user["id"], "🚫 <b>Бан.</b>")
+            try: await bot.send_message(target_user["id"], "🚫 <b>Вы заблокированы.</b>")
             except: pass
-            await m.answer("✅ Бан")
+            await m.answer("✅ Пользователь забанен")
 
         elif cmd == "unban":
             target_user["is_banned"] = False
-            await m.answer("✅ Разбан")
+            await m.answer("✅ Разблокирован")
 
         await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"config": config})
 
@@ -262,6 +262,7 @@ async def bot_worker_task(bot_id: str, token: str):
         config = res[0]['config']
         admin_id = config.get("adminChatId")
 
+        # АДМИН ПИШЕТ
         if admin_id and str(m.chat.id) == str(admin_id):
             target_id = None
             if m.message_thread_id:
@@ -275,11 +276,12 @@ async def bot_worker_task(bot_id: str, token: str):
                 try:
                     await bot.copy_message(target_id, m.chat.id, m.message_id)
                     await update_bot_stats_db(bot_id, "outgoing")
-                    await add_bot_log(bot_id, "outgoing", f"Ответ юзеру {target_id}")
+                    await add_bot_log(bot_id, "outgoing", f"Ответ админа юзеру {target_id}")
                 except Exception as e:
-                    await add_bot_log(bot_id, "error", f"Ошибка отправки {target_id}: {e}")
+                    await add_bot_log(bot_id, "error", f"Ошибка отправки юзеру {target_id}: {e}")
             return
 
+        # ПОЛЬЗОВАТЕЛЬ ПИШЕТ
         user = next((u for u in config.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
         if not user or user.get("is_banned"): return
 
@@ -287,25 +289,38 @@ async def bot_worker_task(bot_id: str, token: str):
 
         if m.text:
             text_low = m.text.lower()
+            # Обработка кнопок
             for btn in config.get("buttons", []):
                 if btn.get("text") and btn["text"].lower() == text_low:
-                    await add_bot_log(bot_id, "info", f"Кнопка: {btn['text']}")
+                    await add_bot_log(bot_id, "info", f"Нажата кнопка: {btn['text']}")
+                    
                     if btn.get("type") == "request" and admin_id:
-                        txt = format_msg(btn.get("adminTemplate", "⚡ Обращение: {{button}}"), m, btn["text"])
-                        await bot.send_message(admin_id, txt, message_thread_id=user.get("thread_id"))
-                    await m.answer(btn.get("response", "Принято!"))
-                    await update_bot_stats_db(bot_id, "outgoing")
+                        # Используем кастомный шаблон из настроек кнопки
+                        template = btn.get("adminTemplate") or "📩 <b>Новое обращение!</b>\nКнопка: {{button}}\nОт: {{name}} (ID: {{id}})"
+                        txt = format_msg(template, m, btn["text"])
+                        try:
+                            await bot.send_message(admin_id, txt, message_thread_id=user.get("thread_id"))
+                        except: pass
+                    
+                    if btn.get("response"):
+                        await m.answer(btn.get("response"))
+                        await update_bot_stats_db(bot_id, "outgoing")
                     return
             
+            # Обработка триггеров
             for trig in config.get("triggers", []):
                 if trig.get("keyword") and trig["keyword"].lower() in text_low:
-                    await add_bot_log(bot_id, "info", f"Триггер: {trig['keyword']}")
+                    await add_bot_log(bot_id, "info", f"Сработал триггер: {trig['keyword']}")
                     await m.answer(trig.get("response", ""))
                     await update_bot_stats_db(bot_id, "outgoing")
                     return
 
+        # Просто пересылка админу
         if admin_id:
             try:
+                # Генерируем служебную плашку перед пересылкой, если это НЕ кнопка
+                info_header = f"👤 {m.from_user.full_name} (ID: <code>{m.from_user.id}</code>)\n\n"
+                await bot.send_message(admin_id, info_header, message_thread_id=user.get("thread_id"))
                 await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=user.get("thread_id"))
                 await update_bot_stats_db(bot_id, "incoming")
             except: pass
@@ -410,7 +425,7 @@ async def stop_bot(bot_id: str):
     if bot_id in active_tasks:
         active_tasks[bot_id].cancel(); del active_tasks[bot_id]
     if bot_id in active_bots:
-        await add_bot_log(bot_id, "system", "Бот остановлен.")
+        await add_bot_log(bot_id, "system", "Бот остановлен пользователем.")
         del active_bots[bot_id]
     return {"status": "ok"}
 
