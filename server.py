@@ -20,26 +20,16 @@ from aiogram.types import Message
 from aiogram.client.default import DefaultBotProperties
 import uvicorn
 
-# 1. ПРИНУДИТЕЛЬНАЯ НАСТРОЙКА ОКРУЖЕНИЯ
+# ПРИНУДИТЕЛЬНАЯ НАСТРОЙКА ОКРУЖЕНИЯ
 BASE_DIR = "/root/bot-builder/bot-builder"
 if os.path.exists(BASE_DIR):
     os.chdir(BASE_DIR)
 
-logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    stream=sys.stdout
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', stream=sys.stdout)
 logger = logging.getLogger("API-Server")
 
 def load_env_bulletproof():
-    """Загрузка .env с проверкой всех возможных аномалий"""
-    paths = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'),
-        os.path.join(BASE_DIR, '.env'),
-        '.env'
-    ]
-    found = False
+    paths = [os.path.join(BASE_DIR, '.env'), '.env', '../.env']
     for p in paths:
         if os.path.exists(p):
             logger.info(f"📂 Загрузка конфигурации из: {p}")
@@ -49,31 +39,22 @@ def load_env_bulletproof():
                         line = line.strip()
                         if line and '=' in line and not line.startswith('#'):
                             k, v = line.split('=', 1)
-                            key = k.strip()
                             val = v.strip().strip('"').strip("'")
-                            # Очистка на случай багов консоли
-                            if "root/" in val and key == "ADMIN_BOT_TOKEN":
+                            # Фикс склейки путей в консоли
+                            if "root/" in val and k.strip() == "ADMIN_BOT_TOKEN":
                                 val = val.split("root/")[0].strip()
-                            os.environ[key] = val
-                found = True
-                break
-            except Exception as e:
-                logger.error(f"❌ Ошибка парсинга {p}: {e}")
-    
-    if not found:
-        logger.warning("⚠️ Файл .env не найден! Используются переменные окружения системы.")
+                            os.environ[k.strip()] = val
+                return True
+            except Exception as e: logger.error(f"Ошибка чтении {p}: {e}")
+    return False
 
 load_env_bulletproof()
 
-# Проверка критических переменных
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
-if not os.getenv("ADMIN_BOT_TOKEN"):
-    logger.error("🚨 КРИТИЧЕСКАЯ ОШИБКА: ADMIN_BOT_TOKEN не найден в .env!")
-
-# База данных и глобальные состояния
 DB_FILE = "database.json"
 db_content = {"users": [], "bots": [], "issued_keys": []}
 active_tasks: Dict[str, asyncio.Task] = {}
+active_bots: Dict[str, Bot] = {}
 
 def save_db():
     try:
@@ -95,14 +76,14 @@ def load_db():
 def check_license(user_id: str) -> bool:
     user = next((u for u in db_content.get("users", []) if str(u.get("id")) == str(user_id)), None)
     if not user: return False
-    expires = user.get("licenseExpiresAt", 0)
-    return float(expires) > (time.time() * 1000)
+    return float(user.get("licenseExpiresAt", 0)) > (time.time() * 1000)
 
 async def bot_worker(bot_cfg: dict):
     bot_id = bot_cfg["id"]
     try:
         token = bot_cfg["token"].strip()
         bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        active_bots[bot_id] = bot
         dp = Dispatcher()
         
         @dp.message(CommandStart())
@@ -118,33 +99,28 @@ async def bot_worker(bot_cfg: dict):
         async def _handle(m: Message):
             admin_id = bot_cfg.get("adminChatId")
             if not admin_id or not check_license(bot_cfg["ownerId"]): return
-            
             if str(m.from_user.id) == str(admin_id) and m.reply_to_message:
                 match = re.search(r"ID: (\d+)", m.reply_to_message.text or "")
                 if match:
                     try:
-                        await bot.send_message(int(match.group(1)), m.text or "[Медиа]")
+                        await bot.send_message(int(match.group(1)), m.text or "[Media]")
                         await m.reply("✅ Отправлено")
                     except: pass
                 return
-
             if str(m.from_user.id) != str(admin_id):
                 info = f"📩 <b>От {m.from_user.full_name}</b>\nID: {m.from_user.id}\n\n"
                 try:
                     if m.text: await bot.send_message(admin_id, info + m.text)
-                    else:
-                        await bot.send_message(admin_id, info + "[Медиа]")
-                        await m.forward(admin_id)
+                    else: await bot.send_message(admin_id, info + "[Медиа]"); await m.forward(admin_id)
                 except: pass
 
         await dp.start_polling(bot)
-    except Exception as e:
-        logger.error(f"Бот {bot_id} упал: {e}")
+    except Exception as e: logger.error(f"Бот {bot_id} упал: {e}")
+    finally: active_bots.pop(bot_id, None)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_db()
-    logger.info(f"🚀 Сервер запущен. Пользователей в БД: {len(db_content['users'])}")
     for b in db_content["bots"]:
         if b.get("status") == "RUNNING" and check_license(b["ownerId"]):
             active_tasks[b["id"]] = asyncio.create_task(bot_worker(b))
@@ -158,8 +134,9 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
-class KeyGenRequest(BaseModel):
-    months: int
+class BroadcastRequest(BaseModel):
+    botIds: List[str]
+    message: str
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
@@ -172,8 +149,7 @@ async def login(req: LoginRequest):
 
 @app.post("/api/auth/register")
 async def register(user_data: dict):
-    db_content["users"].append(user_data)
-    save_db()
+    db_content["users"].append(user_data); save_db()
     return user_data
 
 @app.get("/api/bots/{user_id}")
@@ -185,8 +161,13 @@ async def save_bot_api(bot_data: dict):
     idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_data["id"]), -1)
     if idx >= 0: db_content["bots"][idx] = bot_data
     else: db_content["bots"].append(bot_data)
-    save_db()
-    return {"status": "ok"}
+    save_db(); return {"status": "ok"}
+
+@app.delete("/api/bots/delete/{bot_id}")
+async def delete_bot(bot_id: str):
+    if bot_id in active_tasks: active_tasks[bot_id].cancel()
+    db_content["bots"] = [b for b in db_content["bots"] if b["id"] != bot_id]
+    save_db(); return {"status": "ok"}
 
 @app.post("/api/bots/start/{bot_id}")
 async def start_bot(bot_id: str):
@@ -194,18 +175,27 @@ async def start_bot(bot_id: str):
     if not bot_cfg or not check_license(bot_cfg["ownerId"]): raise HTTPException(403)
     if bot_id not in active_tasks or active_tasks[bot_id].done():
         active_tasks[bot_id] = asyncio.create_task(bot_worker(bot_cfg))
-        bot_cfg["status"] = "RUNNING"
-        save_db()
+        bot_cfg["status"] = "RUNNING"; save_db()
     return {"status": "ok"}
 
 @app.post("/api/bots/stop/{bot_id}")
 async def stop_bot(bot_id: str):
-    if bot_id in active_tasks:
-        active_tasks[bot_id].cancel()
+    if bot_id in active_tasks: active_tasks[bot_id].cancel()
     for b in db_content["bots"]:
         if b["id"] == bot_id: b["status"] = "IDLE"
-    save_db()
-    return {"status": "ok"}
+    save_db(); return {"status": "ok"}
+
+@app.post("/api/broadcast")
+async def broadcast(req: BroadcastRequest):
+    success, failed = 0, 0
+    for bid in req.botIds:
+        bot = active_bots.get(bid)
+        bot_cfg = next((b for b in db_content["bots"] if b["id"] == bid), None)
+        if bot and bot_cfg:
+            for uid in bot_cfg.get("subscribers", []):
+                try: await bot.send_message(uid, req.message); success += 1
+                except: failed += 1
+    return {"success": success, "failed": failed}
 
 @app.post("/api/license/activate")
 async def activate_key(req: dict):
@@ -214,17 +204,15 @@ async def activate_key(req: dict):
     if not u or not k: raise HTTPException(400)
     now = int(time.time() * 1000)
     u["licenseExpiresAt"] = max(u.get("licenseExpiresAt", now), now) + (k["months"] * 30 * 24 * 3600 * 1000)
-    k["used"] = True
-    save_db()
+    k["used"] = True; save_db()
     return {"status": "ok", "newExpiry": u["licenseExpiresAt"]}
 
 @app.post("/api/admin/generate-key")
-async def admin_gen_key(req: KeyGenRequest, x_admin_token: str = Header(None)):
+async def admin_gen_key(req: dict, x_admin_token: str = Header(None)):
     if x_admin_token != ADMIN_SECRET: raise HTTPException(403)
-    key = f"BOT-{req.months}-{secrets.token_hex(3).upper()}"
-    db_content["issued_keys"].append({"key": key, "months": req.months, "used": False})
-    save_db()
-    return {"key": key}
+    key = f"BOT-{req['months']}-{secrets.token_hex(3).upper()}"
+    db_content["issued_keys"].append({"key": key, "months": req['months'], "used": False})
+    save_db(); return {"key": key}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
