@@ -97,7 +97,6 @@ async def bot_worker(bot_cfg: dict):
     bot_id = bot_cfg["id"]
     owner_id = bot_cfg["ownerId"]
     
-    # ПРОВЕРКА ЛИЦЕНЗИИ ПЕРЕД ЗАПУСКОМ
     if not check_license(owner_id):
         add_log(bot_id, "error", "Лицензия истекла. Бот не может быть запущен.", "LICENSE_EXPIRED")
         return
@@ -113,34 +112,24 @@ async def bot_worker(bot_cfg: dict):
             if not check_license(owner_id):
                 await m.answer("⚠️ Работа бота приостановлена владельцем (истекла лицензия).")
                 return
-
-            # Логика подписки... (сокращено для ясности)
             await m.answer(bot_cfg.get("welcomeMessage", "Привет!"))
 
         @dp.message()
         async def _handle_all(m: Message):
-            # Проверка лицензии на каждое сообщение (Runtime Check)
             if not check_license(owner_id): return
-            
             user_id = m.from_user.id
             admin_id = bot_cfg.get("adminChatId")
-            
-            # Обработка Feedback (Livegram Mode)
             if admin_id and str(user_id) == str(admin_id) and m.reply_to_message:
                 reply_text = m.reply_to_message.text or m.reply_to_message.caption or ""
                 match = re.search(r"ID: (\d+)", reply_text)
                 if match:
                     target_user_id = int(match.group(1))
-                    try:
-                        await bot.send_message(target_user_id, m.text or "Медиа")
-                        return await m.reply("✅ Отправлено")
+                    try: await bot.send_message(target_user_id, m.text or "Медиа"); return await m.reply("✅ Отправлено")
                     except: pass
-
-            # Пересылка админу
             if admin_id and str(user_id) != str(admin_id):
                 await bot.send_message(admin_id, f"📩 <b>Сообщение от {m.from_user.full_name}</b>\nID: {user_id}\n\n{m.text or '[Медиа]'}")
 
-        add_log(bot_id, "system", "Инстанс запущен и готов к работе.")
+        add_log(bot_id, "system", "Инстанс запущен.")
         await dp.start_polling(bot)
     except Exception as e:
         add_log(bot_id, "error", f"Ошибка: {str(e)}")
@@ -150,12 +139,11 @@ async def bot_worker(bot_cfg: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_db()
-    # Авто-рестарт только живых лицензий
     for b in db_content["bots"]:
         if b.get("status") == "RUNNING" and check_license(b["ownerId"]):
             active_tasks[b["id"]] = asyncio.create_task(bot_worker(b))
         elif b.get("status") == "RUNNING":
-            b["status"] = "IDLE" # Лицензия сдохла пока сервер лежал
+            b["status"] = "IDLE"
     save_db()
     yield
 
@@ -165,7 +153,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
 
-# --- ADMIN API (Для License Bot) ---
 @app.post("/api/admin/generate-key")
 async def admin_gen_key(req: KeyGenRequest, x_admin_token: str = Header(None)):
     if x_admin_token != ADMIN_SECRET: raise HTTPException(403, "Invalid Admin Token")
@@ -174,39 +161,36 @@ async def admin_gen_key(req: KeyGenRequest, x_admin_token: str = Header(None)):
     save_db()
     return {"key": new_key}
 
-# --- USER API ---
 @app.post("/api/license/activate")
 async def activate_key(req: KeyActivationRequest):
     user = next((u for u in db_content["users"] if u["id"] == req.userId), None)
     if not user: raise HTTPException(404, "User not found")
-    
     key_entry = next((k for k in db_content["issued_keys"] if k["key"] == req.key and not k["used"]), None)
-    if not key_entry:
-        raise HTTPException(400, "Неверный или уже использованный ключ")
-    
+    if not key_entry: raise HTTPException(400, "Неверный или использованный ключ")
     months = key_entry["months"]
     now = int(time.time() * 1000)
     current_expiry = user.get("licenseExpiresAt", now)
     new_expiry = max(current_expiry, now) + (months * 30 * 24 * 3600 * 1000)
-    
     user["licenseExpiresAt"] = new_expiry
     key_entry["used"] = True
     key_entry["used_by"] = user["email"]
-    key_entry["used_at"] = now
-    
     save_db()
     return {"status": "ok", "newExpiry": new_expiry}
 
+@app.post("/api/auth/login")
+async def login(req: LoginRequest):
+    user = next((u for u in db_content["users"] if u["email"] == req.email and u["password"] == req.password), None)
+    if not user: raise HTTPException(401)
+    return user
+
 @app.get("/api/bots/{user_id}")
-async def get_bots(user_id: str):
-    return [b for b in db_content["bots"] if b["ownerId"] == user_id]
+async def get_bots(user_id: str): return [b for b in db_content["bots"] if b["ownerId"] == user_id]
 
 @app.post("/api/bots/start/{bot_id}")
 async def start_bot(bot_id: str):
     bot_cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
     if not bot_cfg: raise HTTPException(404)
-    if not check_license(bot_cfg["ownerId"]): raise HTTPException(403, "Лицензия истекла")
-    
+    if not check_license(bot_cfg["ownerId"]): raise HTTPException(403)
     if bot_id in active_tasks: return {"status": "ok"}
     active_tasks[bot_id] = asyncio.create_task(bot_worker(bot_cfg))
     bot_cfg["status"] = "RUNNING"
@@ -215,9 +199,7 @@ async def start_bot(bot_id: str):
 
 @app.post("/api/bots/stop/{bot_id}")
 async def stop_bot(bot_id: str):
-    if bot_id in active_tasks:
-        active_tasks[bot_id].cancel()
-        del active_tasks[bot_id]
+    if bot_id in active_tasks: active_tasks[bot_id].cancel(); del active_tasks[bot_id]
     for b in db_content["bots"]:
         if b["id"] == bot_id: b["status"] = "IDLE"
     save_db()
@@ -226,12 +208,15 @@ async def stop_bot(bot_id: str):
 @app.post("/api/bots/save")
 async def save_bot_api(bot_data: dict):
     idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_data["id"]), -1)
-    if idx >= 0:
-        bot_data["logs"] = db_content["bots"][idx].get("logs", [])
-        bot_data["subscribers"] = db_content["bots"][idx].get("subscribers", [])
-        db_content["bots"][idx] = bot_data
-    else:
-        db_content["bots"].append(bot_data)
+    if idx >= 0: db_content["bots"][idx] = bot_data
+    else: db_content["bots"].append(bot_data)
+    save_db()
+    return {"status": "ok"}
+
+@app.delete("/api/bots/delete/{bot_id}")
+async def delete_bot(bot_id: str):
+    await stop_bot(bot_id)
+    db_content["bots"] = [b for b in db_content["bots"] if b["id"] != bot_id]
     save_db()
     return {"status": "ok"}
 
