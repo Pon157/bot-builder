@@ -54,8 +54,9 @@ export interface BotConfig {
   welcomeMessage: string;
   logs: MessageLog[];
   connectedUsers: TelegramUser[];
-  triggers: any[];
-  buttons: any[];
+  subscribers: number[]; // Список ID всех пользователей для рассылки
+  triggers: { keyword: string; response: string }[];
+  buttons: { text: string; response: string }[];
   stats: BotStats;
   settings: {
     useTopics: boolean;
@@ -73,7 +74,7 @@ export interface User {
   username: string;
   email: string;
   password?: string;
-  licenseExpiresAt: number; // Timestamp
+  licenseExpiresAt: number;
   trialUsed: boolean;
   activeKey?: string;
   balance: number;
