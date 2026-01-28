@@ -32,18 +32,14 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     e.preventDefault();
     setLoading(true);
     setError('');
-    console.log('Попытка запроса кода на email:', email);
     try {
-      const success = await api.requestVerification(email);
-      if (success) {
-        console.log('Код успешно запрошен');
+      const result = await api.requestVerification(email);
+      if (result === true) {
         setMode('verify');
       } else {
-        console.error('Ошибка: сервер вернул неуспешный статус');
-        setError('Ошибка отправки кода на почту');
+        setError(typeof result === 'string' ? result : 'Ошибка отправки кода на почту');
       }
     } catch (err) {
-      console.error('Сетевая ошибка при запросе кода:', err);
       setError('Нет связи с сервером');
     }
     setLoading(false);
@@ -52,17 +48,14 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const handleVerifyAndRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    console.log('Попытка завершения регистрации:', { email, code, username });
     try {
         const user = await api.verifyAndRegister({ email, code, password, username });
         if (user) {
-            console.log('Регистрация успешна');
             onLogin(user);
         } else {
             setError('Неверный код или ошибка регистрации');
         }
     } catch (err) {
-        console.error('Ошибка регистрации:', err);
         setError('Ошибка сервера');
     }
     setLoading(false);
@@ -84,10 +77,11 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setError('');
     try {
-        const success = await api.forgotPassword(email);
-        if (success) setMode('reset');
-        else setError('Пользователь с таким Email не найден');
+        const result = await api.forgotPassword(email);
+        if (result === true) setMode('reset');
+        else setError(typeof result === 'string' ? result : 'Пользователь не найден');
     } catch (err) {
         setError('Ошибка сервера');
     }
@@ -110,7 +104,7 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#050505] px-4 font-sans">
+    <div className="min-h-screen flex items-center justify-center bg-[#050505] px-4 font-sans text-zinc-300">
       <div className="w-full max-w-md space-y-6 bg-[#111] p-10 rounded-[2.5rem] border border-zinc-800 shadow-2xl relative overflow-hidden">
         {/* Glow effect */}
         <div className="absolute -top-24 -right-24 w-48 h-48 bg-blue-600/10 blur-[100px] rounded-full"></div>
@@ -187,7 +181,7 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
 
           {mode === 'verify' && (
             <form className="space-y-4 text-center" onSubmit={handleVerifyAndRegister}>
-              <p className="text-zinc-500 text-xs mb-4">Мы отправили код на <b>{email}</b>. Введите его ниже для завершения.</p>
+              <p className="text-zinc-500 text-xs mb-4">Мы отправили код на <b>{email.toLowerCase()}</b>. Введите его ниже.</p>
               <input 
                 type="text" 
                 required 
@@ -206,7 +200,7 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
 
           {mode === 'forgot' && (
             <form className="space-y-4" onSubmit={handleForgotPassword}>
-              <p className="text-zinc-500 text-xs text-center mb-4">Введите ваш Email для получения кода сброса.</p>
+              <p className="text-zinc-500 text-xs text-center mb-4">Введите Email для восстановления доступа.</p>
               <div className="relative">
                 <Mail className="absolute left-4 top-4 w-4 h-4 text-zinc-600" />
                 <input type="email" required className="w-full bg-black border border-zinc-800 rounded-2xl p-4 pl-12 text-sm text-white focus:ring-1 focus:ring-blue-500 outline-none transition-all" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} />
