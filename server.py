@@ -140,17 +140,14 @@ async def bot_worker_task(bot_id: str, token: str):
         msg = format_msg(config.get("welcomeMessage", "Привет!"), m)
         await m.answer(msg, reply_markup=kb)
 
-    # Модерация командами (в топике)
     @router.message(Command("warn", "unwarn", "ban", "unban"))
     async def admin_moderation(m: Message):
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
         if not config or str(m.chat.id) != str(config.get("adminChatId")): return
 
         target_user = None
-        # Поиск юзера по thread_id
         if m.message_thread_id:
             target_user = next((u for u in config.get("connectedUsers", []) if u.get("thread_id") == m.message_thread_id), None)
-        
         if not target_user and m.reply_to_message:
             match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
             if match:
@@ -158,7 +155,7 @@ async def bot_worker_task(bot_id: str, token: str):
                 target_user = next((u for u in config.get("connectedUsers", []) if u["id"] == uid), None)
 
         if not target_user:
-            return await m.reply("❌ Пользователь не найден в этом контексте.")
+            return await m.reply("❌ Пользователь не найден.")
 
         cmd = m.text.split()[0].replace("/", "").lower()
         threshold = config.get("settings", {}).get("autoBanThreshold", 0)
@@ -174,7 +171,7 @@ async def bot_worker_task(bot_id: str, token: str):
                 target_user["is_banned"] = True
                 try: await bot.send_message(target_user["id"], "🚫 <b>Вы были автоматически заблокированы (порог варнов).</b>")
                 except: pass
-                await m.answer(f"🔨 Пользователь {target_user['id']} автоматически забанен.")
+                await m.answer(f"🔨 Юзер {target_user['id']} автоматически забанен.")
             else:
                 await m.answer(f"✅ Варн выдан. Всего: {target_user['warns']}")
 
@@ -188,13 +185,16 @@ async def bot_worker_task(bot_id: str, token: str):
             target_user["is_banned"] = True
             try: await bot.send_message(target_user["id"], "🚫 <b>Вы были заблокированы администратором.</b>")
             except: pass
-            await m.answer("✅ Пользователь заблокирован.")
+            await m.answer("✅ Юзер забанен.")
 
         elif cmd == "unban":
             target_user["is_banned"] = False
+            # При разбане через ТГ тоже сбрасываем варны, чтобы не было моментального ребана
+            if threshold > 0 and target_user.get("warns", 0) >= threshold:
+                target_user["warns"] = threshold - 1
             try: await bot.send_message(target_user["id"], "✅ <b>Вы были разблокированы администратором!</b>")
             except: pass
-            await m.answer("✅ Пользователь разблокирован.")
+            await m.answer("✅ Юзер разблокирован.")
 
         save_db()
 
@@ -249,10 +249,9 @@ async def bot_worker_task(bot_id: str, token: str):
                     update_bot_stats(bot_id, "outgoing")
                     return
 
-        # Feedback пересылка
+        # Feedback
         if admin_id:
             tid = user.get("thread_id")
-            
             async def send_with_recovery(target_tid):
                 try:
                     if not target_tid:
@@ -275,7 +274,7 @@ async def bot_worker_task(bot_id: str, token: str):
                     await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=user["thread_id"])
                     update_bot_stats(bot_id, "incoming")
                 except Exception as e:
-                    await bot.send_message(admin_id, f"📩 Сообщение от ID: {m.from_user.id} (ошибка топика)")
+                    await bot.send_message(admin_id, f"📩 Сообщение от ID: {m.from_user.id}")
                     await bot.copy_message(admin_id, m.chat.id, m.message_id)
 
     dp.include_router(router)
@@ -309,7 +308,8 @@ async def register(req: dict):
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
     u = next((u for u in db_content["users"] if u["email"] == req.email and u["password"] == req.password), None)
-    if not u: raise HTTPException(401); return u
+    if not u: raise HTTPException(401)
+    return u
 
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
@@ -322,8 +322,6 @@ async def save_bot(bot_data: dict):
     idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_data["id"]), -1)
     if idx >= 0:
         old = db_content["bots"][idx]
-        
-        # ЛОГИКА МОДЕРАЦИИ ЧЕРЕЗ САЙТ (Уведомления пользователям)
         threshold = bot_data.get("settings", {}).get("autoBanThreshold", 0)
         bot_instance = active_bots.get(bot_data["id"])
         
@@ -338,7 +336,6 @@ async def save_bot(bot_data: dict):
                             if threshold > 0: txt += f" / {threshold}"
                             asyncio.create_task(bot_instance.send_message(new_u["id"], txt))
                         except: pass
-                    # Понизились варны
                     elif new_u.get("warns", 0) < old_u.get("warns", 0):
                         try: asyncio.create_task(bot_instance.send_message(new_u["id"], f"ℹ️ <b>С вас снято предупреждение.</b>\nОсталось: {new_u['warns']}"))
                         except: pass
@@ -351,21 +348,22 @@ async def save_bot(bot_data: dict):
                         try: asyncio.create_task(bot_instance.send_message(new_u["id"], "✅ <b>Вы были разблокированы администратором!</b>"))
                         except: pass
 
-                # Проверка порога автобана при сохранении
-                if threshold > 0 and new_u.get("warns", 0) >= threshold and not new_u.get("is_banned"):
-                    new_u["is_banned"] = True
-                    try: asyncio.create_task(bot_instance.send_message(new_u["id"], "🚫 <b>Автобан: превышен лимит предупреждений.</b>"))
-                    except: pass
-
         db_content["bots"][idx] = bot_data
     else: db_content["bots"].append(bot_data)
+    save_db(); return {"status": "ok"}
+
+@app.delete("/api/bots/delete/{bot_id}")
+async def delete_bot(bot_id: str):
+    if bot_id in active_tasks:
+        active_tasks[bot_id].cancel(); del active_tasks[bot_id]
+    db_content["bots"] = [b for b in db_content["bots"] if b["id"] != bot_id]
     save_db(); return {"status": "ok"}
 
 @app.post("/api/bots/start/{bot_id}")
 async def start_bot(bot_id: str):
     cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
     if not cfg: raise HTTPException(404)
-    if not is_bot_license_active(cfg): raise HTTPException(403, detail="License expired for this bot.")
+    if not is_bot_license_active(cfg): raise HTTPException(403)
     if bot_id in active_tasks and not active_tasks[bot_id].done(): return {"status": "ok"}
     active_tasks[bot_id] = asyncio.create_task(bot_worker_task(bot_id, cfg["token"]))
     cfg["status"] = "RUNNING"; save_db(); return {"status": "ok"}
@@ -383,8 +381,7 @@ async def stop_bot(bot_id: str):
 async def activate(req: ActivateRequest):
     bot_cfg = next((b for b in db_content["bots"] if b["id"] == req.botId), None)
     key_obj = next((k for k in db_content["issued_keys"] if k["key"] == req.key and not k["used"]), None)
-    if not bot_cfg or not key_obj: raise HTTPException(400, detail="Invalid bot or key.")
-    
+    if not bot_cfg or not key_obj: raise HTTPException(400)
     now = int(time.time() * 1000)
     exp = max(bot_cfg.get("licenseExpiresAt", now), now)
     bot_cfg["licenseExpiresAt"] = exp + (key_obj["months"] * 30 * 24 * 3600 * 1000)
