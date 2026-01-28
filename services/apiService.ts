@@ -53,18 +53,22 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId, key })
       });
-      return response.ok ? await response.json() : null;
-    } catch (e) { return null; }
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || "Activation failed");
+      }
+      return await response.json();
+    } catch (e: any) { 
+      alert(e.message);
+      return null; 
+    }
   },
 
   getBots: async (userId: string): Promise<BotConfig[]> => {
     try {
       const response = await fetchWithTimeout(`${API_BASE}/bots/${userId}`);
       return response.ok ? await response.json() : [];
-    } catch (e) { 
-      console.warn("API Error: Server is likely unreachable.");
-      return []; 
-    }
+    } catch (e) { return []; }
   },
 
   saveBot: async (userId: string, bot: BotConfig): Promise<void> => {
@@ -90,8 +94,8 @@ export const api = {
       const res = await fetchWithTimeout(`${API_BASE}/bots/start/${bot.id}`, { method: 'POST' });
       if (res.ok) return true;
       const errorData = await res.json();
-      return errorData.detail || "Неизвестная ошибка";
-    } catch (e) { return "Ошибка сети"; }
+      return errorData.detail || "Error";
+    } catch (e) { return "Network Error"; }
   },
 
   stopBotOnServer: async (botId: string): Promise<boolean> => {
