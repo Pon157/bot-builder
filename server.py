@@ -42,10 +42,6 @@ class KeyActivationRequest(BaseModel):
 class KeyGenRequest(BaseModel):
     months: int
 
-class BroadcastRequest(BaseModel):
-    botIds: List[str]
-    message: str
-
 def save_db():
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
@@ -62,15 +58,20 @@ def load_db():
                 db_content["bots"] = loaded.get("bots", [])
                 db_content["issued_keys"] = loaded.get("issued_keys", [])
         except Exception as e: 
+            logger.error(f"Load DB Error: {e}")
             db_content = {"users": [], "bots": [], "issued_keys": []}
 
 def check_license(user_id: str) -> bool:
-    """Безопасная проверка лицензии. Если поля нет - лицензия считается истекшей (0)."""
-    user = next((u for u in db_content["users"] if u["id"] == user_id), None)
-    if not user: return False
-    # Используем .get() чтобы не было KeyError
+    """Безопасная проверка лицензии. Теперь никаких KeyError."""
+    user = next((u for u in db_content["users"] if str(u.get("id")) == str(user_id)), None)
+    if not user: 
+        return False
+    # Безопасное получение значения
     expires = user.get("licenseExpiresAt", 0)
-    return expires > (time.time() * 1000)
+    try:
+        return float(expires) > (time.time() * 1000)
+    except:
+        return False
 
 def add_log(bot_id: str, log_type: str, text: str, code: str = None):
     for b in db_content["bots"]:
@@ -120,7 +121,8 @@ async def bot_worker(bot_cfg: dict):
                     try: await bot.send_message(target_user_id, m.text or "Медиа"); return await m.reply("✅ Отправлено")
                     except: pass
             if admin_id and str(user_id) != str(admin_id):
-                await bot.send_message(admin_id, f"📩 <b>Сообщение от {m.from_user.full_name}</b>\nID: {user_id}\n\n{m.text or '[Медиа]'}")
+                try: await bot.send_message(admin_id, f"📩 <b>Сообщение от {m.from_user.full_name}</b>\nID: {user_id}\n\n{m.text or '[Медиа]'}")
+                except: pass
 
         add_log(bot_id, "system", "Инстанс запущен.")
         await dp.start_polling(bot)
@@ -132,11 +134,13 @@ async def bot_worker(bot_cfg: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_db()
-    logger.info("Сервер запускается, проверяем активных ботов...")
-    for b in db_content["bots"]:
+    logger.info("Сервер запускается, восстановление активных ботов...")
+    for b in db_content.get("bots", []):
         try:
+            # Используем .get() везде
             if b.get("status") == "RUNNING":
-                if check_license(b["ownerId"]):
+                owner_id = b.get("ownerId")
+                if owner_id and check_license(owner_id):
                     active_tasks[b["id"]] = asyncio.create_task(bot_worker(b))
                 else:
                     b["status"] = "IDLE"
@@ -188,7 +192,7 @@ async def get_bots(user_id: str): return [b for b in db_content["bots"] if b["ow
 async def start_bot(bot_id: str):
     bot_cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
     if not bot_cfg: raise HTTPException(404)
-    if not check_license(bot_cfg["ownerId"]): raise HTTPException(403)
+    if not check_license(bot_cfg["ownerId"]): raise HTTPException(403, "Лицензия истекла")
     if bot_id in active_tasks: return {"status": "ok"}
     active_tasks[bot_id] = asyncio.create_task(bot_worker(bot_cfg))
     bot_cfg["status"] = "RUNNING"
@@ -197,7 +201,9 @@ async def start_bot(bot_id: str):
 
 @app.post("/api/bots/stop/{bot_id}")
 async def stop_bot(bot_id: str):
-    if bot_id in active_tasks: active_tasks[bot_id].cancel(); del active_tasks[bot_id]
+    if bot_id in active_tasks: 
+        active_tasks[bot_id].cancel()
+        del active_tasks[bot_id]
     for b in db_content["bots"]:
         if b["id"] == bot_id: b["status"] = "IDLE"
     save_db()
