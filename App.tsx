@@ -49,12 +49,13 @@ const App: React.FC = () => {
               stats: serverBot.stats,
               usersCount: serverBot.usersCount,
               connectedUsers: serverBot.connectedUsers,
-              licenseExpiresAt: serverBot.licenseExpiresAt
+              licenseExpiresAt: serverBot.licenseExpiresAt,
+              logs: serverBot.logs || [] // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Переносим логи
             };
           });
         });
       } catch (e) {}
-    }, 15000);
+    }, 10000); // Сокращаем до 10 сек для лучшего UX в консоли
     return () => clearInterval(interval);
   }, [user]);
 
@@ -112,7 +113,6 @@ const App: React.FC = () => {
 
   return (
     <div className="flex h-screen bg-[#0a0a0a] text-zinc-300 overflow-hidden font-sans relative">
-      {/* Mobile Sidebar Overlay */}
       {isSidebarOpen && (
         <div 
           className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden"
@@ -133,7 +133,6 @@ const App: React.FC = () => {
       />
       
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
-        {/* Mobile Header */}
         <header className="md:hidden flex items-center justify-between p-4 bg-[#121212] border-b border-zinc-800 shrink-0">
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 bg-blue-600 rounded flex items-center justify-center font-bold text-white text-[10px]">BE</div>
