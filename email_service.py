@@ -6,7 +6,7 @@ from email.mime.multipart import MIMEMultipart
 import logging
 import sys
 
-# Настраиваем логирование так, чтобы оно точно попадало в stdout (логи PM2)
+# Настраиваем логирование
 logger = logging.getLogger("EmailService")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
@@ -14,35 +14,35 @@ if not logger.handlers:
     handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     logger.addHandler(handler)
 
-# Настройки
-GMAIL_USER = os.getenv('GMAIL_EMAIL')
-GMAIL_PASS = os.getenv('GMAIL_PASSWORD')
-SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
-
-raw_port = os.getenv('SMTP_PORT', '587')
-try:
-    SMTP_PORT = int(raw_port)
-except (ValueError, TypeError):
-    SMTP_PORT = 587
-
 class EmailService:
     @staticmethod
     def send_email(subject: str, recipient: str, html_content: str):
+        # Считываем переменные прямо здесь, чтобы они подхватились после загрузки .env
+        gmail_user = os.getenv('GMAIL_EMAIL')
+        gmail_pass = os.getenv('GMAIL_PASSWORD')
+        smtp_server = os.getenv('SMTP_SERVER')
+        
+        raw_port = os.getenv('SMTP_PORT')
+        try:
+            smtp_port = int(raw_port)
+        except (ValueError, TypeError):
+            smtp_port = 587
+
         logger.info(f"📧 Попытка отправки письма на {recipient} с темой '{subject}'...")
         
-        if not GMAIL_USER or not GMAIL_PASS:
+        if not gmail_user or not gmail_pass:
             logger.error("❌ Ошибка: Данные почты (GMAIL_EMAIL/GMAIL_PASSWORD) не найдены в окружении!")
             return False
         try:
             msg = MIMEMultipart()
-            msg['From'] = f"BotEngine Pro <{GMAIL_USER}>"
+            msg['From'] = f"BotEngine Pro <{gmail_user}>"
             msg['To'] = recipient
             msg['Subject'] = subject
             msg.attach(MIMEText(html_content, 'html'))
 
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
+            with smtplib.SMTP(smtp_server, smtp_port, timeout=10) as server:
                 server.starttls()
-                server.login(GMAIL_USER, GMAIL_PASS)
+                server.login(gmail_user, gmail_pass)
                 server.send_message(msg)
             
             logger.info(f"✅ Письмо успешно отправлено на {recipient}")
