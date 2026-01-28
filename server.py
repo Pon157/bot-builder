@@ -8,15 +8,17 @@ import re
 import uuid
 import secrets
 import sys
+from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 import uvicorn
@@ -27,7 +29,7 @@ if os.path.exists(BASE_DIR):
     os.chdir(BASE_DIR)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("API-Server")
+logger = logging.getLogger("BotEngine")
 
 def load_env():
     path = os.path.join(BASE_DIR, '.env')
@@ -38,9 +40,6 @@ def load_env():
                 if line and '=' in line and not line.startswith('#'):
                     k, v = line.split('=', 1)
                     val = v.strip().strip('"').strip("'")
-                    # Очистка токена от мусора путей (если прилетел при копировании)
-                    if k.strip() == "ADMIN_BOT_TOKEN" and "root/" in val:
-                        val = val.split("root/")[0].strip()
                     os.environ[k.strip()] = val
 
 load_env()
@@ -52,12 +51,12 @@ db_content = {"users": [], "bots": [], "issued_keys": []}
 active_tasks: Dict[str, asyncio.Task] = {}
 active_bots: Dict[str, Bot] = {}
 
-# --- Работа с БД ---
+# --- DB Core ---
 def save_db():
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(db_content, f, ensure_ascii=False, indent=2)
-    except Exception as e: logger.error(f"DB Save Error: {e}")
+    except Exception as e: logger.error(f"Save DB Error: {e}")
 
 def load_db():
     global db_content
@@ -68,120 +67,184 @@ def load_db():
                 db_content["users"] = loaded.get("users", [])
                 db_content["bots"] = loaded.get("bots", [])
                 db_content["issued_keys"] = loaded.get("issued_keys", [])
-        except: pass
+                logger.info(f"Database loaded: {len(db_content['users'])} users, {len(db_content['bots'])} bots")
+        except Exception as e: 
+            logger.error(f"Load DB Error: {e}")
+            db_content = {"users": [], "bots": [], "issued_keys": []}
+
+def add_bot_log(bot_id: str, log_type: str, text: str, code: str = None):
+    bot = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
+    if not bot: return
+    log_entry = {"id": str(time.time()), "timestamp": int(time.time() * 1000), "type": log_type, "text": text, "code": code}
+    bot.setdefault("logs", []).insert(0, log_entry)
+    bot["logs"] = bot["logs"][:100]
+    save_db()
+
+def update_bot_stats(bot_id: str, stat_type: str):
+    bot = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
+    if not bot: return
+    if "stats" not in bot or not bot["stats"]: 
+        bot["stats"] = {"totalMessages": 0, "incomingToday": 0, "outgoingToday": 0, "bannedCount": 0, "history": []}
+    bot["stats"]["totalMessages"] += 1
+    if stat_type == "incoming": bot["stats"]["incomingToday"] += 1
+    else: bot["stats"]["outgoingToday"] += 1
+    save_db()
 
 def check_license(owner_id: str) -> bool:
     user = next((u for u in db_content["users"] if str(u["id"]) == str(owner_id)), None)
     if not user: return False
     return float(user.get("licenseExpiresAt", 0)) > (time.time() * 1000)
 
-# --- Логика Бот-Воркера (Конструктор) ---
-async def bot_worker(bot_cfg: dict):
-    bot_id = bot_cfg["id"]
-    try:
-        token = bot_cfg["token"].strip()
-        bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-        active_bots[bot_id] = bot
-        dp = Dispatcher()
+# --- Bot Engine Logic ---
+def get_keyboard(config: dict):
+    buttons = config.get("buttons", [])
+    if not buttons: return None
+    kb_buttons = []
+    row = []
+    for btn in buttons:
+        if btn.get("text"):
+            row.append(KeyboardButton(text=btn["text"]))
+            if len(row) == 2:
+                kb_buttons.append(row); row = []
+    if row: kb_buttons.append(row)
+    return ReplyKeyboardMarkup(keyboard=kb_buttons, resize_keyboard=True)
 
-        def get_keyboard():
-            btns = bot_cfg.get("buttons", [])
-            if not btns: return None
-            # Собираем клавиатуру по 2 кнопки в ряд
-            rows = []
-            current_row = []
-            for b in btns:
-                if b.get("text"):
-                    current_row.append(KeyboardButton(text=b["text"]))
-                    if len(current_row) == 2:
-                        rows.append(current_row)
-                        current_row = []
-            if current_row: rows.append(current_row)
-            return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+async def bot_worker(bot_id: str, token: str):
+    session = AiohttpSession()
+    bot = Bot(token=token, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    active_bots[bot_id] = bot
+    dp = Dispatcher()
+    router = Router()
 
-        @dp.message(CommandStart())
-        async def handle_start(m: Message):
-            if not check_license(bot_cfg["ownerId"]): return
-            
-            # Регистрация подписчика для рассылок
-            if "subscribers" not in bot_cfg: bot_cfg["subscribers"] = []
-            if m.from_user.id not in bot_cfg["subscribers"]:
-                bot_cfg["subscribers"].append(m.from_user.id)
-            
-            # Регистрация пользователя для CRM/Модерации
-            if "connectedUsers" not in bot_cfg: bot_cfg["connectedUsers"] = []
-            if not any(u["id"] == m.from_user.id for u in bot_cfg["connectedUsers"]):
-                bot_cfg["connectedUsers"].append({
-                    "id": m.from_user.id,
-                    "first_name": m.from_user.first_name,
-                    "username": m.from_user.username,
-                    "is_banned": False,
-                    "warns": 0,
-                    "joined_at": int(time.time())
-                })
+    @router.message(CommandStart())
+    async def cmd_start(m: Message):
+        config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
+        if not config: return
+        if not check_license(config["ownerId"]): return
+        
+        user = next((u for u in config.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
+        if not user:
+            user = {"id": m.from_user.id, "first_name": m.from_user.first_name, "username": m.from_user.username, "joined_at": int(time.time()), "is_banned": False, "is_active": True, "warns": 0}
+            config.setdefault("connectedUsers", []).append(user)
+            config["usersCount"] = len(config["connectedUsers"])
+            add_bot_log(bot_id, "system", f"New user: {m.from_user.full_name}")
             save_db()
-            await m.answer(bot_cfg.get("welcomeMessage", "Привет!"), reply_markup=get_keyboard())
+        
+        # Регистрация подписчика для рассылок
+        if "subscribers" not in config: config["subscribers"] = []
+        if m.from_user.id not in config["subscribers"]:
+            config["subscribers"].append(m.from_user.id)
+            save_db()
 
-        @dp.message()
-        async def handle_messages(m: Message):
-            if not check_license(bot_cfg["ownerId"]): return
+        if user["is_banned"]: return
+        await m.answer(config.get("welcomeMessage", "Welcome!"), reply_markup=get_keyboard(config))
+
+    @router.message(Command("ban", "unban", "warn", "unwarn"))
+    async def admin_moderation(m: Message):
+        config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
+        if str(m.chat.id) != str(config.get("adminChatId")): return
+        
+        target_id = None
+        if m.message_thread_id:
+            user = next((u for u in config.get("connectedUsers", []) if u.get("thread_id") == m.message_thread_id), None)
+            if user: target_id = user["id"]
+        
+        if not target_id and m.reply_to_message:
+            match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
+            if match: target_id = int(match.group(1))
             
-            # 0. Проверка на бан
-            user_crm = next((u for u in bot_cfg.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
-            if user_crm and user_crm.get("is_banned"): return
+        if not target_id:
+            parts = m.text.split()
+            if len(parts) > 1 and parts[1].isdigit(): target_id = int(parts[1])
 
-            admin_id = bot_cfg.get("adminChatId")
+        if not target_id: return await m.reply("Could not determine User ID.")
+        
+        user = next((u for u in config.get("connectedUsers", []) if u["id"] == target_id), None)
+        if not user: return await m.reply("User not found in DB.")
+        
+        cmd = m.text.split()[0].lower()
+        if "/ban" in cmd: user["is_banned"] = True
+        elif "/unban" in cmd: user["is_banned"] = False
+        elif "/warn" in cmd: user["warns"] = user.get("warns", 0) + 1
+        elif "/unwarn" in cmd: user["warns"] = max(0, user.get("warns", 0) - 1)
+        
+        save_db()
+        await m.reply(f"Action {cmd} applied to user {target_id}")
 
-            # 1. Если пишет админ и это реплай — отвечаем пользователю (Livegram mode)
-            if admin_id and str(m.from_user.id) == str(admin_id) and m.reply_to_message:
-                reply_text = m.reply_to_message.text or m.reply_to_message.caption or ""
-                match = re.search(r"ID: (\d+)", reply_text)
-                if match:
-                    target_id = int(match.group(1))
-                    try:
-                        if m.text: await bot.send_message(target_id, m.text)
-                        elif m.photo: await bot.send_photo(target_id, m.photo[-1].file_id, caption=m.caption)
-                        elif m.voice: await bot.send_voice(target_id, m.voice.file_id)
-                        await m.reply("✅ Отправлено")
-                    except Exception as e: await m.reply(f"❌ Ошибка отправки: {e}")
-                return
+    @router.message()
+    async def handle_msg(m: Message):
+        config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
+        if not config or not check_license(config["ownerId"]): return
+        admin_id = config.get("adminChatId")
+        if not admin_id: return
 
-            # 2. Обработка кнопок и триггеров (прежде чем слать админу)
-            if m.text:
-                text_low = m.text.lower()
-                # Кнопки (точное совпадение)
-                for btn in bot_cfg.get("buttons", []):
-                    if btn["text"].lower() == text_low:
-                        return await m.answer(btn["response"], reply_markup=get_keyboard())
-                # Триггеры (вхождение слова)
-                for trig in bot_cfg.get("triggers", []):
-                    if trig["keyword"].lower() in text_low:
-                        return await m.answer(trig["response"], reply_markup=get_keyboard())
-
-            # 3. Пересылка админу (Feedback)
-            if admin_id and str(m.from_user.id) != str(admin_id):
-                info = f"📩 <b>Сообщение от {m.from_user.full_name}</b>\nID: <code>{m.from_user.id}</code>\n\n"
+        # 1. Логика Админа (Ответ пользователю)
+        if str(m.chat.id) == str(admin_id):
+            if m.text and m.text.startswith("/"): return
+            target_id = None
+            if m.message_thread_id:
+                user = next((u for u in config.get("connectedUsers", []) if u.get("thread_id") == m.message_thread_id), None)
+                if user: target_id = user["id"]
+            if not target_id and m.reply_to_message:
+                match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
+                if match: target_id = int(match.group(1))
+            if target_id:
                 try:
-                    if m.text:
-                        await bot.send_message(admin_id, info + m.text)
-                    else:
-                        await bot.send_message(admin_id, info + f"[Вложение: {m.content_type}]")
-                        await m.forward_message(admin_id, m.chat.id, m.message_id)
-                except Exception as e: logger.error(f"Forward fail: {e}")
+                    await bot.copy_message(chat_id=target_id, from_chat_id=m.chat.id, message_id=m.message_id)
+                    update_bot_stats(bot_id, "outgoing")
+                except Exception as e: await m.reply(f"Error: {e}")
+            return
 
-        await dp.start_polling(bot)
-    except Exception as e:
-        logger.error(f"Бот {bot_id} упал: {e}")
-    finally: active_bots.pop(bot_id, None)
+        # 2. Логика Пользователя
+        user = next((u for u in config.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
+        if not user or user["is_banned"]: return
 
-# --- FastAPI App ---
+        # Кнопки и Триггеры
+        if m.text:
+            text_low = m.text.lower()
+            for btn in config.get("buttons", []):
+                if btn.get("text") and btn["text"].lower() == text_low:
+                    return await m.answer(btn.get("response", "...")), update_bot_stats(bot_id, "outgoing")
+            for trig in config.get("triggers", []):
+                if trig.get("keyword") and trig["keyword"].lower() in text_low:
+                    return await m.answer(trig.get("response", "...")), update_bot_stats(bot_id, "outgoing")
+
+        # Пересылка админу
+        use_topics = config.get("settings", {}).get("useTopics", False)
+        target_thread = None
+        if use_topics:
+            if not user.get("thread_id"):
+                try:
+                    topic = await bot.create_forum_topic(admin_id, f"{m.from_user.first_name} [{m.from_user.id}]")
+                    user["thread_id"] = topic.message_thread_id
+                    save_db()
+                    info = f"👤 <b>New Client</b>\nID: <code>{m.from_user.id}</code>\n"
+                    if config["settings"].get("showUsername") and m.from_user.username:
+                        info += f"User: @{m.from_user.username}\n"
+                    await bot.send_message(admin_id, info, message_thread_id=user["thread_id"])
+                except Exception: use_topics = False
+            target_thread = user.get("thread_id")
+
+        try:
+            if not use_topics:
+                await bot.send_message(admin_id, f"📩 <b>ID: {m.from_user.id}</b>\nName: {m.from_user.full_name}")
+            await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=target_thread)
+            update_bot_stats(bot_id, "incoming")
+        except Exception as e: add_bot_log(bot_id, "error", f"Forward fail: {e}")
+
+    dp.include_router(router)
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        await dp.start_polling(bot, skip_updates=True)
+    finally: await session.close()
+
+# --- API Endpoints ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_db()
-    # Автозапуск ботов, которые были запущены
     for b in db_content["bots"]:
         if b.get("status") == "RUNNING" and check_license(b["ownerId"]):
-            active_tasks[b["id"]] = asyncio.create_task(bot_worker(b))
+            active_tasks[b["id"]] = asyncio.create_task(bot_worker(b["id"], b["token"]))
     yield
     for t in active_tasks.values(): t.cancel()
 
@@ -192,59 +255,61 @@ class BroadcastRequest(BaseModel):
     botIds: List[str]
     message: str
 
-# -- Auth API --
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
-
-@app.post("/api/auth/login")
-async def login(req: dict):
-    u = next((u for u in db_content["users"] if u["email"] == req["email"] and u["password"] == req["password"]), None)
-    if not u: raise HTTPException(401)
-    return u
 
 @app.post("/api/auth/register")
 async def register(user: dict):
     if any(u["email"] == user["email"] for u in db_content["users"]):
-        raise HTTPException(400, "User already exists")
+        raise HTTPException(status_code=400, detail="User already exists")
     db_content["users"].append(user)
     save_db()
     return user
 
-# -- Bots API --
+@app.post("/api/auth/login")
+async def login(req: dict):
+    user = next((u for u in db_content["users"] if u["email"] == req["email"] and u["password"] == req["password"]), None)
+    if not user: raise HTTPException(status_code=401, detail="Invalid credentials")
+    return user
+
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
     return [b for b in db_content["bots"] if str(b["ownerId"]) == str(user_id)]
 
 @app.post("/api/bots/save")
-async def save_bot_api(bot_data: dict):
+async def save_bot_endpoint(bot_data: dict):
     idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_data["id"]), -1)
     if idx >= 0:
-        # Сохраняем логи и пользователей, если они уже есть в старом конфиге
-        bot_data["logs"] = db_content["bots"][idx].get("logs", [])
-        bot_data["connectedUsers"] = db_content["bots"][idx].get("connectedUsers", [])
-        bot_data["subscribers"] = db_content["bots"][idx].get("subscribers", [])
+        bot_data.setdefault("logs", db_content["bots"][idx].get("logs", []))
+        bot_data.setdefault("connectedUsers", db_content["bots"][idx].get("connectedUsers", []))
+        bot_data.setdefault("subscribers", db_content["bots"][idx].get("subscribers", []))
         db_content["bots"][idx] = bot_data
-    else:
-        db_content["bots"].append(bot_data)
+    else: db_content["bots"].append(bot_data)
     save_db()
     return {"status": "ok"}
 
-@app.delete("/api/bots/delete/{bot_id}")
-async def delete_bot(bot_id: str):
-    if bot_id in active_tasks: active_tasks[bot_id].cancel()
-    db_content["bots"] = [b for b in db_content["bots"] if b["id"] != bot_id]
-    save_db()
-    return {"status": "ok"}
+@app.delete("/api/bots/delete/{user_id}/{bot_id}")
+async def delete_bot(user_id: str, bot_id: str):
+    idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_id and str(b["ownerId"]) == str(user_id)), -1)
+    if idx >= 0:
+        if bot_id in active_tasks:
+            active_tasks[bot_id].cancel()
+            del active_tasks[bot_id]
+        if bot_id in active_bots: del active_bots[bot_id]
+        db_content["bots"].pop(idx)
+        save_db()
+        return {"status": "ok"}
+    raise HTTPException(status_code=404, detail="Bot not found")
 
 @app.post("/api/bots/start/{bot_id}")
 async def start_bot(bot_id: str):
-    cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-    if not cfg: raise HTTPException(404)
-    if not check_license(cfg["ownerId"]): raise HTTPException(403, "License expired")
-    if bot_id not in active_tasks or active_tasks[bot_id].done():
-        active_tasks[bot_id] = asyncio.create_task(bot_worker(cfg))
-        cfg["status"] = "RUNNING"
-        save_db()
+    bot_cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
+    if not bot_cfg: raise HTTPException(404)
+    if not check_license(bot_cfg["ownerId"]): raise HTTPException(403, "License expired")
+    if bot_id in active_tasks and not active_tasks[bot_id].done(): return {"status": "ok"}
+    active_tasks[bot_id] = asyncio.create_task(bot_worker(bot_id, bot_cfg["token"]))
+    bot_cfg["status"] = "RUNNING"
+    save_db()
     return {"status": "ok"}
 
 @app.post("/api/bots/stop/{bot_id}")
@@ -252,24 +317,25 @@ async def stop_bot(bot_id: str):
     if bot_id in active_tasks:
         active_tasks[bot_id].cancel()
         del active_tasks[bot_id]
+    if bot_id in active_bots: del active_bots[bot_id]
     for b in db_content["bots"]:
         if b["id"] == bot_id: b["status"] = "IDLE"
     save_db()
     return {"status": "ok"}
 
-# -- License & Admin API --
 @app.post("/api/broadcast")
 async def broadcast(req: BroadcastRequest):
     success, failed = 0, 0
-    for bid in req.botIds:
-        bot = active_bots.get(bid)
-        cfg = next((b for b in db_content["bots"] if b["id"] == bid), None)
-        if bot and cfg:
-            for uid in cfg.get("subscribers", []):
+    for bot_id in req.botIds:
+        bot_instance = active_bots.get(bot_id)
+        config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
+        if bot_instance and config:
+            for uid in config.get("subscribers", []):
                 try:
-                    await bot.send_message(uid, req.message)
+                    await bot_instance.send_message(uid, req.message)
                     success += 1
-                except: failed += 1
+                    update_bot_stats(bot_id, "outgoing")
+                except Exception: failed += 1
     return {"success": success, "failed": failed}
 
 @app.post("/api/license/activate")
