@@ -1,8 +1,8 @@
 
-import React from 'react';
+import React, { useState } from 'react';
 import { BotConfig, TelegramUser } from '../types';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Users, MessageSquare, Ban, Activity, ShieldAlert, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { Users, MessageSquare, Ban, Activity, ShieldAlert, ShieldCheck, AlertTriangle, Loader2 } from 'lucide-react';
 import { api } from '../services/apiService';
 
 interface BotStatsViewProps {
@@ -11,6 +11,8 @@ interface BotStatsViewProps {
 }
 
 const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
+  const [isSyncing, setIsSyncing] = useState<number | null>(null);
+
   const stats = bot.stats || { 
     totalMessages: 0, 
     incomingToday: 0, 
@@ -26,25 +28,38 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
 
   const bannedUsers = bot.connectedUsers.filter(u => u.is_banned);
 
-  const handleModeration = async (userId: number, action: 'unban' | 'warn' | 'unwarn') => {
+  const handleModeration = async (userId: number, action: 'unban' | 'warn' | 'unwarn' | 'ban') => {
+    setIsSyncing(userId);
     const updatedUsers = bot.connectedUsers.map(u => {
       if (u.id === userId) {
         if (action === 'unban') return { ...u, is_banned: false };
+        if (action === 'ban') return { ...u, is_banned: true };
         if (action === 'warn') return { ...u, warns: (u.warns || 0) + 1 };
         if (action === 'unwarn') return { ...u, warns: Math.max(0, (u.warns || 0) - 1) };
       }
       return u;
     });
     
-    // Обновляем локальный стейт через родителя для мгновенного отклика
-    const updatedBot = { ...bot, connectedUsers: updatedUsers };
-    onUpdate(updatedBot);
+    // Проверка порога автобана на фронте для мгновенного визуала
+    const threshold = bot.settings.autoBanThreshold || 0;
+    const finalizedUsers = updatedUsers.map(u => {
+        if (u.id === userId && threshold > 0 && u.warns >= threshold) {
+            return { ...u, is_banned: true };
+        }
+        return u;
+    });
+
+    const updatedBot = { ...bot, connectedUsers: finalizedUsers };
     
-    // Сохраняем на сервер в фоне
     try {
+        // Сначала сохраняем на сервер
         await api.saveBot(bot.ownerId, updatedBot);
+        // Затем обновляем локально (чтобы поллинг в App.tsx не затирал изменения)
+        onUpdate(updatedBot);
     } catch (e) {
-        console.error("Failed to sync moderation state with server");
+        alert("Ошибка синхронизации с сервером");
+    } finally {
+        setIsSyncing(null);
     }
   };
 
@@ -107,13 +122,25 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
             ) : (
               bot.connectedUsers.filter(u => !u.is_banned).map(u => (
                 <div key={u.id} className="p-4 flex items-center justify-between hover:bg-zinc-800/30 border-b border-zinc-900/50 last:border-0 transition-colors">
-                  <div>
-                    <p className="text-sm font-bold text-white">{u.first_name}</p>
-                    <p className="text-[10px] text-zinc-500">ID: {u.id} {u.warns > 0 && <span className="text-yellow-500 ml-2">Варны: {u.warns}</span>}</p>
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-blue-600/20 text-blue-500 flex items-center justify-center text-xs font-black">
+                        {u.first_name.charAt(0)}
+                    </div>
+                    <div>
+                        <p className="text-sm font-bold text-white">{u.first_name}</p>
+                        <p className="text-[10px] text-zinc-500">ID: {u.id} {u.warns > 0 && <span className="text-yellow-500 ml-2">Варны: {u.warns}</span>}</p>
+                    </div>
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={() => handleModeration(u.id, 'warn')} className="p-2 bg-yellow-500/10 text-yellow-500 rounded-lg hover:bg-yellow-500/20 transition-all"><AlertTriangle className="w-3.5 h-3.5" /></button>
-                    <button onClick={() => handleModeration(u.id, 'unwarn')} className="p-2 bg-blue-500/10 text-blue-500 rounded-lg hover:bg-blue-500/20 transition-all"><ShieldCheck className="w-3.5 h-3.5" /></button>
+                    {isSyncing === u.id ? (
+                        <div className="p-2"><Loader2 className="w-4 h-4 text-zinc-500 animate-spin" /></div>
+                    ) : (
+                        <>
+                            <button onClick={() => handleModeration(u.id, 'warn')} title="Выдать варн" className="p-2 bg-yellow-500/10 text-yellow-500 rounded-lg hover:bg-yellow-500/20 transition-all"><AlertTriangle className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => handleModeration(u.id, 'unwarn')} title="Снять варн" className="p-2 bg-blue-500/10 text-blue-500 rounded-lg hover:bg-blue-500/20 transition-all"><ShieldCheck className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => handleModeration(u.id, 'ban')} title="Забанить" className="p-2 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500/20 transition-all"><Ban className="w-3.5 h-3.5" /></button>
+                        </>
+                    )}
                   </div>
                 </div>
               ))
@@ -134,11 +161,20 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
             ) : (
               bannedUsers.map(u => (
                 <div key={u.id} className="p-4 flex items-center justify-between bg-red-500/5 border-b border-red-500/10">
-                  <div>
-                    <p className="text-sm font-bold text-white">{u.first_name}</p>
-                    <p className="text-[10px] text-zinc-500">ID: {u.id}</p>
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-red-500/20 text-red-500 flex items-center justify-center text-xs font-black">
+                        {u.first_name.charAt(0)}
+                    </div>
+                    <div>
+                        <p className="text-sm font-bold text-white">{u.first_name}</p>
+                        <p className="text-[10px] text-zinc-500">ID: {u.id}</p>
+                    </div>
                   </div>
-                  <button onClick={() => handleModeration(u.id, 'unban')} className="text-[8px] font-black uppercase text-red-500 hover:underline">Разблокировать</button>
+                  {isSyncing === u.id ? (
+                      <Loader2 className="w-4 h-4 text-zinc-500 animate-spin mr-4" />
+                  ) : (
+                      <button onClick={() => handleModeration(u.id, 'unban')} className="text-[8px] font-black uppercase text-red-500 hover:underline px-4 py-2">Разблокировать</button>
+                  )}
                 </div>
               ))
             )}
