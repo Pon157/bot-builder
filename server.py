@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, validator
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command
@@ -23,7 +23,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 import uvicorn
 
-# --- Загрузка переменных окружения из .env ---
+# --- Загрузка переменных окружения ---
 def load_env_file():
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
     if os.path.exists(env_path):
@@ -47,7 +47,7 @@ except ImportError:
         @staticmethod
         def send_license_alert(*args): return False
 
-# --- Инициализация окружения ---
+# --- Инициализация ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BASE_DIR)
 
@@ -65,24 +65,40 @@ if not ADMIN_SECRET:
     ADMIN_SECRET = secrets.token_hex(16)
     logger.warning(f"⚠️ ADMIN_SECRET не найден! Сгенерирован: {ADMIN_SECRET}")
 
-# --- Модели данных ---
+# --- Модели данных с валидацией Email ---
 class LoginRequest(BaseModel):
     email: str
     password: str
+    
+    @validator('email')
+    def normalize_email(cls, v):
+        return v.lower().strip()
 
 class VerificationRequest(BaseModel):
     email: str
+    
+    @validator('email')
+    def normalize_email(cls, v):
+        return v.lower().strip()
 
 class VerifyAndRegisterRequest(BaseModel):
     email: str
     code: str
     password: str
     username: str
+    
+    @validator('email')
+    def normalize_email(cls, v):
+        return v.lower().strip()
 
 class ResetPasswordRequest(BaseModel):
     email: str
     code: str
     newPassword: str
+    
+    @validator('email')
+    def normalize_email(cls, v):
+        return v.lower().strip()
 
 class BroadcastRequest(BaseModel):
     botIds: List[str]
@@ -301,7 +317,13 @@ async def ping(): return {"status": "online"}
 
 @app.post("/api/auth/request-verification")
 async def request_verification(req: VerificationRequest):
-    logger.info(f"📥 Запрос верификации для регистрации: {req.email}")
+    logger.info(f"📥 Запрос верификации: {req.email}")
+    
+    # 1. Проверяем, нет ли такого пользователя уже
+    if any(u["email"] == req.email for u in db_content["users"]):
+        logger.warning(f"⚠️ Попытка регистрации на существующий Email: {req.email}")
+        raise HTTPException(400, "Этот Email уже зарегистрирован")
+
     code = "".join(secrets.choice("0123456789") for _ in range(6))
     verification_store[req.email] = {"code": code, "expires": int(time.time()) + 600, "type": "reg"}
     
@@ -318,8 +340,10 @@ async def verify_and_register(req: VerifyAndRegisterRequest):
     store = verification_store.get(req.email)
     if not store or store["code"] != req.code or store["expires"] < time.time() or store["type"] != "reg":
         raise HTTPException(400, "Неверный код или срок действия истек")
+    
     if any(u["email"] == req.email for u in db_content["users"]):
         raise HTTPException(400, "Email уже зарегистрирован")
+        
     new_user = {
         "id": "u_" + secrets.token_hex(4),
         "username": req.username,
@@ -339,7 +363,7 @@ async def forgot_password(req: VerificationRequest):
     user = next((u for u in db_content["users"] if u["email"] == req.email), None)
     if not user: 
         logger.warning(f"⚠️ Попытка сброса пароля для несуществующего Email: {req.email}")
-        raise HTTPException(404, "Email не найден")
+        raise HTTPException(404, "Пользователь с таким Email не найден")
     
     code = "".join(secrets.choice("0123456789") for _ in range(6))
     verification_store[req.email] = {"code": code, "expires": int(time.time()) + 600, "type": "reset"}
