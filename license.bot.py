@@ -18,44 +18,49 @@ logging.basicConfig(
 logger = logging.getLogger("LicenseBot")
 
 def load_env():
-    """Универсальный загрузчик .env"""
-    paths = ['.env', '../.env', './.env']
-    for p in paths:
+    """Максимально надежная загрузка .env из разных путей для PM2"""
+    # Список возможных путей к .env
+    possible_paths = [
+        os.path.join(os.getcwd(), '.env'),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'),
+        '/root/bot-builder/bot-builder/.env'
+    ]
+    
+    found = False
+    for p in possible_paths:
         if os.path.exists(p):
-            with open(p) as f:
+            logger.info(f"Загрузка настроек из: {p}")
+            with open(p, 'r') as f:
                 for line in f:
                     line = line.strip()
-                    if '=' in line and not line.startswith('#'):
+                    if line and not line.startswith('#') and '=' in line:
                         k, v = line.split('=', 1)
                         os.environ[k.strip()] = v.strip('"').strip("'").strip()
-            return True
-    return False
+            found = True
+            break
+    return found
 
-load_env()
+# Сначала загружаем окружение
+if not load_env():
+    logger.error("⚠️ ВНИМАНИЕ: Файл .env не найден! Бот может не запуститься.")
 
-# Конфигурация
+# Теперь берем переменные
 TOKEN = os.getenv("ADMIN_BOT_TOKEN")
-# Важно: ADMIN_SECRET должен совпадать с тем, что в server.py
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "SUPER_SECRET_TOKEN_123")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
 
-if not TOKEN:
-    logger.critical("❌ ОШИБКА: ADMIN_BOT_TOKEN не найден! Проверьте файл .env")
-    sys.exit(1)
-
-bot = Bot(token=TOKEN.strip())
+# --- Глобальные объекты (создаем только если есть токен) ---
+bot = None
 dp = Dispatcher()
 
+# --- Вспомогательные функции ---
+
 def is_authorized(message: types.Message):
-    """Проверяет, разрешено ли пользователю или чату управлять лицензиями"""
-    if not ADMIN_CHAT_ID:
-        return True # Если не указано, разрешено всем (не рекомендуется)
-    
+    if not ADMIN_CHAT_ID: return True
     user_id = str(message.from_user.id)
     chat_id = str(message.chat.id)
     allowed_ids = [i.strip() for i in ADMIN_CHAT_ID.split(',')]
-    
     return user_id in allowed_ids or chat_id in allowed_ids
 
 async def generate_key_via_api(months: int):
@@ -63,19 +68,16 @@ async def generate_key_via_api(months: int):
         url = f"{SERVER_URL}/api/admin/generate-key"
         headers = {"x-admin-token": ADMIN_SECRET}
         payload = {"months": months}
-        
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
             None, 
             lambda: requests.post(url, json=payload, headers=headers, timeout=5)
         )
-        
         if response.status_code == 200:
             return response.json().get("key")
-        return None
     except Exception as e:
-        logger.error(f"Ошибка API: {e}")
-        return None
+        logger.error(f"API Error: {e}")
+    return None
 
 def get_admin_kb():
     builder = InlineKeyboardBuilder()
@@ -84,38 +86,38 @@ def get_admin_kb():
     builder.row(InlineKeyboardButton(text="💎 12 месяцев", callback_data="gen_12"))
     return builder.as_markup()
 
+# --- Обработчики ---
+
 @dp.message(Command("start"))
 async def start(message: types.Message):
     if not is_authorized(message):
-        return await message.answer("❌ Доступ ограничен. Ваш ID: `" + str(message.from_user.id) + "`", parse_mode="Markdown")
-        
-    await message.answer(
-        "💎 **Генератор лицензионных ключей**\nВыберите тариф для создания ключа:",
-        reply_markup=get_admin_kb(),
-        parse_mode="Markdown"
-    )
+        return await message.answer(f"❌ Доступ ограничен. ID: `{message.from_user.id}`", parse_mode="Markdown")
+    await message.answer("💎 **Генератор ключей**\nВыберите тариф:", reply_markup=get_admin_kb(), parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("gen_"))
 async def handle_gen_key(callback: CallbackQuery):
-    if not is_authorized(callback.message):
-        return await callback.answer("Нет доступа", show_alert=True)
-
+    if not is_authorized(callback.message): return
     months = int(callback.data.split("_")[1])
-    await callback.answer("Генерирую...")
-    
+    await callback.answer("⏳...")
     key = await generate_key_via_api(months)
-    
     if key:
-        await callback.message.answer(
-            f"✅ **Ключ создан (на {months} мес.)**\n\n`{key}`\n\n_Скопируйте и отправьте пользователю._",
-            parse_mode="Markdown"
-        )
+        await callback.message.answer(f"✅ **Ключ создан:**\n`{key}`", parse_mode="Markdown")
     else:
-        await callback.message.answer("❌ **Ошибка API!** Проверьте, что `server.py` запущен.")
+        await callback.message.answer("❌ Ошибка сервера API. Проверьте server.py")
 
 async def main():
-    logger.info(f"Бот запущен. ADMIN_CHAT_ID: {ADMIN_CHAT_ID}")
+    global bot
+    if not TOKEN:
+        logger.critical("❌ ТОКЕН НЕ НАЙДЕН! Проверьте ADMIN_BOT_TOKEN в .env")
+        return
+
+    logger.info("Инициализация бота...")
+    bot = Bot(token=TOKEN.strip())
+    logger.info("Бот для лицензий успешно запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Бот остановлен.")
