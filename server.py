@@ -5,7 +5,7 @@ import os
 import time
 import re
 import uuid
-from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -146,25 +146,35 @@ async def bot_worker(bot_cfg: dict):
     finally:
         if bot_id in active_bots: del active_bots[bot_id]
 
-# --- API Endpoints ---
+# --- Lifespan (Modern FastAPI Startup) ---
 
-app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     load_db()
+    
     # Фоновая проверка лицензий (раз в 10 минут)
     async def license_checker():
         while True:
-            now = int(time.time() * 1000)
-            for b in db_content["bots"]:
-                owner = next((u for u in db_content["users"] if u["id"] == b["ownerId"]), None)
-                if owner and owner["licenseExpiresAt"] < now and b["id"] in active_tasks:
-                    active_tasks[b["id"]].cancel()
-                    b["status"] = "IDLE"
+            try:
+                now = int(time.time() * 1000)
+                for b in db_content["bots"]:
+                    owner = next((u for u in db_content["users"] if u["id"] == b["ownerId"]), None)
+                    # Используем .get() чтобы избежать KeyError
+                    if owner and owner.get("licenseExpiresAt", 0) < now and b["id"] in active_tasks:
+                        active_tasks[b["id"]].cancel()
+                        b["status"] = "IDLE"
+            except Exception as e:
+                logger.error(f"License Checker Error: {e}")
             await asyncio.sleep(600)
-    asyncio.create_task(license_checker())
+
+    checker_task = asyncio.create_task(license_checker())
+    yield
+    checker_task.cancel()
+
+# --- API Endpoints ---
+
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
@@ -191,7 +201,9 @@ async def activate_key(req: KeyActivationRequest):
     if not match: raise HTTPException(400, "Invalid key")
     months = int(match.group(1))
     now = int(time.time() * 1000)
-    user["licenseExpiresAt"] = max(user["licenseExpiresAt"], now) + (months * 30 * 24 * 3600 * 1000)
+    # Гарантируем наличие ключа
+    current_expiry = user.get("licenseExpiresAt", now)
+    user["licenseExpiresAt"] = max(current_expiry, now) + (months * 30 * 24 * 3600 * 1000)
     save_db()
     return {"status": "ok", "newExpiry": user["licenseExpiresAt"]}
 
