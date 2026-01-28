@@ -4,7 +4,7 @@ import { BotConfig, BotStatus } from '../types';
 import { api } from '../services/apiService';
 import BotConsole from './BotConsole';
 import BotStatsView from './BotStatsView';
-import { Settings, Cpu, MousePointer2, BarChart3, Terminal, X, Save, Power, MessageSquare, Ticket } from 'lucide-react';
+import { Settings, Cpu, MousePointer2, BarChart3, Terminal, X, Save, Power, MessageSquare, Ticket, ShieldAlert } from 'lucide-react';
 
 interface BotEditorProps {
   bot: BotConfig;
@@ -51,6 +51,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
     }
   };
 
+  const isLicenseExpired = bot.licenseExpiresAt < Date.now();
+
   return (
     <div className="space-y-8 animate-in fade-in duration-500 pb-20">
       <header className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] flex flex-col md:flex-row justify-between items-center gap-6 shadow-xl relative overflow-hidden">
@@ -60,9 +62,16 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
           </div>
           <div>
             <h1 className="text-3xl font-black text-white">{bot.name}</h1>
-            <div className="flex items-center gap-2">
-               <span className={`w-2 h-2 rounded-full ${bot.status === BotStatus.RUNNING ? 'bg-green-500 animate-pulse' : 'bg-zinc-600'}`}></span>
-               <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">{bot.status}</span>
+            <div className="flex items-center gap-4 mt-1">
+               <div className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full ${bot.status === BotStatus.RUNNING ? 'bg-green-500 animate-pulse' : 'bg-zinc-600'}`}></span>
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">{bot.status}</span>
+               </div>
+               <div className="flex items-center gap-2">
+                  <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded border ${isLicenseExpired ? 'bg-red-500/10 text-red-500 border-red-500/20' : 'bg-green-500/10 text-green-500 border-green-500/20'}`}>
+                    {isLicenseExpired ? 'Лицензия истекла' : `Лицензия до ${new Date(bot.licenseExpiresAt).toLocaleDateString()}`}
+                  </span>
+               </div>
             </div>
           </div>
         </div>
@@ -76,10 +85,10 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
            </button>
            <button 
              onClick={handleToggleServer} 
-             disabled={isProcessing} 
+             disabled={isProcessing || isLicenseExpired} 
              className={`px-10 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center gap-2 shadow-lg disabled:opacity-50 ${bot.status === BotStatus.RUNNING ? 'bg-red-500/10 text-red-500' : 'bg-blue-600 text-white'}`}
            >
-             <Power className="w-4 h-4" /> {isProcessing ? 'Запуск...' : (bot.status === BotStatus.RUNNING ? 'Стоп' : 'Старт')}
+             <Power className="w-4 h-4" /> {isProcessing ? (bot.status === BotStatus.RUNNING ? 'Стоп...' : 'Пуск...') : (bot.status === BotStatus.RUNNING ? 'Стоп' : 'Старт')}
            </button>
         </div>
       </header>
@@ -117,7 +126,10 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                   <input type="text" className="w-full bg-black border border-zinc-800 p-4 rounded-xl text-white" value={bot.adminChatId} onChange={e => onUpdate({...bot, adminChatId: e.target.value})} />
                 </label>
                 <label className="block">
-                  <span className="text-[10px] font-bold text-zinc-500 uppercase">Приветствие (/start)</span>
+                  <span className="text-[10px] font-bold text-zinc-500 uppercase flex justify-between">
+                    Приветствие (/start)
+                    <span className="text-blue-500 italic">Поддерживает теги {`{{id}}`}, {`{{name}}`}</span>
+                  </span>
                   <textarea className="w-full mt-1 bg-black border border-zinc-800 p-4 rounded-xl text-white min-h-[100px]" value={bot.welcomeMessage} onChange={e => onUpdate({...bot, welcomeMessage: e.target.value})} />
                 </label>
               </div>
@@ -125,6 +137,19 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
             <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
               <h2 className="text-xl font-black text-white">Системные опции</h2>
               <div className="space-y-4">
+                <div className="p-4 bg-black rounded-2xl border border-zinc-800">
+                   <p className="text-xs font-bold text-white uppercase tracking-widest mb-3">Автоматическая модерация</p>
+                   <label className="block">
+                      <span className="text-[9px] font-bold text-zinc-500 uppercase block mb-1">Порог варнов для бана (0 = откл)</span>
+                      <input 
+                        type="number" 
+                        className="w-full bg-zinc-900 border border-zinc-800 p-3 rounded-xl text-white" 
+                        value={bot.settings.autoBanThreshold || 0} 
+                        onChange={e => onUpdate({...bot, settings: {...bot.settings, autoBanThreshold: parseInt(e.target.value) || 0}})} 
+                      />
+                   </label>
+                </div>
+
                 <label className="flex items-center gap-4 p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer hover:border-blue-500/50 transition-all">
                   <input type="checkbox" className="w-5 h-5 rounded bg-zinc-900 border-zinc-800 text-blue-600" checked={bot.settings.useTopics} onChange={e => onUpdate({...bot, settings: {...bot.settings, useTopics: e.target.checked}})} />
                   <div>
