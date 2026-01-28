@@ -34,7 +34,6 @@ def load_env_file():
                     key, value = line.split('=', 1)
                     os.environ[key.strip()] = value.strip().strip('"').strip("'")
 
-# Загружаем окружение ДО импорта EmailService
 load_env_file()
 
 try:
@@ -61,11 +60,10 @@ logger = logging.getLogger("BotEngineCore")
 
 DB_FILE = "database.json"
 
-# Безопасно получаем ADMIN_SECRET. Если его нет в .env, генерируем случайный для безопасности.
 ADMIN_SECRET = os.getenv("ADMIN_SECRET")
 if not ADMIN_SECRET:
     ADMIN_SECRET = secrets.token_hex(16)
-    logger.warning(f"⚠️ ADMIN_SECRET не найден в .env! Сгенерирован временный: {ADMIN_SECRET}")
+    logger.warning(f"⚠️ ADMIN_SECRET не найден! Сгенерирован: {ADMIN_SECRET}")
 
 # --- Модели данных ---
 class LoginRequest(BaseModel):
@@ -303,19 +301,25 @@ async def ping(): return {"status": "online"}
 
 @app.post("/api/auth/request-verification")
 async def request_verification(req: VerificationRequest):
+    logger.info(f"📥 Запрос верификации для регистрации: {req.email}")
     code = "".join(secrets.choice("0123456789") for _ in range(6))
     verification_store[req.email] = {"code": code, "expires": int(time.time()) + 600, "type": "reg"}
-    if EmailService.send_verification_code(req.email, code):
+    
+    success = EmailService.send_verification_code(req.email, code)
+    if success:
+        logger.info(f"✅ Код регистрации отправлен на {req.email}")
         return {"status": "ok"}
-    raise HTTPException(500, "Email send error")
+    
+    logger.error(f"❌ Не удалось отправить код регистрации на {req.email}")
+    raise HTTPException(500, "Ошибка при отправке Email")
 
 @app.post("/api/auth/verify-and-register")
 async def verify_and_register(req: VerifyAndRegisterRequest):
     store = verification_store.get(req.email)
     if not store or store["code"] != req.code or store["expires"] < time.time() or store["type"] != "reg":
-        raise HTTPException(400, "Invalid or expired code")
+        raise HTTPException(400, "Неверный код или срок действия истек")
     if any(u["email"] == req.email for u in db_content["users"]):
-        raise HTTPException(400, "Email already exists")
+        raise HTTPException(400, "Email уже зарегистрирован")
     new_user = {
         "id": "u_" + secrets.token_hex(4),
         "username": req.username,
@@ -331,18 +335,25 @@ async def verify_and_register(req: VerifyAndRegisterRequest):
 
 @app.post("/api/auth/forgot-password")
 async def forgot_password(req: VerificationRequest):
+    logger.info(f"📥 Запрос восстановления пароля: {req.email}")
     user = next((u for u in db_content["users"] if u["email"] == req.email), None)
-    if not user: raise HTTPException(404)
+    if not user: 
+        logger.warning(f"⚠️ Попытка сброса пароля для несуществующего Email: {req.email}")
+        raise HTTPException(404, "Email не найден")
+    
     code = "".join(secrets.choice("0123456789") for _ in range(6))
     verification_store[req.email] = {"code": code, "expires": int(time.time()) + 600, "type": "reset"}
-    EmailService.send_password_reset(req.email, code)
-    return {"status": "ok"}
+    
+    success = EmailService.send_password_reset(req.email, code)
+    if success:
+        return {"status": "ok"}
+    raise HTTPException(500, "Ошибка при отправке Email")
 
 @app.post("/api/auth/reset-password")
 async def reset_password(req: ResetPasswordRequest):
     store = verification_store.get(req.email)
     if not store or store["code"] != req.code or store["expires"] < time.time() or store["type"] != "reset":
-        raise HTTPException(400, "Invalid code")
+        raise HTTPException(400, "Неверный код")
     user = next((u for u in db_content["users"] if u["email"] == req.email), None)
     if not user: raise HTTPException(404)
     user["password"] = req.newPassword
