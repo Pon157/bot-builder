@@ -122,7 +122,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
                     1 бот / 1 мес — 50 звезд ⭐<br/>
                     1 бот / 3 мес — 120 звезд ⭐<br/>
                 </p>
-                <a href="https://t.me/Kotickr" target="_blank" className="w-full bg-white text-black font-black py-4 rounded-xl uppercase tracking-widest text-xs hover:bg-zinc-200 transition-all shadow-xl text-center">Купить через Telegram</a>
+                <a href="https://t.me/dialogengine_bot" target="_blank" className="w-full bg-white text-black font-black py-4 rounded-xl uppercase tracking-widest text-xs hover:bg-zinc-200 transition-all shadow-xl text-center">Купить через Telegram</a>
             </div>
         </div>
       </div>
