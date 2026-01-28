@@ -6,11 +6,19 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton
+
+# Пытаемся загрузить .env
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    # Явно указываем путь к .env в текущей директории
+    dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
+    if os.path.exists(dotenv_path):
+        load_dotenv(dotenv_path)
+        print(f"✅ Loaded config from {dotenv_path}")
+    else:
+        print(f"⚠️ Warning: .env file not found at {dotenv_path}")
 except ImportError:
-    pass
+    print("⚠️ Warning: python-dotenv not installed")
 
 # --- Конфигурация ---
 TOKEN = os.getenv("ADMIN_BOT_TOKEN")
@@ -18,10 +26,13 @@ ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 WEB_APP_URL = os.getenv("WEB_APP_URL", "http://localhost:3000") 
 
 if not TOKEN:
-    print("❌ ОШИБКА: ADMIN_BOT_TOKEN не найден в переменных окружения или .env файле!")
+    print("❌ CRITICAL ERROR: ADMIN_BOT_TOKEN is missing!")
+    print("Please ensure your .env file contains ADMIN_BOT_TOKEN=your_token")
     exit(1)
 
 logging.basicConfig(level=logging.INFO)
+
+# Инициализируем только если токен есть
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
@@ -117,7 +128,8 @@ async def decline_payment(callback: types.CallbackQuery):
         await callback.message.edit_text(f"❌ Ошибка уведомления юзера.")
 
 async def main():
-    print(f"License Bot started. WebApp URL: {WEB_APP_URL}")
+    print(f"License Bot process started.")
+    print(f"Config: Admin={ADMIN_CHAT_ID}, WebApp={WEB_APP_URL}")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
