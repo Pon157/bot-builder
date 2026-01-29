@@ -45,7 +45,13 @@ export const api = {
     } catch (e: any) { return e.message; }
   },
   verifyAndRegister: async (data) => {
-    try { return await request('/auth/register', 'POST', data); } catch { return null; }
+    try { 
+      // На сервере теперь оба пути работают, но используем стандартный
+      return await request('/auth/register', 'POST', data); 
+    } catch (e: any) { 
+      console.error("Reg error:", e);
+      return null; 
+    }
   },
   forgotPassword: async (email: string) => {
     try { 
@@ -69,7 +75,7 @@ export const api = {
     await request('/bots/save', 'POST', bot);
   },
   sendBroadcast: async (botIds: string[], message: string) => {
-    try { return await request('/broadcast', 'POST', { botIds, message }); } catch { return null; }
+    try { return await request('/broadcast', 'POST', { botIds, message }); } catch (e: any) { return null; }
   },
   startBotOnServer: async (bot) => {
     try { await request(`/bots/start/${bot.id}`, 'POST'); return true; } catch (e: any) { return e.message; }
