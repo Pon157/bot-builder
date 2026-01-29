@@ -20,26 +20,26 @@ from pydantic import BaseModel, Field
 
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.enums import ParseMode, ContentType
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, MagicData
 from aiogram.types import (
     Message, ReplyKeyboardMarkup, KeyboardButton, 
     InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,
-    ForumTopicCreated
+    ForumTopicCreated, ContentType
 )
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import (
     TelegramForbiddenError, TelegramBadRequest, 
-    TelegramRetryAfter, TelegramNetworkError
+    TelegramRetryAfter, TelegramNetworkError,
+    TelegramEntityTooLarge
 )
 
 import uvicorn
 
-# --- ИНИЦИАЛИЗАЦИЯ ОКРУЖЕНИЯ (.env) ---
+# --- ИНИЦИАЛИЗАЦИЯ ОКРУЖЕНИЯ ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def load_env_vars():
-    """Загрузка переменных из .env"""
     env_path = os.path.join(BASE_DIR, '.env')
     if os.path.exists(env_path):
         try:
@@ -49,8 +49,8 @@ def load_env_vars():
                     if line and not line.startswith('#') and '=' in line:
                         parts = line.split('=', 1)
                         if len(parts) == 2:
-                            key, value = parts
-                            os.environ[key.strip()] = value.strip().strip('"').strip("'")
+                            k, v = parts
+                            os.environ[k.strip()] = v.strip().strip('"').strip("'")
             return True
         except Exception as e:
             print(f"Error loading .env: {e}")
@@ -58,7 +58,6 @@ def load_env_vars():
 
 load_env_vars()
 
-# Импорт сервиса почты
 try:
     from email_service import EmailService
 except ImportError:
@@ -79,7 +78,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BotEngine.Core")
 
-# --- МОДЕЛИ ДАННЫХ (PYDANTIC) ---
+# --- МОДЕЛИ ДАННЫХ ---
 class AuthRequest(BaseModel):
     email: str
     password: str
@@ -125,39 +124,34 @@ class LicenseActivateRequest(BaseModel):
     botId: str
     key: str
 
-# --- ДВИЖОК БАЗЫ ДАННЫХ ---
+# --- ДВИЖОК БД ---
 db_content = {
     "users": [], 
     "bots": [], 
     "issued_keys": [], 
-    "verification_codes": {},
+    "verification_codes": {}, 
     "system_stats": {"total_runs": 0, "api_calls": 0}
 }
 
 def save_db():
     try:
-        temp_db = db_content.copy()
-        temp_db["verification_codes"] = {
-            k: v for k, v in db_content["verification_codes"].items() 
-            if v["expires"] > time.time()
-        }
+        temp = db_content.copy()
+        temp["verification_codes"] = {k: v for k, v in db_content["verification_codes"].items() if v["expires"] > time.time()}
         with open(DB_FILE, "w", encoding="utf-8") as f:
-            json.dump(temp_db, f, ensure_ascii=False, indent=2)
+            json.dump(temp, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.error(f"Failed to save database: {e}")
+        logger.error(f"Save DB Error: {e}")
 
 def load_db():
     global db_content
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                db_content.update(data)
-                logger.info(f"Database loaded: {len(db_content['users'])} users, {len(db_content['bots'])} bots")
+                db_content.update(json.load(f))
         except Exception as e:
-            logger.error(f"Failed to load database: {e}")
+            logger.error(f"Load DB Error: {e}")
 
-# --- УПРАВЛЕНИЕ ЗАПУЩЕННЫМИ БОТАМИ ---
+# --- УПРАВЛЕНИЕ БОТАМИ ---
 active_tasks: Dict[str, asyncio.Task] = {}
 active_bots: Dict[str, Bot] = {}
 
@@ -165,299 +159,380 @@ def is_bot_active(bot_id: str) -> bool:
     return bot_id in active_tasks and not active_tasks[bot_id].done()
 
 def check_license(bot_cfg: dict) -> bool:
-    expires = bot_cfg.get("licenseExpiresAt", 0)
-    return int(expires) > int(time.time() * 1000)
+    return int(bot_cfg.get("licenseExpiresAt", 0)) > int(time.time() * 1000)
 
-def format_log_entry(msg: str, level: str = "info"):
-    return {
-        "id": str(uuid.uuid4()),
-        "timestamp": int(time.time() * 1000),
-        "type": level,
-        "text": msg
-    }
-
-# --- ВОРКЕР AIOGRAM ---
 async def start_bot_worker(bot_id: str, token: str):
-    logger.info(f"Starting worker for bot {bot_id}")
+    logger.info(f"Worker for bot {bot_id} started")
     session = AiohttpSession()
     bot = Bot(token=token, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     active_bots[bot_id] = bot
     dp = Dispatcher()
     
-    def get_config():
+    def get_cfg(): 
         return next((b for b in db_content["bots"] if b["id"] == bot_id), None)
 
-    def log_event(text: str, level: str = "info"):
-        cfg = get_config()
-        if cfg:
-            if "logs" not in cfg: cfg["logs"] = []
-            cfg["logs"].insert(0, format_log_entry(text, level))
-            cfg["logs"] = cfg["logs"][:100]
+    def log_evt(msg: str, lvl: str = "info"):
+        c = get_cfg()
+        if c:
+            if "logs" not in c: c["logs"] = []
+            c["logs"].insert(0, {"id": str(uuid.uuid4()), "timestamp": int(time.time()*1000), "type": lvl, "text": msg})
+            c["logs"] = c["logs"][:100]
 
-    def update_msg_stats(direction: str):
-        cfg = get_config()
-        if not cfg: return
-        if "stats" not in cfg: 
-            cfg["stats"] = {"totalMessages": 0, "incomingToday": 0, "outgoingToday": 0, "history": []}
+    def update_stats(direction: str):
+        c = get_cfg()
+        if not c: return
+        if "stats" not in c: 
+            c["stats"] = {"totalMessages": 0, "incomingToday": 0, "outgoingToday": 0, "history": []}
         
-        cfg["stats"]["totalMessages"] += 1
-        today_str = datetime.now().strftime("%d.%m")
-        history = cfg["stats"].get("history", [])
-        day_stat = next((h for h in history if h["date"] == today_str), None)
+        c["stats"]["totalMessages"] += 1
+        today = datetime.now().strftime("%d.%m")
+        history = c["stats"].get("history", [])
+        day_stat = next((h for h in history if h["date"] == today), None)
         
         if not day_stat:
-            day_stat = {"date": today_str, "incoming": 0, "outgoing": 0, "totalUsers": len(cfg.get("connectedUsers", []))}
+            day_stat = {
+                "date": today, 
+                "incoming": 0, 
+                "outgoing": 0, 
+                "totalUsers": len(c.get("connectedUsers", [])),
+                "activeUsers": 0
+            }
             history.append(day_stat)
         
-        if direction == "in":
-            cfg["stats"]["incomingToday"] += 1
+        if direction == "in": 
             day_stat["incoming"] += 1
-        else:
-            cfg["stats"]["outgoingToday"] += 1
+        else: 
             day_stat["outgoing"] += 1
             
-        cfg["stats"]["history"] = history[-14:]
+        c["stats"]["history"] = history[-14:]
         save_db()
 
+    # --- HANDLERS ---
+    
     @dp.message(CommandStart())
-    async def handle_start(m: Message):
-        cfg = get_config()
+    async def h_start(m: Message):
+        cfg = get_cfg()
         if not cfg or not check_license(cfg): return
         
-        if "connectedUsers" not in cfg: cfg["connectedUsers"] = []
-        user = next((u for u in cfg["connectedUsers"] if u["id"] == m.from_user.id), None)
-        if not user:
-            user = {
-                "id": m.from_user.id, "first_name": m.from_user.first_name, "username": m.from_user.username,
-                "joined_at": int(time.time() * 1000), "is_banned": False, "is_active": True, "warns": 0, "thread_id": None
-            }
-            cfg["connectedUsers"].append(user)
-        else:
-            user["is_active"] = True
+        users = cfg.get("connectedUsers", [])
+        u = next((u for u in users if u["id"] == m.from_user.id), None)
         
+        if not u:
+            u = {
+                "id": m.from_user.id, 
+                "first_name": m.from_user.first_name, 
+                "username": m.from_user.username, 
+                "joined_at": int(time.time()*1000), 
+                "is_active": True, 
+                "is_banned": False,
+                "warns": 0,
+                "thread_id": None
+            }
+            users.append(u)
+            cfg["connectedUsers"] = users
+        else:
+            u["is_active"] = True
+            u["username"] = m.from_user.username
+            u["first_name"] = m.from_user.first_name
+
         if "subscribers" not in cfg: cfg["subscribers"] = []
         if m.from_user.id not in cfg["subscribers"]: cfg["subscribers"].append(m.from_user.id)
         
-        save_db()
-        log_event(f"User {m.from_user.id} started the bot", "system")
-        update_msg_stats("out")
-
-        buttons = cfg.get("buttons", [])
+        log_evt(f"User {m.from_user.id} (@{m.from_user.username}) started bot", "system")
+        update_stats("out")
+        
+        btns = cfg.get("buttons", [])
         reply_markup = None
-        if buttons:
-            kb_list = [[KeyboardButton(text=btn.text)] for btn in buttons if btn.text]
-            reply_markup = ReplyKeyboardMarkup(keyboard=kb_list, resize_keyboard=True)
-
+        if btns:
+            kb = [[KeyboardButton(text=b.text)] for b in btns if b.text]
+            reply_markup = ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+            
         await m.answer(cfg.get("welcomeMessage", "Привет!"), reply_markup=reply_markup)
 
-    @dp.message()
-    async def main_handler(m: Message):
-        cfg = get_config()
+    @dp.message(F.content_type.in_({
+        ContentType.TEXT, ContentType.PHOTO, ContentType.VIDEO, 
+        ContentType.VOICE, ContentType.AUDIO, ContentType.DOCUMENT, 
+        ContentType.STICKER, ContentType.VIDEO_NOTE, ContentType.ANIMATION
+    }))
+    async def h_main(m: Message):
+        cfg = get_cfg()
         if not cfg or not check_license(cfg): return
-        admin_chat = cfg.get("adminChatId")
-        if not admin_chat: return
+        admin = cfg.get("adminChatId")
+        if not admin: return
 
-        # АДМИН
-        if str(m.chat.id) == str(admin_chat):
-            target_id = None
+        # 1. ЛОГИКА АДМИНА
+        if str(m.chat.id) == str(admin):
+            tid = None
+            # А) По топику
             if m.message_thread_id:
                 u = next((u for u in cfg.get("connectedUsers", []) if u.get("thread_id") == m.message_thread_id), None)
-                if u: target_id = u["id"]
-            if not target_id and m.reply_to_message:
-                reply_text = m.reply_to_message.text or m.reply_to_message.caption or ""
-                match = re.search(r"ID: (\d+)", reply_text)
-                if match: target_id = int(match.group(1))
-
-            if target_id:
+                if u: tid = u["id"]
+            
+            # Б) По реплаю (Livegram Style)
+            if not tid and m.reply_to_message:
+                r_text = m.reply_to_message.text or m.reply_to_message.caption or ""
+                match = re.search(r"ID: (\d+)", r_text)
+                if match: tid = int(match.group(1))
+            
+            if tid:
                 try:
-                    await bot.copy_message(chat_id=target_id, from_chat_id=m.chat.id, message_id=m.message_id)
-                    log_event(f"Admin replied to {target_id}", "outgoing")
-                    update_msg_stats("out")
-                except Exception as e:
-                    await m.reply(f"❌ Ошибка отправки: {e}")
+                    await bot.copy_message(chat_id=tid, from_chat_id=m.chat.id, message_id=m.message_id)
+                    log_evt(f"Admin replied to {tid}", "outgoing")
+                    update_stats("out")
+                except TelegramForbiddenError:
+                    await m.reply("❌ Пользователь заблокировал бота.")
+                except Exception as e: 
+                    await m.reply(f"❌ Ошибка: {e}")
             return
 
-        # ПОЛЬЗОВАТЕЛЬ
-        user = next((u for u in cfg.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
-        if not user or user.get("is_banned"): return
+        # 2. ЛОГИКА ЮЗЕРА
+        u = next((u for u in cfg.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
+        if not u:
+            # Авто-регистрация если юзер не прожал /start
+            u = {
+                "id": m.from_user.id, "first_name": m.from_user.first_name, 
+                "username": m.from_user.username, "joined_at": int(time.time()*1000), 
+                "is_active": True, "is_banned": False, "warns": 0, "thread_id": None
+            }
+            if "connectedUsers" not in cfg: cfg["connectedUsers"] = []
+            cfg["connectedUsers"].append(u)
+            
+        if u.get("is_banned"): 
+            return
 
+        # Кнопки и триггеры (только для текста)
         if m.text:
             text_low = m.text.lower()
             for btn in cfg.get("buttons", []):
                 if btn.text.lower() == text_low:
                     if btn.type == "request":
                         tmpl = btn.adminTemplate or "📩 Обращение: {{button}}\nОт: {{name}} (ID: {{id}})"
-                        header = tmpl.replace("{{button}}", btn.text)\
-                                    .replace("{{name}}", m.from_user.full_name)\
-                                    .replace("{{id}}", str(m.from_user.id))\
-                                    .replace("{{username}}", f"@{m.from_user.username}" if m.from_user.username else "N/A")
-                        await bot.send_message(admin_chat, header, message_thread_id=user.get("thread_id"))
+                        header = tmpl.replace("{{button}}", btn.text).replace("{{name}}", m.from_user.full_name).replace("{{id}}", str(m.from_user.id))
+                        await bot.send_message(admin, header, message_thread_id=u.get("thread_id"))
                     await m.answer(btn.response)
-                    log_event(f"User clicked button: {btn.text}", "incoming")
-                    update_msg_stats("in")
+                    log_evt(f"User clicked: {btn.text}", "incoming")
+                    update_stats("in")
                     return
             
-            for trig in cfg.get("triggers", []):
-                if trig.keyword.lower() in text_low:
-                    await m.answer(trig.response)
-                    update_msg_stats("in")
+            for trg in cfg.get("triggers", []):
+                if trg.keyword.lower() in text_low:
+                    await m.answer(trg.response)
+                    update_stats("in")
                     return
 
-        # ПЕРЕСЫЛКА (Livegram)
+        # LIVEGRAM FORWARDING
         try:
-            if cfg.get("settings", {}).get("useTopics") and not user.get("thread_id"):
+            # Работа с топиками
+            if cfg.get("settings", {}).get("useTopics") and not u.get("thread_id"):
                 try:
-                    topic = await bot.create_forum_topic(admin_chat, f"{m.from_user.full_name} | {m.from_user.id}")
-                    user["thread_id"] = topic.message_thread_id
+                    topic = await bot.create_forum_topic(admin, f"{m.from_user.first_name} | {m.from_user.id}")
+                    u["thread_id"] = topic.message_thread_id
                     save_db()
-                except: pass
+                    await bot.send_message(
+                        admin, 
+                        f"🆕 <b>Новый диалог</b>\n👤 Юзер: {m.from_user.full_name}\n🆔 ID: <code>{m.from_user.id}</code>",
+                        message_thread_id=u["thread_id"]
+                    )
+                except Exception as e:
+                    logger.error(f"Topic creation failed: {e}")
 
-            if not user.get("thread_id"):
-                header = f"📩 <b>От:</b> {m.from_user.full_name}\n🆔 ID: <code>{m.from_user.id}</code>"
-                await bot.send_message(admin_chat, header)
+            # Если нет топиков - шлем заголовок Livegram
+            if not u.get("thread_id"):
+                header = f"📩 <b>Сообщение от:</b> {m.from_user.full_name}\n🆔 ID: <code>{m.from_user.id}</code>"
+                if m.from_user.username:
+                    header += f"\n🔗 Профиль: @{m.from_user.username}"
+                await bot.send_message(admin, header)
             
-            await bot.copy_message(chat_id=admin_chat, from_chat_id=m.chat.id, message_id=m.message_id, message_thread_id=user.get("thread_id"))
-            log_event(f"Forwarded msg from {m.from_user.id}", "incoming")
-            update_msg_stats("in")
+            # Пересылаем контент
+            await bot.copy_message(
+                chat_id=admin, 
+                from_chat_id=m.chat.id, 
+                message_id=m.message_id, 
+                message_thread_id=u.get("thread_id")
+            )
+            
+            log_evt(f"Forwarded from {m.from_user.id}", "incoming")
+            update_stats("in")
+            
         except Exception as e:
-            logger.error(f"Forward Error: {e}")
+            logger.error(f"Global forward error: {e}")
 
+    # Запуск поллинга
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
+    except Exception as e:
+        log_evt(f"Critical Error: {e}", "error")
     finally:
         await session.close()
         active_bots.pop(bot_id, None)
 
 # --- API ---
-api_router = APIRouter()
+app = FastAPI(title="BotEngine Pro Server v2.5")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-@api_router.get("/ping")
-async def ping():
-    return {"status": "ok", "active": len(active_bots)}
+api = APIRouter()
 
-@api_router.post("/auth/request-verification")
-async def request_verif(req: Dict[str, str], background_tasks: BackgroundTasks):
+@api.get("/ping")
+async def ping(): 
+    return {"status": "ok", "active_workers": len(active_bots), "uptime": "stable"}
+
+@api.post("/auth/request-verification")
+async def req_ver(req: Dict[str, str], bg: BackgroundTasks):
     email = req.get("email", "").lower().strip()
     if not email: raise HTTPException(400, "Email required")
     code = "".join([str(random.randint(0, 9)) for _ in range(6)])
     db_content["verification_codes"][email] = {"code": code, "expires": time.time() + 600}
-    background_tasks.add_task(EmailService.send_verification_code, email, code)
+    bg.add_task(EmailService.send_verification_code, email, code)
     return {"status": "ok"}
 
-@api_router.post("/auth/register")
+@api.post("/auth/register")
+@api.post("/auth/verify-and-register")
 async def register(req: RegisterRequest):
     email = req.email.lower().strip()
     v = db_content["verification_codes"].get(email)
-    if not v or v["code"] != req.code: raise HTTPException(400, "Код неверен")
+    if not v or v["code"] != req.code: raise HTTPException(400, "Неверный код")
     if any(u["email"] == email for u in db_content["users"]): raise HTTPException(400, "Email занят")
-    user = {"id": str(uuid.uuid4()), "username": req.username, "email": email, "password": req.password, "balance": 0, "licenseExpiresAt": int((datetime.now() + timedelta(days=3)).timestamp() * 1000)}
+    
+    user = {
+        "id": str(uuid.uuid4()), 
+        "username": req.username, 
+        "email": email, 
+        "password": req.password, 
+        "balance": 0, 
+        "licenseExpiresAt": int((datetime.now() + timedelta(days=3)).timestamp()*1000)
+    }
     db_content["users"].append(user)
     save_db()
     return user
 
-@api_router.post("/auth/login")
+@api.post("/auth/login")
 async def login(req: AuthRequest):
     email = req.email.lower().strip()
     u = next((u for u in db_content["users"] if u["email"] == email and u["password"] == req.password), None)
     if not u: raise HTTPException(401, "Invalid credentials")
     return u
 
-@api_router.post("/auth/forgot-password")
-async def forgot_password(req: Dict[str, str], background_tasks: BackgroundTasks):
-    email = req.get("email", "").lower().strip()
-    user = next((u for u in db_content["users"] if u["email"] == email), None)
-    if not user: raise HTTPException(404, "User not found")
-    code = "".join([str(random.randint(0, 9)) for _ in range(6)])
-    db_content["verification_codes"][email] = {"code": code, "expires": time.time() + 600}
-    background_tasks.add_task(EmailService.send_password_reset, email, code)
-    return {"status": "ok"}
-
-@api_router.post("/auth/reset-password")
-async def reset_password(req: ResetPasswordRequest):
-    email = req.email.lower().strip()
-    v = db_content["verification_codes"].get(email)
-    if not v or v["code"] != req.code: raise HTTPException(400, "Bad code")
-    user = next((u for u in db_content["users"] if u["email"] == email), None)
-    if user:
-        user["password"] = req.newPassword
-        save_db()
-        return {"status": "ok"}
-    raise HTTPException(404)
-
-@api_router.get("/bots/{user_id}")
-async def get_bots(user_id: str):
-    user_bots = [b for b in db_content["bots"] if str(b["ownerId"]) == str(user_id)]
-    for b in user_bots:
+@api.get("/bots/{uid}")
+async def get_bots(uid: str):
+    user_bots = [b for b in db_content["bots"] if str(b["ownerId"]) == str(uid)]
+    for b in user_bots: 
         b["status"] = "RUNNING" if is_bot_active(b["id"]) else "IDLE"
     return user_bots
 
-@api_router.post("/bots/save")
-async def save_bot(bot_data: BotSaveRequest):
-    idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_data.id), -1)
-    new_data = bot_data.dict()
+@api.post("/bots/save")
+async def save_bot_api(bdata: BotSaveRequest):
+    idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bdata.id), -1)
+    new_d = bdata.dict()
+    
     if idx >= 0:
         old = db_content["bots"][idx]
-        new_data.update({"logs": old.get("logs", []), "stats": old.get("stats", {}), "licenseExpiresAt": old.get("licenseExpiresAt", 0), "subscribers": old.get("subscribers", [])})
-        db_content["bots"][idx] = new_data
+        # Сохраняем критические данные, которые не приходят с фронта в упрощенном виде
+        new_d.update({
+            "logs": old.get("logs", []), 
+            "stats": old.get("stats", {}), 
+            "licenseExpiresAt": old.get("licenseExpiresAt", 0), 
+            "subscribers": old.get("subscribers", [])
+        })
+        db_content["bots"][idx] = new_d
     else:
-        new_data.update({"logs": [], "stats": {"totalMessages": 0, "history": []}, "licenseExpiresAt": int((datetime.now() + timedelta(days=3)).timestamp() * 1000), "subscribers": []})
-        db_content["bots"].append(new_data)
+        new_d.update({
+            "logs": [], 
+            "stats": {"totalMessages": 0, "history": []}, 
+            "licenseExpiresAt": int((datetime.now() + timedelta(days=3)).timestamp()*1000), 
+            "subscribers": []
+        })
+        db_content["bots"].append(new_d)
+    
     save_db()
     return {"status": "ok"}
 
-@api_router.post("/bots/start/{bot_id}")
-async def start_bot_api(bot_id: str):
-    cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-    if not cfg or not check_license(cfg): raise HTTPException(403)
-    if not is_bot_active(bot_id):
-        active_tasks[bot_id] = asyncio.create_task(start_bot_worker(bot_id, cfg["token"]))
+@api.post("/bots/start/{bid}")
+async def start_api(bid: str):
+    c = next((b for b in db_content["bots"] if b["id"] == bid), None)
+    if not c or not check_license(c): raise HTTPException(403, "Лицензия неактивна")
+    
+    if not is_bot_active(bid): 
+        active_tasks[bid] = asyncio.create_task(start_bot_worker(bid, c["token"]))
     return {"status": "ok"}
 
-@api_router.post("/bots/stop/{bot_id}")
-async def stop_bot_api(bot_id: str):
-    task = active_tasks.pop(bot_id, None)
-    if task: task.cancel()
+@api.post("/bots/stop/{bid}")
+async def stop_api(bid: str):
+    t = active_tasks.pop(bid, None)
+    if t: t.cancel()
     return {"status": "ok"}
 
-@api_router.delete("/bots/delete/{bot_id}")
-async def delete_bot_api(bot_id: str):
-    await stop_bot_api(bot_id)
-    db_content["bots"] = [b for b in db_content["bots"] if b["id"] != bot_id]
+@api.delete("/bots/delete/{bid}")
+async def del_api(bid: str):
+    await stop_api(bid)
+    db_content["bots"] = [b for b in db_content["bots"] if b["id"] != bid]
     save_db()
     return {"status": "ok"}
 
-@api_router.post("/license/activate")
-async def activate(req: LicenseActivateRequest):
-    bot_cfg = next((b for b in db_content["bots"] if b["id"] == req.botId), None)
-    key_obj = next((k for k in db_content["issued_keys"] if k["key"] == req.key and not k.get("used")), None)
-    if not bot_cfg or not key_obj: raise HTTPException(400)
-    now = int(time.time() * 1000)
-    bot_cfg["licenseExpiresAt"] = max(bot_cfg.get("licenseExpiresAt", now), now) + (key_obj["months"] * 30 * 24 * 3600 * 1000)
-    key_obj["used"] = True
-    save_db()
-    return {"status": "ok", "newExpiry": bot_cfg["licenseExpiresAt"]}
+@api.post("/broadcast")
+async def broadcast_api(req: BroadcastRequest):
+    total = 0
+    errors = 0
+    for bid in req.botIds:
+        bot = active_bots.get(bid)
+        cfg = next((b for b in db_content["bots"] if b["id"] == bid), None)
+        if not bot or not cfg: continue
+        
+        subs = cfg.get("subscribers", [])
+        for sid in subs:
+            try:
+                await bot.send_message(sid, req.message)
+                total += 1
+                await asyncio.sleep(0.05) # Плавная рассылка
+            except:
+                errors += 1
+    return {"success": total, "failed": errors}
 
-@api_router.post("/admin/generate-key")
-async def gen_key(req: Dict[str, int], x_admin_token: str = Header(None)):
+@api.post("/license/activate")
+async def act_api(req: LicenseActivateRequest):
+    bc = next((b for b in db_content["bots"] if b["id"] == req.botId), None)
+    ko = next((k for k in db_content["issued_keys"] if k["key"] == req.key and not k.get("used")), None)
+    
+    if not bc or not ko: raise HTTPException(400, "Ключ не найден или бот не существует")
+    
+    now = int(time.time()*1000)
+    bc["licenseExpiresAt"] = max(bc.get("licenseExpiresAt", now), now) + (ko["months"]*30*24*3600*1000)
+    ko["used"] = True
+    ko["used_by"] = req.botId
+    
+    save_db()
+    return {"status": "ok", "newExpiry": bc["licenseExpiresAt"]}
+
+@api.post("/admin/generate-key")
+async def gen_api(req: Dict[str, int], x_admin_token: str = Header(None)):
     if x_admin_token != ADMIN_SECRET: raise HTTPException(403)
-    key = f"BOT-{req.get('months', 1)}-{secrets.token_hex(4).upper()}"
-    db_content["issued_keys"].append({"key": key, "months": req.get("months", 1), "used": False})
+    
+    months = req.get('months', 1)
+    k = f"BOT-{months}-{secrets.token_hex(4).upper()}"
+    db_content["issued_keys"].append({
+        "key": k, 
+        "months": months, 
+        "used": False,
+        "created_at": int(time.time()*1000)
+    })
     save_db()
-    return {"key": key}
+    return {"key": k}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_db()
+    # Автозапуск ботов
     for b in db_content["bots"]:
         if b.get("status") == "RUNNING" and check_license(b):
             active_tasks[b["id"]] = asyncio.create_task(start_bot_worker(b["id"], b["token"]))
     yield
-    for t in active_tasks.values(): t.cancel()
+    # Остановка при выключении
+    for t in active_tasks.values(): 
+        t.cancel()
 
-app = FastAPI(title="BotEngine Pro", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-app.include_router(api_router, prefix="/api")
+app.router.lifespan_context = lifespan
+app.include_router(api, prefix="/api")
+app.include_router(api) # Для поддержки прямых вызовов без /api
 
 if __name__ == "__main__":
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)
