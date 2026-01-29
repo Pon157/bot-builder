@@ -254,8 +254,7 @@ async def lifespan(app: FastAPI):
     yield
     for t in active_tasks.values(): t.cancel()
 
-# Добавлен redirect_slashes=False для совместимости с Nginx
-app = FastAPI(lifespan=lifespan, redirect_slashes=False)
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
