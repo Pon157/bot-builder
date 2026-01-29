@@ -1,10 +1,10 @@
 
 import { BotConfig, User } from '../types';
 
+// Используем относительный путь, чтобы Nginx на порту 80/443 мог проксировать запросы
 const API_BASE = '/api';
 
 const fetchWithTimeout = async (path: string, options: any = {}) => {
-  // Убираем принудительный слеш. Маршруты в FastAPI определены БЕЗ слеша на конце.
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
   const url = `${API_BASE}${cleanPath}`;
   
@@ -22,7 +22,7 @@ const fetchWithTimeout = async (path: string, options: any = {}) => {
     
     if (response.status === 405) {
       console.error(`❌ 405 Method Not Allowed на ${url}.`);
-      console.log("%cПРИЧИНА: Nginx блокирует POST запрос. Убедитесь, что в конфиге Nginx блок /api/ стоит ПЕРЕД блоком location / и использует proxy_pass.", "color: orange; font-weight: bold;");
+      console.log("%cРЕШЕНИЕ: Проверьте конфиг Nginx! Блок 'location ^~ /api/ { proxy_pass http://127.0.0.1:8000/api/; }' должен быть выше, чем 'location /'.", "color: orange; font-weight: bold;");
     }
     
     return response;
@@ -30,18 +30,6 @@ const fetchWithTimeout = async (path: string, options: any = {}) => {
     console.error(`❌ Network Error (${url}):`, error.message);
     throw error;
   }
-};
-
-const DEFAULT_SETTINGS = {
-  useTopics: false,
-  topicPerRequest: false,
-  forwardToAdmin: true,
-  antiSpam: true,
-  showUserInfo: true,
-  showUsername: true,
-  autoApproveJoin: false,
-  rateLimit: 15,
-  autoBanThreshold: 0
 };
 
 export const api = {
@@ -54,9 +42,10 @@ export const api = {
 
   login: async (email: string, password: string): Promise<User | null> => {
     try {
+      // Fix: replaced .strip() with .trim() as .strip() is not a native JS string method
       const response = await fetchWithTimeout('/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify({ email: email.toLowerCase().trim(), password })
       });
       if (!response.ok) return null;
       return await response.json();
@@ -65,9 +54,10 @@ export const api = {
 
   requestVerification: async (email: string): Promise<boolean | string> => {
     try {
+      // Fix: replaced .strip() with .trim() as .strip() is not a native JS string method
       const response = await fetchWithTimeout('/auth/verify-request', {
         method: 'POST',
-        body: JSON.stringify({ email })
+        body: JSON.stringify({ email: email.toLowerCase().trim() })
       });
       if (response.ok) return true;
       const data = await response.json();
@@ -90,16 +80,7 @@ export const api = {
       const response = await fetchWithTimeout(`/bots/${userId}`);
       if (!response.ok) return [];
       const rows = await response.json();
-      return rows.map((row: any) => ({
-        ...row,
-        ...row.config,
-        ownerId: row.owner_id,
-        licenseExpiresAt: row.license_expires_at,
-        settings: { ...DEFAULT_SETTINGS, ...(row.config?.settings || {}) },
-        stats: row.stats || { totalMessages: 0, incomingToday: 0, outgoingToday: 0, history: [] },
-        connectedUsers: row.config?.connectedUsers || [],
-        logs: row.config?.logs || []
-      }));
+      return rows;
     } catch (e) { return []; }
   },
 
@@ -156,9 +137,10 @@ export const api = {
 
   forgotPassword: async (email: string): Promise<boolean | string> => {
     try {
+      // Fix: replaced .strip() with .trim() as .strip() is not a native JS string method
       const response = await fetchWithTimeout('/auth/forgot-password', {
         method: 'POST',
-        body: JSON.stringify({ email })
+        body: JSON.stringify({ email: email.toLowerCase().trim() })
       });
       if (response.ok) return true;
       const data = await response.json();
