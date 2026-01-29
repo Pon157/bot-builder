@@ -1,10 +1,8 @@
 
 import { BotConfig, User } from '../types';
 
-const API_BASE = (import.meta as any).env?.VITE_API_URL || 
-  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-    ? `${window.location.protocol}//${window.location.hostname}:8000/api` 
-    : `${window.location.origin}/api`);
+// Используем относительный путь, чтобы запросы шли через Vite Proxy
+const API_BASE = '/api';
 
 const fetchWithTimeout = async (url: string, options: any = {}, timeout = 15000) => {
   const controller = new AbortController();
@@ -50,7 +48,6 @@ export const api = {
     } catch (e) { return null; }
   },
 
-  // FIX: Added missing authentication methods
   requestVerification: async (email: string): Promise<boolean | string> => {
     try {
       const response = await fetchWithTimeout(`${API_BASE}/auth/verify-request`, {
@@ -124,7 +121,6 @@ export const api = {
 
   saveBot: async (userId: string, bot: BotConfig): Promise<void> => {
     try {
-      // Сервер ожидает ownerId и id в корне, остальное в конфиге (сервер сам разложит)
       await fetchWithTimeout(`${API_BASE}/bots/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
