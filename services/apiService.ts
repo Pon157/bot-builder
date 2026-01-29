@@ -1,118 +1,151 @@
 
 import { BotConfig, User } from '../types';
 
-const API_BASE = `${window.location.protocol}//${window.location.hostname}:8000/api`;
+/**
+ * apiService.ts
+ * Сервис для взаимодействия с FastAPI бэкендом.
+ * Автоматически подстраивается под VITE_API_URL или использует относительные пути.
+ */
 
-const fetchWithTimeout = async (url: string, options: any = {}, timeout = 10000) => {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeout);
+const API_BASE = (import.meta as any).env?.VITE_API_URL || '/api';
+
+const request = async (path: string, method = 'GET', body?: any) => {
+  // Очистка путей для предотвращения двойных слешей
+  const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+  const cleanBase = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
+  const url = `${cleanBase}/${cleanPath}`;
+  
   try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    clearTimeout(id);
-    return response;
-  } catch (error) {
-    clearTimeout(id);
-    throw error;
+    const response = await fetch(url, {
+      method,
+      headers: { 
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: body ? JSON.stringify(body) : undefined
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errorMessage = `Ошибка ${response.status}`;
+      try {
+        const errorJson = JSON.parse(errorText);
+        errorMessage = errorJson.detail || errorMessage;
+      } catch (e) {
+        if (errorText.includes('nginx')) {
+          errorMessage = 'Nginx вернул ошибку. Проверьте конфигурацию прокси (404/405).';
+        } else {
+          errorMessage = errorText || errorMessage;
+        }
+      }
+      throw new Error(errorMessage);
+    }
+    
+    return response.json();
+  } catch (e: any) {
+    console.error(`[API Request Failed] ${method} ${url}:`, e);
+    throw e;
   }
 };
 
 export const api = {
+  /** Проверка связи с бэкендом */
   checkConnection: async (): Promise<boolean> => {
     try {
-      const res = await fetchWithTimeout(`${API_BASE}/ping`, { method: 'GET' }, 3000);
-      return res.ok;
-    } catch (e) { return false; }
-  },
-
-  login: async (email: string, password: string): Promise<User | null> => {
-    try {
-      const response = await fetchWithTimeout(`${API_BASE}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
-      });
-      return response.ok ? await response.json() : null;
-    } catch (e) { return null; }
-  },
-
-  register: async (userData: any): Promise<User | null> => {
-    try {
-      const response = await fetchWithTimeout(`${API_BASE}/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(userData)
-      });
-      return response.ok ? await response.json() : null;
-    } catch (e) { return null; }
-  },
-
-  activateLicense: async (botId: string, key: string): Promise<any> => {
-    try {
-      const response = await fetchWithTimeout(`${API_BASE}/license/activate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ botId, key })
-      });
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.detail || "Activation failed");
-      }
-      return await response.json();
-    } catch (e: any) { 
-      alert(e.message);
-      return null; 
+      const res = await request('ping');
+      return res && res.status === 'online';
+    } catch (e) { 
+      return false; 
     }
   },
 
+  /** Авторизация */
+  login: async (email, password): Promise<User> => {
+    return await request('auth/login', 'POST', { email, password });
+  },
+
+  /** Запрос кода верификации (регистрация) */
+  requestVerification: async (email: string): Promise<boolean | string> => {
+    try {
+      await request('auth/request-verification', 'POST', { email });
+      return true;
+    } catch (e: any) {
+      return e.message;
+    }
+  },
+
+  /** Верификация и создание аккаунта */
+  verifyAndRegister: async (data: any): Promise<User> => {
+    return await request('auth/verify-and-register', 'POST', data);
+  },
+
+  /** Запрос кода восстановления пароля */
+  forgotPassword: async (email: string): Promise<boolean | string> => {
+    try {
+      await request('auth/forgot-password', 'POST', { email });
+      return true;
+    } catch (e: any) {
+      return e.message;
+    }
+  },
+
+  /** Сброс пароля с кодом */
+  resetPassword: async (data: any): Promise<boolean> => {
+    try {
+      await request('auth/reset-password', 'POST', data);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  /** Боты: получение списка */
   getBots: async (userId: string): Promise<BotConfig[]> => {
     try {
-      const response = await fetchWithTimeout(`${API_BASE}/bots/${userId}`);
-      return response.ok ? await response.json() : [];
-    } catch (e) { return []; }
+      return await request(`bots/${userId}`);
+    } catch (e) { 
+      console.warn("Could not fetch bots, returning empty list.");
+      return []; 
+    }
   },
 
+  /** Боты: сохранение конфигурации */
   saveBot: async (userId: string, bot: BotConfig): Promise<void> => {
-    try {
-      await fetchWithTimeout(`${API_BASE}/bots/save`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(bot)
-      });
-    } catch (e) { console.error("Failed to save bot"); }
+    await request('bots/save', 'POST', bot);
   },
 
+  /** Боты: удаление */
   deleteBot: async (userId: string, botId: string): Promise<void> => {
-    try {
-      await fetchWithTimeout(`${API_BASE}/bots/delete/${botId}`, {
-        method: 'DELETE'
-      });
-    } catch (e) { console.error("Failed to delete bot"); }
+    await request(`bots/delete/${botId}`, 'DELETE');
   },
 
+  /** Боты: запуск процесса на сервере */
   startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
     try {
-      const res = await fetchWithTimeout(`${API_BASE}/bots/start/${bot.id}`, { method: 'POST' });
-      if (res.ok) return true;
-      const errorData = await res.json();
-      return errorData.detail || "Error";
-    } catch (e) { return "Network Error"; }
+      await request(`bots/start/${bot.id}`, 'POST');
+      return true;
+    } catch (e: any) {
+      return e.message;
+    }
   },
 
+  /** Боты: остановка процесса */
   stopBotOnServer: async (botId: string): Promise<boolean> => {
     try {
-      const res = await fetchWithTimeout(`${API_BASE}/bots/stop/${botId}`, { method: 'POST' });
-      return res.ok;
-    } catch (e) { return false; }
+      await request(`bots/stop/${botId}`, 'POST');
+      return true;
+    } catch { 
+      return false; 
+    }
   },
 
+  /** Рассылка */
   sendBroadcast: async (botIds: string[], message: string): Promise<any> => {
-    try {
-      const res = await fetchWithTimeout(`${API_BASE}/broadcast`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ botIds, message })
-      });
-      return res.ok ? await res.json() : null;
-    } catch (e) { return null; }
+    return await request('broadcast', 'POST', { botIds, message });
+  },
+
+  /** Лицензии: активация ключа */
+  activateLicense: async (botId: string, key: string): Promise<any> => {
+    return await request('license/activate', 'POST', { botId, key });
   }
 };
