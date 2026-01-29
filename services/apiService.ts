@@ -4,13 +4,8 @@ import { BotConfig, User } from '../types';
 const API_BASE = '/api';
 
 const fetchWithTimeout = async (path: string, options: any = {}) => {
-  // Для Nginx и FastAPI критично, чтобы POST запросы на эндпоинты имели единообразный формат.
-  // Добавляем слеш в конце, если его нет, для всех внутренних путей.
-  let cleanPath = path.startsWith('/') ? path : `/${path}`;
-  if (!cleanPath.endsWith('/')) {
-    cleanPath = `${cleanPath}/`;
-  }
-
+  // Убираем принудительный слеш. Маршруты в FastAPI определены БЕЗ слеша на конце.
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
   const url = `${API_BASE}${cleanPath}`;
   
   console.log(`📡 Sending ${options.method || 'GET'} to: ${url}`);
@@ -27,7 +22,7 @@ const fetchWithTimeout = async (path: string, options: any = {}) => {
     
     if (response.status === 405) {
       console.error(`❌ 405 Method Not Allowed на ${url}.`);
-      console.log("%cРЕШЕНИЕ: Проверьте Nginx! Используйте 'location ^~ /api/ { proxy_pass http://127.0.0.1:8000/api/; }'", "color: yellow; font-weight: bold;");
+      console.log("%cПРИЧИНА: Nginx блокирует POST запрос. Убедитесь, что в конфиге Nginx блок /api/ стоит ПЕРЕД блоком location / и использует proxy_pass.", "color: orange; font-weight: bold;");
     }
     
     return response;
