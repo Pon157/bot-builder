@@ -1,18 +1,27 @@
 
 import { BotConfig, User } from '../types';
 
-// Используем относительный путь, чтобы запросы шли через Vite Proxy
+// Используем относительный путь, чтобы запросы шли через Vite Proxy в деве
+// или напрямую через Nginx в проде (если фронт и бэк на одном домене)
 const API_BASE = '/api';
 
 const fetchWithTimeout = async (url: string, options: any = {}, timeout = 15000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
+    const response = await fetch(url, { 
+      ...options, 
+      signal: controller.signal,
+      headers: {
+        'Accept': 'application/json',
+        ...(options.headers || {})
+      }
+    });
     clearTimeout(id);
     return response;
   } catch (error) {
     clearTimeout(id);
+    console.error(`Fetch error for ${url}:`, error);
     throw error;
   }
 };
@@ -44,7 +53,12 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
       });
-      return response.ok ? await response.json() : null;
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error("Login failed:", errorData.detail || response.statusText);
+        return null;
+      }
+      return await response.json();
     } catch (e) { return null; }
   },
 
