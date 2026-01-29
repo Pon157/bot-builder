@@ -1,64 +1,118 @@
 
 import { BotConfig, User } from '../types';
 
-// Если мы на продакшене, используем текущий домен, если в разработке - localhost
-const API_BASE = '/api'; 
+const API_BASE = `${window.location.protocol}//${window.location.hostname}:8000/api`;
 
-const request = async (path: string, method = 'GET', body?: any) => {
-  const url = `${API_BASE}/${path.startsWith('/') ? path.slice(1) : path}`;
-  
+const fetchWithTimeout = async (url: string, options: any = {}, timeout = 10000) => {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
   try {
-    const response = await fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined
-    });
-
-    if (!response.ok) {
-      const err = await response.text();
-      throw new Error(err || `Status ${response.status}`);
-    }
-    return response.json();
-  } catch (e: any) {
-    console.error(`API Error on ${url}:`, e);
-    throw e;
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(id);
+    return response;
+  } catch (error) {
+    clearTimeout(id);
+    throw error;
   }
 };
 
 export const api = {
-  checkConnection: async () => {
+  checkConnection: async (): Promise<boolean> => {
     try {
-      const res = await request('ping');
-      return res && res.status === 'online';
-    } catch {
-      return false;
+      const res = await fetchWithTimeout(`${API_BASE}/ping`, { method: 'GET' }, 3000);
+      return res.ok;
+    } catch (e) { return false; }
+  },
+
+  login: async (email: string, password: string): Promise<User | null> => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      return response.ok ? await response.json() : null;
+    } catch (e) { return null; }
+  },
+
+  register: async (userData: any): Promise<User | null> => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE}/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(userData)
+      });
+      return response.ok ? await response.json() : null;
+    } catch (e) { return null; }
+  },
+
+  activateLicense: async (botId: string, key: string): Promise<any> => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE}/license/activate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ botId, key })
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || "Activation failed");
+      }
+      return await response.json();
+    } catch (e: any) { 
+      alert(e.message);
+      return null; 
     }
   },
-  login: async (email, password) => request('auth/login', 'POST', { email, password }),
-  requestVerification: async (email) => {
-    try { await request('auth/request-verification', 'POST', { email }); return true; }
-    catch (e: any) { return e.message; }
+
+  getBots: async (userId: string): Promise<BotConfig[]> => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE}/bots/${userId}`);
+      return response.ok ? await response.json() : [];
+    } catch (e) { return []; }
   },
-  verifyAndRegister: async (data) => request('auth/verify-and-register', 'POST', data),
-  getBots: async (uid) => request(`bots/${uid}`),
-  saveBot: async (uid, bot) => request('bots/save', 'POST', bot),
-  startBotOnServer: async (bot) => {
-    try { await request(`bots/start/${bot.id}`, 'POST'); return true; }
-    catch (e: any) { return e.message; }
+
+  saveBot: async (userId: string, bot: BotConfig): Promise<void> => {
+    try {
+      await fetchWithTimeout(`${API_BASE}/bots/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bot)
+      });
+    } catch (e) { console.error("Failed to save bot"); }
   },
-  stopBotOnServer: async (bid) => {
-    try { await request(`bots/stop/${bid}`, 'POST'); return true; }
-    catch { return false; }
+
+  deleteBot: async (userId: string, botId: string): Promise<void> => {
+    try {
+      await fetchWithTimeout(`${API_BASE}/bots/delete/${botId}`, {
+        method: 'DELETE'
+      });
+    } catch (e) { console.error("Failed to delete bot"); }
   },
-  deleteBot: async (uid, bid) => request(`bots/delete/${bid}`, 'DELETE'),
-  sendBroadcast: async (botIds, message) => request('broadcast', 'POST', { botIds, message }),
-  forgotPassword: async (email) => {
-    try { await request('auth/forgot-password', 'POST', { email }); return true; }
-    catch (e: any) { return e.message; }
+
+  startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/bots/start/${bot.id}`, { method: 'POST' });
+      if (res.ok) return true;
+      const errorData = await res.json();
+      return errorData.detail || "Error";
+    } catch (e) { return "Network Error"; }
   },
-  resetPassword: async (data) => {
-    try { await request('auth/reset-password', 'POST', data); return true; }
-    catch { return false; }
+
+  stopBotOnServer: async (botId: string): Promise<boolean> => {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/bots/stop/${botId}`, { method: 'POST' });
+      return res.ok;
+    } catch (e) { return false; }
   },
-  activateLicense: async (bid, key) => request('license/activate', 'POST', { botId: bid, key })
+
+  sendBroadcast: async (botIds: string[], message: string): Promise<any> => {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/broadcast`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ botIds, message })
+      });
+      return res.ok ? await res.json() : null;
+    } catch (e) { return null; }
+  }
 };
