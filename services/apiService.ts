@@ -1,15 +1,12 @@
 
 import { BotConfig, User } from '../types';
 
-// Используем относительный путь для проксирования через Nginx
 const API_BASE = '/api';
 
 const request = async (path: string, method = 'GET', body?: any) => {
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
   const url = `${API_BASE}${cleanPath}`;
   
-  console.log(`📡 API Request: ${method} ${url}`);
-
   const response = await fetch(url, {
     method,
     headers: { 
@@ -39,14 +36,10 @@ export const api = {
     try { await request('/ping'); return true; } catch { return false; }
   },
   login: async (email, password) => {
-    try { return await request('/auth/login', 'POST', { email, password }); } catch (e) { 
-      console.error("Login Error:", e);
-      return null; 
-    }
+    try { return await request('/auth/login', 'POST', { email, password }); } catch { return null; }
   },
   requestVerification: async (email) => {
     try { 
-      // Пробуем оба варианта пути для совместимости
       await request('/auth/request-verification', 'POST', { email }); 
       return true; 
     } catch (e: any) { return e.message; }
@@ -55,22 +48,28 @@ export const api = {
     try { return await request('/auth/register', 'POST', data); } catch { return null; }
   },
   forgotPassword: async (email: string) => {
-    try { await request('/auth/forgot-password', 'POST', { email }); return true; } catch (e: any) { return e.message; }
+    try { 
+      await request('/auth/forgot-password', 'POST', { email }); 
+      return true; 
+    } catch (e: any) { return e.message; }
   },
   resetPassword: async (data: any) => {
-    try { await request('/auth/reset-password', 'POST', data); return true; } catch { return false; }
+    try { 
+      await request('/auth/reset-password', 'POST', data); 
+      return true; 
+    } catch (e: any) { return e.message; }
   },
   getBots: async (userId) => {
     try { 
       const rows = await request(`/bots/${userId}`); 
-      return rows.map(r => ({ ...r, ...r.config, ownerId: r.ownerId, status: r.status }));
+      return rows.map(r => ({ ...r, ownerId: r.ownerId, status: r.status }));
     } catch { return []; }
   },
   saveBot: async (userId, bot) => {
     await request('/bots/save', 'POST', bot);
   },
   sendBroadcast: async (botIds: string[], message: string) => {
-    return await request('/broadcast', 'POST', { botIds, message });
+    try { return await request('/broadcast', 'POST', { botIds, message }); } catch { return null; }
   },
   startBotOnServer: async (bot) => {
     try { await request(`/bots/start/${bot.id}`, 'POST'); return true; } catch (e: any) { return e.message; }
