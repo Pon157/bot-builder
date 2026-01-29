@@ -1,15 +1,22 @@
 
 import { BotConfig, User } from '../types';
 
-// Используем относительный путь для поддержки проксирования через Nginx/Vite
+// Используем относительный путь
 const API_BASE = '/api';
 
 const fetchWithTimeout = async (url: string, options: any = {}, timeout = 15000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   
-  // Убеждаемся, что URL не содержит двойных слешей
-  const cleanUrl = url.replace(/([^:]\/)\/+/g, "$1");
+  // 1. Убираем двойные слеши
+  // 2. Убираем завершающий слеш в конце (критично для POST)
+  let cleanUrl = url.replace(/([^:]\/)\/+/g, "$1");
+  if (cleanUrl.endsWith('/') && cleanUrl.length > 1) {
+    cleanUrl = cleanUrl.slice(0, -1);
+  }
+
+  // Для отладки в продакшене
+  console.log(`API Call: ${options.method || 'GET'} ${cleanUrl}`);
 
   try {
     const response = await fetch(cleanUrl, { 
@@ -24,13 +31,14 @@ const fetchWithTimeout = async (url: string, options: any = {}, timeout = 15000)
     clearTimeout(id);
     
     if (response.status === 405) {
-      console.error(`ERROR 405: Method ${options.method || 'GET'} not allowed on ${cleanUrl}. Check backend routes or Nginx proxy.`);
+      console.error(`CRITICAL 405: Method ${options.method || 'GET'} is NOT ALLOWED on ${cleanUrl}.`);
+      console.error(`Check if your Nginx config has 'proxy_pass' for /api/ location.`);
     }
     
     return response;
   } catch (error) {
     clearTimeout(id);
-    console.error(`Fetch error for ${cleanUrl}:`, error);
+    console.error(`Network Error for ${cleanUrl}:`, error);
     throw error;
   }
 };
@@ -64,7 +72,7 @@ export const api = {
       });
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        console.error("Login failed:", errorData.detail || response.statusText);
+        console.error("Login Error Details:", errorData.detail || response.statusText);
         return null;
       }
       return await response.json();
