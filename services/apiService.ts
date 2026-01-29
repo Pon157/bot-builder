@@ -1,17 +1,17 @@
 
 import { BotConfig, User } from '../types';
 
-// Используем относительный путь для автоматического подхвата Nginx
+// Используем простой префикс. Nginx сам разберется.
 const API_BASE = '/api';
 
-const fetchWithTimeout = async (url: string, options: any = {}) => {
-  // Исправление URL: гарантируем, что путь начинается с /api и не имеет лишних слешей
-  const cleanUrl = url.startsWith('http') ? url : url.replace(/\/+$/, "");
+const fetchWithTimeout = async (path: string, options: any = {}) => {
+  // Гарантируем правильный формат пути: /api/something
+  const url = path.startsWith('http') ? path : `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
   
-  console.log(`📡 Sending ${options.method || 'GET'} to: ${cleanUrl}`);
+  console.log(`📡 Sending ${options.method || 'GET'} to: ${url}`);
 
   try {
-    const response = await fetch(cleanUrl, { 
+    const response = await fetch(url, { 
       ...options, 
       headers: {
         'Content-Type': 'application/json',
@@ -21,12 +21,12 @@ const fetchWithTimeout = async (url: string, options: any = {}) => {
     });
     
     if (response.status === 405) {
-      console.error("❌ 405 Method Not Allowed! Проверьте, что Nginx проксирует POST запросы в /api/");
+      console.error(`❌ 405 Method Not Allowed на ${url}. Проверь блок "location /api" в Nginx!`);
     }
     
     return response;
   } catch (error: any) {
-    console.error(`❌ API Error (${cleanUrl}):`, error.message);
+    console.error(`❌ Network Error (${url}):`, error.message);
     throw error;
   }
 };
@@ -46,14 +46,14 @@ const DEFAULT_SETTINGS = {
 export const api = {
   checkConnection: async (): Promise<boolean> => {
     try {
-      const res = await fetchWithTimeout(`${API_BASE}/ping`, { method: 'GET' });
+      const res = await fetchWithTimeout('/ping', { method: 'GET' });
       return res.ok;
     } catch (e) { return false; }
   },
 
   login: async (email: string, password: string): Promise<User | null> => {
     try {
-      const response = await fetchWithTimeout(`${API_BASE}/auth/login`, {
+      const response = await fetchWithTimeout('/auth/login', {
         method: 'POST',
         body: JSON.stringify({ email, password })
       });
@@ -64,7 +64,7 @@ export const api = {
 
   requestVerification: async (email: string): Promise<boolean | string> => {
     try {
-      const response = await fetchWithTimeout(`${API_BASE}/auth/verify-request`, {
+      const response = await fetchWithTimeout('/auth/verify-request', {
         method: 'POST',
         body: JSON.stringify({ email })
       });
@@ -76,7 +76,7 @@ export const api = {
 
   verifyAndRegister: async (data: any): Promise<User | null> => {
     try {
-      const response = await fetchWithTimeout(`${API_BASE}/auth/register`, {
+      const response = await fetchWithTimeout('/auth/register', {
         method: 'POST',
         body: JSON.stringify(data)
       });
@@ -86,7 +86,7 @@ export const api = {
 
   getBots: async (userId: string): Promise<BotConfig[]> => {
     try {
-      const response = await fetchWithTimeout(`${API_BASE}/bots/${userId}`);
+      const response = await fetchWithTimeout(`/bots/${userId}`);
       if (!response.ok) return [];
       const rows = await response.json();
       return rows.map((row: any) => ({
@@ -104,7 +104,7 @@ export const api = {
 
   saveBot: async (userId: string, bot: BotConfig): Promise<void> => {
     try {
-      await fetchWithTimeout(`${API_BASE}/bots/save`, {
+      await fetchWithTimeout('/bots/save', {
         method: 'POST',
         body: JSON.stringify(bot)
       });
@@ -113,13 +113,13 @@ export const api = {
 
   deleteBot: async (userId: string, botId: string): Promise<void> => {
     try {
-      await fetchWithTimeout(`${API_BASE}/bots/delete/${botId}`, { method: 'DELETE' });
+      await fetchWithTimeout(`/bots/delete/${botId}`, { method: 'DELETE' });
     } catch (e) { console.error("Delete error:", e); }
   },
 
   startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
     try {
-      const res = await fetchWithTimeout(`${API_BASE}/bots/start/${bot.id}`, { method: 'POST' });
+      const res = await fetchWithTimeout(`/bots/start/${bot.id}`, { method: 'POST' });
       if (res.ok) return true;
       const err = await res.json();
       return err.detail || "Error starting bot";
@@ -128,14 +128,14 @@ export const api = {
 
   stopBotOnServer: async (botId: string): Promise<boolean> => {
     try {
-      const res = await fetchWithTimeout(`${API_BASE}/bots/stop/${botId}`, { method: 'POST' });
+      const res = await fetchWithTimeout(`/bots/stop/${botId}`, { method: 'POST' });
       return res.ok;
     } catch (e) { return false; }
   },
 
   sendBroadcast: async (botIds: string[], message: string): Promise<any> => {
     try {
-      const res = await fetchWithTimeout(`${API_BASE}/broadcast`, {
+      const res = await fetchWithTimeout('/broadcast', {
         method: 'POST',
         body: JSON.stringify({ botIds, message })
       });
@@ -145,7 +145,7 @@ export const api = {
 
   activateLicense: async (botId: string, key: string): Promise<any> => {
     try {
-      const res = await fetchWithTimeout(`${API_BASE}/license/activate`, {
+      const res = await fetchWithTimeout('/license/activate', {
         method: 'POST',
         body: JSON.stringify({ botId, key })
       });
@@ -155,7 +155,7 @@ export const api = {
 
   forgotPassword: async (email: string): Promise<boolean | string> => {
     try {
-      const response = await fetchWithTimeout(`${API_BASE}/auth/forgot-password`, {
+      const response = await fetchWithTimeout('/auth/forgot-password', {
         method: 'POST',
         body: JSON.stringify({ email })
       });
@@ -167,7 +167,7 @@ export const api = {
 
   resetPassword: async (data: any): Promise<boolean> => {
     try {
-      const response = await fetchWithTimeout(`${API_BASE}/auth/reset-password`, {
+      const response = await fetchWithTimeout('/auth/reset-password', {
         method: 'POST',
         body: JSON.stringify(data)
       });
