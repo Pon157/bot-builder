@@ -1,171 +1,66 @@
 
 import { BotConfig, User } from '../types';
 
-// Используем относительный путь, чтобы Nginx на порту 80/443 мог проксировать запросы
 const API_BASE = '/api';
 
-const fetchWithTimeout = async (path: string, options: any = {}) => {
-  const cleanPath = path.startsWith('/') ? path : `/${path}`;
-  const url = `${API_BASE}${cleanPath}`;
-  
-  console.log(`📡 Sending ${options.method || 'GET'} to: ${url}`);
-
-  try {
-    const response = await fetch(url, { 
-      ...options, 
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        ...(options.headers || {})
-      }
-    });
-    
-    if (response.status === 405) {
-      console.error(`❌ 405 Method Not Allowed на ${url}.`);
-      console.log("%cРЕШЕНИЕ: Проверьте конфиг Nginx! Блок 'location ^~ /api/ { proxy_pass http://127.0.0.1:8000/api/; }' должен быть выше, чем 'location /'. Также убедитесь, что в конце прокси-адреса стоит /api/.", "color: orange; font-weight: bold;");
-    }
-
-    if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`❌ API Error ${response.status}: ${errorText}`);
-    }
-    
-    return response;
-  } catch (error: any) {
-    console.error(`❌ Network Error (${url}):`, error.message);
-    if (error.message.includes('Failed to fetch')) {
-        console.log("%cСОВЕТ: Если вы видите это в браузере, проверьте, запущен ли Python сервер (uvicorn) и доступен ли порт 8000.", "color: cyan;");
-    }
-    throw error;
+const request = async (path: string, method = 'GET', body?: any) => {
+  const url = `${API_BASE}${path.startsWith('/') ? path : '/' + path}`;
+  const response = await fetch(url, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Network error' }));
+    throw new Error(error.detail || 'API Error');
   }
+  return response.json();
 };
 
 export const api = {
-  checkConnection: async (): Promise<boolean> => {
-    try {
-      const res = await fetchWithTimeout('/ping', { method: 'GET' });
-      return res.ok;
-    } catch (e) { return false; }
+  checkConnection: async () => {
+    try { await request('/ping'); return true; } catch { return false; }
   },
-
-  login: async (email: string, password: string): Promise<User | null> => {
-    try {
-      const response = await fetchWithTimeout('/auth/login', {
-        method: 'POST',
-        body: JSON.stringify({ email: email.toLowerCase().trim(), password })
-      });
-      if (!response.ok) return null;
-      return await response.json();
-    } catch (e) { return null; }
+  login: async (email, password) => {
+    try { return await request('/auth/login', 'POST', { email, password }); } catch { return null; }
   },
-
-  requestVerification: async (email: string): Promise<boolean | string> => {
-    try {
-      const response = await fetchWithTimeout('/auth/verify-request', {
-        method: 'POST',
-        body: JSON.stringify({ email: email.toLowerCase().trim() })
-      });
-      if (response.ok) return true;
-      const data = await response.json();
-      return data.detail || 'Ошибка';
-    } catch (e) { return 'Ошибка сети'; }
+  requestVerification: async (email) => {
+    try { await request('/auth/verify-request', 'POST', { email }); return true; } catch (e: any) { return e.message; }
   },
-
-  verifyAndRegister: async (data: any): Promise<User | null> => {
-    try {
-      const response = await fetchWithTimeout('/auth/register', {
-        method: 'POST',
-        body: JSON.stringify(data)
-      });
-      return response.ok ? await response.json() : null;
-    } catch (e) { return null; }
+  verifyAndRegister: async (data) => {
+    try { return await request('/auth/register', 'POST', data); } catch { return null; }
   },
-
-  getBots: async (userId: string): Promise<BotConfig[]> => {
-    try {
-      const response = await fetchWithTimeout(`/bots/${userId}`);
-      if (!response.ok) return [];
-      const rows = await response.json();
-      return rows.map((row: any) => ({
-          ...row,
-          ...row.config,
-          ownerId: row.owner_id,
-          licenseExpiresAt: row.license_expires_at,
-          status: row.status || 'IDLE'
-      }));
-    } catch (e) { return []; }
+  // Added forgotPassword method to handle password recovery requests
+  forgotPassword: async (email: string) => {
+    try { await request('/auth/forgot-password', 'POST', { email }); return true; } catch (e: any) { return e.message; }
   },
-
-  saveBot: async (userId: string, bot: BotConfig): Promise<void> => {
-    try {
-      await fetchWithTimeout('/bots/save', {
-        method: 'POST',
-        body: JSON.stringify(bot)
-      });
-    } catch (e) { console.error("Save error:", e); }
+  // Added resetPassword method to finalize password reset with a code
+  resetPassword: async (data: any) => {
+    try { await request('/auth/reset-password', 'POST', data); return true; } catch { return false; }
   },
-
-  deleteBot: async (userId: string, botId: string): Promise<void> => {
-    try {
-      await fetchWithTimeout(`/bots/delete/${botId}`, { method: 'DELETE' });
-    } catch (e) { console.error("Delete error:", e); }
+  getBots: async (userId) => {
+    try { 
+      const rows = await request(`/bots/${userId}`); 
+      return rows.map(r => ({ ...r, ...r.config, ownerId: r.ownerId, status: r.status }));
+    } catch { return []; }
   },
-
-  startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
-    try {
-      const res = await fetchWithTimeout(`/bots/start/${bot.id}`, { method: 'POST' });
-      if (res.ok) return true;
-      const err = await res.json();
-      return err.detail || "Error starting bot";
-    } catch (e) { return "Network error"; }
+  saveBot: async (userId, bot) => {
+    await request('/bots/save', 'POST', bot);
   },
-
-  stopBotOnServer: async (botId: string): Promise<boolean> => {
-    try {
-      const res = await fetchWithTimeout(`/bots/stop/${botId}`, { method: 'POST' });
-      return res.ok;
-    } catch (e) { return false; }
+  // Added sendBroadcast method for global messaging across multiple bots
+  sendBroadcast: async (botIds: string[], message: string) => {
+    return await request('/broadcast', 'POST', { botIds, message });
   },
-
-  sendBroadcast: async (botIds: string[], message: string): Promise<any> => {
-    try {
-      const res = await fetchWithTimeout('/broadcast', {
-        method: 'POST',
-        body: JSON.stringify({ botIds, message })
-      });
-      return res.ok ? await res.json() : null;
-    } catch (e) { return null; }
+  startBotOnServer: async (bot) => {
+    try { await request(`/bots/start/${bot.id}`, 'POST'); return true; } catch (e: any) { return e.message; }
   },
-
-  activateLicense: async (botId: string, key: string): Promise<any> => {
-    try {
-      const res = await fetchWithTimeout('/license/activate', {
-        method: 'POST',
-        body: JSON.stringify({ botId, key })
-      });
-      return res.ok ? await res.json() : null;
-    } catch (e) { return null; }
+  stopBotOnServer: async (botId) => {
+    try { await request(`/bots/stop/${botId}`, 'POST'); return true; } catch { return false; }
   },
-
-  forgotPassword: async (email: string): Promise<boolean | string> => {
-    try {
-      const response = await fetchWithTimeout('/auth/forgot-password', {
-        method: 'POST',
-        body: JSON.stringify({ email: email.toLowerCase().trim() })
-      });
-      if (response.ok) return true;
-      const data = await response.json();
-      return data.detail || 'Ошибка';
-    } catch (e) { return 'Ошибка сети'; }
+  deleteBot: async (userId, botId) => {
+    await request(`/bots/delete/${botId}`, 'DELETE');
   },
-
-  resetPassword: async (data: any): Promise<boolean> => {
-    try {
-      const response = await fetchWithTimeout('/auth/reset-password', {
-        method: 'POST',
-        body: JSON.stringify(data)
-      });
-      return response.ok;
-    } catch (e) { return false; }
-  },
+  activateLicense: async (botId, key) => {
+    try { return await request('/license/activate', 'POST', { botId, key }); } catch { return null; }
+  }
 };
