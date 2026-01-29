@@ -14,7 +14,7 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Any, Union
 
-from fastapi import FastAPI, HTTPException, Header, Request, Depends, APIRouter, status
+from fastapi import FastAPI, HTTPException, Header, Request, Depends, APIRouter, status, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -68,10 +68,8 @@ class SupabaseDB:
         async with httpx.AsyncClient() as client:
             url = f"{self.url}/rest/v1/{table}"
             headers = self.headers.copy()
-            
             if method == "POST" and params and "on_conflict" in params:
                 headers["Prefer"] = "resolution=merge-duplicates,return=representation"
-
             try:
                 resp = await client.request(method, url, params=params, json=json_data, headers=headers)
                 if resp.status_code >= 400:
@@ -111,42 +109,26 @@ async def log_event(bot_id: str, type: str, text: str):
     if not res: return
     config = res[0].get('config', {})
     logs = config.get('logs', [])
-    new_log = {
-        "id": str(uuid.uuid4())[:8],
-        "timestamp": int(time.time() * 1000),
-        "type": type,
-        "text": text
-    }
+    new_log = {"id": str(uuid.uuid4())[:8], "timestamp": int(time.time() * 1000), "type": type, "text": text}
     logs = [new_log] + logs[:49]
     config['logs'] = logs
     await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"config": config})
-    if bot_id in bot_configs:
-        bot_configs[bot_id]['config']['logs'] = logs
+    if bot_id in bot_configs: bot_configs[bot_id]['config']['logs'] = logs
 
 async def update_stats(bot_id: str, direction: str):
     res = await db.query("bots", params={"id": f"eq.{bot_id}", "select": "stats,config"})
     if not res: return
     stats = res[0].get('stats', {}) or {"totalMessages": 0, "incomingToday": 0, "outgoingToday": 0, "history": []}
     config = res[0].get('config', {})
-    
     stats["totalMessages"] = stats.get("totalMessages", 0) + 1
     if direction == "in": stats["incomingToday"] = stats.get("incomingToday", 0) + 1
     else: stats["outgoingToday"] = stats.get("outgoingToday", 0) + 1
-    
     today = datetime.now().strftime("%d.%m")
     history = stats.get("history", [])
     if not history or history[-1]["date"] != today:
-        history.append({
-            "date": today, 
-            "incoming": 0, 
-            "outgoing": 0, 
-            "totalUsers": len(config.get("connectedUsers", [])),
-            "activeUsers": 0
-        })
-    
+        history.append({"date": today, "incoming": 0, "outgoing": 0, "totalUsers": len(config.get("connectedUsers", [])), "activeUsers": 0})
     if direction == "in": history[-1]["incoming"] += 1
     else: history[-1]["outgoing"] += 1
-    
     stats["history"] = history[-30:]
     await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"stats": stats})
 
@@ -154,11 +136,9 @@ async def update_stats(bot_id: str, direction: str):
 async def bot_worker_task(bot_id: str, token: str):
     logger.info(f"🚀 Starting bot process: {bot_id}")
     await log_event(bot_id, "system", "Инициализация...")
-
     res = await db.query("bots", params={"id": f"eq.{bot_id}"})
     if not res: return
     bot_configs[bot_id] = res[0]
-
     session = AiohttpSession()
     bot = Bot(token=token, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     active_bots[bot_id] = bot
@@ -170,25 +150,17 @@ async def bot_worker_task(bot_id: str, token: str):
         full_data = bot_configs.get(bot_id)
         if not full_data or not is_active_license(full_data['license_expires_at']): return
         config = full_data.get('config', {})
-        
         users = config.get("connectedUsers", [])
         user = next((u for u in users if str(u['id']) == str(m.from_user.id)), None)
         if not user:
-            user = {
-                "id": m.from_user.id, "first_name": m.from_user.first_name, 
-                "username": m.from_user.username, "joined_at": int(time.time()), 
-                "is_banned": False, "warns": 0, "thread_id": None, "is_active": True
-            }
+            user = {"id": m.from_user.id, "first_name": m.from_user.first_name, "username": m.from_user.username, "joined_at": int(time.time()), "is_banned": False, "warns": 0, "thread_id": None, "is_active": True}
             users.append(user); config["connectedUsers"] = users
             await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"config": config})
             bot_configs[bot_id]['config'] = config
             await log_event(bot_id, "info", f"Новый пользователь: {m.from_user.full_name}")
-
         if user.get("is_banned"): return
-        
         rows = [[KeyboardButton(text=b["text"])] for b in config.get("buttons", []) if b.get("text")]
         kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True) if rows else ReplyKeyboardRemove()
-        
         welcome = config.get("welcomeMessage", "Добро пожаловать!")
         await m.answer(format_msg(welcome, m), reply_markup=kb)
         asyncio.create_task(update_stats(bot_id, "out"))
@@ -199,23 +171,19 @@ async def bot_worker_task(bot_id: str, token: str):
         if not full_data or not is_active_license(full_data['license_expires_at']): return
         config = full_data.get('config', {})
         admin_id = str(config.get("adminChatId", ""))
-
         if admin_id and str(m.chat.id) == admin_id:
             target_id = None
             if m.reply_to_message:
                 content = m.reply_to_message.text or m.reply_to_message.caption or ""
                 match = re.search(r"ID: (\d+)", content)
                 if match: target_id = int(match.group(1))
-            
             if target_id:
                 try:
                     await bot.copy_message(target_id, m.chat.id, m.message_id)
                     asyncio.create_task(update_stats(bot_id, "out"))
                     await log_event(bot_id, "outgoing", f"Ответ юзеру {target_id}")
-                except Exception as e:
-                    await m.reply(f"❌ Ошибка отправки: {e}")
+                except Exception as e: await m.reply(f"❌ Ошибка отправки: {e}")
             return
-
         if m.text:
             low = m.text.lower().strip()
             for btn in config.get("buttons", []):
@@ -232,7 +200,6 @@ async def bot_worker_task(bot_id: str, token: str):
                     await m.answer(format_msg(tr.get("response", ""), m))
                     asyncio.create_task(update_stats(bot_id, "out"))
                     return
-
         if admin_id:
             try:
                 info = f"👤 <b>{m.from_user.full_name}</b>\n🆔 ID: <code>{m.from_user.id}</code>"
@@ -240,18 +207,15 @@ async def bot_worker_task(bot_id: str, token: str):
                 await bot.copy_message(admin_id, m.chat.id, m.message_id)
                 asyncio.create_task(update_stats(bot_id, "in"))
                 await log_event(bot_id, "incoming", f"Сообщение от {m.from_user.id}")
-            except Exception as e:
-                logger.error(f"Forward error: {e}")
+            except Exception as e: logger.error(f"Forward error: {e}")
 
     dp.include_router(router)
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await log_event(bot_id, "system", "Бот активен.")
         await dp.start_polling(bot, skip_updates=True)
-    except Exception as e:
-        await log_event(bot_id, "error", f"Ошибка: {str(e)}")
-    finally:
-        await session.close()
+    except Exception as e: await log_event(bot_id, "error", f"Ошибка: {str(e)}")
+    finally: await session.close()
 
 # --- 6. FASTAPI SETUP ---
 @asynccontextmanager
@@ -263,7 +227,6 @@ async def lifespan(app: FastAPI):
     yield
     for t in active_tasks.values(): t.cancel()
 
-# redirect_slashes=False КРИТИЧЕСКИ ВАЖНО для предотвращения 405 ошибки при POST запросах
 app = FastAPI(lifespan=lifespan, redirect_slashes=False)
 
 app.add_middleware(
@@ -272,32 +235,26 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"]
 )
 
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    logger.info(f"Incoming request: {request.method} {request.url.path}")
-    response = await call_next(request)
-    if response.status_code == 405:
-        logger.error(f"405 Method Not Allowed on {request.url.path}")
-    return response
+# Роутер для API
+api_router = APIRouter(prefix="/api")
 
-# --- API ROUTES ---
-@app.get("/api/ping")
-async def ping(): 
-    return {"status": "online", "time": int(time.time()), "engine": "FastAPI 0.110+"}
+@api_router.get("/ping")
+async def ping(): return {"status": "online", "time": int(time.time())}
 
-@app.post("/api/auth/login")
+@api_router.options("/{rest_of_path:path}")
+async def preflight_handler(): return Response(status_code=200)
+
+@api_router.post("/auth/login")
 async def login_api(req: dict):
     email = req.get('email', '').strip().lower()
     password = req.get('password', '')
     res = await db.query("users", params={"email": f"eq.{email}", "password": f"eq.{password}"})
-    if not res: 
-        raise HTTPException(status_code=401, detail="Неверные учетные данные")
+    if not res: raise HTTPException(status_code=401, detail="Неверные учетные данные")
     return res[0]
 
-@app.post("/api/auth/verify-request")
+@api_router.post("/auth/verify-request")
 async def verify_req(req: dict):
     email = req.get("email", "").lower().strip()
     code = str(random.randint(100000, 999999))
@@ -306,89 +263,64 @@ async def verify_req(req: dict):
         return {"status": "ok"}
     raise HTTPException(status_code=500, detail="Ошибка при отправке письма")
 
-@app.post("/api/auth/register")
+@api_router.post("/auth/register")
 async def register_api(req: dict):
     email = req.get("email", "").lower().strip()
     if email not in pending_verifications or pending_verifications[email]["code"] != req.get("code"):
         raise HTTPException(status_code=400, detail="Неверный код")
-    
     user_id = str(uuid.uuid4())
-    payload = {
-        "id": user_id, "email": email, "username": req.get("username"), "password": req.get("password"),
-        "balance": 0, "botsCreated": 0, "licenseExpiresAt": int(time.time()*1000) + (3 * 24 * 3600 * 1000)
-    }
+    payload = {"id": user_id, "email": email, "username": req.get("username"), "password": req.get("password"), "balance": 0, "botsCreated": 0, "licenseExpiresAt": int(time.time()*1000) + (3 * 24 * 3600 * 1000)}
     await db.query("users", method="POST", json_data=payload)
     del pending_verifications[email]
     return payload
 
-@app.post("/api/auth/forgot-password")
+@api_router.post("/auth/forgot-password")
 async def forgot_password_api(req: dict):
     email = req.get("email", "").lower().strip()
     res = await db.query("users", params={"email": f"eq.{email}"})
-    if not res:
-        raise HTTPException(status_code=404, detail="Пользователь не найден")
-    
+    if not res: raise HTTPException(status_code=404, detail="Пользователь не найден")
     code = str(random.randint(100000, 999999))
     if EmailService.send_password_reset(email, code):
         pending_resets[email] = {"code": code, "time": time.time()}
         return {"status": "ok"}
     raise HTTPException(status_code=500, detail="Ошибка отправки кода")
 
-@app.post("/api/auth/reset-password")
+@api_router.post("/auth/reset-password")
 async def reset_password_api(req: dict):
-    email = req.get("email", "").lower().strip()
-    code = req.get("code", "")
-    new_password = req.get("newPassword", "")
-    
+    email, code, new_password = req.get("email", "").lower().strip(), req.get("code", ""), req.get("newPassword", "")
     if email not in pending_resets or pending_resets[email]["code"] != code:
         raise HTTPException(status_code=400, detail="Неверный код сброса")
-        
     await db.query("users", method="PATCH", params={"email": f"eq.{email}"}, json_data={"password": new_password})
     del pending_resets[email]
     return {"status": "ok"}
 
-@app.get("/api/bots/{user_id}")
+@api_router.get("/bots/{user_id}")
 async def get_user_bots(user_id: str):
     rows = await db.query("bots", params={"owner_id": f"eq.{user_id}"})
-    for r in rows:
-        r['status'] = "RUNNING" if r['id'] in active_tasks else "IDLE"
+    for r in rows: r['status'] = "RUNNING" if r['id'] in active_tasks else "IDLE"
     return rows
 
-@app.post("/api/bots/save")
+@api_router.post("/bots/save")
 async def save_bot_api(data: dict):
     bid = data['id']
-    payload = {
-        "id": bid, "owner_id": data['ownerId'], "name": data['name'], "token": data['token'],
-        "license_expires_at": int(data.get('licenseExpiresAt', 0)),
-        "config": {
-            "welcomeMessage": data.get('welcomeMessage', ""),
-            "adminChatId": str(data.get('adminChatId', "")),
-            "buttons": data.get('buttons', []),
-            "triggers": data.get('triggers', []),
-            "settings": data.get('settings', {}),
-            "connectedUsers": data.get('connectedUsers', []),
-            "logs": data.get('logs', [])
-        }
-    }
+    payload = {"id": bid, "owner_id": data['ownerId'], "name": data['name'], "token": data['token'], "license_expires_at": int(data.get('licenseExpiresAt', 0)), "config": {"welcomeMessage": data.get('welcomeMessage', ""), "adminChatId": str(data.get('adminChatId', "")), "buttons": data.get('buttons', []), "triggers": data.get('triggers', []), "settings": data.get('settings', {}), "connectedUsers": data.get('connectedUsers', []), "logs": data.get('logs', [])}}
     await db.query("bots", method="POST", json_data=payload, params={"on_conflict": "id"})
     if bid in active_tasks:
         res = await db.query("bots", params={"id": f"eq.{bid}"})
         if res: bot_configs[bid] = res[0]
     return {"status": "ok"}
 
-@app.post("/api/bots/start/{bot_id}")
+@api_router.post("/bots/start/{bot_id}")
 async def start_bot_api(bot_id: str):
     res = await db.query("bots", params={"id": f"eq.{bot_id}"})
     if not res: raise HTTPException(404)
-    if not is_active_license(res[0].get('license_expires_at')): 
-        raise HTTPException(403, "License expired")
-    
+    if not is_active_license(res[0].get('license_expires_at')): raise HTTPException(403, "License expired")
     await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"status": "RUNNING"})
     if bot_id in active_tasks: active_tasks[bot_id].cancel()
     active_tasks[bot_id] = asyncio.create_task(bot_worker_task(bot_id, res[0]['token']))
     return {"status": "ok"}
 
-@app.post("/api/bots/stop/{bot_id}")
+@api_router.post("/bots/stop/{bot_id}")
 async def stop_bot_api(bot_id: str):
     await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"status": "IDLE"})
     if bot_id in active_tasks: 
@@ -396,13 +328,13 @@ async def stop_bot_api(bot_id: str):
         del active_tasks[bot_id]
     return {"status": "ok"}
 
-@app.delete("/api/bots/delete/{bot_id}")
+@api_router.delete("/bots/delete/{bot_id}")
 async def del_bot_api(bot_id: str):
     if bot_id in active_tasks: active_tasks[bot_id].cancel()
     await db.query("bots", method="DELETE", params={"id": f"eq.{bot_id}"})
     return {"status": "ok"}
 
-@app.post("/api/broadcast")
+@api_router.post("/broadcast")
 async def broadcast_api(req: dict):
     bot_ids, msg = req.get("botIds", []), req.get("message", "")
     report = {"success": 0, "failed": 0}
@@ -419,28 +351,27 @@ async def broadcast_api(req: dict):
             await asyncio.sleep(0.05)
     return report
 
-@app.post("/api/license/activate")
+@api_router.post("/license/activate")
 async def activate_lic_api(req: dict):
     bot_id, key = req.get("botId"), req.get("key", "")
     match = re.match(r"BOT-(\d+)-(\w+)", key)
     if not match: raise HTTPException(400, detail="Invalid key")
-    
     months = int(match.group(1))
     res = await db.query("bots", params={"id": f"eq.{bot_id}"})
     if not res: raise HTTPException(404)
-    
     current_expiry = max(int(time.time()*1000), int(res[0].get('license_expires_at', 0)))
     new_expiry = current_expiry + (months * 30 * 24 * 3600 * 1000)
-    
     await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"license_expires_at": new_expiry})
     return {"status": "ok", "newExpiry": new_expiry}
 
-@app.post("/api/admin/generate-key")
+@api_router.post("/admin/generate-key")
 async def gen_key_api(req: dict, x_token: str = Header(None, alias="x-admin-token")):
     if x_token != ADMIN_SECRET: raise HTTPException(403)
     months = req.get("months", 1)
     key = f"BOT-{months}-{secrets.token_hex(4).upper()}"
     return {"key": key}
+
+app.include_router(api_router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
