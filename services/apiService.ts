@@ -1,13 +1,14 @@
 
 import { BotConfig, User } from '../types';
 
+// Используем относительный путь для автоматического подхвата Nginx
 const API_BASE = '/api';
 
 const fetchWithTimeout = async (url: string, options: any = {}) => {
-  // Убираем возможные двойные слеши и завершающие слеши (критично для Nginx POST)
-  const cleanUrl = url.replace(/([^:]\/)\/+/g, "$1").replace(/\/$/, ""); 
+  // Исправление URL: гарантируем, что путь начинается с /api и не имеет лишних слешей
+  const cleanUrl = url.startsWith('http') ? url : url.replace(/\/+$/, "");
   
-  console.log(`📡 API Request: ${options.method || 'GET'} ${cleanUrl}`);
+  console.log(`📡 Sending ${options.method || 'GET'} to: ${cleanUrl}`);
 
   try {
     const response = await fetch(cleanUrl, { 
@@ -20,12 +21,12 @@ const fetchWithTimeout = async (url: string, options: any = {}) => {
     });
     
     if (response.status === 405) {
-      console.error("❌ 405 Method Not Allowed! Проверьте конфиг Nginx (блок location /api/).");
+      console.error("❌ 405 Method Not Allowed! Проверьте, что Nginx проксирует POST запросы в /api/");
     }
     
     return response;
   } catch (error: any) {
-    console.error(`❌ Network Error:`, error.message);
+    console.error(`❌ API Error (${cleanUrl}):`, error.message);
     throw error;
   }
 };
@@ -69,7 +70,7 @@ export const api = {
       });
       if (response.ok) return true;
       const data = await response.json();
-      return data.detail || 'Ошибка отправки';
+      return data.detail || 'Ошибка';
     } catch (e) { return 'Ошибка сети'; }
   },
 
