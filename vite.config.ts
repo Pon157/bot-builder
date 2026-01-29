@@ -27,7 +27,6 @@ export default defineConfig({
         'react-dom/client',
         'recharts',
         'lucide-react',
-        '@google/genai'
       ],
       output: {
         globals: {
