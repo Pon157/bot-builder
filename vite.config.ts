@@ -35,7 +35,6 @@ export default defineConfig({
           'react-dom/client': 'ReactDOM',
           recharts: 'Recharts',
           'lucide-react': 'Lucide',
-          '@google/genai': 'GoogleGenAI'
         }
       }
     }
