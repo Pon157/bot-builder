@@ -1,12 +1,17 @@
 
 import { BotConfig, User } from '../types';
 
-// Используем простой префикс. Nginx сам разберется.
 const API_BASE = '/api';
 
 const fetchWithTimeout = async (path: string, options: any = {}) => {
-  // Гарантируем правильный формат пути: /api/something
-  const url = path.startsWith('http') ? path : `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+  // Для Nginx и FastAPI критично, чтобы POST запросы на эндпоинты имели единообразный формат.
+  // Добавляем слеш в конце, если его нет, для всех внутренних путей.
+  let cleanPath = path.startsWith('/') ? path : `/${path}`;
+  if (!cleanPath.endsWith('/')) {
+    cleanPath = `${cleanPath}/`;
+  }
+
+  const url = `${API_BASE}${cleanPath}`;
   
   console.log(`📡 Sending ${options.method || 'GET'} to: ${url}`);
 
@@ -21,7 +26,8 @@ const fetchWithTimeout = async (path: string, options: any = {}) => {
     });
     
     if (response.status === 405) {
-      console.error(`❌ 405 Method Not Allowed на ${url}. Проверь блок "location /api" в Nginx!`);
+      console.error(`❌ 405 Method Not Allowed на ${url}.`);
+      console.log("%cРЕШЕНИЕ: Проверьте Nginx! Используйте 'location ^~ /api/ { proxy_pass http://127.0.0.1:8000/api/; }'", "color: yellow; font-weight: bold;");
     }
     
     return response;
