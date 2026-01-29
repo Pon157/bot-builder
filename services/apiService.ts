@@ -18,12 +18,13 @@ const request = async (path: string, method = 'GET', body?: any) => {
 
   if (!response.ok) {
     const errorText = await response.text();
-    let errorMessage = 'API Error';
+    let errorMessage = 'Ошибка сервера';
     try {
       const errorJson = JSON.parse(errorText);
       errorMessage = errorJson.detail || errorMessage;
     } catch (e) {
-      errorMessage = errorText || errorMessage;
+      if (errorText.includes('nginx')) errorMessage = 'Ошибка прокси-сервера (Nginx)';
+      else errorMessage = errorText || errorMessage;
     }
     throw new Error(errorMessage);
   }
@@ -36,7 +37,7 @@ export const api = {
     try { await request('/ping'); return true; } catch { return false; }
   },
   login: async (email, password) => {
-    try { return await request('/auth/login', 'POST', { email, password }); } catch { return null; }
+    try { return await request('/auth/login', 'POST', { email, password }); } catch (e: any) { throw e; }
   },
   requestVerification: async (email) => {
     try { 
@@ -46,11 +47,9 @@ export const api = {
   },
   verifyAndRegister: async (data) => {
     try { 
-      // Пробуем вызвать алиас, который мы прописали на сервере
       return await request('/auth/verify-and-register', 'POST', data); 
     } catch (e: any) { 
-      console.error("Registration error:", e);
-      return null; 
+      throw e;
     }
   },
   forgotPassword: async (email: string) => {
