@@ -7,13 +7,15 @@ export default defineConfig({
   define: {
     'process.env.API_KEY': JSON.stringify(process.env.API_KEY),
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV),
+    'import.meta.env.VITE_API_URL': JSON.stringify(process.env.VITE_API_URL),
   },
   server: {
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
+        secure: false,
       }
     }
   },
@@ -27,7 +29,6 @@ export default defineConfig({
         'react-dom/client',
         'recharts',
         'lucide-react',
-        '@google/genai'
       ],
       output: {
         globals: {
