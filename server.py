@@ -29,7 +29,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, Teleg
 import uvicorn
 from email_service import EmailService
 
-# --- 1. CONFIGURATION & LOGGING ---
+# --- CONFIG & LOGGING ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - [%(levelname)s] - %(name)s - %(message)s',
@@ -53,7 +53,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
 
-# --- 2. DATABASE LAYER (Supabase) ---
+# --- DATABASE LAYER ---
 class SupabaseDB:
     def __init__(self, url: str, key: str):
         self.url = url
@@ -82,14 +82,14 @@ class SupabaseDB:
 
 db = SupabaseDB(SUPABASE_URL, SUPABASE_KEY)
 
-# --- 3. GLOBAL STATE ---
+# --- GLOBAL STATE ---
 active_tasks: Dict[str, asyncio.Task] = {}
 active_bots: Dict[str, Bot] = {}
 bot_configs: Dict[str, dict] = {}
 pending_verifications: Dict[str, dict] = {} 
 pending_resets: Dict[str, dict] = {}
 
-# --- 4. CORE UTILS ---
+# --- UTILS ---
 def is_active_license(expiry: Any) -> bool:
     try:
         return int(expiry or 0) > int(time.time() * 1000)
@@ -110,7 +110,7 @@ async def log_event(bot_id: str, type: str, text: str):
     config = res[0].get('config', {})
     logs = config.get('logs', [])
     new_log = {"id": str(uuid.uuid4())[:8], "timestamp": int(time.time() * 1000), "type": type, "text": text}
-    logs = [new_log] + logs[:49] # Храним последние 50 логов
+    logs = [new_log] + logs[:49]
     config['logs'] = logs
     await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"config": config})
     if bot_id in bot_configs: bot_configs[bot_id]['config']['logs'] = logs
@@ -120,6 +120,7 @@ async def update_stats(bot_id: str, direction: str):
     if not res: return
     stats = res[0].get('stats', {}) or {"totalMessages": 0, "incomingToday": 0, "outgoingToday": 0, "history": []}
     config = res[0].get('config', {})
+    
     stats["totalMessages"] = stats.get("totalMessages", 0) + 1
     if direction == "in": stats["incomingToday"] = stats.get("incomingToday", 0) + 1
     else: stats["outgoingToday"] = stats.get("outgoingToday", 0) + 1
@@ -132,13 +133,13 @@ async def update_stats(bot_id: str, direction: str):
     if direction == "in": history[-1]["incoming"] += 1
     else: history[-1]["outgoing"] += 1
     
-    stats["history"] = history[-30:] # Последние 30 дней
+    stats["history"] = history[-30:]
     await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"stats": stats})
 
-# --- 5. BOT WORKER LOGIC ---
+# --- BOT ENGINE CORE ---
 async def bot_worker_task(bot_id: str, token: str):
-    logger.info(f"🚀 Starting bot process: {bot_id}")
-    await log_event(bot_id, "system", "Инициализация...")
+    logger.info(f"🚀 Initializing bot: {bot_id}")
+    await log_event(bot_id, "system", "Запуск процесса...")
     
     res = await db.query("bots", params={"id": f"eq.{bot_id}"})
     if not res: return
@@ -148,28 +149,27 @@ async def bot_worker_task(bot_id: str, token: str):
     bot = Bot(token=token, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     active_bots[bot_id] = bot
     dp = Dispatcher()
-    router = Router()
 
-    @router.message(CommandStart())
+    @dp.message(CommandStart())
     async def cmd_start(m: Message):
         full_data = bot_configs.get(bot_id)
-        if not full_data or not is_active_license(full_data['license_expires_at']): return
+        if not full_data or not is_active_license(full_data['license_expires_at']):
+            return await m.answer("❌ Лицензия этого бота истекла.")
         
         config = full_data.get('config', {})
         users = config.get("connectedUsers", [])
-        
         user = next((u for u in users if str(u['id']) == str(m.from_user.id)), None)
+        
         if not user:
-            user = {"id": m.from_user.id, "first_name": m.from_user.first_name, "username": m.from_user.username, "joined_at": int(time.time()), "is_banned": False, "warns": 0, "thread_id": None, "is_active": True}
+            user = {"id": m.from_user.id, "first_name": m.from_user.first_name, "username": m.from_user.username, "joined_at": int(time.time()), "is_banned": False, "warns": 0, "is_active": True}
             users.append(user)
             config["connectedUsers"] = users
             await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"config": config})
             bot_configs[bot_id]['config'] = config
-            await log_event(bot_id, "info", f"Новый пользователь: {m.from_user.full_name}")
+            await log_event(bot_id, "info", f"Новый юзер: {m.from_user.full_name}")
 
         if user.get("is_banned"): return
 
-        # Клавиатура
         rows = [[KeyboardButton(text=b["text"])] for b in config.get("buttons", []) if b.get("text")]
         kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True) if rows else ReplyKeyboardRemove()
         
@@ -177,7 +177,7 @@ async def bot_worker_task(bot_id: str, token: str):
         await m.answer(format_msg(welcome, m), reply_markup=kb)
         asyncio.create_task(update_stats(bot_id, "out"))
 
-    @router.message()
+    @dp.message()
     async def main_handler(m: Message):
         full_data = bot_configs.get(bot_id)
         if not full_data or not is_active_license(full_data['license_expires_at']): return
@@ -189,8 +189,8 @@ async def bot_worker_task(bot_id: str, token: str):
         if admin_id and str(m.chat.id) == admin_id:
             target_id = None
             if m.reply_to_message:
-                content = m.reply_to_message.text or m.reply_to_message.caption or ""
-                match = re.search(r"ID: (\d+)", content)
+                reply_text = m.reply_to_message.text or m.reply_to_message.caption or ""
+                match = re.search(r"ID: (\d+)", reply_text)
                 if match: target_id = int(match.group(1))
             
             if target_id:
@@ -199,13 +199,13 @@ async def bot_worker_task(bot_id: str, token: str):
                     asyncio.create_task(update_stats(bot_id, "out"))
                     await log_event(bot_id, "outgoing", f"Ответ юзеру {target_id}")
                 except Exception as e:
-                    await m.reply(f"❌ Ошибка отправки: {e}")
+                    await m.reply(f"❌ Ошибка: {e}")
             return
 
         # 2. Кнопки и триггеры
         if m.text:
             low = m.text.lower().strip()
-            # Кнопки
+            # Buttons
             for btn in config.get("buttons", []):
                 if btn.get("text") and btn["text"].lower().strip() == low:
                     if btn.get("type") == "request" and admin_id:
@@ -216,14 +216,14 @@ async def bot_worker_task(bot_id: str, token: str):
                         await m.answer(format_msg(btn["response"], m))
                         asyncio.create_task(update_stats(bot_id, "out"))
                     return
-            # Триггеры
+            # Triggers
             for tr in config.get("triggers", []):
                 if tr.get("keyword") and tr["keyword"].lower().strip() in low:
                     await m.answer(format_msg(tr.get("response", ""), m))
                     asyncio.create_task(update_stats(bot_id, "out"))
                     return
 
-        # 3. Пересылка админу (Livegram mode)
+        # 3. Пересылка админу
         if admin_id:
             try:
                 info = f"👤 <b>{m.from_user.full_name}</b>\n🆔 ID: <code>{m.from_user.id}</code>"
@@ -232,22 +232,21 @@ async def bot_worker_task(bot_id: str, token: str):
                 asyncio.create_task(update_stats(bot_id, "in"))
                 await log_event(bot_id, "incoming", f"Сообщение от {m.from_user.id}")
             except Exception as e:
-                logger.error(f"Forward error: {e}")
+                logger.error(f"Bot {bot_id} forward error: {e}")
 
-    dp.include_router(router)
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        await log_event(bot_id, "system", "Бот активен.")
+        await log_event(bot_id, "system", "Бот готов к работе.")
         await dp.start_polling(bot, skip_updates=True)
     except Exception as e:
-        await log_event(bot_id, "error", f"Ошибка: {str(e)}")
+        await log_event(bot_id, "error", f"Crash: {e}")
     finally:
         await session.close()
 
-# --- 6. FASTAPI SETUP ---
+# --- API ENDPOINTS ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Восстановление активных ботов при рестарте
+    # Восстановление активных ботов
     rows = await db.query("bots", params={"status": "eq.RUNNING"})
     for b in rows:
         if is_active_license(b.get('license_expires_at')):
@@ -270,13 +269,12 @@ api = APIRouter(prefix="/api")
 @api.get("/ping")
 async def ping(): return {"status": "online", "time": int(time.time())}
 
-# --- AUTH API ---
+# AUTH
 @api.post("/auth/login")
 async def login_api(req: dict):
-    email = req.get('email', '').strip().lower()
-    password = req.get('password', '')
+    email, password = req.get('email', '').strip().lower(), req.get('password', '')
     res = await db.query("users", params={"email": f"eq.{email}", "password": f"eq.{password}"})
-    if not res: raise HTTPException(status_code=401, detail="Неверные учетные данные")
+    if not res: raise HTTPException(401, "Неверные данные")
     return res[0]
 
 @api.post("/auth/verify-request")
@@ -286,22 +284,17 @@ async def verify_req(req: dict):
     if EmailService.send_verification_code(email, code):
         pending_verifications[email] = {"code": code, "time": time.time()}
         return {"status": "ok"}
-    raise HTTPException(status_code=500, detail="Ошибка при отправке письма")
+    raise HTTPException(500, "Email Error")
 
 @api.post("/auth/register")
 async def register_api(req: dict):
-    email = req.get("email", "").lower().strip()
-    if email not in pending_verifications or pending_verifications[email]["code"] != req.get("code"):
-        raise HTTPException(status_code=400, detail="Неверный код")
+    email, code = req.get("email", "").lower().strip(), req.get("code")
+    if email not in pending_verifications or pending_verifications[email]["code"] != code:
+        raise HTTPException(400, "Код неверен")
     
-    user_id = str(uuid.uuid4())
     payload = {
-        "id": user_id,
-        "email": email,
-        "username": req.get("username"),
-        "password": req.get("password"),
-        "balance": 0,
-        "botsCreated": 0,
+        "id": str(uuid.uuid4()), "email": email, "username": req.get("username"),
+        "password": req.get("password"), "balance": 0, "botsCreated": 0,
         "licenseExpiresAt": int(time.time()*1000) + (3 * 24 * 3600 * 1000)
     }
     await db.query("users", method="POST", json_data=payload)
@@ -309,54 +302,47 @@ async def register_api(req: dict):
     return payload
 
 @api.post("/auth/forgot-password")
-async def forgot_password_api(req: dict):
+async def forgot_api(req: dict):
     email = req.get("email", "").lower().strip()
     res = await db.query("users", params={"email": f"eq.{email}"})
-    if not res: raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if not res: raise HTTPException(404, "User not found")
     code = str(random.randint(100000, 999999))
     if EmailService.send_password_reset(email, code):
         pending_resets[email] = {"code": code, "time": time.time()}
         return {"status": "ok"}
-    raise HTTPException(status_code=500, detail="Ошибка отправки кода")
+    raise HTTPException(500, "SMTP Error")
 
 @api.post("/auth/reset-password")
-async def reset_password_api(req: dict):
-    email, code, new_password = req.get("email", "").lower().strip(), req.get("code", ""), req.get("newPassword", "")
+async def reset_api(req: dict):
+    email, code, pwd = req.get("email", "").lower().strip(), req.get("code"), req.get("newPassword")
     if email not in pending_resets or pending_resets[email]["code"] != code:
-        raise HTTPException(status_code=400, detail="Неверный код сброса")
-    await db.query("users", method="PATCH", params={"email": f"eq.{email}"}, json_data={"password": new_password})
+        raise HTTPException(400, "Wrong code")
+    await db.query("users", method="PATCH", params={"email": f"eq.{email}"}, json_data={"password": pwd})
     del pending_resets[email]
     return {"status": "ok"}
 
-# --- BOTS API ---
+# BOTS
 @api.get("/bots/{user_id}")
 async def get_user_bots(user_id: str):
     rows = await db.query("bots", params={"owner_id": f"eq.{user_id}"})
-    for r in rows:
-        r['status'] = "RUNNING" if r['id'] in active_tasks else "IDLE"
+    for r in rows: r['status'] = "RUNNING" if r['id'] in active_tasks else "IDLE"
     return rows
 
 @api.post("/bots/save")
 async def save_bot_api(data: dict):
     bid = data['id']
     payload = {
-        "id": bid,
-        "owner_id": data['ownerId'],
-        "name": data['name'],
-        "token": data['token'],
+        "id": bid, "owner_id": data['ownerId'], "name": data['name'], "token": data['token'],
         "license_expires_at": int(data.get('licenseExpiresAt', 0)),
         "config": {
             "welcomeMessage": data.get('welcomeMessage', ""),
             "adminChatId": str(data.get('adminChatId', "")),
-            "buttons": data.get('buttons', []),
-            "triggers": data.get('triggers', []),
-            "settings": data.get('settings', {}),
-            "connectedUsers": data.get('connectedUsers', []),
+            "buttons": data.get('buttons', []), "triggers": data.get('triggers', []),
+            "settings": data.get('settings', {}), "connectedUsers": data.get('connectedUsers', []),
             "logs": data.get('logs', [])
         }
     }
     await db.query("bots", method="POST", json_data=payload, params={"on_conflict": "id"})
-    # Если бот запущен, обновляем его конфиг в памяти
     if bid in active_tasks:
         res = await db.query("bots", params={"id": f"eq.{bid}"})
         if res: bot_configs[bid] = res[0]
@@ -365,9 +351,8 @@ async def save_bot_api(data: dict):
 @api.post("/bots/start/{bot_id}")
 async def start_bot_api(bot_id: str):
     res = await db.query("bots", params={"id": f"eq.{bot_id}"})
-    if not res: raise HTTPException(404)
-    if not is_active_license(res[0].get('license_expires_at')):
-        raise HTTPException(403, "License expired")
+    if not res or not is_active_license(res[0].get('license_expires_at')):
+        raise HTTPException(403, "No license")
     
     await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"status": "RUNNING"})
     if bot_id in active_tasks: active_tasks[bot_id].cancel()
@@ -391,7 +376,7 @@ async def del_bot_api(bot_id: str):
 @api.post("/broadcast")
 async def broadcast_api(req: dict):
     bot_ids, msg = req.get("botIds", []), req.get("message", "")
-    report = {"success": 0, "failed": 0}
+    rep = {"success": 0, "failed": 0}
     for bid in bot_ids:
         bot = active_bots.get(bid)
         if not bot: continue
@@ -400,29 +385,26 @@ async def broadcast_api(req: dict):
         for uid in users:
             try:
                 await bot.send_message(uid, msg)
-                report["success"] += 1
-            except: report["failed"] += 1
-            await asyncio.sleep(0.05) # Защита от флуда
-    return report
+                rep["success"] += 1
+            except: rep["failed"] += 1
+            await asyncio.sleep(0.05)
+    return rep
 
 @api.post("/license/activate")
 async def activate_lic_api(req: dict):
-    bot_id, key = req.get("botId"), req.get("key", "")
-    match = re.match(r"BOT-(\d+)-(\w+)", key)
-    if not match: raise HTTPException(400, detail="Invalid key")
-    months = int(match.group(1))
-    res = await db.query("bots", params={"id": f"eq.{bot_id}"})
+    bid, key = req.get("botId"), req.get("key", "")
+    m = re.match(r"BOT-(\d+)-(\w+)", key)
+    if not m: raise HTTPException(400, "Bad key")
+    res = await db.query("bots", params={"id": f"eq.{bid}"})
     if not res: raise HTTPException(404)
-    current_expiry = max(int(time.time()*1000), int(res[0].get('license_expires_at', 0)))
-    new_expiry = current_expiry + (months * 30 * 24 * 3600 * 1000)
-    await db.query("bots", method="PATCH", params={"id": f"eq.{bot_id}"}, json_data={"license_expires_at": new_expiry})
-    return {"status": "ok", "newExpiry": new_expiry}
+    exp = max(int(time.time()*1000), int(res[0].get('license_expires_at', 0))) + (int(m.group(1)) * 30 * 24 * 3600 * 1000)
+    await db.query("bots", method="PATCH", params={"id": f"eq.{bid}"}, json_data={"license_expires_at": exp})
+    return {"status": "ok", "newExpiry": exp}
 
 @api.post("/admin/generate-key")
 async def gen_key_api(req: dict, x_token: str = Header(None, alias="x-admin-token")):
     if x_token != ADMIN_SECRET: raise HTTPException(403)
-    months = req.get("months", 1)
-    key = f"BOT-{months}-{secrets.token_hex(4).upper()}"
+    key = f"BOT-{req.get('months', 1)}-{secrets.token_hex(4).upper()}"
     return {"key": key}
 
 app.include_router(api)
