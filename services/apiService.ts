@@ -22,12 +22,20 @@ const fetchWithTimeout = async (path: string, options: any = {}) => {
     
     if (response.status === 405) {
       console.error(`❌ 405 Method Not Allowed на ${url}.`);
-      console.log("%cРЕШЕНИЕ: Проверьте конфиг Nginx! Блок 'location ^~ /api/ { proxy_pass http://127.0.0.1:8000/api/; }' должен быть выше, чем 'location /'.", "color: orange; font-weight: bold;");
+      console.log("%cРЕШЕНИЕ: Проверьте конфиг Nginx! Блок 'location ^~ /api/ { proxy_pass http://127.0.0.1:8000/api/; }' должен быть выше, чем 'location /'. Также убедитесь, что в конце прокси-адреса стоит /api/.", "color: orange; font-weight: bold;");
+    }
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`❌ API Error ${response.status}: ${errorText}`);
     }
     
     return response;
   } catch (error: any) {
     console.error(`❌ Network Error (${url}):`, error.message);
+    if (error.message.includes('Failed to fetch')) {
+        console.log("%cСОВЕТ: Если вы видите это в браузере, проверьте, запущен ли Python сервер (uvicorn) и доступен ли порт 8000.", "color: cyan;");
+    }
     throw error;
   }
 };
@@ -42,7 +50,6 @@ export const api = {
 
   login: async (email: string, password: string): Promise<User | null> => {
     try {
-      // Fix: replaced .strip() with .trim() as .strip() is not a native JS string method
       const response = await fetchWithTimeout('/auth/login', {
         method: 'POST',
         body: JSON.stringify({ email: email.toLowerCase().trim(), password })
@@ -54,7 +61,6 @@ export const api = {
 
   requestVerification: async (email: string): Promise<boolean | string> => {
     try {
-      // Fix: replaced .strip() with .trim() as .strip() is not a native JS string method
       const response = await fetchWithTimeout('/auth/verify-request', {
         method: 'POST',
         body: JSON.stringify({ email: email.toLowerCase().trim() })
@@ -80,7 +86,13 @@ export const api = {
       const response = await fetchWithTimeout(`/bots/${userId}`);
       if (!response.ok) return [];
       const rows = await response.json();
-      return rows;
+      return rows.map((row: any) => ({
+          ...row,
+          ...row.config,
+          ownerId: row.owner_id,
+          licenseExpiresAt: row.license_expires_at,
+          status: row.status || 'IDLE'
+      }));
     } catch (e) { return []; }
   },
 
@@ -137,7 +149,6 @@ export const api = {
 
   forgotPassword: async (email: string): Promise<boolean | string> => {
     try {
-      // Fix: replaced .strip() with .trim() as .strip() is not a native JS string method
       const response = await fetchWithTimeout('/auth/forgot-password', {
         method: 'POST',
         body: JSON.stringify({ email: email.toLowerCase().trim() })
