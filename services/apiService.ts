@@ -46,10 +46,10 @@ export const api = {
   },
   verifyAndRegister: async (data) => {
     try { 
-      // На сервере теперь оба пути работают, но используем стандартный
-      return await request('/auth/register', 'POST', data); 
+      // Пробуем вызвать алиас, который мы прописали на сервере
+      return await request('/auth/verify-and-register', 'POST', data); 
     } catch (e: any) { 
-      console.error("Reg error:", e);
+      console.error("Registration error:", e);
       return null; 
     }
   },
@@ -68,7 +68,7 @@ export const api = {
   getBots: async (userId) => {
     try { 
       const rows = await request(`/bots/${userId}`); 
-      return rows.map(r => ({ ...r, ownerId: r.ownerId, status: r.status }));
+      return rows.map(r => ({ ...r, status: r.status }));
     } catch { return []; }
   },
   saveBot: async (userId, bot) => {
