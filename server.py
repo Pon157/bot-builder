@@ -14,7 +14,7 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Any, Union
 
-from fastapi import FastAPI, HTTPException, Header, Request, Depends, APIRouter
+from fastapi import FastAPI, HTTPException, Header, Request, Depends, APIRouter, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -263,7 +263,8 @@ async def lifespan(app: FastAPI):
     yield
     for t in active_tasks.values(): t.cancel()
 
-app = FastAPI(lifespan=lifespan)
+# redirect_slashes=False КРИТИЧЕСКИ ВАЖНО для предотвращения 405 ошибки при POST запросах
+app = FastAPI(lifespan=lifespan, redirect_slashes=False)
 
 app.add_middleware(
     CORSMiddleware,
@@ -271,12 +272,21 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"Incoming request: {request.method} {request.url.path}")
+    response = await call_next(request)
+    if response.status_code == 405:
+        logger.error(f"405 Method Not Allowed on {request.url.path}")
+    return response
 
 # --- API ROUTES ---
 @app.get("/api/ping")
 async def ping(): 
-    return {"status": "online", "time": int(time.time())}
+    return {"status": "online", "time": int(time.time()), "engine": "FastAPI 0.110+"}
 
 @app.post("/api/auth/login")
 async def login_api(req: dict):
@@ -391,6 +401,23 @@ async def del_bot_api(bot_id: str):
     if bot_id in active_tasks: active_tasks[bot_id].cancel()
     await db.query("bots", method="DELETE", params={"id": f"eq.{bot_id}"})
     return {"status": "ok"}
+
+@app.post("/api/broadcast")
+async def broadcast_api(req: dict):
+    bot_ids, msg = req.get("botIds", []), req.get("message", "")
+    report = {"success": 0, "failed": 0}
+    for bid in bot_ids:
+        bot = active_bots.get(bid)
+        if not bot: continue
+        conf = bot_configs.get(bid, {}).get('config', {})
+        users = [u['id'] for u in conf.get('connectedUsers', []) if not u.get('is_banned')]
+        for uid in users:
+            try:
+                await bot.send_message(uid, msg)
+                report["success"] += 1
+            except: report["failed"] += 1
+            await asyncio.sleep(0.05)
+    return report
 
 @app.post("/api/license/activate")
 async def activate_lic_api(req: dict):
