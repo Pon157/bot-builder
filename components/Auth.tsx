@@ -37,10 +37,10 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
       if (result === true) {
         setMode('verify');
       } else {
-        setError(typeof result === 'string' ? result : 'Ошибка отправки кода на почту');
+        setError(typeof result === 'string' ? result : 'Ошибка отправки кода');
       }
-    } catch (err) {
-      setError('Нет связи с сервером');
+    } catch (err: any) {
+      setError(err.message || 'Нет связи с сервером');
     }
     setLoading(false);
   };
@@ -48,15 +48,14 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const handleVerifyAndRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setError('');
     try {
         const user = await api.verifyAndRegister({ email, code, password, username });
         if (user) {
             onLogin(user);
-        } else {
-            setError('Неверный код или ошибка регистрации');
         }
-    } catch (err) {
-        setError('Ошибка сервера');
+    } catch (err: any) {
+        setError(err.message || 'Ошибка регистрации');
     }
     setLoading(false);
   };
@@ -64,12 +63,12 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setError('');
     try {
         const user = await api.login(email, password);
         if (user) onLogin(user);
-        else setError('Неверный логин или пароль');
-    } catch (err) {
-        setError('Ошибка подключения к серверу');
+    } catch (err: any) {
+        setError(err.message || 'Неверный логин или пароль');
     }
     setLoading(false);
   };
