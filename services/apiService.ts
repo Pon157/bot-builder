@@ -1,9 +1,12 @@
 
 import { BotConfig, User } from '../types';
 
-const API_BASE = `${window.location.protocol}//${window.location.hostname}:8000/api`;
+const API_BASE = (import.meta as any).env?.VITE_API_URL || 
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+    ? `${window.location.protocol}//${window.location.hostname}:8000/api` 
+    : `${window.location.origin}/api`);
 
-const fetchWithTimeout = async (url: string, options: any = {}, timeout = 10000) => {
+const fetchWithTimeout = async (url: string, options: any = {}, timeout = 15000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
@@ -28,15 +31,6 @@ const DEFAULT_SETTINGS = {
   autoBanThreshold: 0
 };
 
-const DEFAULT_STATS = {
-  totalMessages: 0,
-  incomingToday: 0,
-  outgoingToday: 0,
-  activeUsers24h: 0,
-  bannedCount: 0,
-  history: []
-};
-
 export const api = {
   checkConnection: async (): Promise<boolean> => {
     try {
@@ -51,57 +45,57 @@ export const api = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
-      }, 20000);
-      if (!response.ok) return null;
-      return await response.json();
+      });
+      return response.ok ? await response.json() : null;
     } catch (e) { return null; }
   },
 
+  // FIX: Added missing authentication methods
   requestVerification: async (email: string): Promise<boolean | string> => {
     try {
-      const res = await fetchWithTimeout(`${API_BASE}/auth/request-verification`, {
+      const response = await fetchWithTimeout(`${API_BASE}/auth/verify-request`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email })
-      }, 20000);
-      if (res.ok) return true;
-      const data = await res.json();
-      return data.detail || "Error";
-    } catch (e) { return false; }
+      });
+      if (response.ok) return true;
+      const data = await response.json();
+      return data.detail || 'Error sending code';
+    } catch (e) { return 'Connection error'; }
   },
 
   verifyAndRegister: async (data: any): Promise<User | null> => {
     try {
-      const res = await fetchWithTimeout(`${API_BASE}/auth/verify-and-register`, {
+      const response = await fetchWithTimeout(`${API_BASE}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
-      }, 20000);
-      return res.ok ? await res.json() : null;
+      });
+      return response.ok ? await response.json() : null;
     } catch (e) { return null; }
   },
 
   forgotPassword: async (email: string): Promise<boolean | string> => {
     try {
-      const res = await fetchWithTimeout(`${API_BASE}/auth/forgot-password`, {
+      const response = await fetchWithTimeout(`${API_BASE}/auth/forgot-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email })
-      }, 20000);
-      if (res.ok) return true;
-      const data = await res.json();
-      return data.detail || "Error";
-    } catch (e) { return false; }
+      });
+      if (response.ok) return true;
+      const data = await response.json();
+      return data.detail || 'User not found';
+    } catch (e) { return 'Connection error'; }
   },
 
   resetPassword: async (data: any): Promise<boolean> => {
     try {
-      const res = await fetchWithTimeout(`${API_BASE}/auth/reset-password`, {
+      const response = await fetchWithTimeout(`${API_BASE}/auth/reset-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
-      }, 20000);
-      return res.ok;
+      });
+      return response.ok;
     } catch (e) { return false; }
   },
 
@@ -118,7 +112,7 @@ export const api = {
           ownerId: row.owner_id,
           licenseExpiresAt: row.license_expires_at,
           settings: { ...DEFAULT_SETTINGS, ...(config.settings || {}) },
-          stats: { ...DEFAULT_STATS, ...(row.stats || {}) },
+          stats: row.stats || { totalMessages: 0, incomingToday: 0, outgoingToday: 0, history: [] },
           connectedUsers: config.connectedUsers || [],
           triggers: config.triggers || [],
           buttons: config.buttons || [],
@@ -130,31 +124,27 @@ export const api = {
 
   saveBot: async (userId: string, bot: BotConfig): Promise<void> => {
     try {
+      // Сервер ожидает ownerId и id в корне, остальное в конфиге (сервер сам разложит)
       await fetchWithTimeout(`${API_BASE}/bots/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            ...bot,
-            ownerId: userId
-        })
+        body: JSON.stringify(bot)
       });
-    } catch (e) { console.error("Failed to save bot"); }
+    } catch (e) { console.error("API Error: Failed to save bot"); }
   },
 
   deleteBot: async (userId: string, botId: string): Promise<void> => {
     try {
-      await fetchWithTimeout(`${API_BASE}/bots/delete/${botId}`, {
-        method: 'DELETE'
-      });
-    } catch (e) { console.error("Failed to delete bot"); }
+      await fetchWithTimeout(`${API_BASE}/bots/delete/${botId}`, { method: 'DELETE' });
+    } catch (e) { console.error("API Error: Failed to delete bot"); }
   },
 
   startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
     try {
       const res = await fetchWithTimeout(`${API_BASE}/bots/start/${bot.id}`, { method: 'POST' });
       if (res.ok) return true;
-      const errorData = await res.json();
-      return errorData.detail || "Error";
+      const err = await res.json();
+      return err.detail || "Error";
     } catch (e) { return "Network Error"; }
   },
 
@@ -178,12 +168,12 @@ export const api = {
 
   activateLicense: async (botId: string, key: string): Promise<any> => {
     try {
-      const response = await fetchWithTimeout(`${API_BASE}/license/activate`, {
+      const res = await fetchWithTimeout(`${API_BASE}/license/activate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ botId, key })
       });
-      return response.ok ? await response.json() : null;
+      return res.ok ? await res.json() : null;
     } catch (e) { return null; }
   }
 };
