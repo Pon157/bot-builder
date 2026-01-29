@@ -69,7 +69,6 @@ class SupabaseDB:
             url = f"{self.url}/rest/v1/{table}"
             headers = self.headers.copy()
             
-            # Upsert support logic
             if method == "POST" and params and "on_conflict" in params:
                 headers["Prefer"] = "resolution=merge-duplicates,return=representation"
 
@@ -90,6 +89,7 @@ active_tasks: Dict[str, asyncio.Task] = {}
 active_bots: Dict[str, Bot] = {}
 bot_configs: Dict[str, dict] = {}
 pending_verifications: Dict[str, dict] = {} 
+pending_resets: Dict[str, dict] = {}
 
 # --- 4. CORE UTILS ---
 def is_active_license(expiry: Any) -> bool:
@@ -200,7 +200,6 @@ async def bot_worker_task(bot_id: str, token: str):
         config = full_data.get('config', {})
         admin_id = str(config.get("adminChatId", ""))
 
-        # 1. ADMIN REPLY
         if admin_id and str(m.chat.id) == admin_id:
             target_id = None
             if m.reply_to_message:
@@ -217,7 +216,6 @@ async def bot_worker_task(bot_id: str, token: str):
                     await m.reply(f"❌ Ошибка отправки: {e}")
             return
 
-        # 2. USER HANDLERS
         if m.text:
             low = m.text.lower().strip()
             for btn in config.get("buttons", []):
@@ -235,7 +233,6 @@ async def bot_worker_task(bot_id: str, token: str):
                     asyncio.create_task(update_stats(bot_id, "out"))
                     return
 
-        # 3. FORWARDING
         if admin_id:
             try:
                 info = f"👤 <b>{m.from_user.full_name}</b>\n🆔 ID: <code>{m.from_user.id}</code>"
@@ -268,7 +265,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# CORS: Add as early as possible
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -277,15 +273,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Debug middleware to catch 405 errors
-@app.middleware("http")
-async def dbg_middleware(request: Request, call_next):
-    logger.info(f"REQ: {request.method} {request.url.path}")
-    response = await call_next(request)
-    if response.status_code == 405:
-        logger.error(f"405 NOT ALLOWED: {request.method} {request.url.path}")
-    return response
-
 # --- API ROUTES ---
 @app.get("/api/ping")
 async def ping(): 
@@ -293,27 +280,27 @@ async def ping():
 
 @app.post("/api/auth/login")
 async def login_api(req: dict):
-    email = req.get('email')
-    password = req.get('password')
+    email = req.get('email', '').strip().lower()
+    password = req.get('password', '')
     res = await db.query("users", params={"email": f"eq.{email}", "password": f"eq.{password}"})
     if not res: 
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail="Неверные учетные данные")
     return res[0]
 
 @app.post("/api/auth/verify-request")
 async def verify_req(req: dict):
-    email = req.get("email", "").lower()
+    email = req.get("email", "").lower().strip()
     code = str(random.randint(100000, 999999))
     if EmailService.send_verification_code(email, code):
         pending_verifications[email] = {"code": code, "time": time.time()}
         return {"status": "ok"}
-    raise HTTPException(status_code=500, detail="Failed to send code")
+    raise HTTPException(status_code=500, detail="Ошибка при отправке письма")
 
 @app.post("/api/auth/register")
 async def register_api(req: dict):
-    email = req.get("email", "").lower()
+    email = req.get("email", "").lower().strip()
     if email not in pending_verifications or pending_verifications[email]["code"] != req.get("code"):
-        raise HTTPException(status_code=400, detail="Invalid code")
+        raise HTTPException(status_code=400, detail="Неверный код")
     
     user_id = str(uuid.uuid4())
     payload = {
@@ -323,6 +310,32 @@ async def register_api(req: dict):
     await db.query("users", method="POST", json_data=payload)
     del pending_verifications[email]
     return payload
+
+@app.post("/api/auth/forgot-password")
+async def forgot_password_api(req: dict):
+    email = req.get("email", "").lower().strip()
+    res = await db.query("users", params={"email": f"eq.{email}"})
+    if not res:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    code = str(random.randint(100000, 999999))
+    if EmailService.send_password_reset(email, code):
+        pending_resets[email] = {"code": code, "time": time.time()}
+        return {"status": "ok"}
+    raise HTTPException(status_code=500, detail="Ошибка отправки кода")
+
+@app.post("/api/auth/reset-password")
+async def reset_password_api(req: dict):
+    email = req.get("email", "").lower().strip()
+    code = req.get("code", "")
+    new_password = req.get("newPassword", "")
+    
+    if email not in pending_resets or pending_resets[email]["code"] != code:
+        raise HTTPException(status_code=400, detail="Неверный код сброса")
+        
+    await db.query("users", method="PATCH", params={"email": f"eq.{email}"}, json_data={"password": new_password})
+    del pending_resets[email]
+    return {"status": "ok"}
 
 @app.get("/api/bots/{user_id}")
 async def get_user_bots(user_id: str):
