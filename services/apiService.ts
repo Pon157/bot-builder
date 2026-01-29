@@ -1,27 +1,36 @@
 
 import { BotConfig, User } from '../types';
 
-// Используем относительный путь, чтобы запросы шли через Vite Proxy в деве
-// или напрямую через Nginx в проде (если фронт и бэк на одном домене)
+// Используем относительный путь для поддержки проксирования через Nginx/Vite
 const API_BASE = '/api';
 
 const fetchWithTimeout = async (url: string, options: any = {}, timeout = 15000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
+  
+  // Убеждаемся, что URL не содержит двойных слешей
+  const cleanUrl = url.replace(/([^:]\/)\/+/g, "$1");
+
   try {
-    const response = await fetch(url, { 
+    const response = await fetch(cleanUrl, { 
       ...options, 
       signal: controller.signal,
       headers: {
         'Accept': 'application/json',
+        'Cache-Control': 'no-cache',
         ...(options.headers || {})
       }
     });
     clearTimeout(id);
+    
+    if (response.status === 405) {
+      console.error(`ERROR 405: Method ${options.method || 'GET'} not allowed on ${cleanUrl}. Check backend routes or Nginx proxy.`);
+    }
+    
     return response;
   } catch (error) {
     clearTimeout(id);
-    console.error(`Fetch error for ${url}:`, error);
+    console.error(`Fetch error for ${cleanUrl}:`, error);
     throw error;
   }
 };
