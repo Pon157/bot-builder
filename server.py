@@ -11,7 +11,7 @@ import sys
 from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Any
-from fastapi import FastAPI, HTTPException, Header, Request, Depends, Response, status
+from fastapi import FastAPI, HTTPException, Header, Request, Depends, Response, status, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -88,7 +88,6 @@ class RegisterWithCodeRequest(BaseModel):
 # --- Жизненный цикл ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Первоначальная загрузка данных
     if supabase:
         try:
             users = supabase.table("users").select("*").execute()
@@ -101,9 +100,9 @@ async def lifespan(app: FastAPI):
     yield
 
 # --- Инициализация App ---
-app = FastAPI(lifespan=lifespan)
+# Отключаем redirect_slashes, чтобы избежать 405 при POST запросах без слеша на конце
+app = FastAPI(lifespan=lifespan, redirect_slashes=False)
 
-# Настройка CORS: Важно, чтобы CORSMiddleware был настроен корректно для обработки OPTIONS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -113,34 +112,22 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
-# Глобальный обработчик ошибок валидации (помогает отловить 422)
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    logger.error(f"❌ Validation Error: {exc.errors()} | Body: {await request.body()}")
+    logger.error(f"❌ Validation Error: {exc.errors()}")
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={"detail": exc.errors(), "message": "Ошибка валидации данных"},
     )
 
-# Middleware для логирования запросов
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    start_time = time.time()
-    logger.info(f"Incoming: {request.method} {request.url.path}")
-    response = await call_next(request)
-    duration = (time.time() - start_time) * 1000
-    logger.info(f"Completed: {request.method} {request.url.path} | Status: {response.status_code} | {duration:.2f}ms")
-    return response
+# --- API Router ---
+api_router = APIRouter(prefix="/api")
 
-# --- Роуты ---
-
-@app.get("/api/ping")
-@app.get("/api/ping/")
+@api_router.get("/ping")
 async def ping():
     return {"status": "online", "timestamp": time.time()}
 
-@app.post("/api/auth/login")
-@app.post("/api/auth/login/")
+@api_router.post("/auth/login")
 async def login(req: LoginRequest):
     email = req.email.lower().strip()
     if supabase:
@@ -154,15 +141,19 @@ async def login(req: LoginRequest):
         raise HTTPException(401, "Неверный Email или пароль")
     return u
 
-@app.post("/api/auth/request-verification")
-@app.post("/api/auth/request-verification/")
+@api_router.post("/auth/request-verification")
 async def request_verification(req: VerificationRequest):
     email = req.email.lower().strip()
-    # Проверка на существование
+    logger.info(f"📩 Requesting verification for: {email}")
+    
     if supabase:
-        res = supabase.table("users").select("id").eq("email", email).execute()
-        if res.data:
-            raise HTTPException(400, "Email уже зарегистрирован")
+        try:
+            res = supabase.table("users").select("id").eq("email", email).execute()
+            if res.data:
+                raise HTTPException(400, "Email уже зарегистрирован")
+        except Exception as e:
+            logger.error(f"DB Error: {e}")
+            # Не падаем, если Supabase временно недоступен, но логируем
     
     code = "".join([str(secrets.randbelow(10)) for _ in range(6)])
     verification_codes[email] = {"code": code, "timestamp": time.time()}
@@ -172,8 +163,7 @@ async def request_verification(req: VerificationRequest):
     
     raise HTTPException(500, "Ошибка отправки почты. Проверьте настройки SMTP.")
 
-@app.post("/api/auth/verify-and-register")
-@app.post("/api/auth/verify-and-register/")
+@api_router.post("/auth/verify-and-register")
 async def verify_and_register(req: RegisterWithCodeRequest):
     email = req.email.lower().strip()
     stored = verification_codes.get(email)
@@ -188,7 +178,7 @@ async def verify_and_register(req: RegisterWithCodeRequest):
         "password": req.password,
         "balance": 0.0,
         "botsCreated": 0,
-        "licenseExpiresAt": int(time.time() * 1000) + (3 * 24 * 3600 * 1000) # 3 дня триала
+        "licenseExpiresAt": int(time.time() * 1000) + (3 * 24 * 3600 * 1000)
     }
     
     if supabase:
@@ -196,22 +186,20 @@ async def verify_and_register(req: RegisterWithCodeRequest):
             supabase.table("users").insert(new_user).execute()
         except Exception as e:
             logger.error(f"Error creating user: {e}")
-            raise HTTPException(500, "Ошибка сохранения пользователя")
+            raise HTTPException(500, f"Ошибка сохранения пользователя: {str(e)}")
             
     db_content["users"].append(new_user)
     verification_codes.pop(email, None)
     return new_user
 
-@app.get("/api/bots/{user_id}")
-@app.get("/api/bots/{user_id}/")
+@api_router.get("/bots/{user_id}")
 async def get_bots(user_id: str):
     if supabase:
         res = supabase.table("bots").select("*").eq("ownerId", user_id).execute()
         return res.data or []
     return [b for b in db_content["bots"] if str(b["ownerId"]) == str(user_id)]
 
-@app.post("/api/bots/save")
-@app.post("/api/bots/save/")
+@api_router.post("/bots/save")
 async def save_bot_api(bot_data: dict):
     if supabase:
         try:
@@ -221,6 +209,8 @@ async def save_bot_api(bot_data: dict):
             raise HTTPException(500, "Ошибка базы данных")
     return {"status": "ok"}
 
+# Включаем роутер
+app.include_router(api_router)
+
 if __name__ == "__main__":
-    # Запуск на порту 8000
     uvicorn.run(app, host="0.0.0.0", port=8000)
