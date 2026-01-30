@@ -17,22 +17,26 @@ if not logger.handlers:
 class EmailService:
     @staticmethod
     def send_email(subject: str, recipient: str, html_content: str):
-        # Считываем переменные прямо здесь, чтобы они подхватились после загрузки .env
+        # Принудительно считываем из os.environ, которые мы заполнили в server.py
         gmail_user = os.getenv('GMAIL_EMAIL')
         gmail_pass = os.getenv('GMAIL_PASSWORD')
-        smtp_server = os.getenv('SMTP_SERVER')
+        smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
         
-        raw_port = os.getenv('SMTP_PORT')
+        raw_port = os.getenv('SMTP_PORT', '587')
         try:
             smtp_port = int(raw_port)
         except (ValueError, TypeError):
             smtp_port = 587
 
-        logger.info(f"📧 Попытка отправки письма на {recipient} с темой '{subject}'...")
-        
         if not gmail_user or not gmail_pass:
-            logger.error("❌ Ошибка: Данные почты (GMAIL_EMAIL/GMAIL_PASSWORD) не найдены в окружении!")
+            missing = []
+            if not gmail_user: missing.append("GMAIL_EMAIL")
+            if not gmail_pass: missing.append("GMAIL_PASSWORD")
+            logger.error(f"❌ Ошибка: Переменные {', '.join(missing)} не найдены в os.environ!")
             return False
+
+        logger.info(f"📧 Отправка письма на {recipient}...")
+        
         try:
             msg = MIMEMultipart()
             msg['From'] = f"BotEngine Pro <{gmail_user}>"
@@ -40,15 +44,15 @@ class EmailService:
             msg['Subject'] = subject
             msg.attach(MIMEText(html_content, 'html'))
 
-            with smtplib.SMTP(smtp_server, smtp_port, timeout=10) as server:
+            with smtplib.SMTP(smtp_server, smtp_port, timeout=15) as server:
                 server.starttls()
                 server.login(gmail_user, gmail_pass)
                 server.send_message(msg)
             
-            logger.info(f"✅ Письмо успешно отправлено на {recipient}")
+            logger.info(f"✅ Письмо успешно доставлено: {recipient}")
             return True
         except Exception as e:
-            logger.error(f"❌ Ошибка SMTP при отправке на {recipient}: {str(e)}")
+            logger.error(f"❌ Критическая ошибка SMTP: {str(e)}")
             return False
 
     @classmethod
@@ -61,6 +65,7 @@ class EmailService:
             <div style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #fff; background: #111; padding: 30px; text-align: center; border-radius: 15px; margin: 30px 0; border: 1px solid #3b82f6;">
                 {code}
             </div>
+            <p style="font-size: 12px; color: #555;">Если вы не запрашивали этот код, просто проигнорируйте письмо.</p>
         </div>
         """
         return cls.send_email(subject, recipient, content)
