@@ -1,10 +1,9 @@
 
 import { BotConfig, User } from '../types';
 
-// Используем текущий хост и порт 8000 для API
 const API_BASE = `${window.location.protocol}//${window.location.hostname}:8000/api`;
 
-const fetchWithTimeout = async (url: string, options: any = {}, timeout = 12000) => {
+const fetchWithTimeout = async (url: string, options: any = {}, timeout = 15000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
@@ -48,8 +47,7 @@ export const api = {
       const data = await response.json();
       return data.detail || "Ошибка отправки кода";
     } catch (e) { 
-      console.error("Verification error:", e);
-      return "Нет связи с API сервером"; 
+      return "Сервер регистрации временно недоступен"; 
     }
   },
 
