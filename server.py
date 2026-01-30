@@ -104,7 +104,6 @@ async def load_db_full():
     if supabase:
         try:
             logger.info("🔄 Полная синхронизация с облаком...")
-            # Если в облаке пусто - локально тоже будет пусто (upsert logic)
             users = supabase.table("users").select("*").execute()
             bots = supabase.table("bots").select("*").execute()
             keys = supabase.table("issued_keys").select("*").execute()
@@ -117,7 +116,6 @@ async def load_db_full():
             save_db_local()
         except Exception as e:
             logger.error(f"❌ Не удалось загрузить данные из облака: {e}")
-            # Если облако упало, используем локальный кэш
             if os.path.exists(DB_FILE):
                 with open(DB_FILE, "r", encoding="utf-8") as f:
                     db_content.update(json.load(f))
@@ -145,7 +143,7 @@ class ActivateRequest(BaseModel):
     botId: str
     key: str
 
-# --- Бот Воркер (без изменений логики, только использование кэша) ---
+# --- Бот Воркер ---
 active_tasks: Dict[str, asyncio.Task] = {}
 active_bots: Dict[str, Bot] = {}
 
@@ -244,14 +242,14 @@ async def ping(): return {"status": "online"}
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
     email = req.email.lower().strip()
-    # ПРЯМОЙ ЗАПРОС В SUPABASE
+    logger.info(f"🔑 Попытка входа: {email}")
     if supabase:
         res = supabase.table("users").select("*").eq("email", email).eq("password", req.password).execute()
         if not res.data:
+            logger.warning(f"❌ Неудачный вход: {email}")
             raise HTTPException(401, "Неверный Email или пароль")
         return res.data[0]
     
-    # Fallback на локальный кэш (только если Supabase не сконфигурирован)
     u = next((u for u in db_content["users"] if u["email"] == email and u["password"] == req.password), None)
     if not u: raise HTTPException(401, "Неверный Email или пароль")
     return u
@@ -259,20 +257,43 @@ async def login(req: LoginRequest):
 @app.post("/api/auth/request-verification")
 async def request_verification(req: VerificationRequest):
     email = req.email.lower().strip()
-    # ПРЯМОЙ ЗАПРОС В SUPABASE
+    logger.info(f"📧 Запрос кода: {email}")
     if supabase:
         res = supabase.table("users").select("id").eq("email", email).execute()
-        if res.data: raise HTTPException(400, "Пользователь уже существует")
+        if res.data: 
+            logger.warning(f"❌ Попытка повторной регистрации: {email}")
+            raise HTTPException(400, "Пользователь с таким Email уже существует")
     
     code = "".join([str(secrets.randbelow(10)) for _ in range(6)])
     verification_codes[email] = {"code": code, "timestamp": time.time()}
     if EmailService.send_verification_code(email, code): return {"status": "ok"}
-    logger.warning(f"CODE FOR {email}: {code}")
-    raise HTTPException(500, "Ошибка SMTP")
+    logger.error(f"❌ Ошибка SMTP для {email}")
+    raise HTTPException(500, "Ошибка отправки почты. Попробуйте позже.")
+
+@app.post("/api/auth/verify-and-register")
+async def verify_and_register(req: RegisterWithCodeRequest):
+    email = req.email.lower().strip()
+    stored = verification_codes.get(email)
+    if not stored or stored["code"] != req.code:
+        raise HTTPException(400, "Неверный или просроченный код")
+    
+    new_user = {
+        "id": f"u_{secrets.token_hex(4)}",
+        "username": req.username,
+        "email": email,
+        "password": req.password,
+        "balance": 0.0,
+        "botsCreated": 0,
+        "licenseExpiresAt": int(time.time() * 1000) + (3 * 24 * 3600 * 1000)
+    }
+    
+    db_content["users"].append(new_user)
+    await sync_to_supabase("users", new_user)
+    verification_codes.pop(email, None)
+    return new_user
 
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
-    # ПРЯМОЙ ЗАПРОС В SUPABASE
     if supabase:
         res = supabase.table("bots").select("*").eq("ownerId", user_id).execute()
         bots = res.data or []
@@ -282,19 +303,16 @@ async def get_bots(user_id: str):
 
 @app.post("/api/bots/save")
 async def save_bot_api(bot_data: dict):
-    # Обновляем локальный кэш для воркера
     idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_data["id"]), -1)
     if idx >= 0: db_content["bots"][idx] = bot_data
     else: db_content["bots"].append(bot_data)
     
-    # ПРЯМАЯ ЗАПИСЬ В SUPABASE
     await sync_to_supabase("bots", bot_data)
     save_db_local()
     return {"status": "ok"}
 
 @app.post("/api/bots/start/{bot_id}")
 async def start_bot_api(bot_id: str):
-    # Получаем актуальный конфиг из Supabase перед запуском
     cfg = None
     if supabase:
         res = supabase.table("bots").select("*").eq("id", bot_id).execute()
@@ -323,28 +341,6 @@ async def stop_bot_api_endpoint(bot_id: str):
         if b["id"] == bot_id: b["status"] = "IDLE"
     save_db_local()
     return {"status": "ok"}
-
-@app.post("/api/license/activate")
-async def activate_key_api(req: ActivateRequest):
-    # Все проверки только через Supabase (Источник правды)
-    if not supabase: raise HTTPException(500, "Supabase недоступен")
-    
-    bot_res = supabase.table("bots").select("*").eq("id", req.botId).execute()
-    key_res = supabase.table("issued_keys").select("*").eq("key", req.key).eq("used", False).execute()
-    
-    if not bot_res.data: raise HTTPException(404, "Бот не найден")
-    if not key_res.data: raise HTTPException(400, "Ключ недействителен или уже использован")
-    
-    bot_cfg, key_obj = bot_res.data[0], key_res.data[0]
-    now = int(time.time() * 1000)
-    new_exp = max(int(bot_cfg.get("licenseExpiresAt", now)), now) + (key_obj["months"] * 30 * 24 * 3600 * 1000)
-    
-    supabase.table("bots").update({"licenseExpiresAt": new_exp}).eq("id", req.botId).execute()
-    supabase.table("issued_keys").update({"used": True, "used_by_bot": req.botId, "used_at": now}).eq("key", req.key).execute()
-    
-    # Обновляем локальный кэш
-    await load_db_full()
-    return {"status": "ok", "newExpiry": new_exp}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
