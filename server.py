@@ -78,6 +78,9 @@ if SUPABASE_AVAILABLE and SUPABASE_URL and SUPABASE_KEY:
 
 # Временное хранилище кодов (email: {code, timestamp})
 verification_codes: Dict[str, dict] = {}
+# Временное хранилище для сброса пароля
+reset_codes: Dict[str, dict] = {}
+
 db_content = {"users": [], "bots": [], "issued_keys": [], "system_logs": []}
 
 # --- Логика БД (Supabase Sync) ---
@@ -86,18 +89,15 @@ async def sync_to_supabase(table: str, data: Any):
     """Синхронизация конкретного объекта или списка в Supabase"""
     if not supabase: return
     try:
-        # Supabase Python SDK требует список словарей для upsert
         payload = data if isinstance(data, list) else [data]
         if not payload: return
         
-        # Очищаем данные от лишних полей перед отправкой (например, временных статусов RUNNING)
+        # Удаляем временные поля, которых нет в схеме БД
         clean_payload = []
         for item in payload:
             c = item.copy()
-            if table == "bots":
-                # Не храним в базе динамические логи (они слишком тяжелые)
-                # или храним только последние 10. Для простоты здесь сохраняем всё.
-                pass
+            # Удаляем пароль при синхронизации ботов (если он там вдруг есть)
+            # и другие динамические поля
             clean_payload.append(c)
 
         result = supabase.table(table).upsert(clean_payload).execute()
@@ -114,7 +114,7 @@ def save_db_local():
         logger.error(f"❌ Local Save Error: {e}")
 
 async def load_db_full():
-    """Полная загрузка данных из Supabase (или локально, если Supabase недоступен)"""
+    """Полная загрузка данных из Supabase"""
     global db_content
     
     if supabase:
@@ -157,6 +157,11 @@ class RegisterWithCodeRequest(BaseModel):
     password: str
     username: str
 
+class ResetPasswordRequest(BaseModel):
+    email: str
+    code: str
+    newPassword: str
+
 class BroadcastRequest(BaseModel):
     botIds: List[str]
     message: str
@@ -184,14 +189,14 @@ async def add_bot_log(bot_id: str, log_type: str, text: str):
             "text": text
         }
         bot_cfg["logs"].insert(0, log_entry)
-        bot_cfg["logs"] = bot_cfg["logs"][:30] # Храним меньше логов в БД
+        bot_cfg["logs"] = bot_cfg["logs"][:30]
         save_db_local()
         await sync_to_supabase("bots", bot_cfg)
 
 active_tasks: Dict[str, asyncio.Task] = {}
 active_bots: Dict[str, Bot] = {}
 
-# --- Бот Воркер (Livegram Logic) ---
+# --- Бот Воркер ---
 
 async def bot_worker_task(bot_id: str, token: str):
     logger.info(f"🤖 Starting worker for bot {bot_id}")
@@ -234,7 +239,6 @@ async def bot_worker_task(bot_id: str, token: str):
                 admin_id = cfg.get("adminChatId")
                 text = message.text or ""
 
-                # 1. Ответ админа
                 if admin_id and str(user_id) == str(admin_id) and message.reply_to_message:
                     reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
                     match = re.search(r"ID: (\d+)", reply_text)
@@ -252,7 +256,6 @@ async def bot_worker_task(bot_id: str, token: str):
                             await message.reply(f"❌ Ошибка: {e}")
                             return
 
-                # 2. Кнопки
                 for btn in cfg.get("buttons", []):
                     if btn["text"].lower() == text.lower():
                         await message.answer(btn.get("response", "..."))
@@ -267,14 +270,12 @@ async def bot_worker_task(bot_id: str, token: str):
                             except: pass
                         return
 
-                # 3. Триггеры
                 for trig in cfg.get("triggers", []):
                     if trig["keyword"].lower() in text.lower():
                         await message.answer(trig["response"])
                         await add_bot_log(bot_id, "outgoing", f"Trigger: {trig['keyword']}")
                         return
 
-                # 4. Пересылка админу
                 if admin_id and str(user_id) != str(admin_id):
                     info = f"📩 <b>Сообщение от пользователя</b>\n👤 {message.from_user.full_name}\n🆔 ID: <code>{user_id}</code>\n\n"
                     try:
@@ -331,7 +332,6 @@ async def ping(): return {"status": "online"}
 async def request_verification(req: VerificationRequest):
     email = req.email.lower().strip()
     
-    # Прямая проверка в Supabase для исключения дубликатов
     if supabase:
         check = supabase.table("users").select("id").eq("email", email).execute()
         if check.data:
@@ -380,6 +380,41 @@ async def login(req: LoginRequest):
     if not u: raise HTTPException(401, "Неверный Email или пароль")
     return u
 
+@app.post("/api/auth/forgot-password")
+async def forgot_password(req: VerificationRequest):
+    email = req.email.lower().strip()
+    u = next((u for u in db_content["users"] if u["email"] == email), None)
+    if not u:
+        raise HTTPException(404, "Пользователь с таким Email не найден")
+    
+    code = "".join([str(secrets.randbelow(10)) for _ in range(6)])
+    reset_codes[email] = {"code": code, "timestamp": time.time()}
+    
+    sent = EmailService.send_password_reset(email, code)
+    if not sent:
+        logger.warning(f"🔥 SMTP FAILURE. RESET CODE FOR {email} IS: {code}")
+        raise HTTPException(500, "Ошибка SMTP. Обратитесь в поддержку")
+    
+    return {"status": "ok"}
+
+@app.post("/api/auth/reset-password")
+async def reset_password(req: ResetPasswordRequest):
+    email = req.email.lower().strip()
+    stored = reset_codes.get(email)
+    if not stored or stored["code"] != req.code or time.time() - stored["timestamp"] > 600:
+        raise HTTPException(400, "Неверный или просроченный код подтверждения")
+    
+    user_idx = next((i for i, u in enumerate(db_content["users"]) if u["email"] == email), -1)
+    if user_idx == -1:
+        raise HTTPException(404, "Пользователь не найден")
+    
+    db_content["users"][user_idx]["password"] = req.newPassword
+    save_db_local()
+    await sync_to_supabase("users", db_content["users"][user_idx])
+    
+    reset_codes.pop(email, None)
+    return {"status": "ok"}
+
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
     user_bots = [b for b in db_content["bots"] if str(b["ownerId"]) == str(user_id)]
@@ -413,7 +448,7 @@ async def start_bot_api(bot_id: str):
     return {"status": "ok"}
 
 @app.post("/api/bots/stop/{bot_id}")
-async def stop_bot_api(bot_id: str):
+async def stop_bot_api_endpoint(bot_id: str):
     if bot_id in active_tasks:
         active_tasks[bot_id].cancel()
         active_tasks.pop(bot_id, None)
