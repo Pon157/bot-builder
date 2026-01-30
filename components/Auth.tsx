@@ -37,10 +37,10 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
       if (result === true) {
         setMode('verify');
       } else {
-        setError(typeof result === 'string' ? result : 'Ошибка отправки кода на почту');
+        setError(typeof result === 'string' ? result : 'Ошибка отправки кода');
       }
-    } catch (err) {
-      setError('Нет связи с сервером');
+    } catch (err: any) {
+      setError(err.message || 'Нет связи с сервером');
     }
     setLoading(false);
   };
@@ -48,15 +48,14 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const handleVerifyAndRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setError('');
     try {
         const user = await api.verifyAndRegister({ email, code, password, username });
         if (user) {
             onLogin(user);
-        } else {
-            setError('Неверный код или ошибка регистрации');
         }
-    } catch (err) {
-        setError('Ошибка сервера');
+    } catch (err: any) {
+        setError(err.message || 'Ошибка регистрации');
     }
     setLoading(false);
   };
@@ -64,12 +63,12 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setError('');
     try {
         const user = await api.login(email, password);
         if (user) onLogin(user);
-        else setError('Неверный логин или пароль');
-    } catch (err) {
-        setError('Ошибка подключения к серверу');
+    } catch (err: any) {
+        setError(err.message || 'Ошибка входа');
     }
     setLoading(false);
   };
@@ -81,9 +80,9 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     try {
         const result = await api.forgotPassword(email);
         if (result === true) setMode('reset');
-        else setError(typeof result === 'string' ? result : 'Пользователь не найден');
-    } catch (err) {
-        setError('Ошибка сервера');
+        else setError(typeof result === 'string' ? result : 'Ошибка');
+    } catch (err: any) {
+        setError(err.message || 'Ошибка сервера');
     }
     setLoading(false);
   };
@@ -91,14 +90,15 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setError('');
     try {
         const success = await api.resetPassword({ email, code, newPassword: password });
         if (success) {
             alert('Пароль успешно изменен!');
             setMode('login');
-        } else setError('Неверный код подтверждения');
-    } catch (err) {
-        setError('Ошибка сервера');
+        }
+    } catch (err: any) {
+        setError(err.message || 'Неверный код или ошибка сервера');
     }
     setLoading(false);
   };
@@ -106,7 +106,6 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-[#050505] px-4 font-sans text-zinc-300">
       <div className="w-full max-w-md space-y-6 bg-[#111] p-10 rounded-[2.5rem] border border-zinc-800 shadow-2xl relative overflow-hidden">
-        {/* Glow effect */}
         <div className="absolute -top-24 -right-24 w-48 h-48 bg-blue-600/10 blur-[100px] rounded-full"></div>
         
         <div className="text-center relative z-10">
