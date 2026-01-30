@@ -247,6 +247,53 @@ async def bot_worker_task(bot_id: str, token: str):
         active_bots.pop(bot_id, None)
         active_tasks.pop(bot_id, None)
 
+# --- LIFESPAN (Определяем ДО инициализации FastAPI) ---
+
+async def stop_bot_api(bot_id: str):
+    if bot_id in active_tasks:
+        active_tasks[bot_id].cancel()
+        active_tasks.pop(bot_id, None)
+    if bot_id in active_bots:
+        active_bots.pop(bot_id, None)
+    for b in db_content["bots"]:
+        if b["id"] == bot_id: b["status"] = "IDLE"
+    save_db()
+    return {"status": "ok"}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # При старте
+    load_db()
+    for b in db_content["bots"]:
+        if b.get("status") == "RUNNING" and is_bot_license_active(b):
+            logger.info(f"♻️ Auto-restarting bot {b['name']} ({b['id']})")
+            active_tasks[b["id"]] = asyncio.create_task(bot_worker_task(b["id"], b["token"]))
+    
+    async def monitor():
+        while True:
+            try:
+                now = int(time.time() * 1000)
+                # Копия ключей для безопасной итерации
+                current_task_ids = list(active_tasks.keys())
+                for b_id in current_task_ids:
+                    bot_cfg = next((b for b in db_content["bots"] if b["id"] == b_id), None)
+                    if bot_cfg and not is_bot_license_active(bot_cfg):
+                        logger.warning(f"🚨 License expired for {bot_cfg['name']}, stopping...")
+                        await stop_bot_api(b_id)
+            except Exception as e:
+                logger.error(f"Monitor error: {e}")
+            await asyncio.sleep(300)
+    
+    m_task = asyncio.create_task(monitor())
+    
+    yield
+    
+    # При выключении
+    m_task.cancel()
+    for t in active_tasks.values():
+        t.cancel()
+    logger.info("👋 Server shutdown complete")
+
 # --- API ---
 
 app = FastAPI(lifespan=lifespan)
@@ -264,7 +311,9 @@ async def request_verification(req: VerificationRequest):
     verification_codes[email] = {"code": code, "timestamp": time.time()}
     if not EmailService.send_verification_code(email, code):
         logger.warning(f"Code for {email}: {code}")
-        raise HTTPException(500, "Ошибка SMTP")
+        # Если SMTP не работает, мы все равно позволяем продолжить для отладки, если нужно
+        # Но по правилам возвращаем ошибку, если письмо не ушло
+        raise HTTPException(500, "Ошибка SMTP. Проверьте логи сервера для получения кода.")
     return {"status": "ok"}
 
 @app.post("/api/auth/verify-and-register")
@@ -322,12 +371,8 @@ async def start_bot_api(bot_id: str):
     return {"status": "ok"}
 
 @app.post("/api/bots/stop/{bot_id}")
-async def stop_bot_api(bot_id: str):
-    if bot_id in active_tasks:
-        active_tasks[bot_id].cancel(); active_tasks.pop(bot_id, None)
-    for b in db_content["bots"]:
-        if b["id"] == bot_id: b["status"] = "IDLE"
-    save_db(); return {"status": "ok"}
+async def stop_bot_api_endpoint(bot_id: str):
+    return await stop_bot_api(bot_id)
 
 @app.post("/api/broadcast")
 async def broadcast_api(req: BroadcastRequest):
@@ -336,6 +381,7 @@ async def broadcast_api(req: BroadcastRequest):
         bot_inst = active_bots.get(bot_id)
         if not bot_inst: continue
         cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
+        if not cfg: continue
         for sub_id in cfg.get("subscribers", []):
             try:
                 await bot_inst.send_message(sub_id, req.message)
@@ -343,27 +389,40 @@ async def broadcast_api(req: BroadcastRequest):
             except: failed += 1
     return {"success": success, "failed": failed}
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    load_db()
-    for b in db_content["bots"]:
-        if b.get("status") == "RUNNING" and is_bot_license_active(b):
-            active_tasks[b["id"]] = asyncio.create_task(bot_worker_task(b["id"], b["token"]))
+@app.post("/api/admin/generate-key")
+async def generate_key_api(req: KeyGenRequest, x_admin_token: str = Header(None)):
+    if x_admin_token != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+        
+    new_key = f"BOT-{req.months}-{secrets.token_hex(3).upper()}"
+    db_content["issued_keys"].append({
+        "key": new_key,
+        "months": req.months,
+        "used": False,
+        "created_at": int(time.time() * 1000)
+    })
+    save_db()
+    return {"key": new_key}
+
+@app.post("/api/license/activate")
+async def activate_key_api(req: ActivateRequest):
+    bot_cfg = next((b for b in db_content["bots"] if b["id"] == req.botId), None)
+    key_obj = next((k for k in db_content["issued_keys"] if k["key"] == req.key and not k.get("used")), None)
     
-    async def monitor():
-        while True:
-            try:
-                now = int(time.time() * 1000)
-                for b in db_content["bots"]:
-                    if b["id"] in active_tasks and not is_bot_license_active(b):
-                        await stop_bot_api(b["id"])
-            except: pass
-            await asyncio.sleep(300)
+    if not bot_cfg: raise HTTPException(404, "Бот не найден")
+    if not key_obj: raise HTTPException(400, "Неверный или уже использованный ключ")
     
-    m_task = asyncio.create_task(monitor())
-    yield
-    m_task.cancel()
-    for t in active_tasks.values(): t.cancel()
+    now = int(time.time() * 1000)
+    current_exp = int(bot_cfg.get("licenseExpiresAt", now))
+    base_time = max(current_exp, now)
+    
+    bot_cfg["licenseExpiresAt"] = base_time + (key_obj["months"] * 30 * 24 * 3600 * 1000)
+    key_obj["used"] = True
+    key_obj["used_by_bot"] = req.botId
+    key_obj["used_at"] = now
+    
+    save_db()
+    return {"status": "ok", "newExpiry": bot_cfg["licenseExpiresAt"]}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
