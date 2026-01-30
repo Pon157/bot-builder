@@ -100,5 +100,76 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(bot)
     });
+  },
+
+  // Fix error in App.tsx: deleteBot implementation
+  deleteBot: async (userId: string, botId: string): Promise<void> => {
+    await fetchWithTimeout(`${getApiBase()}/bots/${userId}/${botId}`, {
+      method: 'DELETE'
+    });
+  },
+
+  // Fix error in BotEditor.tsx: stopBotOnServer implementation
+  stopBotOnServer: async (botId: string): Promise<void> => {
+    await fetchWithTimeout(`${getApiBase()}/bots/stop/${botId}`, {
+      method: 'POST'
+    });
+  },
+
+  // Fix error in BotEditor.tsx: startBotOnServer implementation
+  startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/bots/start`, {
+        method: 'POST',
+        body: JSON.stringify(bot)
+      });
+      if (response.ok) return true;
+      return await getErrorMessage(response);
+    } catch (err: any) {
+      return err.message || "Ошибка соединения";
+    }
+  },
+
+  // Fix error in BroadcastManager.tsx: sendBroadcast implementation
+  sendBroadcast: async (botIds: string[], message: string): Promise<{ success: number; failed: number } | null> => {
+    const response = await fetchWithTimeout(`${getApiBase()}/bots/broadcast`, {
+      method: 'POST',
+      body: JSON.stringify({ botIds, message })
+    });
+    if (!response.ok) throw new Error(await getErrorMessage(response));
+    return await response.json();
+  },
+
+  // Fix error in Auth.tsx: forgotPassword implementation
+  forgotPassword: async (email: string): Promise<boolean | string> => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/auth/forgot-password`, {
+        method: 'POST',
+        body: JSON.stringify({ email })
+      });
+      if (response.ok) return true;
+      return await getErrorMessage(response);
+    } catch (err: any) {
+      return err.message || "Ошибка соединения";
+    }
+  },
+
+  // Fix error in Auth.tsx: resetPassword implementation
+  resetPassword: async (data: any): Promise<boolean> => {
+    const response = await fetchWithTimeout(`${getApiBase()}/auth/reset-password`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+    return response.ok;
+  },
+
+  // Fix error in Profile.tsx: activateLicense implementation
+  activateLicense: async (botId: string, key: string): Promise<{ status: string; newExpiry: number } | null> => {
+    const response = await fetchWithTimeout(`${getApiBase()}/bots/activate-license`, {
+      method: 'POST',
+      body: JSON.stringify({ botId, key })
+    });
+    if (!response.ok) return null;
+    return await response.json();
   }
 };
