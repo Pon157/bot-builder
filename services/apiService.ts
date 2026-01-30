@@ -4,15 +4,19 @@ import { BotConfig, User } from '../types';
 // Используем относительный путь, чтобы работать через прокси Vite/Nginx
 const API_BASE = '/api';
 
-const fetchWithTimeout = async (url: string, options: any = {}, timeout = 20000) => {
+const fetchWithTimeout = async (url: string, options: any = {}, timeout = 45000) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
     const response = await fetch(url, { ...options, signal: controller.signal });
     clearTimeout(timer);
     return response;
-  } catch (error) {
+  } catch (error: any) {
     clearTimeout(timer);
+    if (error.name === 'AbortError') {
+      console.error(`❌ Request Timeout: ${url} exceeded ${timeout}ms`);
+      throw new Error("Сервер не ответил в отведенное время (Таймаут)");
+    }
     throw error;
   }
 };
@@ -35,16 +39,21 @@ export const api = {
   },
 
   login: async (email: string, password: string): Promise<User | null> => {
-    const response = await fetchWithTimeout(`${API_BASE}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password })
-    });
-    if (!response.ok) {
-      const msg = await getErrorMessage(response);
-      throw new Error(msg);
+    try {
+      const response = await fetchWithTimeout(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      if (!response.ok) {
+        const msg = await getErrorMessage(response);
+        throw new Error(msg);
+      }
+      return await response.json();
+    } catch (e: any) {
+      console.error("Login Error:", e);
+      throw e;
     }
-    return await response.json();
   },
 
   requestVerification: async (email: string): Promise<boolean | string> => {
@@ -57,31 +66,41 @@ export const api = {
       if (response.ok) return true;
       return await getErrorMessage(response);
     } catch (e: any) { 
-      return e.name === 'AbortError' ? "Сервер не ответил вовремя" : "Ошибка сетевого соединения"; 
+      console.error("Verification Request Error:", e);
+      return e.message || "Ошибка сетевого соединения"; 
     }
   },
 
   verifyAndRegister: async (data: any): Promise<User | null> => {
-    const response = await fetchWithTimeout(`${API_BASE}/auth/verify-and-register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
-    if (!response.ok) {
-      const msg = await getErrorMessage(response);
-      throw new Error(msg);
+    try {
+      const response = await fetchWithTimeout(`${API_BASE}/auth/verify-and-register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+      if (!response.ok) {
+        const msg = await getErrorMessage(response);
+        throw new Error(msg);
+      }
+      return await response.json();
+    } catch (e: any) {
+      console.error("Registration Finalization Error:", e);
+      throw e;
     }
-    return await response.json();
   },
 
   forgotPassword: async (email: string): Promise<boolean | string> => {
-    const response = await fetchWithTimeout(`${API_BASE}/auth/forgot-password`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email })
-    });
-    if (response.ok) return true;
-    return await getErrorMessage(response);
+    try {
+      const response = await fetchWithTimeout(`${API_BASE}/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      if (response.ok) return true;
+      return await getErrorMessage(response);
+    } catch (e: any) {
+      return e.message || "Ошибка соединения";
+    }
   },
 
   resetPassword: async (data: any): Promise<boolean> => {
@@ -99,7 +118,7 @@ export const api = {
 
   getBots: async (userId: string): Promise<BotConfig[]> => {
     try {
-      const response = await fetchWithTimeout(`${API_BASE}/bots/${userId}`);
+      const response = await fetchWithTimeout(`${API_BASE}/bots/${userId}`, {}, 15000);
       if (!response.ok) return [];
       return await response.json();
     } catch (e) { return []; }
