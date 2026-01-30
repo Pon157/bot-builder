@@ -22,12 +22,34 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.default import DefaultBotProperties
 import uvicorn
 
+# --- Ручная загрузка .env (критично для стабильности окружения) ---
+def manual_load_env():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, 'r', encoding='utf-8-sig') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#') or '=' not in line:
+                        continue
+                    key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    if key and value:
+                        os.environ[key] = value
+            return True
+        except Exception as e:
+            print(f"Error loading .env: {e}")
+    return False
+
+manual_load_env()
+
 # Безопасный импорт исключений aiogram
 try:
     from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter, TokenValidationError
 except ImportError:
     from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
-    TokenValidationError = ValueError # Фолбек для старых версий или специфичных сборок
+    TokenValidationError = ValueError # Фолбек
 
 # Попытка импорта Supabase
 try:
@@ -36,10 +58,10 @@ try:
 except ImportError:
     SUPABASE_AVAILABLE = False
 
-# Импорт сервиса почты
+# Импорт сервиса почты (выполняется ПОСЛЕ manual_load_env)
 from email_service import EmailService
 
-# --- Инициализация окружения ---
+# --- Инициализация логирования ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BASE_DIR)
 
@@ -97,7 +119,7 @@ class ActivateRequest(BaseModel):
     botId: str
     key: str
 
-# --- БД (Local JSON + Sync Logic) ---
+# --- БД ---
 db_content = {"users": [], "bots": [], "issued_keys": [], "system_logs": []}
 
 def save_db():
@@ -247,7 +269,7 @@ async def bot_worker_task(bot_id: str, token: str):
         active_bots.pop(bot_id, None)
         active_tasks.pop(bot_id, None)
 
-# --- LIFESPAN (Определяем ДО инициализации FastAPI) ---
+# --- LIFESPAN ---
 
 async def stop_bot_api(bot_id: str):
     if bot_id in active_tasks:
@@ -273,7 +295,6 @@ async def lifespan(app: FastAPI):
         while True:
             try:
                 now = int(time.time() * 1000)
-                # Копия ключей для безопасной итерации
                 current_task_ids = list(active_tasks.keys())
                 for b_id in current_task_ids:
                     bot_cfg = next((b for b in db_content["bots"] if b["id"] == b_id), None)
@@ -285,10 +306,7 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(300)
     
     m_task = asyncio.create_task(monitor())
-    
     yield
-    
-    # При выключении
     m_task.cancel()
     for t in active_tasks.values():
         t.cancel()
@@ -309,11 +327,14 @@ async def request_verification(req: VerificationRequest):
         raise HTTPException(400, "Пользователь существует")
     code = "".join([str(secrets.randbelow(10)) for _ in range(6)])
     verification_codes[email] = {"code": code, "timestamp": time.time()}
-    if not EmailService.send_verification_code(email, code):
-        logger.warning(f"Code for {email}: {code}")
-        # Если SMTP не работает, мы все равно позволяем продолжить для отладки, если нужно
-        # Но по правилам возвращаем ошибку, если письмо не ушло
-        raise HTTPException(500, "Ошибка SMTP. Проверьте логи сервера для получения кода.")
+    
+    # Пытаемся отправить
+    sent = EmailService.send_verification_code(email, code)
+    if not sent:
+        # Даже если SMTP не сработал, выводим код в консоль для возможности входа админу
+        logger.warning(f"🔥 SMTP FAILURE. CODE FOR {email} IS: {code}")
+        raise HTTPException(500, "Ошибка SMTP. Проверьте настройки GMAIL_EMAIL и GMAIL_PASSWORD в .env")
+        
     return {"status": "ok"}
 
 @app.post("/api/auth/verify-and-register")
