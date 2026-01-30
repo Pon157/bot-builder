@@ -1,13 +1,14 @@
 
 import { BotConfig, User } from '../types';
 
-// По умолчанию используем относительный путь для проксирования через Nginx/Vite
+// Определяем базовый URL для API
 const getApiBase = () => {
   const debugUrl = localStorage.getItem('DEBUG_API_URL');
-  return debugUrl ? debugUrl + '/api' : '/api';
+  // Если работаем через прокси (например, Nginx), используем относительный путь
+  return debugUrl ? `${debugUrl}/api` : '/api';
 };
 
-const fetchWithTimeout = async (url: string, options: any = {}, timeout = 45000) => {
+const fetchWithTimeout = async (url: string, options: any = {}, timeout = 30000) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   
@@ -24,18 +25,17 @@ const fetchWithTimeout = async (url: string, options: any = {}, timeout = 45000)
     clearTimeout(timer);
     
     if (response.status === 405) {
-      console.error(`❌ 405 Method Not Allowed на URL: ${url}. 
-      Метод: ${options.method || 'GET'}. 
-      Если вы видите это в браузере, но curl работает — проверьте OPTIONS запросы и trailing slashes в Nginx.`);
+      console.error(`❌ 405 Method Not Allowed на URL: ${url}`);
+      console.warn("Подсказка: Если вы используете Nginx, убедитесь, что 'proxy_pass' не делает лишних редиректов и разрешает метод " + (options.method || 'GET'));
     }
     
     return response;
   } catch (error: any) {
     clearTimeout(timer);
     if (error.name === 'AbortError') {
-      throw new Error("Сервер не ответил вовремя (Таймаут)");
+      throw new Error("Таймаут соединения с сервером");
     }
-    console.error(`🔌 Сетевая ошибка (${url}):`, error);
+    console.error(`🔌 Ошибка сети при запросе к ${url}:`, error);
     throw error;
   }
 };
@@ -43,9 +43,9 @@ const fetchWithTimeout = async (url: string, options: any = {}, timeout = 45000)
 const getErrorMessage = async (response: Response): Promise<string> => {
   try {
     const data = await response.json();
-    return data.detail || data.message || "Ошибка сервера";
+    return data.detail || data.message || `Ошибка сервера (${response.status})`;
   } catch (e) {
-    return `Ошибка ${response.status}`;
+    return `Ошибка HTTP ${response.status}`;
   }
 };
 
@@ -90,23 +90,25 @@ export const api = {
 
   getBots: async (userId: string): Promise<BotConfig[]> => {
     try {
-      const response = await fetchWithTimeout(`${getApiBase()}/bots/${userId}`, { method: 'GET' }, 15000);
+      const response = await fetchWithTimeout(`${getApiBase()}/bots/${userId}`, { method: 'GET' }, 10000);
       if (!response.ok) return [];
       return await response.json();
     } catch (e) { return []; }
   },
 
   saveBot: async (userId: string, bot: BotConfig): Promise<void> => {
-    await fetchWithTimeout(`${getApiBase()}/bots/save`, {
+    const response = await fetchWithTimeout(`${getApiBase()}/bots/save`, {
       method: 'POST',
       body: JSON.stringify(bot)
     });
+    if (!response.ok) throw new Error(await getErrorMessage(response));
   },
 
   deleteBot: async (userId: string, botId: string): Promise<void> => {
-    await fetchWithTimeout(`${getApiBase()}/bots/${userId}/${botId}`, {
+    const response = await fetchWithTimeout(`${getApiBase()}/bots/${userId}/${botId}`, {
       method: 'DELETE'
     });
+    if (!response.ok) throw new Error(await getErrorMessage(response));
   },
 
   stopBotOnServer: async (botId: string): Promise<void> => {
