@@ -23,6 +23,30 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 import uvicorn
 
+# --- Загрузка переменных окружения из .env ---
+def load_env_file():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    if os.path.exists(env_path):
+        with open(env_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ[key.strip()] = value.strip().strip('"').strip("'")
+
+load_env_file()
+
+try:
+    from email_service import EmailService
+except ImportError:
+    class EmailService:
+        @staticmethod
+        def send_verification_code(*args): return False
+        @staticmethod
+        def send_password_reset(*args): return False
+        @staticmethod
+        def send_license_alert(*args): return False
+
 # --- Инициализация окружения ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BASE_DIR)
@@ -35,12 +59,30 @@ logging.basicConfig(
 logger = logging.getLogger("BotEngineCore")
 
 DB_FILE = "database.json"
-ADMIN_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
+
+ADMIN_SECRET = os.getenv("ADMIN_SECRET")
+if not ADMIN_SECRET:
+    ADMIN_SECRET = secrets.token_hex(16)
+    logger.warning(f"⚠️ ADMIN_SECRET не найден! Сгенерирован: {ADMIN_SECRET}")
 
 # --- Модели данных ---
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+class VerificationRequest(BaseModel):
+    email: str
+
+class VerifyAndRegisterRequest(BaseModel):
+    email: str
+    code: str
+    password: str
+    username: str
+
+class ResetPasswordRequest(BaseModel):
+    email: str
+    code: str
+    newPassword: str
 
 class BroadcastRequest(BaseModel):
     botIds: List[str]
@@ -53,8 +95,9 @@ class ActivateRequest(BaseModel):
     botId: str
     key: str
 
-# --- БД ---
+# --- База Данных ---
 db_content = {"users": [], "bots": [], "issued_keys": [], "system_logs": []}
+verification_store: Dict[str, dict] = {} 
 
 def save_db():
     try:
@@ -74,15 +117,6 @@ def load_db():
         except Exception as e:
             logger.error(f"❌ Load DB Error: {e}")
 
-def add_bot_log(bot_id: str, log_type: str, text: str):
-    bot = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-    if not bot: return
-    log_entry = {"id": str(uuid.uuid4()), "timestamp": int(time.time() * 1000), "type": log_type, "text": text}
-    if "logs" not in bot: bot["logs"] = []
-    bot["logs"].insert(0, log_entry)
-    bot["logs"] = bot["logs"][:100]
-    save_db()
-
 def update_bot_stats(bot_id: str, direction: str):
     bot = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
     if not bot: return
@@ -95,6 +129,27 @@ def update_bot_stats(bot_id: str, direction: str):
 def is_bot_license_active(bot_config: dict) -> bool:
     return int(bot_config.get("licenseExpiresAt", 0)) > int(time.time() * 1000)
 
+async def license_checker_loop():
+    logger.info("⏳ Запущен фоновый мониторинг лицензий")
+    while True:
+        try:
+            now = int(time.time() * 1000)
+            day_ms = 24 * 3600 * 1000
+            for bot in db_content["bots"]:
+                expires = int(bot.get("licenseExpiresAt", 0))
+                diff = expires - now
+                owner = next((u for u in db_content["users"] if str(u["id"]) == str(bot["ownerId"])), None)
+                if not owner or not owner.get("email"): continue
+                if 3 * day_ms >= diff > 2.5 * day_ms:
+                    EmailService.send_license_alert(owner["email"], bot["name"], 3)
+                elif day_ms >= diff > 0.5 * day_ms:
+                    EmailService.send_license_alert(owner["email"], bot["name"], 1)
+            await asyncio.sleep(12 * 3600)
+        except Exception as e:
+            logger.error(f"Error in license checker: {e}")
+            await asyncio.sleep(60)
+
+# --- Бот Воркер ---
 active_tasks: Dict[str, asyncio.Task] = {}
 active_bots: Dict[str, Bot] = {}
 
@@ -106,7 +161,6 @@ def format_msg(template: str, m: Message, btn_text: str = "") -> str:
     res = res.replace("{{button}}", btn_text)
     return res
 
-# --- Бот Воркер ---
 async def bot_worker_task(bot_id: str, token: str):
     session = AiohttpSession()
     bot = Bot(token=token, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -118,25 +172,20 @@ async def bot_worker_task(bot_id: str, token: str):
     async def cmd_start(m: Message):
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
         if not config or not is_bot_license_active(config): return
-        
         if "connectedUsers" not in config: config["connectedUsers"] = []
         user = next((u for u in config["connectedUsers"] if u["id"] == m.from_user.id), None)
         if not user:
             user = {"id": m.from_user.id, "first_name": m.from_user.first_name, "username": m.from_user.username, "joined_at": int(time.time()), "is_banned": False, "warns": 0, "thread_id": None}
             config["connectedUsers"].append(user)
             config["usersCount"] = len(config["connectedUsers"])
-        
         if "subscribers" not in config: config["subscribers"] = []
         if m.from_user.id not in config["subscribers"]: config["subscribers"].append(m.from_user.id)
         save_db()
-
         if user.get("is_banned"): return
-        
         rows = []
         for btn in config.get("buttons", []):
             if btn.get("text"): rows.append([KeyboardButton(text=btn["text"])])
         kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True) if rows else None
-        
         msg = format_msg(config.get("welcomeMessage", "Привет!"), m)
         await m.answer(msg, reply_markup=kb)
 
@@ -144,7 +193,6 @@ async def bot_worker_task(bot_id: str, token: str):
     async def admin_moderation(m: Message):
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
         if not config or str(m.chat.id) != str(config.get("adminChatId")): return
-
         target_user = None
         if m.message_thread_id:
             target_user = next((u for u in config.get("connectedUsers", []) if u.get("thread_id") == m.message_thread_id), None)
@@ -153,49 +201,31 @@ async def bot_worker_task(bot_id: str, token: str):
             if match:
                 uid = int(match.group(1))
                 target_user = next((u for u in config.get("connectedUsers", []) if u["id"] == uid), None)
-
-        if not target_user:
-            return await m.reply("❌ Пользователь не найден.")
-
+        if not target_user: return await m.reply("❌ Пользователь не найден.")
         cmd = m.text.split()[0].replace("/", "").lower()
         threshold = config.get("settings", {}).get("autoBanThreshold", 0)
-
         if cmd == "warn":
             target_user["warns"] = target_user.get("warns", 0) + 1
             txt = f"⚠️ <b>Вам выдано предупреждение!</b>\nВсего: {target_user['warns']}"
             if threshold > 0: txt += f" / {threshold}"
             try: await bot.send_message(target_user["id"], txt)
             except: pass
-            
             if threshold > 0 and target_user["warns"] >= threshold:
                 target_user["is_banned"] = True
-                try: await bot.send_message(target_user["id"], "🚫 <b>Вы были автоматически заблокированы (порог варнов).</b>")
+                try: await bot.send_message(target_user["id"], "🚫 <b>Вы забанены по порогу варнов.</b>")
                 except: pass
-                await m.answer(f"🔨 Юзер {target_user['id']} автоматически забанен.")
-            else:
-                await m.answer(f"✅ Варн выдан. Всего: {target_user['warns']}")
-
-        elif cmd == "unwarn":
-            target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
-            try: await bot.send_message(target_user["id"], f"ℹ️ <b>С вас снято предупреждение.</b>\nОсталось: {target_user['warns']}")
-            except: pass
-            await m.answer(f"✅ Варн снят. Осталось: {target_user['warns']}")
-
+            await m.answer(f"✅ Варн выдан ({target_user['warns']})")
         elif cmd == "ban":
             target_user["is_banned"] = True
             try: await bot.send_message(target_user["id"], "🚫 <b>Вы были заблокированы администратором.</b>")
             except: pass
-            await m.answer("✅ Юзер забанен.")
-
+            await m.answer("🔨 Забанен.")
         elif cmd == "unban":
             target_user["is_banned"] = False
-            # При разбане через ТГ тоже сбрасываем варны, чтобы не было моментального ребана
-            if threshold > 0 and target_user.get("warns", 0) >= threshold:
-                target_user["warns"] = threshold - 1
-            try: await bot.send_message(target_user["id"], "✅ <b>Вы были разблокированы администратором!</b>")
+            target_user["warns"] = 0
+            try: await bot.send_message(target_user["id"], "✅ <b>Вы были разблокированы!</b>")
             except: pass
-            await m.answer("✅ Юзер разблокирован.")
-
+            await m.answer("😇 Разбанен.")
         save_db()
 
     @router.message()
@@ -203,8 +233,6 @@ async def bot_worker_task(bot_id: str, token: str):
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
         if not config or not is_bot_license_active(config): return
         admin_id = config.get("adminChatId")
-
-        # АДМИН
         if admin_id and str(m.chat.id) == str(admin_id):
             target_id = None
             if m.message_thread_id:
@@ -213,69 +241,39 @@ async def bot_worker_task(bot_id: str, token: str):
             if not target_id and m.reply_to_message:
                 match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
                 if match: target_id = int(match.group(1))
-            
             if target_id:
                 try:
                     await bot.copy_message(target_id, m.chat.id, m.message_id)
                     update_bot_stats(bot_id, "outgoing")
                 except: pass
             return
-
-        # ЮЗЕР
         user = next((u for u in config.get("connectedUsers", []) if u["id"] == m.from_user.id), None)
         if not user or user.get("is_banned"): return
-
-        # Кнопки
         if m.text:
             low = m.text.lower()
             for btn in config.get("buttons", []):
                 if btn.get("text") and btn["text"].lower() == low:
                     if btn.get("type") == "request" and admin_id:
-                        tid = None
-                        if config.get("settings", {}).get("topicPerRequest") or config.get("settings", {}).get("useTopics"):
+                        if config.get("settings", {}).get("useTopics") and not user.get("thread_id"):
                             try:
-                                t = await bot.create_forum_topic(admin_id, f"Ticket: {m.from_user.first_name} [{m.from_user.id}]")
-                                tid = t.message_thread_id
-                                user["thread_id"] = tid
+                                t = await bot.create_forum_topic(admin_id, f"{m.from_user.first_name} [{m.from_user.id}]")
+                                user["thread_id"] = t.message_thread_id
                                 save_db()
-                                await bot.send_message(admin_id, f"👤 Новое обращение через кнопку: <b>{btn['text']}</b>\nID: <code>{m.from_user.id}</code>", message_thread_id=tid)
-                            except Exception as e:
-                                logger.error(f"Failed to create topic: {e}")
-                        
+                            except: pass
                         txt = format_msg(btn.get("adminTemplate", ""), m, btn["text"])
                         await bot.send_message(admin_id, txt, message_thread_id=user.get("thread_id"))
-                    
                     await m.answer(btn.get("response", "Принято"))
                     update_bot_stats(bot_id, "outgoing")
                     return
-
-        # Feedback
         if admin_id:
             tid = user.get("thread_id")
-            async def send_with_recovery(target_tid):
-                try:
-                    if not target_tid:
-                        await bot.send_message(admin_id, f"📩 Сообщение от ID: {m.from_user.id}")
-                    await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=target_tid)
-                    update_bot_stats(bot_id, "incoming")
-                    return True
-                except TelegramBadRequest as e:
-                    if "message thread not found" in str(e).lower() or "thread_id" in str(e).lower():
-                        return False
-                    raise e
-
-            success = await send_with_recovery(tid)
-            if not success and (config.get("settings", {}).get("useTopics") or config.get("settings", {}).get("topicPerRequest")):
-                try:
-                    t = await bot.create_forum_topic(admin_id, f"{m.from_user.first_name} [{m.from_user.id}]")
-                    user["thread_id"] = t.message_thread_id
-                    save_db()
-                    await bot.send_message(admin_id, f"👤 Диалог возобновлен\nID: <code>{m.from_user.id}</code>", message_thread_id=user["thread_id"])
-                    await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=user["thread_id"])
-                    update_bot_stats(bot_id, "incoming")
-                except Exception as e:
-                    await bot.send_message(admin_id, f"📩 Сообщение от ID: {m.from_user.id}")
-                    await bot.copy_message(admin_id, m.chat.id, m.message_id)
+            try:
+                if not tid:
+                    await bot.send_message(admin_id, f"📩 Сообщение от ID: <code>{m.from_user.id}</code>\nИмя: {m.from_user.full_name}")
+                await bot.copy_message(admin_id, m.chat.id, m.message_id, message_thread_id=tid)
+                update_bot_stats(bot_id, "incoming")
+            except:
+                await bot.copy_message(admin_id, m.chat.id, m.message_id)
 
     dp.include_router(router)
     try:
@@ -284,13 +282,14 @@ async def bot_worker_task(bot_id: str, token: str):
     finally:
         await session.close()
 
-# --- API ---
+# --- FastAPI App ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_db()
     for b in db_content["bots"]:
         if b.get("status") == "RUNNING" and is_bot_license_active(b):
             active_tasks[b["id"]] = asyncio.create_task(bot_worker_task(b["id"], b["token"]))
+    asyncio.create_task(license_checker_loop())
     yield
     for t in active_tasks.values(): t.cancel()
 
@@ -300,10 +299,67 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
 
-@app.post("/api/auth/register")
-async def register(req: dict):
-    if any(u["email"] == req["email"] for u in db_content["users"]): raise HTTPException(400)
-    db_content["users"].append(req); save_db(); return req
+@app.post("/api/auth/request-verification")
+async def request_verification(req: VerificationRequest):
+    logger.info(f"📥 Запрос верификации для регистрации: {req.email}")
+    code = "".join(secrets.choice("0123456789") for _ in range(6))
+    verification_store[req.email] = {"code": code, "expires": int(time.time()) + 600, "type": "reg"}
+    
+    success = EmailService.send_verification_code(req.email, code)
+    if success:
+        logger.info(f"✅ Код регистрации отправлен на {req.email}")
+        return {"status": "ok"}
+    
+    logger.error(f"❌ Не удалось отправить код регистрации на {req.email}")
+    raise HTTPException(500, "Ошибка при отправке Email")
+
+@app.post("/api/auth/verify-and-register")
+async def verify_and_register(req: VerifyAndRegisterRequest):
+    store = verification_store.get(req.email)
+    if not store or store["code"] != req.code or store["expires"] < time.time() or store["type"] != "reg":
+        raise HTTPException(400, "Неверный код или срок действия истек")
+    if any(u["email"] == req.email for u in db_content["users"]):
+        raise HTTPException(400, "Email уже зарегистрирован")
+    new_user = {
+        "id": "u_" + secrets.token_hex(4),
+        "username": req.username,
+        "email": req.email,
+        "password": req.password,
+        "licenseExpiresAt": int(time.time() * 1000) + (3 * 24 * 3600 * 1000),
+        "balance": 0, "botsCreated": 0
+    }
+    db_content["users"].append(new_user)
+    save_db()
+    if req.email in verification_store: del verification_store[req.email]
+    return new_user
+
+@app.post("/api/auth/forgot-password")
+async def forgot_password(req: VerificationRequest):
+    logger.info(f"📥 Запрос восстановления пароля: {req.email}")
+    user = next((u for u in db_content["users"] if u["email"] == req.email), None)
+    if not user: 
+        logger.warning(f"⚠️ Попытка сброса пароля для несуществующего Email: {req.email}")
+        raise HTTPException(404, "Email не найден")
+    
+    code = "".join(secrets.choice("0123456789") for _ in range(6))
+    verification_store[req.email] = {"code": code, "expires": int(time.time()) + 600, "type": "reset"}
+    
+    success = EmailService.send_password_reset(req.email, code)
+    if success:
+        return {"status": "ok"}
+    raise HTTPException(500, "Ошибка при отправке Email")
+
+@app.post("/api/auth/reset-password")
+async def reset_password(req: ResetPasswordRequest):
+    store = verification_store.get(req.email)
+    if not store or store["code"] != req.code or store["expires"] < time.time() or store["type"] != "reset":
+        raise HTTPException(400, "Неверный код")
+    user = next((u for u in db_content["users"] if u["email"] == req.email), None)
+    if not user: raise HTTPException(404)
+    user["password"] = req.newPassword
+    save_db()
+    if req.email in verification_store: del verification_store[req.email]
+    return {"status": "ok"}
 
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
@@ -320,35 +376,7 @@ async def get_bots(user_id: str):
 @app.post("/api/bots/save")
 async def save_bot(bot_data: dict):
     idx = next((i for i, b in enumerate(db_content["bots"]) if b["id"] == bot_data["id"]), -1)
-    if idx >= 0:
-        old = db_content["bots"][idx]
-        threshold = bot_data.get("settings", {}).get("autoBanThreshold", 0)
-        bot_instance = active_bots.get(bot_data["id"])
-        
-        if bot_instance:
-            for new_u in bot_data.get("connectedUsers", []):
-                old_u = next((u for u in old.get("connectedUsers", []) if u["id"] == new_u["id"]), None)
-                if old_u:
-                    # Изменились варны
-                    if new_u.get("warns", 0) > old_u.get("warns", 0):
-                        try:
-                            txt = f"⚠️ <b>Вам выдано предупреждение!</b>\nВсего: {new_u['warns']}"
-                            if threshold > 0: txt += f" / {threshold}"
-                            asyncio.create_task(bot_instance.send_message(new_u["id"], txt))
-                        except: pass
-                    elif new_u.get("warns", 0) < old_u.get("warns", 0):
-                        try: asyncio.create_task(bot_instance.send_message(new_u["id"], f"ℹ️ <b>С вас снято предупреждение.</b>\nОсталось: {new_u['warns']}"))
-                        except: pass
-                    
-                    # Изменился статус бана
-                    if new_u.get("is_banned") and not old_u.get("is_banned"):
-                        try: asyncio.create_task(bot_instance.send_message(new_u["id"], "🚫 <b>Вы были заблокированы администратором.</b>"))
-                        except: pass
-                    elif not new_u.get("is_banned") and old_u.get("is_banned"):
-                        try: asyncio.create_task(bot_instance.send_message(new_u["id"], "✅ <b>Вы были разблокированы администратором!</b>"))
-                        except: pass
-
-        db_content["bots"][idx] = bot_data
+    if idx >= 0: db_content["bots"][idx] = bot_data
     else: db_content["bots"].append(bot_data)
     save_db(); return {"status": "ok"}
 
@@ -362,20 +390,17 @@ async def delete_bot(bot_id: str):
 @app.post("/api/bots/start/{bot_id}")
 async def start_bot(bot_id: str):
     cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-    if not cfg: raise HTTPException(404)
-    if not is_bot_license_active(cfg): raise HTTPException(403)
-    if bot_id in active_tasks and not active_tasks[bot_id].done(): return {"status": "ok"}
-    active_tasks[bot_id] = asyncio.create_task(bot_worker_task(bot_id, cfg["token"]))
-    cfg["status"] = "RUNNING"; save_db(); return {"status": "ok"}
+    if not cfg or not is_bot_license_active(cfg): raise HTTPException(403, "License error")
+    if bot_id not in active_tasks:
+        active_tasks[bot_id] = asyncio.create_task(bot_worker_task(bot_id, cfg["token"]))
+    return {"status": "ok"}
 
 @app.post("/api/bots/stop/{bot_id}")
 async def stop_bot(bot_id: str):
     if bot_id in active_tasks:
         active_tasks[bot_id].cancel(); del active_tasks[bot_id]
     if bot_id in active_bots: del active_bots[bot_id]
-    for b in db_content["bots"]:
-        if b["id"] == bot_id: b["status"] = "IDLE"
-    save_db(); return {"status": "ok"}
+    return {"status": "ok"}
 
 @app.post("/api/broadcast")
 async def broadcast(req: BroadcastRequest):
@@ -383,21 +408,12 @@ async def broadcast(req: BroadcastRequest):
     for bot_id in req.botIds:
         bot_instance = active_bots.get(bot_id)
         config = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-        
-        if not bot_instance or not config:
-            continue
-            
-        # Рассылаем всем подписчикам (те, кто нажал /start)
-        subscribers = config.get("subscribers", [])
-        for user_id in subscribers:
+        if not bot_instance or not config: continue
+        for user_id in config.get("subscribers", []):
             try:
                 await bot_instance.send_message(user_id, req.message)
                 results["success"] += 1
-                update_bot_stats(bot_id, "outgoing")
-            except Exception as e:
-                logger.error(f"Broadcast failed for user {user_id} on bot {bot_id}: {e}")
-                results["failed"] += 1
-                
+            except: results["failed"] += 1
     return results
 
 @app.post("/api/license/activate")
