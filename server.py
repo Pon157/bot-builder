@@ -123,10 +123,10 @@ async def lifespan(app: FastAPI):
     yield
 
 # --- Инициализация App ---
-# redirect_slashes=False критичен для предотвращения 405 при OPTIONS запросах
-app = FastAPI(lifespan=lifespan, redirect_slashes=False)
+# Разрешаем redirect_slashes (по умолчанию True), чтобы FastAPI сам разруливал /login и /login/
+app = FastAPI(lifespan=lifespan)
 
-# CORS должен быть настроен максимально широко для отладки
+# CORS должен быть настроен максимально гибко
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -135,14 +135,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Middleware для логирования всех запросов (поможет понять, доходят ли POST запросы)
+# Middleware для логирования и принудительной обработки OPTIONS
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    # Если это OPTIONS (Preflight), мы можем ответить сразу, если CORSMiddleware вдруг пропустил
+    if request.method == "OPTIONS":
+        return Response(status_code=200, headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        })
+
     start_time = time.time()
-    logger.info(f"🚀 Incoming: {request.method} {request.url.path}")
+    logger.info(f"🚀 {request.method} {request.url.path}")
+    
     response = await call_next(request)
+    
     process_time = (time.time() - start_time) * 1000
-    logger.info(f"🏁 Outgoing: {request.method} {request.url.path} - Status: {response.status_code} - {process_time:.2f}ms")
+    logger.info(f"🏁 {request.method} {request.url.path} - Status: {response.status_code} ({process_time:.2f}ms)")
     return response
 
 # --- Роуты ---
@@ -150,7 +160,9 @@ async def log_requests(request: Request, call_next):
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
 
+# Регистрируем пути и со слешем, и без, чтобы избежать 405 при редиректах Nginx
 @app.post("/api/auth/login")
+@app.post("/api/auth/login/")
 async def login(req: LoginRequest):
     email = req.email.lower().strip()
     if supabase:
@@ -162,6 +174,7 @@ async def login(req: LoginRequest):
     return u
 
 @app.post("/api/auth/request-verification")
+@app.post("/api/auth/request-verification/")
 async def request_verification(req: VerificationRequest):
     email = req.email.lower().strip()
     if supabase:
@@ -175,6 +188,7 @@ async def request_verification(req: VerificationRequest):
     raise HTTPException(500, "Ошибка SMTP")
 
 @app.post("/api/auth/verify-and-register")
+@app.post("/api/auth/verify-and-register/")
 async def verify_and_register(req: RegisterWithCodeRequest):
     email = req.email.lower().strip()
     stored = verification_codes.get(email)
@@ -203,6 +217,7 @@ async def get_bots(user_id: str):
     return [b for b in db_content["bots"] if str(b["ownerId"]) == str(user_id)]
 
 @app.post("/api/bots/save")
+@app.post("/api/bots/save/")
 async def save_bot_api(bot_data: dict):
     await sync_to_supabase("bots", bot_data)
     return {"status": "ok"}
