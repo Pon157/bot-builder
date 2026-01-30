@@ -3,73 +3,84 @@ import asyncio
 import logging
 import json
 import os
-import time
+import signal
+import subprocess
 import sys
-import secrets
-from datetime import datetime
+import time
 from contextlib import asynccontextmanager
-from typing import Dict, List, Optional, Any
-from fastapi import FastAPI, HTTPException, Header, Request, Depends, Response, status, APIRouter
+from typing import Dict, Optional
+from fastapi import FastAPI, HTTPException, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
 
-# --- Инициализация логирования ---
+# --- Настройка логирования ---
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("BotEngineCore")
+logger = logging.getLogger("BotEngine")
 
-# --- Попытка импорта Supabase ---
-try:
-    from supabase import create_client, Client
-    SUPABASE_AVAILABLE = True
-except ImportError:
-    SUPABASE_AVAILABLE = False
-    logger.warning("Supabase library not found. Running in demo mode.")
+# --- Менеджер процессов ботов ---
+class BotProcessManager:
+    def __init__(self):
+        self.processes: Dict[str, subprocess.Popen] = {}
 
-# --- БД и Константы ---
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+    def start_bot(self, bot_id: str, bot_token: str, code: str):
+        self.stop_bot(bot_id)
+        
+        # Создаем директорию для ботов, если её нет
+        os.makedirs("active_bots", exist_ok=True)
+        filename = f"active_bots/bot_{bot_id}.py"
+        
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(code)
+        
+        # Запускаем бота как отдельный процесс
+        try:
+            process = subprocess.Popen(
+                [sys.executable, filename],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            self.processes[bot_id] = process
+            logger.info(f"Bot {bot_id} started (PID: {process.pid})")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to start bot {bot_id}: {e}")
+            return False
 
-supabase: Optional['Client'] = None
-if SUPABASE_AVAILABLE and SUPABASE_URL and SUPABASE_KEY:
-    try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        logger.info("✅ Supabase connected successfully")
-    except Exception as e:
-        logger.error(f"❌ Supabase initialization error: {e}")
+    def stop_bot(self, bot_id: str):
+        if bot_id in self.processes:
+            process = self.processes[bot_id]
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            del self.processes[bot_id]
+            logger.info(f"Bot {bot_id} stopped")
+            return True
+        return False
 
-# --- Модели данных ---
-class LoginRequest(BaseModel):
-    email: str
-    password: str
+    def stop_all(self):
+        for bot_id in list(self.processes.keys()):
+            self.stop_bot(bot_id)
 
-class VerificationRequest(BaseModel):
-    email: str
+process_manager = BotProcessManager()
 
-class RegisterWithCodeRequest(BaseModel):
-    email: str
-    code: str
-    password: str
-    username: str
-
-# --- Жизненный цикл приложения ---
+# --- FastAPI Setup ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Логика при старте (например, прогрев кэша)
-    logger.info("Application startup...")
+    logger.info("Backend is starting...")
     yield
-    # Логика при завершении
-    logger.info("Application shutdown...")
+    logger.info("Shutting down: stopping all bots...")
+    process_manager.stop_all()
 
-# --- Инициализация FastAPI ---
-app = FastAPI(lifespan=lifespan, redirect_slashes=False)
+app = FastAPI(lifespan=lifespan)
 
-# Настройка CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -78,87 +89,48 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Модели ---
+class BotStartRequest(BaseModel):
+    id: str
+    token: str
+    code: str  # Фронтенд присылает сгенерированный код
+
 # --- API Роутер ---
 api_router = APIRouter(prefix="/api")
 
 @api_router.get("/ping")
 async def ping():
-    return {"status": "online", "timestamp": time.time()}
+    return {"status": "online", "time": time.time()}
 
 @api_router.post("/auth/login")
-async def login(req: LoginRequest):
-    email = req.email.lower().strip()
-    if supabase:
-        try:
-            res = supabase.table("users").select("*").eq("email", email).eq("password", req.password).execute()
-            if res.data:
-                return res.data[0]
-            raise HTTPException(401, "Неверный логин или пароль")
-        except Exception as e:
-            logger.error(f"Login error: {e}")
-            raise HTTPException(500, "Ошибка базы данных")
-    
-    # Демо-режим, если нет БД
-    if email == "admin@test.com" and req.password == "admin":
-        return {"id": "demo_user", "username": "Admin", "email": email, "balance": 100}
-    raise HTTPException(401, "Пользователь не найден (Demo Mode: admin@test.com / admin)")
-
-@api_router.post("/auth/request-verification")
-async def request_verification(req: VerificationRequest):
-    email = req.email.lower().strip()
-    logger.info(f"Verification requested for: {email}")
-    # В реальности здесь отправка письма через email_service.py
-    return {"status": "ok", "message": "Код отправлен (имитация)"}
+async def login(data: dict):
+    # Упрощенная авторизация для дебага
+    email = data.get("email")
+    return {"id": "admin_user", "username": "Admin", "email": email, "balance": 100}
 
 @api_router.get("/bots/{user_id}")
 async def get_bots(user_id: str):
-    if supabase:
-        try:
-            res = supabase.table("bots").select("*").eq("ownerId", user_id).execute()
-            return res.data or []
-        except Exception as e:
-            logger.error(f"Get bots error: {e}")
-            return []
+    # Здесь должна быть работа с БД, пока возвращаем пустой список
     return []
 
 @api_router.post("/bots/save")
 async def save_bot(bot: dict):
-    if supabase:
-        try:
-            supabase.table("bots").upsert(bot).execute()
-            return {"status": "ok"}
-        except Exception as e:
-            logger.error(f"Save bot error: {e}")
-            raise HTTPException(500, "Ошибка сохранения")
     return {"status": "ok"}
 
 @api_router.post("/bots/start")
-async def start_bot(bot: dict):
-    bot_id = bot.get("id")
-    logger.info(f"Starting bot: {bot_id}")
+async def start_bot(req: BotStartRequest):
+    # Код генерируется на фронтенде и присылается сюда
+    success = process_manager.start_bot(req.id, req.token, req.code)
+    if not success:
+        raise HTTPException(status_code=500, detail="Could not start bot process")
     return {"status": "ok"}
 
 @api_router.post("/bots/stop/{bot_id}")
 async def stop_bot(bot_id: str):
-    logger.info(f"Stopping bot: {bot_id}")
+    process_manager.stop_bot(bot_id)
     return {"status": "ok"}
 
-@api_router.get("/bots/messages/{bot_id}")
-async def get_bot_messages(bot_id: str):
-    return []
-
-# Подключаем роутер
 app.include_router(api_router)
 
-# Обработка исключений для чистого вывода в логи
-@app.exception_handler(Exception)
-async def universal_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled error: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Внутренняя ошибка сервера"}
-    )
-
 if __name__ == "__main__":
-    # Запуск сервера
     uvicorn.run(app, host="0.0.0.0", port=8000)
