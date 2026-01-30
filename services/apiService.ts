@@ -2,7 +2,6 @@
 import { BotConfig, User } from '../types';
 
 // По умолчанию используем относительный путь для проксирования через Nginx/Vite
-// Если в localStorage задан 'DEBUG_API_URL', используем его (например, http://72.56.67.123:8000)
 const getApiBase = () => {
   const debugUrl = localStorage.getItem('DEBUG_API_URL');
   return debugUrl ? debugUrl + '/api' : '/api';
@@ -18,14 +17,16 @@ const fetchWithTimeout = async (url: string, options: any = {}, timeout = 45000)
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
+        'Accept': 'application/json',
         ...(options.headers || {})
       }
     });
     clearTimeout(timer);
     
     if (response.status === 405) {
-      console.error(`❌ 405 Method Not Allowed на URL: ${url}. Проверьте конфигурацию Nginx или наличие слеша в конце.`);
-      throw new Error("Метод не разрешен (405). Ошибка конфигурации сервера.");
+      console.error(`❌ 405 Method Not Allowed на URL: ${url}. 
+      Метод: ${options.method || 'GET'}. 
+      Если вы видите это в браузере, но curl работает — проверьте OPTIONS запросы и trailing slashes в Nginx.`);
     }
     
     return response;
@@ -102,21 +103,18 @@ export const api = {
     });
   },
 
-  // Fix error in App.tsx: deleteBot implementation
   deleteBot: async (userId: string, botId: string): Promise<void> => {
     await fetchWithTimeout(`${getApiBase()}/bots/${userId}/${botId}`, {
       method: 'DELETE'
     });
   },
 
-  // Fix error in BotEditor.tsx: stopBotOnServer implementation
   stopBotOnServer: async (botId: string): Promise<void> => {
     await fetchWithTimeout(`${getApiBase()}/bots/stop/${botId}`, {
       method: 'POST'
     });
   },
 
-  // Fix error in BotEditor.tsx: startBotOnServer implementation
   startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/bots/start`, {
@@ -130,7 +128,6 @@ export const api = {
     }
   },
 
-  // Fix error in BroadcastManager.tsx: sendBroadcast implementation
   sendBroadcast: async (botIds: string[], message: string): Promise<{ success: number; failed: number } | null> => {
     const response = await fetchWithTimeout(`${getApiBase()}/bots/broadcast`, {
       method: 'POST',
@@ -140,7 +137,6 @@ export const api = {
     return await response.json();
   },
 
-  // Fix error in Auth.tsx: forgotPassword implementation
   forgotPassword: async (email: string): Promise<boolean | string> => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/auth/forgot-password`, {
@@ -154,7 +150,6 @@ export const api = {
     }
   },
 
-  // Fix error in Auth.tsx: resetPassword implementation
   resetPassword: async (data: any): Promise<boolean> => {
     const response = await fetchWithTimeout(`${getApiBase()}/auth/reset-password`, {
       method: 'POST',
@@ -163,7 +158,6 @@ export const api = {
     return response.ok;
   },
 
-  // Fix error in Profile.tsx: activateLicense implementation
   activateLicense: async (botId: string, key: string): Promise<{ status: string; newExpiry: number } | null> => {
     const response = await fetchWithTimeout(`${getApiBase()}/bots/activate-license`, {
       method: 'POST',
