@@ -1,148 +1,118 @@
 
 import { BotConfig, User } from '../types';
-import { generatePythonCode } from './pythonGenerator';
 
-const getApiBase = () => {
-  const debugUrl = localStorage.getItem('DEBUG_API_URL');
-  return debugUrl ? `${debugUrl}/api` : '/api';
-};
+const API_BASE = `${window.location.protocol}//${window.location.hostname}:8000/api`;
 
-const fetchWithTimeout = async (url: string, options: any = {}, timeout = 30000) => {
+const fetchWithTimeout = async (url: string, options: any = {}, timeout = 10000) => {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-  
+  const id = setTimeout(() => controller.abort(), timeout);
   try {
-    const response = await fetch(url, { 
-      ...options, 
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        ...(options.headers || {})
-      }
-    });
-    clearTimeout(timer);
-    
-    if (!response.ok) {
-        const errorText = await getErrorMessage(response);
-        throw new Error(errorText);
-    }
-    
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(id);
     return response;
-  } catch (error: any) {
-    clearTimeout(timer);
+  } catch (error) {
+    clearTimeout(id);
     throw error;
-  }
-};
-
-const getErrorMessage = async (response: Response): Promise<string> => {
-  try {
-    const data = await response.json();
-    return data.detail || data.message || `Error ${response.status}`;
-  } catch (e) {
-    return `HTTP Error ${response.status}`;
   }
 };
 
 export const api = {
   checkConnection: async (): Promise<boolean> => {
     try {
-      const res = await fetch(`${getApiBase()}/ping`);
+      const res = await fetchWithTimeout(`${API_BASE}/ping`, { method: 'GET' }, 3000);
       return res.ok;
     } catch (e) { return false; }
   },
 
   login: async (email: string, password: string): Promise<User | null> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/auth/login`, {
-      method: 'POST',
-      body: JSON.stringify({ email, password })
-    });
-    return await response.json();
-  },
-
-  requestVerification: async (email: string): Promise<boolean | string> => {
     try {
-      const response = await fetchWithTimeout(`${getApiBase()}/auth/request-verification`, {
+      const response = await fetchWithTimeout(`${API_BASE}/auth/login`, {
         method: 'POST',
-        body: JSON.stringify({ email })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
       });
-      return response.ok;
-    } catch (err: any) { throw err; }
+      return response.ok ? await response.json() : null;
+    } catch (e) { return null; }
   },
 
-  verifyAndRegister: async (data: any): Promise<User> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/auth/verify-and-register`, {
-      method: 'POST',
-      body: JSON.stringify({
-        email: data.email,
-        username: data.username,
-        password: data.password,
-        code: data.code
-      })
-    });
-    return await response.json();
+  register: async (userData: any): Promise<User | null> => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE}/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(userData)
+      });
+      return response.ok ? await response.json() : null;
+    } catch (e) { return null; }
+  },
+
+  activateLicense: async (botId: string, key: string): Promise<any> => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE}/license/activate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ botId, key })
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || "Activation failed");
+      }
+      return await response.json();
+    } catch (e: any) { 
+      alert(e.message);
+      return null; 
+    }
   },
 
   getBots: async (userId: string): Promise<BotConfig[]> => {
     try {
-      const response = await fetchWithTimeout(`${getApiBase()}/bots/${userId}`, { method: 'GET' });
-      return await response.json();
+      const response = await fetchWithTimeout(`${API_BASE}/bots/${userId}`);
+      return response.ok ? await response.json() : [];
     } catch (e) { return []; }
   },
 
   saveBot: async (userId: string, bot: BotConfig): Promise<void> => {
-    await fetchWithTimeout(`${getApiBase()}/bots/save`, {
-      method: 'POST',
-      body: JSON.stringify(bot)
-    });
+    try {
+      await fetchWithTimeout(`${API_BASE}/bots/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bot)
+      });
+    } catch (e) { console.error("Failed to save bot"); }
   },
 
   deleteBot: async (userId: string, botId: string): Promise<void> => {
-    await fetchWithTimeout(`${getApiBase()}/bots/${userId}/${botId}`, { method: 'DELETE' });
-  },
-
-  stopBotOnServer: async (botId: string): Promise<void> => {
-    await fetchWithTimeout(`${getApiBase()}/bots/stop/${botId}`, { method: 'POST' });
+    try {
+      await fetchWithTimeout(`${API_BASE}/bots/delete/${botId}`, {
+        method: 'DELETE'
+      });
+    } catch (e) { console.error("Failed to delete bot"); }
   },
 
   startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
     try {
-      const code = generatePythonCode(bot);
-      await fetchWithTimeout(`${getApiBase()}/bots/start`, {
-        method: 'POST',
-        body: JSON.stringify({
-          id: bot.id,
-          token: bot.token,
-          code: code
-        })
-      });
-      return true;
-    } catch (err: any) { return err.message; }
+      const res = await fetchWithTimeout(`${API_BASE}/bots/start/${bot.id}`, { method: 'POST' });
+      if (res.ok) return true;
+      const errorData = await res.json();
+      return errorData.detail || "Error";
+    } catch (e) { return "Network Error"; }
   },
 
-  sendBroadcast: async (botIds: string[], message: string): Promise<{ success: number; failed: number } | null> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/bots/broadcast`, {
-      method: 'POST',
-      body: JSON.stringify({ botIds, message })
-    });
-    return await response.json();
-  },
-
-  getBotMessages: async (botId: string): Promise<any[]> => {
+  stopBotOnServer: async (botId: string): Promise<boolean> => {
     try {
-      const response = await fetchWithTimeout(`${getApiBase()}/bots/messages/${botId}`, { method: 'GET' });
-      return await response.json();
-    } catch (e) { return []; }
+      const res = await fetchWithTimeout(`${API_BASE}/bots/stop/${botId}`, { method: 'POST' });
+      return res.ok;
+    } catch (e) { return false; }
   },
 
-  activateLicense: async (botId: string, key: string): Promise<any> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/license/activate`, {
-      method: 'POST',
-      body: JSON.stringify({ botId, key })
-    });
-    return await response.json();
-  },
-
-  forgotPassword: async (email: string) => true,
-  resetPassword: async (data: any) => true,
+  sendBroadcast: async (botIds: string[], message: string): Promise<any> => {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/broadcast`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ botIds, message })
+      });
+      return res.ok ? await res.json() : null;
+    } catch (e) { return null; }
+  }
 };
