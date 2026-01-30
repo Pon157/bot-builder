@@ -22,7 +22,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.default import DefaultBotProperties
 import uvicorn
 
-# --- Ручная загрузка .env (критично для стабильности окружения) ---
+# --- Загрузка окружения ---
 def manual_load_env():
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
     if os.path.exists(env_path):
@@ -44,27 +44,7 @@ def manual_load_env():
 
 manual_load_env()
 
-# Безопасный импорт исключений aiogram
-try:
-    from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter, TokenValidationError
-except ImportError:
-    from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
-    TokenValidationError = ValueError # Фолбек
-
-# Попытка импорта Supabase
-try:
-    from supabase import create_client, Client
-    SUPABASE_AVAILABLE = True
-except ImportError:
-    SUPABASE_AVAILABLE = False
-
-# Импорт сервиса почты (выполняется ПОСЛЕ manual_load_env)
-from email_service import EmailService
-
-# --- Инициализация логирования ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-os.chdir(BASE_DIR)
-
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -72,6 +52,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BotEngineCore")
 
+# Импорт зависимостей
+try:
+    from supabase import create_client, Client
+    SUPABASE_AVAILABLE = True
+except ImportError:
+    SUPABASE_AVAILABLE = False
+
+from email_service import EmailService
+
+# --- Константы ---
 DB_FILE = "database.json"
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -82,14 +72,78 @@ supabase: Optional['Client'] = None
 if SUPABASE_AVAILABLE and SUPABASE_URL and SUPABASE_KEY:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        logger.info("✅ Supabase client initialized")
+        logger.info("✅ Supabase client initialized and connected")
     except Exception as e:
         logger.error(f"❌ Supabase init error: {e}")
 
 # Временное хранилище кодов (email: {code, timestamp})
 verification_codes: Dict[str, dict] = {}
+db_content = {"users": [], "bots": [], "issued_keys": [], "system_logs": []}
 
-# --- Модели данных ---
+# --- Логика БД (Supabase Sync) ---
+
+async def sync_to_supabase(table: str, data: Any):
+    """Синхронизация конкретного объекта или списка в Supabase"""
+    if not supabase: return
+    try:
+        # Supabase Python SDK требует список словарей для upsert
+        payload = data if isinstance(data, list) else [data]
+        if not payload: return
+        
+        # Очищаем данные от лишних полей перед отправкой (например, временных статусов RUNNING)
+        clean_payload = []
+        for item in payload:
+            c = item.copy()
+            if table == "bots":
+                # Не храним в базе динамические логи (они слишком тяжелые)
+                # или храним только последние 10. Для простоты здесь сохраняем всё.
+                pass
+            clean_payload.append(c)
+
+        result = supabase.table(table).upsert(clean_payload).execute()
+        return result
+    except Exception as e:
+        logger.error(f"❌ Supabase Sync Error (table: {table}): {e}")
+
+def save_db_local():
+    """Сохранение локального бэкапа"""
+    try:
+        with open(DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(db_content, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"❌ Local Save Error: {e}")
+
+async def load_db_full():
+    """Полная загрузка данных из Supabase (или локально, если Supabase недоступен)"""
+    global db_content
+    
+    if supabase:
+        try:
+            logger.info("🔄 Fetching data from Supabase...")
+            users_res = supabase.table("users").select("*").execute()
+            bots_res = supabase.table("bots").select("*").execute()
+            keys_res = supabase.table("issued_keys").select("*").execute()
+            
+            db_content["users"] = users_res.data or []
+            db_content["bots"] = bots_res.data or []
+            db_content["issued_keys"] = keys_res.data or []
+            
+            logger.info(f"💾 Synced: {len(db_content['users'])} users, {len(db_content['bots'])} bots")
+            save_db_local()
+            return
+        except Exception as e:
+            logger.error(f"❌ Supabase Fetch Error, falling back to local: {e}")
+
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                for key in db_content.keys():
+                    if key in loaded: db_content[key] = loaded[key]
+        except Exception as e:
+            logger.error(f"❌ Local Load Error: {e}")
+
+# --- Модели API ---
 class LoginRequest(BaseModel):
     email: str
     password: str
@@ -103,11 +157,6 @@ class RegisterWithCodeRequest(BaseModel):
     password: str
     username: str
 
-class ResetPasswordRequest(BaseModel):
-    email: str
-    code: str
-    newPassword: str
-
 class BroadcastRequest(BaseModel):
     botIds: List[str]
     message: str
@@ -119,36 +168,12 @@ class ActivateRequest(BaseModel):
     botId: str
     key: str
 
-# --- БД ---
-db_content = {"users": [], "bots": [], "issued_keys": [], "system_logs": []}
-
-def save_db():
-    try:
-        with open(DB_FILE, "w", encoding="utf-8") as f:
-            json.dump(db_content, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"❌ Save DB Error: {e}")
-
-def load_db():
-    global db_content
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                for key in db_content.keys():
-                    if key in loaded: db_content[key] = loaded[key]
-            logger.info(f"📁 Loaded: {len(db_content['users'])} users, {len(db_content['bots'])} bots")
-        except Exception as e:
-            logger.error(f"❌ Load DB Error: {e}")
-
-load_db()
-
 # --- Вспомогательные функции ---
 def is_bot_license_active(bot_config: dict) -> bool:
     exp = bot_config.get("licenseExpiresAt", 0)
     return int(exp) > int(time.time() * 1000)
 
-def add_bot_log(bot_id: str, log_type: str, text: str):
+async def add_bot_log(bot_id: str, log_type: str, text: str):
     bot_cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
     if bot_cfg:
         if "logs" not in bot_cfg: bot_cfg["logs"] = []
@@ -159,12 +184,14 @@ def add_bot_log(bot_id: str, log_type: str, text: str):
             "text": text
         }
         bot_cfg["logs"].insert(0, log_entry)
-        bot_cfg["logs"] = bot_cfg["logs"][:50]
+        bot_cfg["logs"] = bot_cfg["logs"][:30] # Храним меньше логов в БД
+        save_db_local()
+        await sync_to_supabase("bots", bot_cfg)
 
 active_tasks: Dict[str, asyncio.Task] = {}
 active_bots: Dict[str, Bot] = {}
 
-# --- Бот Воркер ---
+# --- Бот Воркер (Livegram Logic) ---
 
 async def bot_worker_task(bot_id: str, token: str):
     logger.info(f"🤖 Starting worker for bot {bot_id}")
@@ -189,14 +216,14 @@ async def bot_worker_task(bot_id: str, token: str):
                 
                 reply_markup = ReplyKeyboardMarkup(keyboard=kb_list, resize_keyboard=True) if kb_list else None
                 await message.answer(welcome, reply_markup=reply_markup)
-                add_bot_log(bot_id, "incoming", f"User {message.from_user.id} (/start)")
+                await add_bot_log(bot_id, "incoming", f"User {message.from_user.id} (/start)")
                 
                 if cfg:
-                    if "subscribers" not in cfg: cfg["subscribers"] = []
+                    if "subscribers" not in cfg or cfg["subscribers"] is None: cfg["subscribers"] = []
                     if message.from_user.id not in cfg["subscribers"]:
                         cfg["subscribers"].append(message.from_user.id)
                         cfg["usersCount"] = len(cfg["subscribers"])
-                        save_db()
+                        await sync_to_supabase("bots", cfg)
 
             @router.message()
             async def main_handler(message: Message):
@@ -209,7 +236,7 @@ async def bot_worker_task(bot_id: str, token: str):
 
                 # 1. Ответ админа
                 if admin_id and str(user_id) == str(admin_id) and message.reply_to_message:
-                    reply_text = message.reply_to_message.text or ""
+                    reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
                     match = re.search(r"ID: (\d+)", reply_text)
                     if match:
                         target_id = int(match.group(1))
@@ -219,7 +246,7 @@ async def bot_worker_task(bot_id: str, token: str):
                             else:
                                 await message.copy_to(target_id)
                             await message.reply("✅ Отправлено")
-                            add_bot_log(bot_id, "outgoing", f"Admin replied to {target_id}")
+                            await add_bot_log(bot_id, "outgoing", f"Admin replied to {target_id}")
                             return
                         except Exception as e:
                             await message.reply(f"❌ Ошибка: {e}")
@@ -229,7 +256,7 @@ async def bot_worker_task(bot_id: str, token: str):
                 for btn in cfg.get("buttons", []):
                     if btn["text"].lower() == text.lower():
                         await message.answer(btn.get("response", "..."))
-                        add_bot_log(bot_id, "outgoing", f"Button: {btn['text']}")
+                        await add_bot_log(bot_id, "outgoing", f"Button: {btn['text']}")
                         if btn.get("type") == "request" and admin_id:
                             template = btn.get("adminTemplate", "📩 Обращение: {{button}}\nОт: {{name}} (ID: {{id}})")
                             admin_msg = template.replace("{{id}}", str(user_id))\
@@ -244,7 +271,7 @@ async def bot_worker_task(bot_id: str, token: str):
                 for trig in cfg.get("triggers", []):
                     if trig["keyword"].lower() in text.lower():
                         await message.answer(trig["response"])
-                        add_bot_log(bot_id, "outgoing", f"Trigger: {trig['keyword']}")
+                        await add_bot_log(bot_id, "outgoing", f"Trigger: {trig['keyword']}")
                         return
 
                 # 4. Пересылка админу
@@ -264,55 +291,35 @@ async def bot_worker_task(bot_id: str, token: str):
             await dp.start_polling(bot, skip_updates=True)
     except Exception as e:
         logger.error(f"❌ Bot {bot_id} Error: {e}")
-        add_bot_log(bot_id, "error", str(e))
+        await add_bot_log(bot_id, "error", str(e))
     finally:
         active_bots.pop(bot_id, None)
         active_tasks.pop(bot_id, None)
 
-# --- LIFESPAN ---
-
-async def stop_bot_api(bot_id: str):
-    if bot_id in active_tasks:
-        active_tasks[bot_id].cancel()
-        active_tasks.pop(bot_id, None)
-    if bot_id in active_bots:
-        active_bots.pop(bot_id, None)
-    for b in db_content["bots"]:
-        if b["id"] == bot_id: b["status"] = "IDLE"
-    save_db()
-    return {"status": "ok"}
+# --- API Endpoints ---
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # При старте
-    load_db()
+    await load_db_full()
     for b in db_content["bots"]:
         if b.get("status") == "RUNNING" and is_bot_license_active(b):
-            logger.info(f"♻️ Auto-restarting bot {b['name']} ({b['id']})")
             active_tasks[b["id"]] = asyncio.create_task(bot_worker_task(b["id"], b["token"]))
     
     async def monitor():
         while True:
             try:
-                now = int(time.time() * 1000)
-                current_task_ids = list(active_tasks.keys())
-                for b_id in current_task_ids:
-                    bot_cfg = next((b for b in db_content["bots"] if b["id"] == b_id), None)
-                    if bot_cfg and not is_bot_license_active(bot_cfg):
-                        logger.warning(f"🚨 License expired for {bot_cfg['name']}, stopping...")
-                        await stop_bot_api(b_id)
-            except Exception as e:
-                logger.error(f"Monitor error: {e}")
+                for b in db_content["bots"]:
+                    if b["id"] in active_tasks and not is_bot_license_active(b):
+                        active_tasks[b["id"]].cancel()
+                        b["status"] = "IDLE"
+                        await sync_to_supabase("bots", b)
+            except: pass
             await asyncio.sleep(300)
     
     m_task = asyncio.create_task(monitor())
     yield
     m_task.cancel()
-    for t in active_tasks.values():
-        t.cancel()
-    logger.info("👋 Server shutdown complete")
-
-# --- API ---
+    for t in active_tasks.values(): t.cancel()
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -323,17 +330,22 @@ async def ping(): return {"status": "online"}
 @app.post("/api/auth/request-verification")
 async def request_verification(req: VerificationRequest):
     email = req.email.lower().strip()
-    if any(u["email"] == email for u in db_content["users"]):
-        raise HTTPException(400, "Пользователь существует")
+    
+    # Прямая проверка в Supabase для исключения дубликатов
+    if supabase:
+        check = supabase.table("users").select("id").eq("email", email).execute()
+        if check.data:
+            raise HTTPException(400, "Пользователь с таким Email уже зарегистрирован")
+    elif any(u["email"] == email for u in db_content["users"]):
+        raise HTTPException(400, "Пользователь с таким Email уже зарегистрирован")
+
     code = "".join([str(secrets.randbelow(10)) for _ in range(6)])
     verification_codes[email] = {"code": code, "timestamp": time.time()}
     
-    # Пытаемся отправить
     sent = EmailService.send_verification_code(email, code)
     if not sent:
-        # Даже если SMTP не сработал, выводим код в консоль для возможности входа админу
         logger.warning(f"🔥 SMTP FAILURE. CODE FOR {email} IS: {code}")
-        raise HTTPException(500, "Ошибка SMTP. Проверьте настройки GMAIL_EMAIL и GMAIL_PASSWORD в .env")
+        raise HTTPException(500, "Ошибка SMTP. Проверьте настройки почты в .env")
         
     return {"status": "ok"}
 
@@ -342,7 +354,8 @@ async def verify_and_register(req: RegisterWithCodeRequest):
     email = req.email.lower().strip()
     stored = verification_codes.get(email)
     if not stored or stored["code"] != req.code or time.time() - stored["timestamp"] > 600:
-        raise HTTPException(400, "Неверный код")
+        raise HTTPException(400, "Неверный или просроченный код")
+    
     new_user = {
         "id": f"u_{secrets.token_hex(4)}",
         "username": req.username,
@@ -352,7 +365,11 @@ async def verify_and_register(req: RegisterWithCodeRequest):
         "botsCreated": 0,
         "licenseExpiresAt": int(time.time() * 1000) + (3 * 24 * 3600 * 1000)
     }
-    db_content["users"].append(new_user); save_db()
+    
+    db_content["users"].append(new_user)
+    save_db_local()
+    await sync_to_supabase("users", new_user)
+    
     verification_codes.pop(email, None)
     return new_user
 
@@ -360,7 +377,7 @@ async def verify_and_register(req: RegisterWithCodeRequest):
 async def login(req: LoginRequest):
     email = req.email.lower().strip()
     u = next((u for u in db_content["users"] if u["email"] == email and u["password"] == req.password), None)
-    if not u: raise HTTPException(401, "Ошибка")
+    if not u: raise HTTPException(401, "Неверный Email или пароль")
     return u
 
 @app.get("/api/bots/{user_id}")
@@ -379,51 +396,51 @@ async def save_bot_api(bot_data: dict):
         db_content["bots"][idx] = bot_data
     else:
         db_content["bots"].append(bot_data)
-    save_db(); return {"status": "ok"}
+    
+    save_db_local()
+    await sync_to_supabase("bots", bot_data)
+    return {"status": "ok"}
 
 @app.post("/api/bots/start/{bot_id}")
 async def start_bot_api(bot_id: str):
     cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-    if not cfg: raise HTTPException(404)
+    if not cfg: raise HTTPException(404, "Бот не найден")
     if not is_bot_license_active(cfg): raise HTTPException(403, "Лицензия истекла")
     if bot_id not in active_tasks:
         active_tasks[bot_id] = asyncio.create_task(bot_worker_task(bot_id, cfg["token"]))
-        cfg["status"] = "RUNNING"; save_db()
+        cfg["status"] = "RUNNING"
+        await sync_to_supabase("bots", cfg)
     return {"status": "ok"}
 
 @app.post("/api/bots/stop/{bot_id}")
-async def stop_bot_api_endpoint(bot_id: str):
-    return await stop_bot_api(bot_id)
-
-@app.post("/api/broadcast")
-async def broadcast_api(req: BroadcastRequest):
-    success, failed = 0, 0
-    for bot_id in req.botIds:
-        bot_inst = active_bots.get(bot_id)
-        if not bot_inst: continue
-        cfg = next((b for b in db_content["bots"] if b["id"] == bot_id), None)
-        if not cfg: continue
-        for sub_id in cfg.get("subscribers", []):
-            try:
-                await bot_inst.send_message(sub_id, req.message)
-                success += 1; await asyncio.sleep(0.05)
-            except: failed += 1
-    return {"success": success, "failed": failed}
+async def stop_bot_api(bot_id: str):
+    if bot_id in active_tasks:
+        active_tasks[bot_id].cancel()
+        active_tasks.pop(bot_id, None)
+    
+    for b in db_content["bots"]:
+        if b["id"] == bot_id: 
+            b["status"] = "IDLE"
+            await sync_to_supabase("bots", b)
+            
+    save_db_local()
+    return {"status": "ok"}
 
 @app.post("/api/admin/generate-key")
 async def generate_key_api(req: KeyGenRequest, x_admin_token: str = Header(None)):
     if x_admin_token != ADMIN_SECRET:
         raise HTTPException(status_code=403, detail="Forbidden")
         
-    new_key = f"BOT-{req.months}-{secrets.token_hex(3).upper()}"
-    db_content["issued_keys"].append({
-        "key": new_key,
+    new_key = {
+        "key": f"BOT-{req.months}-{secrets.token_hex(3).upper()}",
         "months": req.months,
         "used": False,
         "created_at": int(time.time() * 1000)
-    })
-    save_db()
-    return {"key": new_key}
+    }
+    db_content["issued_keys"].append(new_key)
+    save_db_local()
+    await sync_to_supabase("issued_keys", new_key)
+    return {"key": new_key["key"]}
 
 @app.post("/api/license/activate")
 async def activate_key_api(req: ActivateRequest):
@@ -431,7 +448,7 @@ async def activate_key_api(req: ActivateRequest):
     key_obj = next((k for k in db_content["issued_keys"] if k["key"] == req.key and not k.get("used")), None)
     
     if not bot_cfg: raise HTTPException(404, "Бот не найден")
-    if not key_obj: raise HTTPException(400, "Неверный или уже использованный ключ")
+    if not key_obj: raise HTTPException(400, "Ключ недействителен")
     
     now = int(time.time() * 1000)
     current_exp = int(bot_cfg.get("licenseExpiresAt", now))
@@ -442,7 +459,10 @@ async def activate_key_api(req: ActivateRequest):
     key_obj["used_by_bot"] = req.botId
     key_obj["used_at"] = now
     
-    save_db()
+    save_db_local()
+    await sync_to_supabase("bots", bot_cfg)
+    await sync_to_supabase("issued_keys", key_obj)
+    
     return {"status": "ok", "newExpiry": bot_cfg["licenseExpiresAt"]}
 
 if __name__ == "__main__":
