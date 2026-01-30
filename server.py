@@ -1,173 +1,164 @@
 
-import { BotConfig, User } from '../types';
+import asyncio
+import logging
+import json
+import os
+import time
+import sys
+import secrets
+from datetime import datetime
+from contextlib import asynccontextmanager
+from typing import Dict, List, Optional, Any
+from fastapi import FastAPI, HTTPException, Header, Request, Depends, Response, status, APIRouter
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+import uvicorn
 
-const getApiBase = () => {
-  const debugUrl = localStorage.getItem('DEBUG_API_URL');
-  return debugUrl ? `${debugUrl}/api` : '/api';
-};
+# --- Инициализация логирования ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("BotEngineCore")
 
-const fetchWithTimeout = async (url: string, options: any = {}, timeout = 30000) => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-  
-  try {
-    const response = await fetch(url, { 
-      ...options, 
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        ...(options.headers || {})
-      }
-    });
-    clearTimeout(timer);
+# --- Попытка импорта Supabase ---
+try:
+    from supabase import create_client, Client
+    SUPABASE_AVAILABLE = True
+except ImportError:
+    SUPABASE_AVAILABLE = False
+    logger.warning("Supabase library not found. Running in demo mode.")
+
+# --- БД и Константы ---
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+supabase: Optional['Client'] = None
+if SUPABASE_AVAILABLE and SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logger.info("✅ Supabase connected successfully")
+    except Exception as e:
+        logger.error(f"❌ Supabase initialization error: {e}")
+
+# --- Модели данных ---
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class VerificationRequest(BaseModel):
+    email: str
+
+class RegisterWithCodeRequest(BaseModel):
+    email: str
+    code: str
+    password: str
+    username: str
+
+# --- Жизненный цикл приложения ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Логика при старте (например, прогрев кэша)
+    logger.info("Application startup...")
+    yield
+    # Логика при завершении
+    logger.info("Application shutdown...")
+
+# --- Инициализация FastAPI ---
+app = FastAPI(lifespan=lifespan, redirect_slashes=False)
+
+# Настройка CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- API Роутер ---
+api_router = APIRouter(prefix="/api")
+
+@api_router.get("/ping")
+async def ping():
+    return {"status": "online", "timestamp": time.time()}
+
+@api_router.post("/auth/login")
+async def login(req: LoginRequest):
+    email = req.email.lower().strip()
+    if supabase:
+        try:
+            res = supabase.table("users").select("*").eq("email", email).eq("password", req.password).execute()
+            if res.data:
+                return res.data[0]
+            raise HTTPException(401, "Неверный логин или пароль")
+        except Exception as e:
+            logger.error(f"Login error: {e}")
+            raise HTTPException(500, "Ошибка базы данных")
     
-    if (!response.ok) {
-        console.error(`📡 Server responded with ${response.status} for ${url}`);
-        if (response.status === 405) {
-            console.warn("Hint: 405 Method Not Allowed is usually a routing/Nginx issue. Check if POST is allowed on this endpoint.");
-        }
-    }
-    
-    return response;
-  } catch (error: any) {
-    clearTimeout(timer);
-    if (error.name === 'AbortError') {
-      throw new Error("Таймаут соединения с сервером");
-    }
-    console.error(`🔌 Network error requesting ${url}:`, error);
-    throw error;
-  }
-};
+    # Демо-режим, если нет БД
+    if email == "admin@test.com" and req.password == "admin":
+        return {"id": "demo_user", "username": "Admin", "email": email, "balance": 100}
+    raise HTTPException(401, "Пользователь не найден (Demo Mode: admin@test.com / admin)")
 
-const getErrorMessage = async (response: Response): Promise<string> => {
-  try {
-    const data = await response.json();
-    return data.detail || data.message || `Ошибка сервера (${response.status})`;
-  } catch (e) {
-    return `Ошибка HTTP ${response.status}`;
-  }
-};
+@api_router.post("/auth/request-verification")
+async def request_verification(req: VerificationRequest):
+    email = req.email.lower().strip()
+    logger.info(f"Verification requested for: {email}")
+    # В реальности здесь отправка письма через email_service.py
+    return {"status": "ok", "message": "Код отправлен (имитация)"}
 
-export const api = {
-  checkConnection: async (): Promise<boolean> => {
-    try {
-      const res = await fetchWithTimeout(`${getApiBase()}/ping`, { method: 'GET' }, 5000);
-      return res.ok;
-    } catch (e) { return false; }
-  },
+@api_router.get("/bots/{user_id}")
+async def get_bots(user_id: str):
+    if supabase:
+        try:
+            res = supabase.table("bots").select("*").eq("ownerId", user_id).execute()
+            return res.data or []
+        except Exception as e:
+            logger.error(f"Get bots error: {e}")
+            return []
+    return []
 
-  login: async (email: string, password: string): Promise<User | null> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/auth/login`, {
-      method: 'POST',
-      body: JSON.stringify({ email, password })
-    });
-    if (!response.ok) throw new Error(await getErrorMessage(response));
-    return await response.json();
-  },
+@api_router.post("/bots/save")
+async def save_bot(bot: dict):
+    if supabase:
+        try:
+            supabase.table("bots").upsert(bot).execute()
+            return {"status": "ok"}
+        except Exception as e:
+            logger.error(f"Save bot error: {e}")
+            raise HTTPException(500, "Ошибка сохранения")
+    return {"status": "ok"}
 
-  requestVerification: async (email: string): Promise<boolean | string> => {
-    try {
-      const response = await fetchWithTimeout(`${getApiBase()}/auth/request-verification`, {
-        method: 'POST',
-        body: JSON.stringify({ email })
-      });
-      if (response.ok) return true;
-      const msg = await getErrorMessage(response);
-      console.error("Verification Request failed:", msg);
-      return msg;
-    } catch (err: any) {
-      return err.message || "Ошибка соединения";
-    }
-  },
+@api_router.post("/bots/start")
+async def start_bot(bot: dict):
+    bot_id = bot.get("id")
+    logger.info(f"Starting bot: {bot_id}")
+    return {"status": "ok"}
 
-  verifyAndRegister: async (data: any): Promise<User | null> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/auth/verify-and-register`, {
-      method: 'POST',
-      body: JSON.stringify(data)
-    });
-    if (!response.ok) throw new Error(await getErrorMessage(response));
-    return await response.json();
-  },
+@api_router.post("/bots/stop/{bot_id}")
+async def stop_bot(bot_id: str):
+    logger.info(f"Stopping bot: {bot_id}")
+    return {"status": "ok"}
 
-  getBots: async (userId: string): Promise<BotConfig[]> => {
-    try {
-      const response = await fetchWithTimeout(`${getApiBase()}/bots/${userId}`, { method: 'GET' }, 10000);
-      if (!response.ok) return [];
-      return await response.json();
-    } catch (e) { return []; }
-  },
+@api_router.get("/bots/messages/{bot_id}")
+async def get_bot_messages(bot_id: str):
+    return []
 
-  saveBot: async (userId: string, bot: BotConfig): Promise<void> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/bots/save`, {
-      method: 'POST',
-      body: JSON.stringify(bot)
-    });
-    if (!response.ok) throw new Error(await getErrorMessage(response));
-  },
+# Подключаем роутер
+app.include_router(api_router)
 
-  deleteBot: async (userId: string, botId: string): Promise<void> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/bots/${userId}/${botId}`, {
-      method: 'DELETE'
-    });
-    if (!response.ok) throw new Error(await getErrorMessage(response));
-  },
+# Обработка исключений для чистого вывода в логи
+@app.exception_handler(Exception)
+async def universal_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Внутренняя ошибка сервера"}
+    )
 
-  stopBotOnServer: async (botId: string): Promise<void> => {
-    await fetchWithTimeout(`${getApiBase()}/bots/stop/${botId}`, {
-      method: 'POST'
-    });
-  },
-
-  startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
-    try {
-      const response = await fetchWithTimeout(`${getApiBase()}/bots/start`, {
-        method: 'POST',
-        body: JSON.stringify(bot)
-      });
-      if (response.ok) return true;
-      return await getErrorMessage(response);
-    } catch (err: any) {
-      return err.message || "Ошибка соединения";
-    }
-  },
-
-  sendBroadcast: async (botIds: string[], message: string): Promise<{ success: number; failed: number } | null> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/bots/broadcast`, {
-      method: 'POST',
-      body: JSON.stringify({ botIds, message })
-    });
-    if (!response.ok) throw new Error(await getErrorMessage(response));
-    return await response.json();
-  },
-
-  forgotPassword: async (email: string): Promise<boolean | string> => {
-    try {
-      const response = await fetchWithTimeout(`${getApiBase()}/auth/forgot-password`, {
-        method: 'POST',
-        body: JSON.stringify({ email })
-      });
-      if (response.ok) return true;
-      return await getErrorMessage(response);
-    } catch (err: any) {
-      return err.message || "Ошибка соединения";
-    }
-  },
-
-  resetPassword: async (data: any): Promise<boolean> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/auth/reset-password`, {
-      method: 'POST',
-      body: JSON.stringify(data)
-    });
-    return response.ok;
-  },
-
-  activateLicense: async (botId: string, key: string): Promise<{ status: string; newExpiry: number } | null> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/bots/activate-license`, {
-      method: 'POST',
-      body: JSON.stringify({ botId, key })
-    });
-    if (!response.ok) return null;
-    return await response.json();
-  }
-};
+if __name__ == "__main__":
+    # Запуск сервера
+    uvicorn.run(app, host="0.0.0.0", port=8000)
