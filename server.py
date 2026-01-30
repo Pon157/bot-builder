@@ -87,6 +87,7 @@ async def sync_to_supabase(table: str, data: Any):
         payload = data if isinstance(data, list) else [data]
         if not payload: return
         supabase.table(table).upsert(payload).execute()
+        logger.info(f"✅ Успешно синхронизировано с Supabase: {table}")
     except Exception as e:
         logger.error(f"❌ Ошибка синхронизации в Supabase ({table}): {e}")
 
@@ -266,15 +267,20 @@ async def request_verification(req: VerificationRequest):
     
     code = "".join([str(secrets.randbelow(10)) for _ in range(6)])
     verification_codes[email] = {"code": code, "timestamp": time.time()}
-    if EmailService.send_verification_code(email, code): return {"status": "ok"}
+    if EmailService.send_verification_code(email, code): 
+        logger.info(f"✅ Код {code} отправлен на {email}")
+        return {"status": "ok"}
     logger.error(f"❌ Ошибка SMTP для {email}")
     raise HTTPException(500, "Ошибка отправки почты. Попробуйте позже.")
 
 @app.post("/api/auth/verify-and-register")
 async def verify_and_register(req: RegisterWithCodeRequest):
     email = req.email.lower().strip()
+    logger.info(f"🧪 Попытка завершения регистрации для {email}")
+    
     stored = verification_codes.get(email)
-    if not stored or stored["code"] != req.code:
+    if not stored or str(stored["code"]) != str(req.code):
+        logger.warning(f"❌ Неверный код для {email}: {req.code} (ожидался {stored['code'] if stored else 'none'})")
         raise HTTPException(400, "Неверный или просроченный код")
     
     new_user = {
@@ -287,9 +293,11 @@ async def verify_and_register(req: RegisterWithCodeRequest):
         "licenseExpiresAt": int(time.time() * 1000) + (3 * 24 * 3600 * 1000)
     }
     
+    logger.info(f"💾 Сохранение пользователя {email} в БД...")
     db_content["users"].append(new_user)
     await sync_to_supabase("users", new_user)
     verification_codes.pop(email, None)
+    logger.info(f"🎉 Пользователь {email} успешно зарегистрирован!")
     return new_user
 
 @app.get("/api/bots/{user_id}")
