@@ -102,12 +102,12 @@ class SupabaseDB:
         headers = {**self.headers, **(extra_headers or {})}
         async with httpx.AsyncClient() as client:
             try:
-                logger.info(f"📡 Supabase {method} {table} | Data: {json_data} | Params: {params}")
+                logger.info(f"📡 Supabase {method} {table} | Params: {params}")
                 resp = await client.request(method, url, headers=headers, json=json_data, params=params)
                 if resp.status_code >= 400:
-                    logger.error(f"🔴 Supabase ERROR {resp.status_code}: {resp.text}")
+                    logger.error(f"🔴 Supabase ERROR {resp.status_code} on {table}: {resp.text}")
                     return None
-                logger.info(f"🟢 Supabase SUCCESS {resp.status_code}")
+                logger.info(f"🟢 Supabase SUCCESS {resp.status_code} on {table}")
                 return resp.json()
             except Exception as e:
                 logger.error(f"🔴 Supabase Connection Error: {str(e)}")
@@ -216,27 +216,29 @@ async def stop_bot_endpoint(bot_id: str):
 @app.post("/api/admin/generate-key")
 async def generate_key(req: dict, x_admin_token: str = Header(None)):
     if x_admin_token != ADMIN_SECRET:
-        logger.warning(f"🕵️ Attempt to generate key with invalid secret: {x_admin_token}")
+        logger.warning(f"🕵️ Unauthorized key gen attempt: {x_admin_token}")
         raise HTTPException(401, "Invalid secret")
     
     months = req.get("months", 1)
     new_key = f"BOT-{months}-{''.join(random.choices('ABCDEF0123456789', k=8))}"
     payload = {"key": new_key, "months": months, "used": False}
     
-    # Пытаемся сохранить в БД
-    res = await db.request("POST", "license_keys", json_data=payload)
+    # Исправлено: таблица называется issued_keys (согласно логам)
+    res = await db.request("POST", "issued_keys", json_data=payload)
     if res is None:
-        logger.error(f"❌ Failed to save key {new_key} to Supabase!")
-        raise HTTPException(500, "Ошибка базы данных при сохранении ключа")
+        logger.error(f"❌ Failed to save key {new_key} to table issued_keys")
+        raise HTTPException(500, "Database error: table issued_keys not found or inaccessible")
     
-    logger.info(f"✅ Key {new_key} successfully saved to DB")
+    logger.info(f"✅ Key {new_key} generated and stored in issued_keys")
     return {"key": new_key}
 
 @app.post("/api/license/activate")
 async def activate_license(req: dict):
     bot_id = req.get("botId")
     key_str = req.get("key")
-    res = await db.request("GET", "license_keys", params={"key": f"eq.{key_str}", "used": "is.false"})
+    
+    # Исправлено: таблица называется issued_keys
+    res = await db.request("GET", "issued_keys", params={"key": f"eq.{key_str}", "used": "is.false"})
     if not res: raise HTTPException(400, "Ключ недействителен или уже использован")
     key_data = res[0]
     
@@ -250,7 +252,7 @@ async def activate_license(req: dict):
     new_expiry = base_time + (key_data["months"] * 30 * 24 * 3600 * 1000)
     
     await db.request("PATCH", "bots", params={"id": f"eq.{bot_id}"}, json_data={"license_expires_at": new_expiry})
-    await db.request("PATCH", "license_keys", params={"key": f"eq.{key_str}"}, json_data={"used": True})
+    await db.request("PATCH", "issued_keys", params={"key": f"eq.{key_str}"}, json_data={"used": True})
     
     return {"status": "ok", "newExpiry": new_expiry}
 
