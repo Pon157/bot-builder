@@ -22,28 +22,31 @@ const App: React.FC = () => {
 
   const syncData = async (userId: string) => {
     try {
-        const serverBots = await api.getBots(userId);
+        const [serverBots, updatedUser] = await Promise.all([
+          api.getBots(userId),
+          api.getUser(userId)
+        ]);
         setBots(serverBots || []);
-        // Также можно запросить обновленные данные профиля здесь, если нужно
-    } catch (e) { console.error(e); }
+        if (updatedUser) {
+          setUser(updatedUser);
+          localStorage.setItem('active_session_user', JSON.stringify(updatedUser));
+        }
+    } catch (e) { console.error("Sync error:", e); }
   };
 
   useEffect(() => {
     const init = async () => {
       try {
         const savedUserStr = localStorage.getItem('active_session_user');
-        if (savedUserStr && savedUserStr !== "undefined" && savedUserStr !== "null") {
+        if (savedUserStr && savedUserStr !== "undefined") {
           const parsedUser = JSON.parse(savedUserStr);
-          if (parsedUser && parsedUser.id) {
+          if (parsedUser?.id) {
             setUser(parsedUser);
             await syncData(parsedUser.id);
           }
         }
-      } catch (e) {
-        localStorage.removeItem('active_session_user');
-      } finally {
-        setLoading(false);
-      }
+      } catch (e) { localStorage.removeItem('active_session_user'); }
+      finally { setLoading(false); }
     };
     init();
   }, []);
@@ -69,35 +72,19 @@ const App: React.FC = () => {
     const newBot: BotConfig = {
       id: newBotId,
       owner_id: user.id,
-      name,
-      token,
+      name, token,
       status: BotStatus.IDLE,
       created_at: Date.now(),
-      license_expires_at: Date.now() + (3 * 24 * 3600 * 1000), // Триальный период 3 дня
-      usersCount: 0,
-      description: 'Новый бот BotEngine',
-      adminChatId: '',
-      welcomeMessage: `Добро пожаловать в ${name}!`,
-      logs: [],
-      connectedUsers: [],
-      subscribers: [],
-      triggers: [],
-      buttons: [],
-      stats: { totalMessages: 0, incomingToday: 0, outgoingToday: 0, activeUsers24h: 0, bannedCount: 0, history: [] },
+      license_expires_at: Date.now() + (3 * 24 * 3600 * 1000),
+      usersCount: 0, description: 'BotEngine instance',
+      adminChatId: '', welcomeMessage: `Привет!`,
+      logs: [], connectedUsers: [], subscribers: [], triggers: [], buttons: [],
+      stats: { totalMessages: 0, incomingToday: 0, outgoingToday: 0, bannedCount: 0, history: [], activeUsers24h: 0 },
       settings: { 
-        useTopics: false, 
-        topicPerRequest: false, 
-        anonymousTopics: false,
-        autoApproveJoin: false, 
-        forwardToAdmin: true, 
-        antiSpam: true, 
-        rateLimit: 15, 
-        showUserInfo: true, 
-        showUsername: true, 
-        autoBanThreshold: 0,
-        showHeaderId: true,
-        showHeaderName: true,
-        showHeaderUsername: true
+        useTopics: false, topicPerRequest: false, anonymousTopics: false,
+        forwardToAdmin: true, antiSpam: true, showUserInfo: true, showUsername: true,
+        autoApproveJoin: false, rateLimit: 15, autoBanThreshold: 0,
+        showHeaderId: true, showHeaderName: true, showHeaderUsername: true
       }
     };
     try {
@@ -105,9 +92,7 @@ const App: React.FC = () => {
       setBots(prev => [...prev, newBot]);
       setSelectedBotId(newBotId);
       setActiveTab('editor');
-    } catch (e) {
-      alert("Ошибка при создании бота");
-    }
+    } catch (e) { alert("Ошибка при создании"); }
   };
 
   if (loading) return null;
@@ -141,7 +126,7 @@ const App: React.FC = () => {
         <main className="flex-1 overflow-y-auto p-4 md:p-12 no-scrollbar">
           <div className="max-w-6xl mx-auto">
             {activeTab === 'dashboard' && <Dashboard bots={bots} onSelectBot={(id) => { setSelectedBotId(id); setActiveTab('editor'); }} onAddBot={() => setIsModalOpen(true)} />}
-            {activeTab === 'profile' && <Profile user={user} bots={bots} onUpdateBots={setBots} />}
+            {activeTab === 'profile' && <Profile user={user} bots={bots} onUpdateBots={(updatedBots) => { setBots(updatedBots); syncData(user.id); }} />}
             {activeTab === 'editor' && activeBot && (
                 <BotEditor 
                     bot={activeBot} 
