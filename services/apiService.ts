@@ -1,6 +1,5 @@
 
 import { BotConfig, User } from '../types';
-import { generatePythonCode } from './pythonGenerator';
 
 const getApiBase = () => {
   const debugUrl = localStorage.getItem('DEBUG_API_URL');
@@ -37,7 +36,6 @@ export const api = {
     } catch (e) { return false; }
   },
 
-  // Fix: Added getUser method to satisfy requirements in App.tsx
   getUser: async (userId: string): Promise<User | null> => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/auth/user/${userId}`, { method: 'GET' });
@@ -102,7 +100,8 @@ export const api = {
     });
   },
 
-  deleteBot: async (userId: string, botId: string) => {
+  // Added deleteBot to fix error in App.tsx on line 143
+  deleteBot: async (userId: string, botId: string): Promise<void> => {
     await fetchWithTimeout(`${getApiBase()}/bots/delete/${userId}/${botId}`, { method: 'DELETE' });
   },
 
@@ -110,7 +109,7 @@ export const api = {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/bots/start`, {
         method: 'POST',
-        body: JSON.stringify({ id: bot.id, token: bot.token })
+        body: JSON.stringify({ id: bot.id })
       });
       return response.ok ? true : 'Failed to start';
     } catch (err: any) { return err.message; }
@@ -123,16 +122,16 @@ export const api = {
   getBotLogs: async (botId: string): Promise<string> => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/bots/logs/${botId}`, { method: 'GET' });
-      if (!response.ok) return "Ошибка получения логов.";
       const data = await response.json();
       return data.logs || "Логов пока нет.";
-    } catch (e) { return "Ошибка связи с сервером."; }
+    } catch (e) { return "Ошибка связи."; }
   },
 
+  // Added getBotMessages to fix error in BotEditor.tsx on line 21
   getBotMessages: async (botId: string): Promise<any[]> => {
     try {
-        const response = await fetchWithTimeout(`${getApiBase()}/bots/messages/${botId}`, { method: 'GET' });
-        return response.ok ? await response.json() : [];
+      const response = await fetchWithTimeout(`${getApiBase()}/bots/messages/${botId}`, { method: 'GET' });
+      return response.ok ? await response.json() : [];
     } catch (e) { return []; }
   },
 
