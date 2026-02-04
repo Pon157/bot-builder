@@ -69,7 +69,7 @@ export interface BotConfig {
   settings: {
     useTopics: boolean;
     topicPerRequest: boolean;
-    anonymousTopics: boolean; // Анонимные топики
+    anonymousTopics: boolean;
     forwardToAdmin: boolean;
     antiSpam: boolean;
     showUserInfo: boolean;
@@ -78,6 +78,10 @@ export interface BotConfig {
     rateLimit: number;
     autoBanThreshold: number;
     adminMessageTemplate?: string;
+    // Новые поля для настройки заголовка
+    showHeaderId: boolean;
+    showHeaderName: boolean;
+    showHeaderUsername: boolean;
   };
 }
 
