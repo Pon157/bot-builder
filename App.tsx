@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { BotConfig, BotStatus, User } from './types';
 import Dashboard from './components/Dashboard';
@@ -26,18 +25,13 @@ const App: React.FC = () => {
         const savedUserStr = localStorage.getItem('active_session_user');
         if (savedUserStr && savedUserStr !== "undefined" && savedUserStr !== "null") {
           const parsedUser = JSON.parse(savedUserStr);
-          if (parsedUser && parsedUser.id && parsedUser.id !== "new" && parsedUser.id !== "undefined") {
-            console.log("App: Restoring session for user", parsedUser.id);
+          if (parsedUser && parsedUser.id) {
             setUser(parsedUser);
             const serverBots = await api.getBots(parsedUser.id);
             setBots(serverBots || []);
-          } else {
-            console.warn("App: Found 'new' or invalid user ID in storage, clearing...");
-            localStorage.removeItem('active_session_user');
           }
         }
       } catch (e) {
-        console.error("App: Session restore failed", e);
         localStorage.removeItem('active_session_user');
       } finally {
         setLoading(false);
@@ -47,18 +41,10 @@ const App: React.FC = () => {
   }, []);
 
   const handleLogin = async (newUser: User) => {
-    if (!newUser || !newUser.id || newUser.id === "new") {
-      alert("Ошибка: сервер вернул некорректные данные пользователя");
-      return;
-    }
     setUser(newUser);
     localStorage.setItem('active_session_user', JSON.stringify(newUser));
-    try {
-      const serverBots = await api.getBots(newUser.id);
-      setBots(serverBots || []);
-    } catch (e) {
-      console.error("App: Failed to load bots after login", e);
-    }
+    const serverBots = await api.getBots(newUser.id);
+    setBots(serverBots || []);
     setActiveTab('dashboard');
   };
 
@@ -71,16 +57,16 @@ const App: React.FC = () => {
   };
 
   const handleCreateBot = async (name: string, token: string) => {
-    if (!user || !user.id || user.id === "new") return;
+    if (!user) return;
     const newBotId = `bot_${Math.random().toString(36).substr(2, 9)}`;
     const newBot: BotConfig = {
       id: newBotId,
-      ownerId: user.id,
+      owner_id: user.id,
       name,
       token,
       status: BotStatus.IDLE,
-      createdAt: Date.now(),
-      licenseExpiresAt: Date.now() + (3 * 24 * 3600 * 1000),
+      created_at: Date.now(),
+      license_expires_at: Date.now() + (3 * 24 * 3600 * 1000),
       usersCount: 0,
       description: 'Новый бот BotEngine',
       adminChatId: '',
@@ -94,6 +80,8 @@ const App: React.FC = () => {
       settings: { 
         useTopics: false, 
         topicPerRequest: false, 
+        // Added missing required property 'anonymousTopics'
+        anonymousTopics: false,
         autoApproveJoin: false, 
         forwardToAdmin: true, 
         antiSpam: true, 
@@ -113,15 +101,7 @@ const App: React.FC = () => {
     }
   };
 
-  if (loading) return (
-    <div className="min-h-screen bg-black flex items-center justify-center">
-      <div className="flex flex-col items-center gap-4">
-        <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-blue-500"></div>
-        <p className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Загрузка системы...</p>
-      </div>
-    </div>
-  );
-
+  if (loading) return null;
   if (!user) return <Auth onLogin={handleLogin} />;
   const activeBot = bots.find(b => b.id === selectedBotId) || null;
 
