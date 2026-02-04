@@ -20,54 +20,51 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  // Инициализация при загрузке
   useEffect(() => {
     const init = async () => {
-      const savedUser = localStorage.getItem('active_session_user');
-      if (savedUser) {
-        const parsedUser = JSON.parse(savedUser);
-        setUser(parsedUser);
-        const serverBots = await api.getBots(parsedUser.id);
-        setBots(serverBots);
+      try {
+        const savedUserStr = localStorage.getItem('active_session_user');
+        if (savedUserStr && savedUserStr !== "undefined" && savedUserStr !== "null") {
+          const parsedUser = JSON.parse(savedUserStr);
+          // Важнейшая проверка на "валидность" ID
+          if (parsedUser && parsedUser.id && parsedUser.id !== "new" && parsedUser.id !== "undefined") {
+            setUser(parsedUser);
+            const serverBots = await api.getBots(parsedUser.id);
+            setBots(serverBots || []);
+          } else {
+            localStorage.removeItem('active_session_user');
+          }
+        }
+      } catch (e) {
+        console.error("Session restore failed", e);
+        localStorage.removeItem('active_session_user');
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
     init();
   }, []);
 
-  useEffect(() => {
-    if (!user) return;
-    const interval = setInterval(async () => {
-      try {
-        const serverBots = await api.getBots(user.id);
-        setBots(prev => {
-          return prev.map(localBot => {
-            const serverBot = serverBots.find(b => b.id === localBot.id);
-            if (!serverBot) return localBot;
-            return {
-              ...localBot,
-              status: serverBot.status,
-              stats: serverBot.stats,
-              usersCount: serverBot.usersCount,
-              connectedUsers: serverBot.connectedUsers,
-              licenseExpiresAt: serverBot.licenseExpiresAt,
-              logs: serverBot.logs || [] // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Переносим логи
-            };
-          });
-        });
-      } catch (e) {}
-    }, 10000); // Сокращаем до 10 сек для лучшего UX в консоли
-    return () => clearInterval(interval);
-  }, [user]);
-
-  const handleUpdateBotLocally = useCallback((updatedBot: BotConfig) => {
-    setBots(prev => prev.map(b => b.id === updatedBot.id ? updatedBot : b));
-  }, []);
-
+  // Обработка логина/регистрации
   const handleLogin = async (newUser: User) => {
+    if (!newUser || !newUser.id || newUser.id === "new") {
+      alert("Ошибка: сервер вернул некорректные данные пользователя");
+      return;
+    }
+    
+    console.log("Setting user session:", newUser);
     setUser(newUser);
     localStorage.setItem('active_session_user', JSON.stringify(newUser));
-    const serverBots = await api.getBots(newUser.id);
-    setBots(serverBots);
+    
+    // Сразу грузим ботов
+    try {
+      const serverBots = await api.getBots(newUser.id);
+      setBots(serverBots || []);
+    } catch (e) {
+      console.error("Failed to load bots after login", e);
+    }
+    
     setActiveTab('dashboard');
   };
 
@@ -76,22 +73,23 @@ const App: React.FC = () => {
     localStorage.removeItem('active_session_user');
     setBots([]);
     setSelectedBotId(null);
+    setActiveTab('dashboard');
   };
 
-  const activeBot = bots.find(b => b.id === selectedBotId) || null;
-
   const handleCreateBot = async (name: string, token: string) => {
-    if (!user) return;
+    if (!user || !user.id || user.id === "new") return;
+    
+    const newBotId = `bot_${Math.random().toString(36).substr(2, 9)}`;
     const newBot: BotConfig = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: newBotId,
       ownerId: user.id,
       name,
       token,
       status: BotStatus.IDLE,
       createdAt: Date.now(),
-      licenseExpiresAt: Date.now() + (3 * 24 * 3600 * 1000),
+      licenseExpiresAt: Date.now() + (3 * 24 * 3600 * 1000), // 3 дня
       usersCount: 0,
-      description: 'Cloud Instance',
+      description: 'Новый бот BotEngine',
       adminChatId: '',
       welcomeMessage: `Добро пожаловать в ${name}!`,
       logs: [],
@@ -100,23 +98,50 @@ const App: React.FC = () => {
       triggers: [],
       buttons: [],
       stats: { totalMessages: 0, incomingToday: 0, outgoingToday: 0, activeUsers24h: 0, bannedCount: 0, history: [] },
-      settings: { useTopics: false, topicPerRequest: false, autoApproveJoin: false, forwardToAdmin: true, antiSpam: true, rateLimit: 15, showUserInfo: true, showUsername: true, autoBanThreshold: 0 }
+      settings: { 
+        useTopics: false, 
+        topicPerRequest: false, 
+        autoApproveJoin: false, 
+        forwardToAdmin: true, 
+        antiSpam: true, 
+        rateLimit: 15, 
+        showUserInfo: true, 
+        showUsername: true, 
+        autoBanThreshold: 0 
+      }
     };
-    await api.saveBot(user.id, newBot);
-    setBots(prev => [...prev, newBot]);
-    setSelectedBotId(newBot.id);
-    setActiveTab('editor');
+
+    try {
+      await api.saveBot(user.id, newBot);
+      setBots(prev => [...prev, newBot]);
+      setSelectedBotId(newBotId);
+      setActiveTab('editor');
+    } catch (e) {
+      alert("Ошибка при создании бота на сервере. Проверьте соединение.");
+    }
   };
 
-  if (loading) return null;
+  if (loading) return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="flex flex-col items-center gap-4">
+        <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-blue-500"></div>
+        <p className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Загрузка системы...</p>
+      </div>
+    </div>
+  );
+
+  // Если пользователя нет — показываем экран входа
   if (!user) return <Auth onLogin={handleLogin} />;
+
+  const activeBot = bots.find(b => b.id === selectedBotId) || null;
 
   return (
     <div className="flex h-screen bg-[#0a0a0a] text-zinc-300 overflow-hidden font-sans relative">
+      {/* Overlay для мобильного сайдбара */}
       {isSidebarOpen && (
         <div 
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden"
-          onClick={() => setIsSidebarOpen(false)}
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden" 
+          onClick={() => setIsSidebarOpen(false)} 
         />
       )}
 
@@ -139,7 +164,7 @@ const App: React.FC = () => {
             <span className="font-black text-sm uppercase tracking-wider text-white">BotEngine <span className="text-blue-500">Pro</span></span>
           </div>
           <button 
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
             className="p-2 bg-zinc-800 rounded-lg text-white"
           >
             {isSidebarOpen ? <X size={20} /> : <Menu size={20} />}
@@ -148,15 +173,39 @@ const App: React.FC = () => {
 
         <main className="flex-1 overflow-y-auto p-4 md:p-12 no-scrollbar">
           <div className="max-w-6xl mx-auto">
-            {activeTab === 'dashboard' && <Dashboard bots={bots} onSelectBot={(id) => { setSelectedBotId(id); setActiveTab('editor'); }} onAddBot={() => setIsModalOpen(true)} />}
-            {activeTab === 'profile' && <Profile user={user} bots={bots} onUpdateBots={setBots} />}
-            {activeTab === 'editor' && activeBot && <BotEditor bot={activeBot} onUpdate={handleUpdateBotLocally} onDelete={() => api.deleteBot(user.id, activeBot.id)} />}
-            {activeTab === 'broadcast' && <BroadcastManager bots={bots} />}
+            {activeTab === 'dashboard' && (
+              <Dashboard 
+                bots={bots} 
+                onSelectBot={(id) => { setSelectedBotId(id); setActiveTab('editor'); }} 
+                onAddBot={() => setIsModalOpen(true)} 
+              />
+            )}
+            {activeTab === 'profile' && (
+              <Profile 
+                user={user} 
+                bots={bots} 
+                onUpdateBots={setBots} 
+              />
+            )}
+            {activeTab === 'editor' && activeBot && (
+              <BotEditor 
+                bot={activeBot} 
+                onUpdate={(u) => setBots(prev => prev.map(b => b.id === u.id ? u : b))} 
+                onDelete={() => api.deleteBot(user.id, activeBot.id)} 
+              />
+            )}
+            {activeTab === 'broadcast' && (
+              <BroadcastManager bots={bots} />
+            )}
           </div>
         </main>
       </div>
 
-      <CreateBotModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSubmit={handleCreateBot} />
+      <CreateBotModal 
+        isOpen={isModalOpen} 
+        onClose={() => setIsModalOpen(false)} 
+        onSubmit={handleCreateBot} 
+      />
     </div>
   );
 };
