@@ -43,11 +43,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email, password })
     });
+    
     if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.detail || 'Login failed');
+        const err = await response.json().catch(() => ({ detail: 'Login failed' }));
+        throw new Error(err.detail || 'Неверный Email или пароль');
     }
-    return await response.json();
+    
+    const userData = await response.json();
+    if (!userData || !userData.id) throw new Error("Сервер вернул пустой профиль");
+    return userData;
   },
 
   requestVerification: async (email: string): Promise<boolean | string> => {
@@ -57,7 +61,7 @@ export const api = {
         body: JSON.stringify({ email })
       });
       if (response.ok) return true;
-      const err = await response.json();
+      const err = await response.json().catch(() => ({ detail: 'Ошибка сервера' }));
       return err.detail || 'Error';
     } catch (err: any) { 
       return err.message; 
@@ -69,28 +73,38 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data)
     });
+    
     if (!response.ok) {
-        const err = await response.json();
+        const err = await response.json().catch(() => ({ detail: 'Ошибка регистрации' }));
         throw new Error(err.detail || 'Registration failed');
     }
-    return await response.json();
+    
+    const userData = await response.json();
+    if (!userData || !userData.id) throw new Error("Ошибка: данные пользователя не созданы в БД");
+    return userData;
   },
 
   getBots: async (userId: string): Promise<BotConfig[]> => {
+    if (!userId || userId === "new") return [];
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/bots/${userId}`, { method: 'GET' });
       return response.ok ? await response.json() : [];
-    } catch (e) { return []; }
+    } catch (e) { 
+      console.error("Fetch bots error:", e);
+      return []; 
+    }
   },
 
   saveBot: async (userId: string, bot: BotConfig): Promise<void> => {
-    await fetchWithTimeout(`${getApiBase()}/bots/save`, {
+    const response = await fetchWithTimeout(`${getApiBase()}/bots/save`, {
       method: 'POST',
       body: JSON.stringify(bot)
     });
+    if (!response.ok) {
+      throw new Error("Не удалось сохранить конфигурацию бота");
+    }
   },
 
-  // Added deleteBot method to fix compilation error in App.tsx
   deleteBot: async (userId: string, botId: string): Promise<void> => {
     await fetchWithTimeout(`${getApiBase()}/bots/delete/${userId}/${botId}`, {
       method: 'DELETE'
@@ -113,6 +127,7 @@ export const api = {
   },
 
   getBotMessages: async (botId: string): Promise<any[]> => {
+    // В текущей реализации логи хранятся в BotConfig.logs
     return [];
   },
 
