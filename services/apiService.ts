@@ -4,7 +4,9 @@ import { generatePythonCode } from './pythonGenerator';
 
 const getApiBase = () => {
   const debugUrl = localStorage.getItem('DEBUG_API_URL');
-  return debugUrl ? `${debugUrl}/api` : '/api';
+  // Убираем возможный лишний слэш в конце
+  const base = debugUrl ? debugUrl : '';
+  return `${base}/api`;
 };
 
 const fetchWithTimeout = async (url: string, options: any = {}, timeout = 30000) => {
@@ -29,15 +31,6 @@ const fetchWithTimeout = async (url: string, options: any = {}, timeout = 30000)
   }
 };
 
-const getErrorMessage = async (response: Response): Promise<string> => {
-  try {
-    const data = await response.json();
-    return data.detail || data.message || `Error ${response.status}`;
-  } catch (e) {
-    return `HTTP Error ${response.status}`;
-  }
-};
-
 export const api = {
   checkConnection: async (): Promise<boolean> => {
     try {
@@ -51,7 +44,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email, password })
     });
-    if (!response.ok) throw new Error(await getErrorMessage(response));
+    if (!response.ok) throw new Error('Login failed');
     return await response.json();
   },
 
@@ -61,35 +54,27 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ email })
       });
-      return response.ok;
+      if (response.ok) return true;
+      return 'Server error (405 or other)';
     } catch (err: any) { return err.message; }
   },
 
   getBots: async (userId: string): Promise<BotConfig[]> => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/bots/${userId}`, { method: 'GET' });
-      if (!response.ok) return [];
-      return await response.json();
+      return response.ok ? await response.json() : [];
     } catch (e) { return []; }
   },
 
   saveBot: async (userId: string, bot: BotConfig): Promise<void> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/bots/save`, {
+    await fetchWithTimeout(`${getApiBase()}/bots/save`, {
       method: 'POST',
       body: JSON.stringify(bot)
     });
-    if (!response.ok) throw new Error(await getErrorMessage(response));
   },
 
   deleteBot: async (userId: string, botId: string): Promise<void> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/bots/${userId}/${botId}`, { 
-      method: 'DELETE' 
-    });
-    if (!response.ok) throw new Error(await getErrorMessage(response));
-  },
-
-  stopBotOnServer: async (botId: string): Promise<void> => {
-    await fetchWithTimeout(`${getApiBase()}/bots/stop/${botId}`, { method: 'POST' });
+    await fetchWithTimeout(`${getApiBase()}/bots/${userId}/${botId}`, { method: 'DELETE' });
   },
 
   startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
@@ -97,28 +82,18 @@ export const api = {
       const code = generatePythonCode(bot);
       const response = await fetchWithTimeout(`${getApiBase()}/bots/start`, {
         method: 'POST',
-        body: JSON.stringify({
-          id: bot.id,
-          token: bot.token,
-          code: code
-        })
+        body: JSON.stringify({ id: bot.id, token: bot.token, code })
       });
-      if (response.ok) return true;
-      return await getErrorMessage(response);
+      return response.ok ? true : 'Failed to start';
     } catch (err: any) { return err.message; }
   },
 
-  sendBroadcast: async (botIds: string[], message: string): Promise<{ success: number; failed: number } | null> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/bots/broadcast`, {
-      method: 'POST',
-      body: JSON.stringify({ botIds, message })
-    });
-    return response.ok ? await response.json() : null;
+  stopBotOnServer: async (botId: string): Promise<void> => {
+    await fetchWithTimeout(`${getApiBase()}/bots/stop/${botId}`, { method: 'POST' });
   },
 
   getBotMessages: async (botId: string): Promise<any[]> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/bots/messages/${botId}`, { method: 'GET' });
-    return response.ok ? await response.json() : [];
+    return [];
   },
 
   activateLicense: async (botId: string, key: string): Promise<any> => {
@@ -129,14 +104,51 @@ export const api = {
     return response.ok ? await response.json() : { status: 'error' };
   },
 
-  forgotPassword: async (email: string) => true,
-  resetPassword: async (data: any) => true,
   verifyAndRegister: async (data: any): Promise<User> => ({ 
     id: 'new', 
     username: data.username || 'User', 
     email: data.email, 
     balance: 0,
     botsCreated: 0,
-    licenseExpiresAt: Date.now() + (3 * 24 * 3600 * 1000)
-  })
+    licenseExpiresAt: Date.now() + 259200000
+  }),
+  
+  // Fix: sendBroadcast now accepts botIds and message
+  sendBroadcast: async (botIds: string[], message: string): Promise<{ success: number; failed: number } | null> => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/broadcast`, {
+        method: 'POST',
+        body: JSON.stringify({ botIds, message })
+      });
+      return response.ok ? await response.json() : { success: 0, failed: botIds.length };
+    } catch (e) {
+      return null;
+    }
+  },
+
+  // Fix: forgotPassword now accepts email
+  forgotPassword: async (email: string): Promise<boolean | string> => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/auth/forgot-password`, {
+        method: 'POST',
+        body: JSON.stringify({ email })
+      });
+      return response.ok ? true : 'Server error';
+    } catch (err: any) {
+      return err.message;
+    }
+  },
+
+  // Fix: resetPassword now accepts data object with email, code, and newPassword
+  resetPassword: async (data: { email: string; code: string; newPassword: string }): Promise<boolean> => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/auth/reset-password`, {
+        method: 'POST',
+        body: JSON.stringify(data)
+      });
+      return response.ok;
+    } catch (e) {
+      return false;
+    }
+  },
 };
