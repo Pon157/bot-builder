@@ -4,7 +4,6 @@ import { generatePythonCode } from './pythonGenerator';
 
 const getApiBase = () => {
   const debugUrl = localStorage.getItem('DEBUG_API_URL');
-  // Важно: возвращаем строку БЕЗ завершающего слэша
   if (debugUrl) return `${debugUrl.replace(/\/$/, '')}/api`;
   return '/api';
 };
@@ -44,23 +43,37 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email, password })
     });
-    if (!response.ok) throw new Error('Login failed');
+    if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || 'Login failed');
+    }
     return await response.json();
   },
 
   requestVerification: async (email: string): Promise<boolean | string> => {
     try {
-      // Явно формируем путь без лишних слэшей
-      const url = `${getApiBase()}/auth/request-verification`;
-      const response = await fetchWithTimeout(url, {
+      const response = await fetchWithTimeout(`${getApiBase()}/auth/request-verification`, {
         method: 'POST',
         body: JSON.stringify({ email })
       });
       if (response.ok) return true;
-      return `Error ${response.status}`;
+      const err = await response.json();
+      return err.detail || 'Error';
     } catch (err: any) { 
       return err.message; 
     }
+  },
+
+  verifyAndRegister: async (data: any): Promise<User> => {
+    const response = await fetchWithTimeout(`${getApiBase()}/auth/verify-and-register`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+    if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || 'Registration failed');
+    }
+    return await response.json();
   },
 
   getBots: async (userId: string): Promise<BotConfig[]> => {
@@ -78,7 +91,8 @@ export const api = {
   },
 
   deleteBot: async (userId: string, botId: string): Promise<void> => {
-    await fetchWithTimeout(`${getApiBase()}/bots/${userId}/${botId}`, { method: 'DELETE' });
+    // Implement delete on backend if needed
+    // await fetchWithTimeout(`${getApiBase()}/bots/${userId}/${botId}`, { method: 'DELETE' });
   },
 
   startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
@@ -108,16 +122,23 @@ export const api = {
     return response.ok ? await response.json() : { status: 'error' };
   },
 
-  verifyAndRegister: async (data: any): Promise<User> => ({ 
-    id: 'new', 
-    username: data.username || 'User', 
-    email: data.email, 
-    balance: 0,
-    botsCreated: 0,
-    licenseExpiresAt: Date.now() + 259200000
-  }),
-  
-  sendBroadcast: async (botIds: string[], message: string) => null,
+  // Fix: Added missing sendBroadcast method to match usage in BroadcastManager.tsx
+  sendBroadcast: async (botIds: string[], message: string): Promise<{ success: number; failed: number } | null> => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/bots/broadcast`, {
+        method: 'POST',
+        body: JSON.stringify({ botIds, message })
+      });
+      if (response.ok) {
+        return await response.json();
+      }
+      return null;
+    } catch (e) {
+      console.error('Broadcast Error:', e);
+      return null;
+    }
+  },
+
   forgotPassword: async (email: string) => true,
   resetPassword: async (data: any) => true,
 };
