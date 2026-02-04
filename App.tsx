@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { BotConfig, BotStatus, User } from './types';
 import Dashboard from './components/Dashboard';
@@ -80,7 +81,6 @@ const App: React.FC = () => {
       settings: { 
         useTopics: false, 
         topicPerRequest: false, 
-        // Added missing required property 'anonymousTopics'
         anonymousTopics: false,
         autoApproveJoin: false, 
         forwardToAdmin: true, 
@@ -88,7 +88,10 @@ const App: React.FC = () => {
         rateLimit: 15, 
         showUserInfo: true, 
         showUsername: true, 
-        autoBanThreshold: 0 
+        autoBanThreshold: 0,
+        showHeaderId: true,
+        showHeaderName: true,
+        showHeaderUsername: true
       }
     };
     try {
