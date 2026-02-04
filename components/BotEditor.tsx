@@ -4,7 +4,7 @@ import { BotConfig, BotStatus } from '../types';
 import { api } from '../services/apiService';
 import BotConsole from './BotConsole';
 import BotStatsView from './BotStatsView';
-import { Settings, Cpu, MousePointer2, BarChart3, Terminal, X, Save, Power, Ticket, Info, Plus, MessageSquare, User, EyeOff, CheckSquare, Square } from 'lucide-react';
+import { Settings, Cpu, MousePointer2, BarChart3, Terminal, X, Save, Power, Ticket, Info, Plus, MessageSquare, User, EyeOff, CheckSquare, Square, ShieldAlert } from 'lucide-react';
 
 interface BotEditorProps {
   bot: BotConfig;
@@ -129,6 +129,23 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                             <span className="text-xs font-bold text-zinc-400">Поддержка топиков (Forum)</span>
                             <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={bot.settings?.useTopics} onChange={e => onUpdate({...bot, settings: {...bot.settings, useTopics: e.target.checked}})} />
                         </label>
+                        <div className="p-4 bg-black rounded-2xl border border-zinc-800 space-y-3">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <ShieldAlert className="w-3.5 h-3.5 text-amber-500" />
+                                    <span className="text-xs font-bold text-zinc-400">Порог авто-бана (варны)</span>
+                                </div>
+                                <input 
+                                    type="number" 
+                                    min="0"
+                                    max="99"
+                                    className="w-16 bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs text-center text-white outline-none focus:border-blue-500"
+                                    value={bot.settings?.autoBanThreshold || 0}
+                                    onChange={e => onUpdate({...bot, settings: {...bot.settings, autoBanThreshold: parseInt(e.target.value) || 0}})}
+                                />
+                            </div>
+                            <p className="text-[9px] text-zinc-600 uppercase font-bold">Если 0 — авто-бан отключен. Пользователь забанится при достижении этого числа варнов.</p>
+                        </div>
                         <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer group">
                             <div className="flex items-center gap-2">
                                 <span className="text-xs font-bold text-zinc-400">Анонимные топики</span>
