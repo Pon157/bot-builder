@@ -90,8 +90,11 @@ export const api = {
     });
   },
 
+  // Added deleteBot method to fix compilation error in App.tsx
   deleteBot: async (userId: string, botId: string): Promise<void> => {
-    // Optional: add delete logic
+    await fetchWithTimeout(`${getApiBase()}/bots/delete/${userId}/${botId}`, {
+      method: 'DELETE'
+    });
   },
 
   startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
