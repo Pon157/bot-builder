@@ -37,6 +37,14 @@ export const api = {
     } catch (e) { return false; }
   },
 
+  // Fix: Added getUser method to satisfy requirements in App.tsx
+  getUser: async (userId: string): Promise<User | null> => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/auth/user/${userId}`, { method: 'GET' });
+      return response.ok ? await response.json() : null;
+    } catch (e) { return null; }
+  },
+
   login: async (email: string, password: string): Promise<User | null> => {
     const response = await fetchWithTimeout(`${getApiBase()}/auth/login`, {
       method: 'POST',
