@@ -53,8 +53,8 @@ class BotInstance:
         self.dp = Dispatcher()
         self.router = Router()
         
-        # Временные метки для предотвращения спама хедером в админ-чат
         self.last_header_time = {} 
+        self.connected_users = []
         
         self.refresh_config(config_data)
         self.sync_queue = asyncio.Queue()
@@ -74,22 +74,23 @@ class BotInstance:
         self.triggers = conf.get('triggers', [])
         self.welcome_message = conf.get('welcomeMessage', 'Привет!')
         
-        new_users = conf.get('connectedUsers', [])
-        if not hasattr(self, 'connected_users'):
-            self.connected_users = new_users
+        incoming_users = conf.get('connectedUsers', [])
+        
+        # Умный мерж пользователей: приоритет данным модерации извне (панели)
+        if not self.connected_users:
+            self.connected_users = incoming_users
         else:
-            # ТЩАТЕЛЬНЫЙ МЕРЖ: Приоритет данным из БД для варнов и банов
-            for nu in new_users:
-                found = False
-                for ou in self.connected_users:
-                    if ou['id'] == nu['id']:
-                        # Обновляем только то, что может менять админ в панели
-                        ou['is_banned'] = nu.get('is_banned', False)
-                        ou['warns'] = nu.get('warns', 0)
-                        found = True
-                        break
-                if not found:
-                    self.connected_users.append(nu)
+            local_users_map = {u['id']: u for u in self.connected_users}
+            for iu in incoming_users:
+                uid = iu['id']
+                if uid in local_users_map:
+                    # Если данные из БД отличаются по варнам или бану — применяем их (админ сменил статус)
+                    local_users_map[uid]['is_banned'] = iu.get('is_banned', local_users_map[uid].get('is_banned', False))
+                    local_users_map[uid]['warns'] = iu.get('warns', local_users_map[uid].get('warns', 0))
+                    local_users_map[uid]['is_active'] = iu.get('is_active', local_users_map[uid].get('is_active', True))
+                else:
+                    local_users_map[uid] = iu
+            self.connected_users = list(local_users_map.values())
 
         self.subscribers = conf.get('subscribers', [])
         self.settings = conf.get('settings', {})
@@ -122,16 +123,14 @@ class BotInstance:
                 if len(history) > 14: history.pop(0)
                 self.stats["history"] = history
             
-            # Мы не пушим конфиг каждые 30 секунд, если не было изменений в юзерах/статах
-            # Чтобы не перезаписать варны из панели старыми данными
             await self.sync_queue.put(("bot_config", {}))
-            await asyncio.sleep(45)
+            await asyncio.sleep(60)
 
     async def remote_sync_task(self):
         async with httpx.AsyncClient() as client:
             headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
             while self.is_running:
-                await asyncio.sleep(15) 
+                await asyncio.sleep(20) 
                 try:
                     res = await client.get(f"{self.sb_url.rstrip('/')}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
                     if res.status_code == 200 and res.json():
@@ -149,21 +148,6 @@ class BotInstance:
                     if action == "msg":
                         await client.post(f"{self.sb_url.rstrip('/')}/rest/v1/bot_messages", json=data, headers=headers)
                     elif action == "bot_config":
-                        # Перед сохранением пытаемся получить актуальных юзеров из БД, чтобы не затереть варны
-                        try:
-                            res = await client.get(f"{self.sb_url.rstrip('/')}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
-                            if res.status_code == 200 and res.json():
-                                db_conf = res.json()[0].get('config', {})
-                                db_users = db_conf.get('connectedUsers', [])
-                                # Мержим варны из БД в память перед пушем
-                                for du in db_users:
-                                    for ou in self.connected_users:
-                                        if ou['id'] == du['id']:
-                                            # Если в БД варнов больше, чем у нас в памяти - берем из БД
-                                            ou['warns'] = max(ou.get('warns', 0), du.get('warns', 0))
-                                            ou['is_banned'] = du.get('is_banned', ou.get('is_banned', False))
-                        except: pass
-
                         payload = {
                             "config": {
                                 **self.config.get("config", {}),
@@ -211,6 +195,7 @@ class BotInstance:
             }
             self.connected_users.append(user_obj)
             if user_id not in self.subscribers: self.subscribers.append(user_id)
+            await self.sync_queue.put(("bot_config", {}))
         return user_obj
 
     async def create_new_topic(self, user, suffix=""):
@@ -220,7 +205,6 @@ class BotInstance:
             if suffix: name = f"{suffix} | {name}"
             topic = await self.bot.create_forum_topic(self.admin_id, name)
             user['last_topic_id'] = topic.message_thread_id
-            # Сбрасываем таймер хедера, чтобы он точно отправился в новый топик
             self.last_header_time[user['id']] = 0
             await self.sync_queue.put(("bot_config", {}))
             return topic.message_thread_id
@@ -277,7 +261,6 @@ class BotInstance:
                 try: await self.bot.send_message(uid, "✅ Разблокированы.")
                 except: pass
                 await m.reply("✅ Разбанен.")
-            # Срочный пуш изменений в БД
             await self.sync_queue.put(("bot_config", {}))
 
         @self.router.message(F.chat.id == self.admin_id, F.reply_to_message)
@@ -308,7 +291,6 @@ class BotInstance:
                 for btn in self.buttons:
                     if btn.get("text") and btn["text"].lower() == low:
                         if btn.get("type") == "request" and self.admin_id:
-                            # ПРИНУДИТЕЛЬНО создаем НОВЫЙ топик
                             t_id = await self.create_new_topic(user, suffix=f"ЗАЯВКА: {btn['text']}")
                             await self.bot.send_message(self.admin_id, format_msg(btn.get("adminTemplate", self.admin_template), m, btn['text']), message_thread_id=t_id)
                         
@@ -326,10 +308,6 @@ class BotInstance:
                 now = time.time()
                 last_sent = self.last_header_time.get(user['id'], 0)
                 
-                # ОТПРАВЛЯЕМ ХЕДЕР только если:
-                # 1. Прошло больше 10 минут с последнего хедера
-                # 2. Или если хедер вообще не отправлялся (новый топик)
-                # Это убирает спам уведомлениями перед каждым сообщением
                 if (now - last_sent) > 600 or last_sent == 0:
                     header = format_msg(self.admin_template, m)
                     await self.bot.send_message(self.admin_id, header, message_thread_id=thread)
