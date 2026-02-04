@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 def load_env():
     env_path = os.path.join(os.path.dirname(__file__), '.env')
     if os.path.exists(env_path):
-        with open(env_path, 'r', encoding='utf-8') as f:
+        with open(env_path, 'r', encoding='utf-8-sig') as f:
             for line in f:
                 line = line.strip()
                 if '=' in line and not line.startswith('#'):
@@ -91,10 +91,76 @@ db = httpx.AsyncClient(
     timeout=30
 )
 
+async def send_telegram_msg(token: str, chat_id: int, text: str):
+    """Вспомогательная функция для рассылки."""
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=5)
+            return True
+    except:
+        return False
+
+@app.post("/api/bots/broadcast")
+async def broadcast_message(data: dict):
+    bot_ids = data.get("botIds", [])
+    message = data.get("message", "")
+    if not bot_ids or not message:
+        return {"success": 0, "failed": 0}
+
+    success_count = 0
+    failed_count = 0
+
+    for bid in bot_ids:
+        res = await db.get("bots", params={"id": f"eq.{bid}"})
+        if res.status_code == 200 and res.json():
+            bot_data = res.json()[0]
+            token = bot_data.get("token")
+            # Получаем юзеров из конфига
+            config = bot_data.get("config", {})
+            users = config.get("connectedUsers", [])
+            
+            for user in users:
+                if user.get("is_active") and not user.get("is_banned"):
+                    res_msg = await send_telegram_msg(token, user["id"], message)
+                    if res_msg: success_count += 1
+                    else: failed_count += 1
+    
+    return {"success": success_count, "failed": failed_count}
+
+@app.post("/api/license/activate")
+async def activate_license(data: dict):
+    bot_id = data.get("botId")
+    key_str = data.get("key")
+    
+    res_key = await db.get("issued_keys", params={"key": f"eq.{key_str}", "used": "eq.false"})
+    if res_key.status_code != 200 or not res_key.json():
+        return {"status": "error", "message": "Ключ не найден или уже использован"}
+    
+    key_data = res_key.json()[0]
+    months = key_data.get("months") or 0
+    days = key_data.get("days") or 0
+    # Считаем общее кол-во мс: (месяцы * 30 + дни) * 24 * 3600 * 1000
+    total_ms = ( (months * 30) + days ) * 24 * 3600 * 1000
+    
+    res_bot = await db.get("bots", params={"id": f"eq.{bot_id}"})
+    if res_bot.status_code != 200 or not res_bot.json():
+        return {"status": "error", "message": "Бот не найден"}
+    
+    bot = res_bot.json()[0]
+    # Начинаем отсчет от текущего времени или от даты истечения, если она еще в будущем
+    current_expiry = int(bot.get("license_expires_at") or 0)
+    start_point = max(current_expiry, int(time.time() * 1000))
+    new_expiry = start_point + total_ms
+    
+    await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"license_expires_at": new_expiry})
+    await db.patch("issued_keys", params={"key": f"eq.{key_str}"}, json={"used": True, "used_by_bot": bot_id})
+    
+    return {"status": "ok", "newExpiry": new_expiry}
+
 @app.post("/api/bots/save")
 async def save_bot(bot: dict):
     bot_id = bot.get("id")
-    # Приводим license_expires_at к числу, чтобы избежать NaN в БД
     expires = bot.get("license_expires_at")
     try:
         expires = int(expires) if expires else 0
@@ -115,86 +181,18 @@ async def save_bot(bot: dict):
     await db.post("bots", json=payload, headers={"Prefer": "resolution=merge-duplicates"})
     return {"status": "ok"}
 
-@app.post("/api/license/activate")
-async def activate_license(data: dict):
-    bot_id = data.get("botId")
-    key_str = data.get("key")
-    
-    # 1. Проверяем ключ
-    res_key = await db.get("issued_keys", params={"key": f"eq.{key_str}", "used": "eq.false"})
-    if res_key.status_code != 200 or not res_key.json():
-        return {"status": "error", "message": "Ключ не найден или уже использован"}
-    
-    key_data = res_key.json()[0]
-    months = key_data.get("months") or 0
-    days = key_data.get("days") or 0
-    total_days = (months * 30) + days
-    
-    # 2. Получаем бота
-    res_bot = await db.get("bots", params={"id": f"eq.{bot_id}"})
-    if res_bot.status_code != 200 or not res_bot.json():
-        return {"status": "error", "message": "Бот не найден"}
-    
-    bot = res_bot.json()[0]
-    current_expiry = int(bot.get("license_expires_at") or time.time() * 1000)
-    # Если лицензия уже истекла, начинаем отсчет от текущего момента
-    start_time = max(current_expiry, int(time.time() * 1000))
-    new_expiry = start_time + (total_days * 24 * 3600 * 1000)
-    
-    # 3. Обновляем бота и ключ
-    await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"license_expires_at": new_expiry})
-    await db.patch("issued_keys", params={"key": f"eq.{key_str}"}, json={"used": True, "used_by_bot": bot_id})
-    
-    return {"status": "ok", "newExpiry": new_expiry}
-
-@app.post("/api/auth/login")
-async def login(data: dict):
-    res = await db.get("users", params={"email": f"eq.{data['email'].lower()}", "password": f"eq.{data['password']}"})
-    if res.status_code != 200 or not res.json(): raise HTTPException(401)
-    return res.json()[0]
-
 @app.get("/api/user/{user_id}")
-async def get_user(user_id: str):
+async def get_user_ep(user_id: str):
     res = await db.get("users", params={"id": f"eq.{user_id}"})
     if res.status_code == 200 and res.json():
         return res.json()[0]
     raise HTTPException(404)
-
-@app.post("/api/auth/verify-and-register")
-async def register(data: dict):
-    user_id = f"u_{secrets.token_hex(4)}"
-    # При регистрации даем 3 дня триала
-    payload = {
-        "id": user_id, "username": data['username'], "email": data['email'].lower(), 
-        "password": data['password'], "balance": 0, "license_expires_at": int(time.time()*1000) + (3 * 24 * 3600 * 1000)
-    }
-    await db.post("users", json=payload)
-    return payload
 
 @app.get("/api/bots/{user_id}")
 async def get_user_bots(user_id: str):
     res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
     bots = res.json() if res.status_code == 200 else []
     return [{**b, **(b.get("config") or {})} for b in bots]
-
-@app.post("/api/bots/start")
-async def start_bot_ep(req: dict):
-    res = await db.get("bots", params={"id": f"eq.{req['id']}"})
-    if res.status_code == 200 and res.json():
-        bot = res.json()[0]
-        if await pm.start_bot(bot['id'], {**bot, **(bot.get("config") or {})}):
-            await db.patch("bots", params={"id": f"eq.{bot['id']}"}, json={"status": "RUNNING"})
-            return {"status": "ok"}
-    raise HTTPException(500)
-
-@app.post("/api/bots/stop/{bot_id}")
-async def stop_bot_ep(bot_id: str):
-    await pm.stop_bot(bot_id)
-    await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "IDLE"})
-    return {"status": "ok"}
-
-@app.get("/api/bots/logs/{bot_id}")
-async def logs(bot_id: str): return {"logs": pm.get_logs(bot_id)}
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
