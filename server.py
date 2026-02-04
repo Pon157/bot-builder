@@ -13,7 +13,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 
-# Импорт сервиса почты (файл email_service.py должен быть в той же папке)
+# --- ЗАГРУЗКА ОКРУЖЕНИЯ ---
+def load_env_to_os():
+    env_path = os.path.join(os.path.dirname(__file__), '.env')
+    if os.path.exists(env_path):
+        with open(env_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                if '=' in line and not line.startswith('#'):
+                    key, value = line.split('=', 1)
+                    # Убираем кавычки и пробелы
+                    os.environ[key.strip()] = value.strip().strip('"').strip("'")
+        return True
+    return False
+
+load_env_to_os()
+
+# Импорт сервиса почты
 try:
     from email_service import EmailService
 except ImportError:
@@ -21,6 +36,10 @@ except ImportError:
         @staticmethod
         def send_verification_code(email, code):
             print(f"!!! ЭМУЛЯЦИЯ ПОЧТЫ: Код {code} для {email} !!!")
+            return True
+        @staticmethod
+        def send_password_reset(email, code):
+            print(f"!!! ЭМУЛЯЦИЯ СБРОСА: Код {code} для {email} !!!")
             return True
 
 # Настройка логов
@@ -31,7 +50,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BotEngine")
 
-# --- ХРАНИЛИЩЕ ДАННЫХ (Простая замена БД на JSON) ---
+# --- ХРАНИЛИЩЕ ДАННЫХ ---
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
@@ -50,7 +69,6 @@ def save_data(file, data):
     with open(file, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# Глобальные переменные данных
 users = load_data(USERS_FILE, {})
 bots_db = load_data(BOTS_FILE, {})
 valid_keys = load_data(KEYS_FILE, {})
@@ -112,14 +130,8 @@ async def request_verification(data: dict):
     code = "".join([str(random.randint(0, 9)) for _ in range(6)])
     pending_verifications[email] = {"code": code, "expires": time.time() + 600}
     
-    logger.info(f"📧 Генерируем код {code} для {email}")
-    success = EmailService.send_verification_code(email, code)
-    
-    if not success:
-        # Если почта не настроена, код все равно будет работать (для тестов)
-        logger.warning("⚠️ Не удалось отправить письмо. Проверьте настройки SMTP.")
-        return {"status": "ok", "debug": "Mail skip"}
-        
+    logger.info(f"📧 Регистрация: {email}, код {code}")
+    EmailService.send_verification_code(email, code)
     return {"status": "ok"}
 
 @app.post("/api/auth/verify-and-register")
@@ -132,56 +144,83 @@ async def verify_and_register(data: dict):
     if email not in pending_verifications or pending_verifications[email]["code"] != code:
         raise HTTPException(400, "Неверный код подтверждения")
 
-    # Создаем пользователя
     user_id = f"u_{int(time.time())}"
     user_data = {
         "id": user_id,
         "username": username,
         "email": email,
-        "password": password, # В реальном проекте хешируйте пароли!
+        "password": password,
         "balance": 0,
         "botsCreated": 0,
-        "licenseExpiresAt": int((time.time() + 259200) * 1000) # 3 дня триала
+        "licenseExpiresAt": int((time.time() + 259200) * 1000)
     }
     
     users[email] = user_data
     save_data(USERS_FILE, users)
     del pending_verifications[email]
     
-    logger.info(f"👤 Новый пользователь зарегистрирован: {email}")
+    logger.info(f"👤 Регистрация завершена: {email}")
     return user_data
 
 @app.post("/api/auth/login")
 async def login(data: dict):
     email = data.get("email", "").lower()
     password = data.get("password")
-    
     user = users.get(email)
     if not user or user["password"] != password:
         raise HTTPException(401, "Неверный Email или пароль")
-        
     return user
 
-# --- BOTS ROUTES ---
+@app.post("/api/auth/forgot-password")
+async def forgot_password(data: dict):
+    email = data.get("email", "").lower()
+    if email not in users:
+        raise HTTPException(404, "Пользователь с таким Email не найден")
+    
+    code = "".join([str(random.randint(0, 9)) for _ in range(6)])
+    pending_verifications[email] = {"code": code, "expires": time.time() + 600}
+    
+    logger.info(f"🔑 Сброс пароля: {email}, код {code}")
+    EmailService.send_password_reset(email, code)
+    return {"status": "ok"}
+
+@app.post("/api/auth/reset-password")
+async def reset_password(data: dict):
+    email = data.get("email", "").lower()
+    code = data.get("code")
+    new_password = data.get("newPassword")
+
+    if email not in pending_verifications or pending_verifications[email]["code"] != code:
+        raise HTTPException(400, "Неверный или истекший код")
+
+    if email in users:
+        users[email]["password"] = new_password
+        save_data(USERS_FILE, users)
+        del pending_verifications[email]
+        logger.info(f"✅ Пароль успешно изменен для {email}")
+        return {"status": "ok"}
+    
+    raise HTTPException(404, "Пользователь не найден")
+
+# --- BOTS & LICENSE (остальное без изменений) ---
+@app.get("/api/ping")
+async def ping(): return {"status": "online"}
 
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
-    user_bots = [b for b in bots_db.values() if b["ownerId"] == user_id]
-    return user_bots
+    return [b for b in bots_db.values() if b["ownerId"] == user_id]
 
 @app.post("/api/bots/save")
-async def save_bot(bot: dict):
+async def save_bot_route(bot: dict):
     bots_db[bot["id"]] = bot
     save_data(BOTS_FILE, bots_db)
-    logger.info(f"💾 Бот сохранен: {bot['name']}")
     return {"status": "ok"}
 
 @app.post("/api/bots/start")
 async def start_bot_endpoint(req: dict):
-    bot_id = req['id']
-    if pm.start_bot(bot_id, req['token'], req['code']):
-        if bot_id in bots_db:
-            bots_db[bot_id]["status"] = "RUNNING"
+    if pm.start_bot(req['id'], req['token'], req['code']):
+        if req['id'] in bots_db:
+            bots_db[req['id']]["status"] = "RUNNING"
             save_data(BOTS_FILE, bots_db)
         return {"status": "ok"}
     raise HTTPException(500, "Start failed")
@@ -194,47 +233,25 @@ async def stop_bot_endpoint(bot_id: str):
         save_data(BOTS_FILE, bots_db)
     return {"status": "ok"}
 
-# --- LICENSE SYSTEM ---
-
 @app.post("/api/admin/generate-key")
 async def gen_key(data: dict, x_admin_token: str = Header(None)):
-    if x_admin_token != "MRAKOTIK": raise HTTPException(403)
-    
+    if x_admin_token != os.getenv("ADMIN_SECRET", "MRAKOTIK"): raise HTTPException(403)
     months = data.get("months", 1)
     new_key = f"BOT-{months}-" + "".join(random.choices("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", k=8))
-    
     valid_keys[new_key] = {"months": months, "created_at": time.time()}
     save_data(KEYS_FILE, valid_keys)
-    
-    logger.info(f"🔑 Создан ключ на {months} мес: {new_key}")
     return {"key": new_key}
 
 @app.post("/api/license/activate")
 async def activate_license(req: dict):
-    bot_id = req.get("botId")
-    key = req.get("key", "").strip()
-    
-    if key not in valid_keys:
-        raise HTTPException(400, "Ключ недействителен или уже использован")
-    
-    if bot_id not in bots_db:
-        raise HTTPException(404, "Бот не найден")
-        
+    bot_id, key = req.get("botId"), req.get("key", "").strip()
+    if key not in valid_keys or bot_id not in bots_db: raise HTTPException(400, "Invalid key or bot")
     months = valid_keys[key]["months"]
-    # Продлеваем лицензию
-    current_expiry = bots_db[bot_id].get("licenseExpiresAt", int(time.time() * 1000))
-    ms_to_add = months * 30 * 24 * 3600 * 1000
-    new_expiry = current_expiry + ms_to_add
-    
-    bots_db[bot_id]["licenseExpiresAt"] = new_expiry
+    bots_db[bot_id]["licenseExpiresAt"] = bots_db[bot_id].get("licenseExpiresAt", int(time.time()*1000)) + (months * 30 * 24 * 3600 * 1000)
     save_data(BOTS_FILE, bots_db)
-    
-    # Удаляем использованный ключ
     del valid_keys[key]
     save_data(KEYS_FILE, valid_keys)
-    
-    logger.info(f"✅ Лицензия бота {bot_id} продлена на {months} мес.")
-    return {"status": "ok", "newExpiry": new_expiry}
+    return {"status": "ok", "newExpiry": bots_db[bot_id]["licenseExpiresAt"]}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
