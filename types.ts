@@ -69,6 +69,7 @@ export interface BotConfig {
   settings: {
     useTopics: boolean;
     topicPerRequest: boolean;
+    anonymousTopics: boolean; // Анонимные топики
     forwardToAdmin: boolean;
     antiSpam: boolean;
     showUserInfo: boolean;
@@ -76,7 +77,7 @@ export interface BotConfig {
     autoApproveJoin: boolean;
     rateLimit: number;
     autoBanThreshold: number;
-    adminMessageTemplate?: string; // Новое поле
+    adminMessageTemplate?: string;
   };
 }
 
@@ -90,4 +91,3 @@ export interface User {
   license_expires_at: number;
   trialUsed?: boolean;
 }
-
