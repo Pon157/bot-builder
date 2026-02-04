@@ -7,10 +7,12 @@ import time
 import json
 import httpx
 import secrets
+import random
 from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from email_service import EmailService
 
 # Настройка окружения
 def load_env():
@@ -92,41 +94,116 @@ db = httpx.AsyncClient(
 )
 
 async def send_telegram_msg(token: str, chat_id: int, text: str):
-    """Вспомогательная функция для рассылки."""
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
         async with httpx.AsyncClient() as client:
-            await client.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=5)
-            return True
+            r = await client.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=5)
+            return r.status_code == 200
     except:
         return False
+
+# --- AUTH ENDPOINTS ---
+
+@app.post("/api/auth/request-verification")
+async def request_verification(data: dict):
+    email = data.get("email", "").lower()
+    code = "".join([str(random.randint(0, 9)) for _ in range(6)])
+    expires = int(time.time() * 1000) + (10 * 60 * 1000) # 10 минут
+    
+    # Сохраняем код в БД
+    await db.post("temp_codes", json={"email": email, "code": code, "type": "REG", "expires_at": expires}, headers={"Prefer": "resolution=merge-duplicates"})
+    
+    # Отправляем письмо
+    sent = EmailService.send_verification_code(email, code)
+    if not sent:
+        return {"status": "error", "message": "Ошибка отправки письма"}
+    return {"status": "ok"}
+
+@app.post("/api/auth/forgot-password")
+async def forgot_password(data: dict):
+    email = data.get("email", "").lower()
+    # Проверяем есть ли юзер
+    res = await db.get("users", params={"email": f"eq.{email}"})
+    if not res.json(): return {"status": "error", "message": "Пользователь не найден"}
+    
+    code = "".join([str(random.randint(0, 9)) for _ in range(6)])
+    expires = int(time.time() * 1000) + (10 * 60 * 1000)
+    await db.post("temp_codes", json={"email": email, "code": code, "type": "RESET", "expires_at": expires}, headers={"Prefer": "resolution=merge-duplicates"})
+    
+    EmailService.send_password_reset(email, code)
+    return {"status": "ok"}
+
+@app.post("/api/auth/reset-password")
+async def reset_password(data: dict):
+    email = data.get("email", "").lower()
+    code = data.get("code")
+    new_password = data.get("newPassword")
+    
+    res = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{code}", "type": "eq.RESET"})
+    if not res.json(): return {"status": "error", "message": "Неверный код"}
+    
+    await db.patch("users", params={"email": f"eq.{email}"}, json={"password": new_password})
+    await db.delete("temp_codes", params={"email": f"eq.{email}"})
+    return {"status": "ok"}
+
+@app.post("/api/auth/login")
+async def login(data: dict):
+    res = await db.get("users", params={"email": f"eq.{data['email'].lower()}", "password": f"eq.{data['password']}"})
+    if res.status_code != 200 or not res.json(): raise HTTPException(401)
+    return res.json()[0]
+
+@app.get("/api/auth/user/{user_id}")
+async def get_user_ep(user_id: str):
+    res = await db.get("users", params={"id": f"eq.{user_id}"})
+    if res.status_code == 200 and res.json():
+        return res.json()[0]
+    raise HTTPException(404)
+
+@app.post("/api/auth/verify-and-register")
+async def verify_reg(data: dict):
+    email = data.get("email", "").lower()
+    code = data.get("code")
+    
+    res_code = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{code}"})
+    if not res_code.json(): raise HTTPException(400, "Неверный код")
+    
+    user_id = f"u_{secrets.token_hex(4)}"
+    payload = {
+        "id": user_id, "username": data['username'], "email": email, 
+        "password": data['password'], "balance": 0, 
+        "license_expires_at": int(time.time()*1000) + (3 * 24 * 3600 * 1000)
+    }
+    await db.post("users", json=payload)
+    await db.delete("temp_codes", params={"email": f"eq.{email}"})
+    return payload
+
+# --- BOTS ENDPOINTS ---
+
+@app.get("/api/bots/{user_id}")
+async def get_user_bots(user_id: str):
+    res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
+    bots = res.json() if res.status_code == 200 else []
+    return [{**b, **(b.get("config") or {})} for b in bots]
 
 @app.post("/api/bots/broadcast")
 async def broadcast_message(data: dict):
     bot_ids = data.get("botIds", [])
     message = data.get("message", "")
-    if not bot_ids or not message:
-        return {"success": 0, "failed": 0}
+    if not bot_ids or not message: return {"success": 0, "failed": 0}
 
-    success_count = 0
-    failed_count = 0
-
+    success = 0
+    failed = 0
     for bid in bot_ids:
         res = await db.get("bots", params={"id": f"eq.{bid}"})
         if res.status_code == 200 and res.json():
-            bot_data = res.json()[0]
-            token = bot_data.get("token")
-            # Получаем юзеров из конфига
-            config = bot_data.get("config", {})
-            users = config.get("connectedUsers", [])
-            
-            for user in users:
-                if user.get("is_active") and not user.get("is_banned"):
-                    res_msg = await send_telegram_msg(token, user["id"], message)
-                    if res_msg: success_count += 1
-                    else: failed_count += 1
-    
-    return {"success": success_count, "failed": failed_count}
+            bot = res.json()[0]
+            token = bot.get("token")
+            users = bot.get("config", {}).get("connectedUsers", [])
+            for u in users:
+                if u.get("is_active") and not u.get("is_banned"):
+                    if await send_telegram_msg(token, u["id"], message): success += 1
+                    else: failed += 1
+    return {"success": success, "failed": failed}
 
 @app.post("/api/license/activate")
 async def activate_license(data: dict):
@@ -135,64 +212,52 @@ async def activate_license(data: dict):
     
     res_key = await db.get("issued_keys", params={"key": f"eq.{key_str}", "used": "eq.false"})
     if res_key.status_code != 200 or not res_key.json():
-        return {"status": "error", "message": "Ключ не найден или уже использован"}
+        return {"status": "error", "message": "Ключ не найден"}
     
     key_data = res_key.json()[0]
-    months = key_data.get("months") or 0
-    days = key_data.get("days") or 0
-    # Считаем общее кол-во мс: (месяцы * 30 + дни) * 24 * 3600 * 1000
-    total_ms = ( (months * 30) + days ) * 24 * 3600 * 1000
+    total_ms = ( (key_data.get("months") or 0) * 30 + (key_data.get("days") or 0) ) * 24 * 3600 * 1000
     
     res_bot = await db.get("bots", params={"id": f"eq.{bot_id}"})
-    if res_bot.status_code != 200 or not res_bot.json():
-        return {"status": "error", "message": "Бот не найден"}
+    if not res_bot.json(): return {"status": "error", "message": "Бот не найден"}
     
     bot = res_bot.json()[0]
-    # Начинаем отсчет от текущего времени или от даты истечения, если она еще в будущем
-    current_expiry = int(bot.get("license_expires_at") or 0)
-    start_point = max(current_expiry, int(time.time() * 1000))
-    new_expiry = start_point + total_ms
+    start = max(int(bot.get("license_expires_at") or 0), int(time.time() * 1000))
+    new_expiry = start + total_ms
     
     await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"license_expires_at": new_expiry})
     await db.patch("issued_keys", params={"key": f"eq.{key_str}"}, json={"used": True, "used_by_bot": bot_id})
-    
     return {"status": "ok", "newExpiry": new_expiry}
 
 @app.post("/api/bots/save")
 async def save_bot(bot: dict):
     bot_id = bot.get("id")
-    expires = bot.get("license_expires_at")
-    try:
-        expires = int(expires) if expires else 0
-    except:
-        expires = 0
-
+    expires = int(bot.get("license_expires_at") or 0)
     clean_config = {k: v for k, v in bot.items() if k not in ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at']}
-    
     payload = {
-        "id": bot_id, 
-        "owner_id": bot.get("owner_id"), 
-        "name": bot["name"], 
-        "token": bot["token"],
-        "status": bot.get("status", "IDLE"), 
-        "license_expires_at": expires,
-        "config": clean_config
+        "id": bot_id, "owner_id": bot.get("owner_id"), "name": bot["name"], "token": bot["token"],
+        "status": bot.get("status", "IDLE"), "license_expires_at": expires, "config": clean_config
     }
     await db.post("bots", json=payload, headers={"Prefer": "resolution=merge-duplicates"})
     return {"status": "ok"}
 
-@app.get("/api/user/{user_id}")
-async def get_user_ep(user_id: str):
-    res = await db.get("users", params={"id": f"eq.{user_id}"})
+@app.post("/api/bots/start")
+async def start_bot_ep(req: dict):
+    res = await db.get("bots", params={"id": f"eq.{req['id']}"})
     if res.status_code == 200 and res.json():
-        return res.json()[0]
-    raise HTTPException(404)
+        bot = res.json()[0]
+        if await pm.start_bot(bot['id'], {**bot, **(bot.get("config") or {})}):
+            await db.patch("bots", params={"id": f"eq.{bot['id']}"}, json={"status": "RUNNING"})
+            return {"status": "ok"}
+    raise HTTPException(500)
 
-@app.get("/api/bots/{user_id}")
-async def get_user_bots(user_id: str):
-    res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
-    bots = res.json() if res.status_code == 200 else []
-    return [{**b, **(b.get("config") or {})} for b in bots]
+@app.post("/api/bots/stop/{bot_id}")
+async def stop_bot_ep(bot_id: str):
+    await pm.stop_bot(bot_id)
+    await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "IDLE"})
+    return {"status": "ok"}
+
+@app.get("/api/bots/logs/{bot_id}")
+async def logs(bot_id: str): return {"logs": pm.get_logs(bot_id)}
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
