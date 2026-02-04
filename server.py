@@ -6,7 +6,8 @@ import subprocess
 import sys
 import time
 from typing import Dict
-from fastapi import FastAPI, HTTPException, Request
+# Добавлен Header в импорт
+from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -42,24 +43,20 @@ class BotProcessManager:
         if bot_id in self.processes:
             p = self.processes[bot_id]
             p.terminate()
-            del self.processes[bot_id]
+            if bot_id in self.processes: del self.processes[bot_id]
             logger.info(f"🛑 Бот {bot_id} остановлен")
             return True
         return False
 
 pm = BotProcessManager()
 
-# redirect_slashes=True поможет FastAPI ловить пути и со слешем и без
 app = FastAPI(title="BotEngine API", redirect_slashes=True)
 
 @app.middleware("http")
-async def log_every_single_request(request: Request, call_next):
-    # Это появится в pm2 logs 29
+async def log_requests(request: Request, call_next):
     logger.info(f"📥 Входящий запрос: {request.method} {request.url.path}")
-    start_time = time.time()
     response = await call_next(request)
-    process_time = time.time() - start_time
-    logger.info(f"📤 Ответ: {response.status_code} (время: {process_time:.4f}s)")
+    logger.info(f"📤 Ответ: {response.status_code}")
     return response
 
 app.add_middleware(
@@ -73,29 +70,18 @@ app.add_middleware(
 # --- РОУТЫ ---
 
 @app.get("/api/ping")
-@app.get("/api/ping/")
 async def ping():
-    return {"status": "online", "server_time": time.time()}
+    return {"status": "online", "time": time.time()}
 
 @app.post("/api/auth/login")
-@app.post("/api/auth/login/")
 async def login(data: dict):
-    logger.info(f"Попытка входа: {data.get('email')}")
-    return {
-        "id": "admin", 
-        "username": "Admin", 
-        "email": data.get("email"), 
-        "balance": 100, 
-        "botsCreated": 0, 
-        "licenseExpiresAt": int(time.time()*1000) + 86400000
-    }
+    return {"id": "admin", "username": "Admin", "email": data.get("email"), "licenseExpiresAt": int(time.time()*1000) + 86400000}
 
 @app.post("/api/auth/request-verification")
-@app.post("/api/auth/request-verification/")
 async def verify(data: dict):
     email = data.get("email", "unknown")
-    logger.info(f"✅ ВЕРИФИКАЦИЯ ВЫЗВАНА для: {email}")
-    return {"status": "ok", "message": "Verification simulated"}
+    logger.info(f"✅ ВЕРИФИКАЦИЯ ВЫЗВАНА: {email}")
+    return {"status": "ok"}
 
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
@@ -103,12 +89,10 @@ async def get_bots(user_id: str):
 
 @app.post("/api/bots/save")
 async def save_bot(bot: dict):
-    logger.info(f"Сохранение бота: {bot.get('name')}")
     return {"status": "ok"}
 
 @app.post("/api/bots/start")
 async def start_bot_endpoint(req: dict):
-    # Используем dict для гибкости
     if pm.start_bot(req['id'], req['token'], req['code']):
         return {"status": "ok"}
     raise HTTPException(status_code=500, detail="Start failed")
@@ -118,6 +102,11 @@ async def stop_bot_endpoint(bot_id: str):
     pm.stop_bot(bot_id)
     return {"status": "ok"}
 
+@app.post("/api/admin/generate-key")
+async def gen_key(data: dict, x_admin_token: str = Header(None)):
+    if x_admin_token != "MRAKOTIK":
+        raise HTTPException(status_code=403)
+    return {"key": f"KEY-{int(time.time())}"}
+
 if __name__ == "__main__":
-    logger.info("🔥 Сервер запускается на порту 8000...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
