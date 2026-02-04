@@ -23,15 +23,43 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BotCore")
 
-def format_msg(template: str, m: Message, btn_text: str = "", extra_text: str = "") -> str:
-    if not template: 
-        return f"📩 <b>Сообщение от {m.from_user.full_name}</b>\nID: <code>{m.from_user.id}</code>"
-    res = template.replace("{{id}}", str(m.from_user.id))
-    res = res.replace("{{name}}", m.from_user.full_name or "User")
-    res = res.replace("{{username}}", f"@{m.from_user.username}" if m.from_user.username else "none")
-    res = res.replace("{{button}}", btn_text)
-    res = res.replace("{{text}}", extra_text or m.text or "[Медиа]")
-    return res
+def get_anon_id(user_id: int) -> str:
+    return hashlib.md5(str(user_id).encode()).hexdigest()[:5].upper()
+
+def format_msg(template: str, m: Message, settings: dict, is_anon: bool = False, btn_text: str = "", extra_text: str = "") -> str:
+    # Если есть кастомный шаблон, используем его
+    if template and template.strip():
+        res = template
+        res = res.replace("{{id}}", str(m.from_user.id))
+        if is_anon:
+            res = res.replace("{{name}}", f"User #{get_anon_id(m.from_user.id)}")
+            res = res.replace("{{username}}", "hidden")
+        else:
+            res = res.replace("{{name}}", m.from_user.full_name or "User")
+            res = res.replace("{{username}}", f"@{m.from_user.username}" if m.from_user.username else "none")
+        res = res.replace("{{button}}", btn_text)
+        res = res.replace("{{text}}", extra_text or m.text or "[Медиа]")
+        return res
+
+    # Иначе строим динамический заголовок на основе настроек
+    parts = []
+    
+    if is_anon:
+        parts.append(f"👤 <b>User #{get_anon_id(m.from_user.id)}</b>")
+    else:
+        name_part = f"<b>{m.from_user.full_name}</b>" if settings.get('showHeaderName', True) else ""
+        user_part = f"(@{m.from_user.username})" if settings.get('showHeaderUsername', True) and m.from_user.username else ""
+        if name_part or user_part:
+            parts.append(f"👤 {name_part} {user_part}".strip())
+    
+    if settings.get('showHeaderId', True) or is_anon:
+        parts.append(f"ID: <code>{m.from_user.id}</code>")
+
+    header = "📩 " + "\n".join(parts)
+    if btn_text:
+        header += f"\n🔘 Кнопка: <b>{btn_text}</b>"
+    
+    return header
 
 class BotInstance:
     def __init__(self, config_data):
@@ -76,21 +104,22 @@ class BotInstance:
         
         incoming_users = conf.get('connectedUsers', [])
         
-        # Умный мерж пользователей: приоритет данным модерации извне (панели)
+        # Улучшенный мерж для синхронизации банов
         if not self.connected_users:
             self.connected_users = incoming_users
         else:
-            local_users_map = {u['id']: u for u in self.connected_users}
+            local_map = {str(u['id']): u for u in self.connected_users}
             for iu in incoming_users:
-                uid = iu['id']
-                if uid in local_users_map:
-                    # Если данные из БД отличаются по варнам или бану — применяем их (админ сменил статус)
-                    local_users_map[uid]['is_banned'] = iu.get('is_banned', local_users_map[uid].get('is_banned', False))
-                    local_users_map[uid]['warns'] = iu.get('warns', local_users_map[uid].get('warns', 0))
-                    local_users_map[uid]['is_active'] = iu.get('is_active', local_users_map[uid].get('is_active', True))
+                uid = str(iu['id'])
+                if uid in local_map:
+                    # ПРИОРИТЕТ: Если в пришедших данных статус бана или варнов изменен - берем его (т.к. это из панели)
+                    local_map[uid]['is_banned'] = iu.get('is_banned', local_map[uid].get('is_banned'))
+                    local_map[uid]['warns'] = iu.get('warns', local_map[uid].get('warns'))
+                    local_map[uid]['is_active'] = iu.get('is_active', local_map[uid].get('is_active', True))
+                    local_map[uid]['first_name'] = iu.get('first_name', local_map[uid].get('first_name'))
                 else:
-                    local_users_map[uid] = iu
-            self.connected_users = list(local_users_map.values())
+                    local_map[uid] = iu
+            self.connected_users = list(local_map.values())
 
         self.subscribers = conf.get('subscribers', [])
         self.settings = conf.get('settings', {})
@@ -130,7 +159,7 @@ class BotInstance:
         async with httpx.AsyncClient() as client:
             headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
             while self.is_running:
-                await asyncio.sleep(20) 
+                await asyncio.sleep(8) # Ускорили до 8 сек для еще более быстрой реакции
                 try:
                     res = await client.get(f"{self.sb_url.rstrip('/')}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
                     if res.status_code == 200 and res.json():
@@ -186,7 +215,7 @@ class BotInstance:
 
     async def get_or_create_user(self, m: Message):
         user_id = m.from_user.id
-        user_obj = next((u for u in self.connected_users if u['id'] == user_id), None)
+        user_obj = next((u for u in self.connected_users if str(u['id']) == str(user_id)), None)
         if not user_obj:
             user_obj = {
                 "id": user_id, "first_name": m.from_user.first_name, "username": m.from_user.username,
@@ -201,7 +230,7 @@ class BotInstance:
     async def create_new_topic(self, user, suffix=""):
         if not self.admin_id: return None
         try:
-            name = f"User #{hashlib.md5(str(user['id']).encode()).hexdigest()[:4].upper()}" if self.anonymous_topics else f"{user['first_name']} [{user['id']}]"
+            name = f"User #{get_anon_id(user['id'])}" if self.anonymous_topics else f"{user['first_name']} [{user['id']}]"
             if suffix: name = f"{suffix} | {name}"
             topic = await self.bot.create_forum_topic(self.admin_id, name)
             user['last_topic_id'] = topic.message_thread_id
@@ -222,7 +251,7 @@ class BotInstance:
         async def cmd_start(m: Message):
             user = await self.get_or_create_user(m)
             if user.get("is_banned"): return
-            await m.answer(format_msg(self.welcome_message, m), reply_markup=self.get_main_kb())
+            await m.answer(format_msg(self.welcome_message, m, self.settings, is_anon=self.anonymous_topics), reply_markup=self.get_main_kb())
             await self.log_message(m.from_user.id, m.from_user.full_name, "/start")
 
         @self.router.message(Command("warn", "unwarn", "ban", "unban"))
@@ -230,11 +259,11 @@ class BotInstance:
             if not self.admin_id or m.chat.id != self.admin_id: return
             target_user = None
             if m.message_thread_id:
-                target_user = next((u for u in self.connected_users if u.get("last_topic_id") == m.message_thread_id), None)
+                target_user = next((u for u in self.connected_users if str(u.get("last_topic_id")) == str(m.message_thread_id)), None)
             
             if not target_user and m.reply_to_message:
                 match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
-                if match: target_user = next((u for u in self.connected_users if u["id"] == int(match.group(1))), None)
+                if match: target_user = next((u for u in self.connected_users if str(u["id"]) == str(match.group(1))), None)
 
             if not target_user: return await m.reply("❌ Юзер не найден.")
             
@@ -268,7 +297,7 @@ class BotInstance:
             if m.is_topic_message and not m.reply_to_message: return
             tid = m.message_thread_id
             target_id = None
-            u = next((u for u in self.connected_users if u.get("last_topic_id") == tid), None)
+            u = next((u for u in self.connected_users if str(u.get("last_topic_id")) == str(tid)), None)
             if u: target_id = u["id"]
             if not target_id:
                 match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
@@ -292,7 +321,7 @@ class BotInstance:
                     if btn.get("text") and btn["text"].lower() == low:
                         if btn.get("type") == "request" and self.admin_id:
                             t_id = await self.create_new_topic(user, suffix=f"ЗАЯВКА: {btn['text']}")
-                            await self.bot.send_message(self.admin_id, format_msg(btn.get("adminTemplate", self.admin_template), m, btn['text']), message_thread_id=t_id)
+                            await self.bot.send_message(self.admin_id, format_msg(btn.get("adminTemplate", self.admin_template), m, self.settings, is_anon=self.anonymous_topics, btn_text=btn['text']), message_thread_id=t_id)
                         
                         await m.answer(btn.get("response", "Принято."), reply_markup=self.get_main_kb())
                         await self.log_message(m.from_user.id, m.from_user.full_name, f"Кнопка: {btn['text']}")
@@ -308,8 +337,9 @@ class BotInstance:
                 now = time.time()
                 last_sent = self.last_header_time.get(user['id'], 0)
                 
-                if (now - last_sent) > 600 or last_sent == 0:
-                    header = format_msg(self.admin_template, m)
+                # Посылаем заголовок если топики выключены (на каждое соо) ИЛИ прошло время
+                if not self.use_topics or (now - last_sent) > 600 or last_sent == 0:
+                    header = format_msg(self.admin_template, m, self.settings, is_anon=self.anonymous_topics)
                     await self.bot.send_message(self.admin_id, header, message_thread_id=thread)
                     self.last_header_time[user['id']] = now
                 
