@@ -1,3 +1,4 @@
+
 import asyncio
 import logging
 import os
@@ -8,70 +9,60 @@ import json
 import random
 import httpx
 from typing import Dict, List, Optional
-from fastapi import FastAPI, HTTPException, Request, Header
+from fastapi import FastAPI, HTTPException, Request, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-# --- ЗАГРУЗКА ОКРУЖЕНИЯ ---
-def load_env_to_os():
+# --- Инициализация окружения ---
+def load_env():
     env_path = os.path.join(os.path.dirname(__file__), '.env')
     if os.path.exists(env_path):
         with open(env_path, 'r', encoding='utf-8') as f:
             for line in f:
-                line = line.strip()
                 if '=' in line and not line.startswith('#'):
-                    key, value = line.split('=', 1)
-                    os.environ[key.strip()] = value.strip().strip('"').strip("'")
-        return True
-    return False
+                    k, v = line.split('=', 1)
+                    os.environ[k.strip()] = v.strip().strip('"').strip("'")
 
-load_env_to_os()
+load_env()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger("BotEngine")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
+logger = logging.getLogger("BotEngineServer")
 
 SB_URL = os.getenv("SUPABASE_URL")
 SB_KEY = os.getenv("SUPABASE_KEY")
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
 
 if not SB_URL or not SB_KEY:
-    logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: SUPABASE_URL или SUPABASE_KEY отсутствуют в .env!")
+    logger.error("❌ SUPABASE_URL или SUPABASE_KEY не найдены!")
 
-# Импорт сервиса почты
+# Импорт сервиса почты (email_service.py)
 try:
     from email_service import EmailService
 except ImportError:
     class EmailService:
         @staticmethod
-        def send_verification_code(email, code):
-            logger.info(f"📧 [EMAIL MOCK] {email} -> {code}")
-            return True
+        def send_verification_code(e, c): logger.info(f"📧 [MOCK] Email {e} code {c}"); return True
         @staticmethod
-        def send_password_reset(email, code):
-            logger.info(f"📧 [RESET MOCK] {email} -> {code}")
-            return True
+        def send_password_reset(e, c): logger.info(f"📧 [MOCK] Reset {e} code {c}"); return True
 
 class BotProcessManager:
     def __init__(self):
         self.processes: Dict[str, subprocess.Popen] = {}
 
-    def start_bot(self, bot_id: str, bot_token: str, code: str):
+    def start_bot(self, bot_id: str, code: str):
         self.stop_bot(bot_id)
         os.makedirs("active_bots", exist_ok=True)
         filename = f"active_bots/bot_{bot_id}.py"
         with open(filename, "w", encoding="utf-8") as f:
             f.write(code)
         try:
-            process = subprocess.Popen([sys.executable, filename])
+            # Запускаем из корня, чтобы ядро bot_core.py было доступно
+            process = subprocess.Popen([sys.executable, filename], env=os.environ.copy(), cwd=os.getcwd())
             self.processes[bot_id] = process
             logger.info(f"🚀 Бот {bot_id} запущен (PID: {process.pid})")
             return True
         except Exception as e:
-            logger.error(f"❌ Ошибка запуска бота {bot_id}: {e}")
+            logger.error(f"❌ Ошибка запуска {bot_id}: {e}")
             return False
 
     def stop_bot(self, bot_id: str):
@@ -86,179 +77,164 @@ class BotProcessManager:
         return False
 
 pm = BotProcessManager()
-
-class SupabaseDB:
-    def __init__(self):
-        self.url = SB_URL.rstrip('/')
-        self.headers = {
-            "apikey": SB_KEY,
-            "Authorization": f"Bearer {SB_KEY}",
-            "Content-Type": "application/json",
-            "Prefer": "return=representation"
-        }
-
-    async def request(self, method: str, table: str, json_data: dict = None, params: dict = None, extra_headers: dict = None):
-        url = f"{self.url}/rest/v1/{table}"
-        headers = {**self.headers, **(extra_headers or {})}
-        async with httpx.AsyncClient() as client:
-            try:
-                logger.info(f"📡 Supabase {method} {table} | Params: {params}")
-                resp = await client.request(method, url, headers=headers, json=json_data, params=params)
-                if resp.status_code >= 400:
-                    logger.error(f"🔴 Supabase ERROR {resp.status_code} on {table}: {resp.text}")
-                    return None
-                logger.info(f"🟢 Supabase SUCCESS {resp.status_code} on {table}")
-                return resp.json()
-            except Exception as e:
-                logger.error(f"🔴 Supabase Connection Error: {str(e)}")
-                return None
-
-db = SupabaseDB()
 pending_verifications = {}
 
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+# Supabase Client
+db = httpx.AsyncClient(
+    base_url=f"{SB_URL}/rest/v1/",
+    headers={"apikey": SB_KEY, "Authorization": f"Bearer {SB_KEY}", "Content-Type": "application/json"},
+    timeout=20
 )
 
+app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# --- AUTH ---
+
 @app.post("/api/auth/request-verification")
-async def request_verification(data: dict):
+async def req_verify(data: dict):
     email = data.get("email", "").lower().strip()
-    if not email: raise HTTPException(400, "Email required")
-    code = "".join([str(random.randint(0, 9)) for _ in range(6)])
+    code = str(random.randint(100000, 999999))
     pending_verifications[email] = {"code": code, "expires": time.time() + 600}
     EmailService.send_verification_code(email, code)
     return {"status": "ok"}
 
 @app.post("/api/auth/verify-and-register")
-async def verify_and_register(data: dict):
+async def verify_reg(data: dict):
     email = data.get("email", "").lower().strip()
-    code = data.get("code")
-    username = data.get("username", "User")
-    password = data.get("password")
-    if email not in pending_verifications or pending_verifications[email]["code"] != code:
-        raise HTTPException(400, "Неверный код")
+    if email not in pending_verifications or pending_verifications[email]["code"] != data.get("code"):
+        raise HTTPException(400, "Неверный код подтверждения")
+    
     user_id = f"u_{int(time.time())}"
     payload = {
-        "id": user_id, "username": username, "email": email, "password": password,
-        "balance": 0, "license_expires_at": int((time.time() + 259200) * 1000), "created_at": int(time.time() * 1000)
+        "id": user_id, "username": data.get("username", "User"), 
+        "email": email, "password": data.get("password"),
+        "license_expires_at": int((time.time() + 259200) * 1000)
     }
-    res = await db.request("POST", "users", json_data=payload)
-    if not res: raise HTTPException(500, "Ошибка записи в БД")
-    user_data = res[0]
-    user_data["licenseExpiresAt"] = user_data.pop("license_expires_at")
-    return user_data
+    res = await db.post("users", json=payload, headers={"Prefer": "return=representation"})
+    if res.status_code >= 400: raise HTTPException(500, f"Ошибка БД: {res.text}")
+    return res.json()[0]
 
 @app.post("/api/auth/login")
 async def login(data: dict):
+    res = await db.get("users", params={"email": f"eq.{data['email']}", "password": f"eq.{data['password']}"})
+    if res.status_code != 200 or not res.json(): raise HTTPException(401, "Неверный логин или пароль")
+    u = res.json()[0]
+    u["licenseExpiresAt"] = u.get("license_expires_at", 0)
+    return u
+
+@app.post("/api/auth/forgot-password")
+async def forgot_pass(data: dict):
     email = data.get("email", "").lower().strip()
-    password = data.get("password")
-    params = {"email": f"eq.{email}", "password": f"eq.{password}"}
-    res = await db.request("GET", "users", params=params)
-    if not res: raise HTTPException(401, "Неверный Email или пароль")
-    user = res[0]
-    user["licenseExpiresAt"] = user.pop("license_expires_at", 0)
-    return user
+    code = str(random.randint(100000, 999999))
+    pending_verifications[email] = {"reset_code": code, "expires": time.time() + 600}
+    EmailService.send_password_reset(email, code)
+    return {"status": "ok"}
+
+@app.post("/api/auth/reset-password")
+async def reset_pass(data: dict):
+    email = data.get("email", "").lower().strip()
+    if email not in pending_verifications or pending_verifications[email].get("reset_code") != data.get("code"):
+        raise HTTPException(400, "Неверный код сброса")
+    await db.patch("users", params={"email": f"eq.{email}"}, json={"password": data.get("newPassword")})
+    return {"status": "ok"}
+
+# --- BOT CRUD ---
 
 @app.get("/api/bots/{user_id}")
-async def get_bots(user_id: str):
-    if user_id in ["new", "undefined", "null"]: return []
-    res = await db.request("GET", "bots", params={"owner_id": f"eq.{user_id}"})
-    if not res: return []
-    formatted = []
-    for b in res:
-        config = b.get("config", {})
-        formatted.append({
-            "id": b["id"], "ownerId": b["owner_id"], "name": b["name"], "token": b["token"],
-            "status": b["status"], "licenseExpiresAt": b["license_expires_at"], "createdAt": b["created_at"],
-            "stats": b.get("stats", {}), **config
-        })
-    return formatted
+async def get_user_bots(user_id: str):
+    res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
+    if res.status_code != 200: return []
+    return [{**b, **b.get("config", {})} for b in res.json()]
 
 @app.post("/api/bots/save")
 async def save_bot(bot: dict):
-    config_keys = ["description", "adminChatId", "welcomeMessage", "triggers", "buttons", "settings"]
-    config = {k: bot.get(k) for k in config_keys if k in bot}
     payload = {
         "id": bot["id"], "owner_id": bot["ownerId"], "name": bot["name"], "token": bot["token"],
         "status": bot.get("status", "IDLE"), "license_expires_at": int(bot.get("licenseExpiresAt", 0)),
-        "created_at": int(bot.get("createdAt", 0)), "stats": bot.get("stats", {}), "config": config
+        "config": {k: bot.get(k) for k in ["description", "adminChatId", "welcomeMessage", "triggers", "buttons", "settings", "connectedUsers"]}
     }
-    headers = {"Prefer": "resolution=merge-duplicates, return=representation"}
-    res = await db.request("POST", "bots", json_data=payload, extra_headers=headers)
-    if not res: raise HTTPException(500, "Ошибка сохранения")
+    await db.post("bots", json=payload, headers={"Prefer": "resolution=merge-duplicates"})
     return {"status": "ok"}
 
 @app.delete("/api/bots/delete/{user_id}/{bot_id}")
-async def delete_bot(user_id: str, bot_id: str):
+async def del_bot(user_id: str, bot_id: str):
     pm.stop_bot(bot_id)
-    await db.request("DELETE", "bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}"})
+    await db.delete("bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}"})
     return {"status": "ok"}
 
+# --- RUNTIME ---
+
 @app.post("/api/bots/start")
-async def start_bot_endpoint(req: dict):
-    bot_id, token, code = req.get('id'), req.get('token'), req.get('code')
-    if pm.start_bot(bot_id, token, code):
-        await db.request("PATCH", "bots", params={"id": f"eq.{bot_id}"}, json_data={"status": "RUNNING"})
+async def start_bot_ep(req: dict):
+    if pm.start_bot(req['id'], req['code']):
+        await db.patch("bots", params={"id": f"eq.{req['id']}"}, json={"status": "RUNNING"})
         return {"status": "ok"}
     raise HTTPException(500, "Ошибка запуска")
 
 @app.post("/api/bots/stop/{bot_id}")
-async def stop_bot_endpoint(bot_id: str):
+async def stop_bot_ep(bot_id: str):
     pm.stop_bot(bot_id)
-    await db.request("PATCH", "bots", params={"id": f"eq.{bot_id}"}, json_data={"status": "IDLE"})
+    await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "IDLE"})
     return {"status": "ok"}
 
-@app.post("/api/admin/generate-key")
-async def generate_key(req: dict, x_admin_token: str = Header(None)):
-    if x_admin_token != ADMIN_SECRET:
-        logger.warning(f"🕵️ Unauthorized key gen attempt: {x_admin_token}")
-        raise HTTPException(401, "Invalid secret")
+@app.get("/api/bots/messages/{bot_id}")
+async def get_messages(bot_id: str):
+    res = await db.get("bot_messages", params={"bot_id": f"eq.{bot_id}", "order": "created_at.desc", "limit": 50})
+    if res.status_code != 200: return []
+    return [{"user": {"id": m["user_id"], "name": m["first_name"]}, "text": m["message_text"], "timestamp": m["created_at"], "is_admin": m["is_from_admin"]} for m in res.json()]
+
+# --- BROADCAST ---
+
+@app.post("/api/bots/broadcast")
+async def broadcast(req: dict):
+    bot_ids = req.get('botIds', [])
+    text = req.get('message', '')
+    results = {"success": 0, "failed": 0}
     
+    for bid in bot_ids:
+        res = await db.get("bots", params={"id": f"eq.{bid}"})
+        if res.status_code != 200 or not res.json(): continue
+        bot_data = res.json()[0]
+        token = bot_data['token']
+        users = bot_data.get('config', {}).get('connectedUsers', [])
+        
+        async with httpx.AsyncClient() as client:
+            for u in users:
+                if u.get('is_banned') or not u.get('is_active'): continue
+                try:
+                    r = await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": u['id'], "text": text, "parse_mode": "HTML"})
+                    if r.status_code == 200: results["success"] += 1
+                    else: results["failed"] += 1
+                except: results["failed"] += 1
+    return results
+
+# --- LICENSE ---
+
+@app.post("/api/admin/generate-key")
+async def gen_key(req: dict, x_admin_token: str = Header(None)):
+    if x_admin_token != ADMIN_SECRET: raise HTTPException(401)
     months = req.get("months", 1)
     new_key = f"BOT-{months}-{''.join(random.choices('ABCDEF0123456789', k=8))}"
-    payload = {"key": new_key, "months": months, "used": False}
-    
-    # Исправлено: таблица называется issued_keys (согласно логам)
-    res = await db.request("POST", "issued_keys", json_data=payload)
-    if res is None:
-        logger.error(f"❌ Failed to save key {new_key} to table issued_keys")
-        raise HTTPException(500, "Database error: table issued_keys not found or inaccessible")
-    
-    logger.info(f"✅ Key {new_key} generated and stored in issued_keys")
+    await db.post("issued_keys", json={"key": new_key, "months": months, "used": False})
     return {"key": new_key}
 
 @app.post("/api/license/activate")
 async def activate_license(req: dict):
-    bot_id = req.get("botId")
-    key_str = req.get("key")
+    bot_id, key_str = req.get("botId"), req.get("key")
+    res = await db.get("issued_keys", params={"key": f"eq.{key_str}", "used": "is.false"})
+    if not res.json(): raise HTTPException(400, "Ключ недействителен")
     
-    # Исправлено: таблица называется issued_keys
-    res = await db.request("GET", "issued_keys", params={"key": f"eq.{key_str}", "used": "is.false"})
-    if not res: raise HTTPException(400, "Ключ недействителен или уже использован")
-    key_data = res[0]
-    
-    bot_res = await db.request("GET", "bots", params={"id": f"eq.{bot_id}"})
-    if not bot_res: raise HTTPException(404, "Бот не найден")
-    bot_data = bot_res[0]
+    key_data = res.json()[0]
+    bot_res = await db.get("bots", params={"id": f"eq.{bot_id}"})
+    bot_data = bot_res.json()[0]
     
     current_expiry = bot_data.get("license_expires_at", int(time.time() * 1000))
-    now_ms = int(time.time() * 1000)
-    base_time = max(current_expiry, now_ms)
-    new_expiry = base_time + (key_data["months"] * 30 * 24 * 3600 * 1000)
+    new_expiry = max(current_expiry, int(time.time() * 1000)) + (key_data["months"] * 30 * 24 * 3600 * 1000)
     
-    await db.request("PATCH", "bots", params={"id": f"eq.{bot_id}"}, json_data={"license_expires_at": new_expiry})
-    await db.request("PATCH", "issued_keys", params={"key": f"eq.{key_str}"}, json_data={"used": True})
-    
+    await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"license_expires_at": new_expiry})
+    await db.patch("issued_keys", params={"key": f"eq.{key_str}"}, json={"used": True})
     return {"status": "ok", "newExpiry": new_expiry}
-
-@app.post("/api/bots/broadcast")
-async def broadcast_endpoint(req: dict):
-    return {"success": len(req.get('botIds', [])), "failed": 0}
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
