@@ -15,7 +15,9 @@ interface SidebarProps {
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, bots, selectedBotId, setSelectedBotId, onAddBot, user, onLogout, isOpen }) => {
-  const daysRemaining = Math.max(0, Math.ceil((user.licenseExpiresAt - Date.now()) / (1000 * 60 * 60 * 24)));
+  // Исправлено: используем правильное имя поля license_expires_at
+  const expiry = Number(user.license_expires_at) || 0;
+  const daysRemaining = Math.max(0, Math.ceil((expiry - Date.now()) / (1000 * 60 * 60 * 24)));
 
   return (
     <aside className={`
