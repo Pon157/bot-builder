@@ -21,12 +21,12 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
     try {
       const res = await api.activateLicense(selectedBotId, activationKey);
       if (res && res.status === 'ok') {
-        const updatedBots = bots.map(b => b.id === selectedBotId ? { ...b, licenseExpiresAt: res.newExpiry } : b);
+        const updatedBots = bots.map(b => b.id === selectedBotId ? { ...b, license_expires_at: res.newExpiry } : b);
         onUpdateBots(updatedBots);
         alert("Лицензия бота успешно продлена!");
         setActivationKey('');
       } else {
-        alert("Ошибка активации: Неверный формат или ключ не найден");
+        alert("Ошибка активации: " + (res.message || "Неверный ключ"));
       }
     } catch (e) {
       alert("Ошибка сервера при активации");
@@ -51,7 +51,8 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
                 </h3>
                 <div className="space-y-3">
                     {bots.map(bot => {
-                        const days = Math.max(0, Math.ceil((bot.licenseExpiresAt - Date.now()) / (1000 * 3600 * 24)));
+                        const expiry = Number(bot.license_expires_at) || 0;
+                        const days = Math.max(0, Math.ceil((expiry - Date.now()) / (1000 * 3600 * 24)));
                         const expired = days === 0;
                         return (
                             <div key={bot.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-black border border-zinc-800 rounded-2xl gap-3">
@@ -63,7 +64,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
                                     <p className={`text-xs font-black uppercase tracking-widest ${expired ? 'text-red-500' : 'text-green-500'}`}>
                                         {expired ? 'Истекла' : `${days} дн.`}
                                     </p>
-                                    <p className="text-[9px] text-zinc-600">До {new Date(bot.licenseExpiresAt).toLocaleDateString()}</p>
+                                    <p className="text-[9px] text-zinc-600">До {expiry > 0 ? new Date(expiry).toLocaleDateString() : '---'}</p>
                                 </div>
                             </div>
                         );
@@ -100,7 +101,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
                         <button 
                             onClick={handleActivate}
                             disabled={isActivating || !activationKey || !selectedBotId}
-                            className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-black px-8 py-4 rounded-xl transition-all uppercase tracking-widest text-xs whitespace-nowrap shadow-lg shadow-blue-600/20"
+                            className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-black px-8 py-4 rounded-xl transition-all uppercase tracking-widest text-xs shadow-lg shadow-blue-600/20"
                         >
                             {isActivating ? 'Активация...' : 'Активировать'}
                         </button>
