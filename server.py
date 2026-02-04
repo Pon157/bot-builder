@@ -7,7 +7,8 @@ import sys
 import time
 import json
 import random
-from typing import Dict, List
+import httpx
+from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -21,12 +22,15 @@ def load_env_to_os():
             for line in f:
                 if '=' in line and not line.startswith('#'):
                     key, value = line.split('=', 1)
-                    # Убираем кавычки и пробелы
                     os.environ[key.strip()] = value.strip().strip('"').strip("'")
         return True
     return False
 
 load_env_to_os()
+
+# Данные Supabase
+SB_URL = os.getenv("SUPABASE_URL")
+SB_KEY = os.getenv("SUPABASE_KEY")
 
 # Импорт сервиса почты
 try:
@@ -35,11 +39,11 @@ except ImportError:
     class EmailService:
         @staticmethod
         def send_verification_code(email, code):
-            print(f"!!! ЭМУЛЯЦИЯ ПОЧТЫ: Код {code} для {email} !!!")
+            print(f"!!! EMAIL SIM: {email} -> {code} !!!")
             return True
         @staticmethod
         def send_password_reset(email, code):
-            print(f"!!! ЭМУЛЯЦИЯ СБРОСА: Код {code} для {email} !!!")
+            print(f"!!! RESET SIM: {email} -> {code} !!!")
             return True
 
 # Настройка логов
@@ -50,29 +54,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BotEngine")
 
-# --- ХРАНИЛИЩЕ ДАННЫХ ---
-DATA_DIR = "data"
-os.makedirs(DATA_DIR, exist_ok=True)
-USERS_FILE = os.path.join(DATA_DIR, "users.json")
-BOTS_FILE = os.path.join(DATA_DIR, "bots.json")
-KEYS_FILE = os.path.join(DATA_DIR, "valid_keys.json")
+# --- SUPABASE CLIENT ---
+class SupabaseDB:
+    def __init__(self):
+        self.url = SB_URL
+        self.headers = {
+            "apikey": SB_KEY,
+            "Authorization": f"Bearer {SB_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation"
+        }
 
-def load_data(file, default):
-    if os.path.exists(file):
-        try:
-            with open(file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except: return default
-    return default
+    async def request(self, method: str, table: str, params: dict = None, json_data: dict = None, filters: str = ""):
+        url = f"{self.url}/rest/v1/{table}{filters}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.request(method, url, headers=self.headers, params=params, json=json_data)
+            if resp.status_code >= 400:
+                logger.error(f"Supabase Error ({table}): {resp.text}")
+                return None
+            return resp.json()
 
-def save_data(file, data):
-    with open(file, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-users = load_data(USERS_FILE, {})
-bots_db = load_data(BOTS_FILE, {})
-valid_keys = load_data(KEYS_FILE, {})
-pending_verifications = {} # {email: {"code": "123456", "expires": timestamp}}
+db = SupabaseDB()
+pending_verifications = {}
 
 class BotProcessManager:
     def __init__(self):
@@ -103,7 +106,7 @@ class BotProcessManager:
         return False
 
 pm = BotProcessManager()
-app = FastAPI(title="BotEngine API")
+app = FastAPI(title="BotEngine Supabase API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -113,145 +116,178 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    logger.info(f"📥 {request.method} {request.url.path}")
-    response = await call_next(request)
-    logger.info(f"📤 Status: {response.status_code}")
-    return response
-
 # --- AUTH ROUTES ---
 
 @app.post("/api/auth/request-verification")
 async def request_verification(data: dict):
     email = data.get("email", "").lower()
     if not email: raise HTTPException(400, "Email required")
-    
     code = "".join([str(random.randint(0, 9)) for _ in range(6)])
     pending_verifications[email] = {"code": code, "expires": time.time() + 600}
-    
-    logger.info(f"📧 Регистрация: {email}, код {code}")
+    logger.info(f"📧 Код для {email}: {code}")
     EmailService.send_verification_code(email, code)
     return {"status": "ok"}
 
 @app.post("/api/auth/verify-and-register")
 async def verify_and_register(data: dict):
     email = data.get("email", "").lower()
-    code = data.get("code")
-    username = data.get("username", "User")
-    password = data.get("password")
+    code, username, password = data.get("code"), data.get("username"), data.get("password")
 
     if email not in pending_verifications or pending_verifications[email]["code"] != code:
-        raise HTTPException(400, "Неверный код подтверждения")
+        raise HTTPException(400, "Неверный код")
 
     user_id = f"u_{int(time.time())}"
-    user_data = {
+    user_payload = {
         "id": user_id,
         "username": username,
         "email": email,
         "password": password,
         "balance": 0,
-        "botsCreated": 0,
-        "licenseExpiresAt": int((time.time() + 259200) * 1000)
+        "license_expires_at": int((time.time() + 259200) * 1000), # 3 дня
+        "created_at": int(time.time() * 1000)
     }
     
-    users[email] = user_data
-    save_data(USERS_FILE, users)
-    del pending_verifications[email]
+    res = await db.request("POST", "users", json_data=user_payload)
+    if res is None: raise HTTPException(500, "Ошибка создания пользователя в БД")
     
-    logger.info(f"👤 Регистрация завершена: {email}")
-    return user_data
+    del pending_verifications[email]
+    # Приводим к формату фронтенда
+    user_payload["licenseExpiresAt"] = user_payload.pop("license_expires_at")
+    return user_payload
 
 @app.post("/api/auth/login")
 async def login(data: dict):
-    email = data.get("email", "").lower()
-    password = data.get("password")
-    user = users.get(email)
-    if not user or user["password"] != password:
-        raise HTTPException(401, "Неверный Email или пароль")
+    email, password = data.get("email", "").lower(), data.get("password")
+    res = await db.request("GET", "users", filters=f"?email=eq.{email}&password=eq.{password}")
+    if not res: raise HTTPException(401, "Неверный логин или пароль")
+    
+    user = res[0]
+    user["licenseExpiresAt"] = user.pop("license_expires_at")
     return user
 
-@app.post("/api/auth/forgot-password")
-async def forgot_password(data: dict):
-    email = data.get("email", "").lower()
-    if email not in users:
-        raise HTTPException(404, "Пользователь с таким Email не найден")
-    
-    code = "".join([str(random.randint(0, 9)) for _ in range(6)])
-    pending_verifications[email] = {"code": code, "expires": time.time() + 600}
-    
-    logger.info(f"🔑 Сброс пароля: {email}, код {code}")
-    EmailService.send_password_reset(email, code)
-    return {"status": "ok"}
-
-@app.post("/api/auth/reset-password")
-async def reset_password(data: dict):
-    email = data.get("email", "").lower()
-    code = data.get("code")
-    new_password = data.get("newPassword")
-
-    if email not in pending_verifications or pending_verifications[email]["code"] != code:
-        raise HTTPException(400, "Неверный или истекший код")
-
-    if email in users:
-        users[email]["password"] = new_password
-        save_data(USERS_FILE, users)
-        del pending_verifications[email]
-        logger.info(f"✅ Пароль успешно изменен для {email}")
-        return {"status": "ok"}
-    
-    raise HTTPException(404, "Пользователь не найден")
-
-# --- BOTS & LICENSE (остальное без изменений) ---
-@app.get("/api/ping")
-async def ping(): return {"status": "online"}
+# --- BOTS ROUTES ---
 
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
-    return [b for b in bots_db.values() if b["ownerId"] == user_id]
+    res = await db.request("GET", "bots", filters=f"?owner_id=eq.{user_id}")
+    if res is None: return []
+    
+    # Конвертируем из БД-формата в формат фронтенда
+    bots = []
+    for b in res:
+        config = b.get("config", {})
+        bot = {
+            "id": b["id"],
+            "ownerId": b["owner_id"],
+            "name": b["name"],
+            "token": b["token"],
+            "status": b["status"],
+            "licenseExpiresAt": b["license_expires_at"],
+            "createdAt": b["created_at"],
+            "stats": b.get("stats", {}),
+            **config
+        }
+        bots.append(bot)
+    return bots
 
 @app.post("/api/bots/save")
-async def save_bot_route(bot: dict):
-    bots_db[bot["id"]] = bot
-    save_data(BOTS_FILE, bots_db)
+async def save_bot(bot: dict):
+    # Извлекаем основные поля для колонок
+    bot_id = bot.get("id")
+    owner_id = bot.get("ownerId")
+    name = bot.get("name")
+    token = bot.get("token")
+    status = bot.get("status", "IDLE")
+    license_expires = bot.get("licenseExpiresAt")
+    created_at = bot.get("createdAt", int(time.time() * 1000))
+    stats = bot.get("stats", {})
+
+    # Всё остальное упаковываем в config (JSONB)
+    config_fields = ["description", "adminChatId", "welcomeMessage", "triggers", "buttons", "settings"]
+    config = {k: bot.get(k) for k in config_fields if k in bot}
+
+    payload = {
+        "id": bot_id,
+        "owner_id": owner_id,
+        "name": name,
+        "token": token,
+        "status": status,
+        "license_expires_at": license_expires,
+        "created_at": created_at,
+        "config": config,
+        "stats": stats
+    }
+    
+    # Используем UPSERT (POST с Prefer: resolution=merge-duplicates)
+    headers = {**db.headers, "Prefer": "resolution=merge-duplicates"}
+    async with httpx.AsyncClient() as client:
+        url = f"{db.url}/rest/v1/bots"
+        await client.post(url, headers=headers, json=payload)
+    
     return {"status": "ok"}
 
 @app.post("/api/bots/start")
 async def start_bot_endpoint(req: dict):
+    # Мы ожидаем 'code' (сгенерированный питон-код) от фронтенда
     if pm.start_bot(req['id'], req['token'], req['code']):
-        if req['id'] in bots_db:
-            bots_db[req['id']]["status"] = "RUNNING"
-            save_data(BOTS_FILE, bots_db)
+        await db.request("PATCH", "bots", filters=f"?id=eq.{req['id']}", json_data={"status": "RUNNING"})
         return {"status": "ok"}
     raise HTTPException(500, "Start failed")
 
 @app.post("/api/bots/stop/{bot_id}")
 async def stop_bot_endpoint(bot_id: str):
     pm.stop_bot(bot_id)
-    if bot_id in bots_db:
-        bots_db[bot_id]["status"] = "IDLE"
-        save_data(BOTS_FILE, bots_db)
+    await db.request("PATCH", "bots", filters=f"?id=eq.{bot_id}", json_data={"status": "IDLE"})
     return {"status": "ok"}
+
+# --- LICENSE SYSTEM (Supabase) ---
 
 @app.post("/api/admin/generate-key")
 async def gen_key(data: dict, x_admin_token: str = Header(None)):
     if x_admin_token != os.getenv("ADMIN_SECRET", "MRAKOTIK"): raise HTTPException(403)
+    
     months = data.get("months", 1)
     new_key = f"BOT-{months}-" + "".join(random.choices("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", k=8))
-    valid_keys[new_key] = {"months": months, "created_at": time.time()}
-    save_data(KEYS_FILE, valid_keys)
+    
+    payload = {
+        "key": new_key,
+        "months": months,
+        "used": False,
+        "created_at": int(time.time() * 1000)
+    }
+    await db.request("POST", "issued_keys", json_data=payload)
     return {"key": new_key}
 
 @app.post("/api/license/activate")
 async def activate_license(req: dict):
-    bot_id, key = req.get("botId"), req.get("key", "").strip()
-    if key not in valid_keys or bot_id not in bots_db: raise HTTPException(400, "Invalid key or bot")
-    months = valid_keys[key]["months"]
-    bots_db[bot_id]["licenseExpiresAt"] = bots_db[bot_id].get("licenseExpiresAt", int(time.time()*1000)) + (months * 30 * 24 * 3600 * 1000)
-    save_data(BOTS_FILE, bots_db)
-    del valid_keys[key]
-    save_data(KEYS_FILE, valid_keys)
-    return {"status": "ok", "newExpiry": bots_db[bot_id]["licenseExpiresAt"]}
+    bot_id, key_str = req.get("botId"), req.get("key", "").strip()
+    
+    # 1. Ищем ключ
+    keys = await db.request("GET", "issued_keys", filters=f"?key=eq.{key_str}&used=eq.false")
+    if not keys: raise HTTPException(400, "Ключ недействителен или уже использован")
+    key_data = keys[0]
+    
+    # 2. Ищем бота
+    bots = await db.request("GET", "bots", filters=f"?id=eq.{bot_id}")
+    if not bots: raise HTTPException(404, "Бот не найден")
+    bot_data = bots[0]
+    
+    # 3. Продлеваем
+    months = key_data["months"]
+    current_expiry = bot_data["license_expires_at"]
+    if current_expiry < int(time.time() * 1000):
+        current_expiry = int(time.time() * 1000)
+        
+    new_expiry = current_expiry + (months * 30 * 24 * 3600 * 1000)
+    
+    # 4. Обновляем бота и помечаем ключ как использованный
+    await db.request("PATCH", "bots", filters=f"?id=eq.{bot_id}", json_data={"license_expires_at": new_expiry})
+    await db.request("PATCH", "issued_keys", filters=f"?key=eq.{key_str}", json_data={"used": True})
+    
+    return {"status": "ok", "newExpiry": new_expiry}
+
+@app.get("/api/ping")
+async def ping(): return {"status": "online"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
