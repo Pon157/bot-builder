@@ -15,7 +15,6 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ContentT
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
-# Детальное логирование в stdout для отображения в консоли панели
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
@@ -62,17 +61,31 @@ class BotInstance:
         self.buttons = conf.get('buttons', [])
         self.triggers = conf.get('triggers', [])
         self.welcome_message = conf.get('welcomeMessage', 'Привет!')
-        self.connected_users = conf.get('connectedUsers', [])
+        
+        # Умное обновление списка пользователей
+        new_users = conf.get('connectedUsers', [])
+        if not hasattr(self, 'connected_users'):
+            self.connected_users = new_users
+        else:
+            # Обновляем только тех, кто изменился в БД (варны, баны), но сохраняем thread_id из памяти
+            for nu in new_users:
+                found = False
+                for ou in self.connected_users:
+                    if ou['id'] == nu['id']:
+                        ou['is_banned'] = nu.get('is_banned', False)
+                        ou['warns'] = nu.get('warns', 0)
+                        # Не затираем last_topic_id если он есть в памяти
+                        found = True
+                        break
+                if not found:
+                    self.connected_users.append(nu)
+
         self.subscribers = conf.get('subscribers', [])
         self.settings = conf.get('settings', {})
         
-        # Слияние статистики: берем максимум, чтобы не обнулять
         new_stats = conf.get('stats', {})
         if not hasattr(self, 'stats'):
-            self.stats = {
-                "totalMessages": 0, "incomingToday": 0, "outgoingToday": 0, 
-                "bannedCount": 0, "history": [], "activeUsers24h": 0
-            }
+            self.stats = {"totalMessages": 0, "incomingToday": 0, "outgoingToday": 0, "bannedCount": 0, "history": [], "activeUsers24h": 0}
         
         if new_stats.get('totalMessages', 0) > self.stats.get('totalMessages', 0):
             self.stats = new_stats
@@ -84,34 +97,27 @@ class BotInstance:
         self.admin_template = self.settings.get('adminMessageTemplate', "")
 
     async def stats_history_manager(self):
-        """Гарантирует, что точка на графике создана и обновлена."""
         while self.is_running:
             today = datetime.now().strftime("%d.%m")
             history = self.stats.get("history", [])
-            
             found = False
             for point in history:
                 if point.get("date") == today:
                     point["totalUsers"] = len(self.connected_users)
                     found = True
                     break
-            
             if not found:
-                new_point = {"date": today, "incoming": 0, "outgoing": 0, "totalUsers": len(self.connected_users), "activeUsers": 0}
-                history.append(new_point)
+                history.append({"date": today, "incoming": 0, "outgoing": 0, "totalUsers": len(self.connected_users), "activeUsers": 0})
                 if len(history) > 14: history.pop(0)
                 self.stats["history"] = history
-            
-            # Принудительный пуш статы каждые 30 секунд
             await self.sync_queue.put(("bot_config", {}))
             await asyncio.sleep(30)
 
     async def remote_sync_task(self):
-        """Синхронизация банов и кнопок из БД."""
         async with httpx.AsyncClient() as client:
             headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
             while self.is_running:
-                await asyncio.sleep(7) 
+                await asyncio.sleep(10) 
                 try:
                     res = await client.get(f"{self.sb_url.rstrip('/')}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
                     if res.status_code == 200 and res.json():
@@ -120,7 +126,6 @@ class BotInstance:
                     logger.error(f"Sync error: {e}")
 
     async def db_sync_worker(self):
-        """Сохранение логов сообщений и конфига в Супабейз."""
         async with httpx.AsyncClient() as client:
             headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}", "Content-Type": "application/json"}
             while self.is_running:
@@ -152,16 +157,12 @@ class BotInstance:
         self.stats["totalMessages"] = self.stats.get("totalMessages", 0) + 1
         key = "incomingToday" if direction == "incoming" else "outgoingToday"
         self.stats[key] = self.stats.get(key, 0) + 1
-        
         today = datetime.now().strftime("%d.%m")
-        history = self.stats.get("history", [])
-        for point in history:
+        for point in self.stats.get("history", []):
             if point.get("date") == today:
                 point[direction] = point.get(direction, 0) + 1
                 point["totalUsers"] = len(self.connected_users)
-        self.stats["history"] = history
-        # Мы не пушим в БД мгновенно на каждое сообщение, чтобы не спамить API, 
-        # пуш идет раз в 30 сек в stats_history_manager
+        # Пуш будет в stats_history_manager
 
     async def log_message(self, user_id, name, text, is_admin=False):
         payload = {
@@ -179,7 +180,7 @@ class BotInstance:
             user_obj = {
                 "id": user_id, "first_name": m.from_user.first_name, "username": m.from_user.username,
                 "is_banned": False, "is_active": True, "warns": 0, 
-                "joined_at": int(datetime.now().timestamp()), "thread_id": None
+                "joined_at": int(datetime.now().timestamp()), "last_topic_id": None
             }
             self.connected_users.append(user_obj)
             if user_id not in self.subscribers: self.subscribers.append(user_id)
@@ -191,25 +192,19 @@ class BotInstance:
             name = f"User #{hashlib.md5(str(user['id']).encode()).hexdigest()[:4].upper()}" if self.anonymous_topics else f"{user['first_name']} [{user['id']}]"
             if suffix: name = f"{suffix} | {name}"
             topic = await self.bot.create_forum_topic(self.admin_id, name)
+            # Обновляем последний активный топик для юзера
+            user['last_topic_id'] = topic.message_thread_id
+            await self.sync_queue.put(("bot_config", {}))
             return topic.message_thread_id
         except Exception as e:
             logger.error(f"Topic Error: {e}")
             return None
 
-    async def ensure_thread(self, user):
+    async def ensure_active_topic(self, user):
+        """Возвращает текущий активный топик или создает новый общий."""
         if not self.admin_id or not self.use_topics: return None
-        if user.get("thread_id"): return user["thread_id"]
-        tid = await self.create_new_topic(user)
-        if tid: user["thread_id"] = tid
-        return tid
-
-    def get_main_kb(self):
-        vbs = [b for b in self.buttons if b.get('text')]
-        if not vbs: return None
-        rows = []
-        for i in range(0, len(vbs), 2):
-            rows.append([KeyboardButton(text=b['text']) for b in vbs[i:i+2]])
-        return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+        if user.get("last_topic_id"): return user["last_topic_id"]
+        return await self.create_new_topic(user)
 
     async def register_handlers(self):
         @self.router.message(CommandStart())
@@ -224,12 +219,14 @@ class BotInstance:
             if not self.admin_id or m.chat.id != self.admin_id: return
             target_user = None
             if m.message_thread_id:
-                target_user = next((u for u in self.connected_users if u.get("thread_id") == m.message_thread_id), None)
+                # Ищем юзера, у которого ЭТОТ топик был последним активным
+                target_user = next((u for u in self.connected_users if u.get("last_topic_id") == m.message_thread_id), None)
+            
             if not target_user and m.reply_to_message:
                 match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
                 if match: target_user = next((u for u in self.connected_users if u["id"] == int(match.group(1))), None)
 
-            if not target_user: return await m.reply("❌ Пользователь не найден.")
+            if not target_user: return await m.reply("❌ Юзер не найден в этом топике.")
             
             cmd = m.text.split()[0].replace("/", "").lower()
             uid = target_user['id']
@@ -237,23 +234,22 @@ class BotInstance:
                 target_user['warns'] = target_user.get('warns', 0) + 1
                 ban = self.auto_ban_threshold > 0 and target_user['warns'] >= self.auto_ban_threshold
                 target_user['is_banned'] = ban
-                # ВОЗВРАЩЕНО: уведомление юзеру
-                try: await self.bot.send_message(uid, f"⚠️ Вам выдано предупреждение ({target_user['warns']}/{self.auto_ban_threshold})")
+                try: await self.bot.send_message(uid, f"⚠️ <b>Вам выдано предупреждение!</b>\nВсего: {target_user['warns']}/{self.auto_ban_threshold or '∞'}")
                 except: pass
-                await m.reply(f"✅ Варн выдан ({target_user['warns']})")
+                await m.reply(f"✅ Варн выдан. Текущее кол-во: {target_user['warns']}")
             elif cmd == "unwarn":
                 target_user['warns'] = max(0, target_user.get('warns', 0) - 1)
-                await m.reply(f"✅ Варн снят ({target_user['warns']})")
+                await m.reply(f"✅ Варн снят. Осталось: {target_user['warns']}")
             elif cmd == "ban":
                 target_user['is_banned'] = True
-                try: await self.bot.send_message(uid, "🚫 Вы были заблокированы администратором.")
+                try: await self.bot.send_message(uid, "🚫 Вы заблокированы администратором.")
                 except: pass
-                await m.reply("✅ Бан.")
+                await m.reply("✅ Забанен.")
             elif cmd == "unban":
                 target_user['is_banned'] = False
-                try: await self.bot.send_message(uid, "✅ Ваша блокировка снята.")
+                try: await self.bot.send_message(uid, "✅ Разблокированы.")
                 except: pass
-                await m.reply("✅ Разбан.")
+                await m.reply("✅ Разбанен.")
             await self.sync_queue.put(("bot_config", {}))
 
         @self.router.message(F.chat.id == self.admin_id, F.reply_to_message)
@@ -261,7 +257,8 @@ class BotInstance:
             if m.is_topic_message and not m.reply_to_message: return
             tid = m.message_thread_id
             target_id = None
-            u = next((u for u in self.connected_users if u.get("thread_id") == tid), None)
+            # Ищем юзера по топику
+            u = next((u for u in self.connected_users if u.get("last_topic_id") == tid), None)
             if u: target_id = u["id"]
             if not target_id:
                 match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
@@ -271,7 +268,7 @@ class BotInstance:
                 try:
                     await self.bot.copy_message(target_id, m.chat.id, m.message_id)
                     await self.log_message(target_id, "Админ", m.text or "[Медиа]", is_admin=True)
-                except Exception as e: await m.reply(f"❌ Ошибка отправки: {e}")
+                except Exception as e: await m.reply(f"❌ Ошибка: {e}")
 
         @self.router.message()
         async def main_handler(m: Message):
@@ -279,13 +276,14 @@ class BotInstance:
             user = await self.get_or_create_user(m)
             if user.get("is_banned"): return
 
+            # Обработка кнопок
             if m.text:
                 low = m.text.lower().strip()
                 for btn in self.buttons:
                     if btn.get("text") and btn["text"].lower() == low:
                         if btn.get("type") == "request" and self.admin_id:
-                            # ПРИНУДИТЕЛЬНО создаем новый топик, если стоит настройка
-                            t_id = await (self.create_new_topic(user, suffix=f"ЗАЯВКА: {btn['text']}") if self.topic_per_request else self.ensure_thread(user))
+                            # ПРИНУДИТЕЛЬНО создаем НОВЫЙ топик для каждой заявки
+                            t_id = await self.create_new_topic(user, suffix=f"ЗАЯВКА: {btn['text']}")
                             await self.bot.send_message(self.admin_id, format_msg(btn.get("adminTemplate", self.admin_template), m, btn['text']), message_thread_id=t_id)
                         
                         await m.answer(btn.get("response", "Принято."), reply_markup=self.get_main_kb())
@@ -297,9 +295,11 @@ class BotInstance:
                         await self.log_message(m.from_user.id, m.from_user.full_name, f"Триггер: {t['keyword']}")
                         return
 
+            # Обычное сообщение -> в последний активный топик
             if self.admin_id:
-                thread = await self.ensure_thread(user)
-                await self.bot.send_message(self.admin_id, format_msg(self.admin_template, m), message_thread_id=thread)
+                thread = await self.ensure_active_topic(user)
+                header = format_msg(self.admin_template, m)
+                await self.bot.send_message(self.admin_id, header, message_thread_id=thread)
                 await self.bot.copy_message(self.admin_id, m.chat.id, m.message_id, message_thread_id=thread)
                 await self.log_message(m.from_user.id, m.from_user.full_name, m.text or "[Медиа]")
 
