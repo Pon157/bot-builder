@@ -36,17 +36,17 @@ def get_anon_id(user_id: int) -> str:
 
 def format_admin_header(template: str, m: Message, settings: dict, is_first: bool = False, btn_text: str = "") -> str:
     """Формирование заголовка сообщения для администратора."""
-    # Если это первый контакт или спец-заявка - используем полный шаблон
+    # Если это первый контакт или спец-заявка - используем ТОЛЬКО шаблон пользователя
     if is_first:
         if not template:
-            return f"🆕 <b>НОВОЕ ОБРАЩЕНИЕ</b>\n👤 Имя: {m.from_user.full_name}\n🆔 ID: <code>{m.from_user.id}</code>\n\n"
+            return "" # Если шаблона нет, возвращаем пустую строку (сигнал не слать ничего)
         
         res = template.replace("{{id}}", str(m.from_user.id))
         res = res.replace("{{name}}", m.from_user.full_name or "User")
         res = res.replace("{{username}}", f"@{m.from_user.username}" if m.from_user.username else "none")
         res = res.replace("{{button}}", btn_text or "—")
         res = res.replace("{{text}}", m.text or m.caption or "[Медиа]")
-        return f"🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ</b>\n\n{res}\n"
+        return res
 
     # Иначе - компактный Livegram-заголовок на основе настроек чекбоксов
     parts = []
@@ -256,8 +256,10 @@ class BotInstance:
         last_sent = self.last_header_time.get(user['id'], 0)
         
         # Отправляем инфо-заголовок если прошло > 10 мин или это первый контакт
-        if is_first or (now - last_sent) > 600:
-            header = format_admin_header(self.admin_template, m, self.settings, is_first, btn_text)
+        header = format_admin_header(self.admin_template, m, self.settings, is_first, btn_text)
+        
+        # Если header не пустой, отправляем его
+        if header and (is_first or (now - last_sent) > 600):
             await self.bot.send_message(self.admin_id, header, message_thread_id=thread_id)
             self.last_header_time[user['id']] = now
 
@@ -375,4 +377,4 @@ class BotInstance:
 if __name__ == "__main__":
     if len(sys.argv) < 2: sys.exit(1)
     with open(sys.argv[1], 'r', encoding='utf-8') as f: cfg = json.load(f)
-    asyncio.run(BotInstance(cfg).run()
+    asyncio.run(BotInstance(cfg).run())
