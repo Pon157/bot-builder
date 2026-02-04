@@ -31,11 +31,13 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         await api.stopBotOnServer(bot.id);
         onUpdate({ ...bot, status: BotStatus.IDLE });
       } else {
-        // Перед запуском сохраняем актуальное состояние
-        await api.saveBot(bot.ownerId, bot);
+        await api.saveBot(bot.owner_id, bot);
         const result = await api.startBotOnServer(bot);
-        if (result === true) onUpdate({ ...bot, status: BotStatus.RUNNING });
-        else alert(`Ошибка запуска: ${result}`);
+        if (result === true) {
+            onUpdate({ ...bot, status: BotStatus.RUNNING });
+        } else {
+            alert(`Ошибка запуска: ${result}`);
+        }
       }
     } catch (e: any) { alert("Ошибка сервера: " + (e.message || "Неизвестно")); }
     finally { setIsProcessing(false); }
@@ -44,8 +46,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
   const save = async () => {
     setIsProcessing(true);
     try {
-      // Отправляем весь объект bot, сервер сам выделит нужные поля для config
-      await api.saveBot(bot.ownerId, bot);
+      await api.saveBot(bot.owner_id, bot);
       alert("Конфигурация успешно сохранена в облаке!");
     } catch (e: any) { 
       alert("Ошибка при сохранении: " + (e.message || "Проверьте подключение")); 
@@ -158,6 +159,17 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                           value={btn.response} 
                           onChange={e => { const nb = [...bot.buttons]; nb[i].response = e.target.value; onUpdate({...bot, buttons: nb}); }} 
                         />
+                        <div className="flex items-center gap-2">
+                             <span className="text-[9px] font-bold text-zinc-500 uppercase">Тип:</span>
+                             <select 
+                                className="bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-[10px] text-white"
+                                value={btn.type || 'message'}
+                                onChange={e => { const nb = [...bot.buttons]; nb[i].type = e.target.value as any; onUpdate({...bot, buttons: nb}); }}
+                             >
+                                 <option value="message">Обычное сообщение</option>
+                                 <option value="request">Заявка админу (Ticket)</option>
+                             </select>
+                        </div>
                     </div>
                  </div>
                ))}
@@ -220,15 +232,18 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                     <h3 className="text-xs font-black text-white uppercase mb-2">Настройки безопасности</h3>
                     <div className="space-y-3">
                         <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer">
-                            <span className="text-xs font-bold text-zinc-400">Автобан при варнах</span>
+                            <span className="text-xs font-bold text-zinc-400">Автобан при варнах (0 = откл)</span>
                             <div className="flex items-center gap-3">
-                                <span className="text-[10px] text-zinc-600">Лимит:</span>
                                 <input type="number" className="w-16 bg-zinc-900 border border-zinc-800 rounded p-1 text-center text-xs text-white" value={bot.settings?.autoBanThreshold || 0} onChange={e => onUpdate({...bot, settings: {...bot.settings, autoBanThreshold: parseInt(e.target.value) || 0}})} />
                             </div>
                         </label>
                         <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer">
-                            <span className="text-xs font-bold text-zinc-400">Пересылать все сообщения админу</span>
-                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={bot.settings?.forwardToAdmin} onChange={e => onUpdate({...bot, settings: {...bot.settings, forwardToAdmin: e.target.checked}})} />
+                            <span className="text-xs font-bold text-zinc-400">Поддержка топиков (Forum)</span>
+                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={bot.settings?.useTopics} onChange={e => onUpdate({...bot, settings: {...bot.settings, useTopics: e.target.checked}})} />
+                        </label>
+                        <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer">
+                            <span className="text-xs font-bold text-zinc-400">Топик на каждую заявку</span>
+                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={bot.settings?.topicPerRequest} onChange={e => onUpdate({...bot, settings: {...bot.settings, topicPerRequest: e.target.checked}})} />
                         </label>
                     </div>
                 </div>
@@ -243,7 +258,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         )}
 
         {activeTab === 'stats' && <BotStatsView bot={bot} onUpdate={onUpdate} />}
-        {activeTab === 'logs' && <BotConsole logs={bot.logs || []} />}
+        {activeTab === 'logs' && <BotConsole botId={bot.id} />}
       </div>
     </div>
   );
