@@ -4,7 +4,7 @@ import { BotConfig, BotStatus } from '../types';
 import { api } from '../services/apiService';
 import BotConsole from './BotConsole';
 import BotStatsView from './BotStatsView';
-import { Settings, Cpu, MousePointer2, BarChart3, Terminal, X, Save, Power, Ticket, Info, Plus, MessageSquare, User } from 'lucide-react';
+import { Settings, Cpu, MousePointer2, BarChart3, Terminal, X, Save, Power, Ticket, Info, Plus, MessageSquare, User, EyeOff } from 'lucide-react';
 
 interface BotEditorProps {
   bot: BotConfig;
@@ -102,7 +102,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                 <label className="block">
                   <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Шаблон уведомлений админу</span>
                   <textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] focus:border-blue-500/50 outline-none transition-all resize-none shadow-inner text-xs" value={bot.settings?.adminMessageTemplate || ""} onChange={e => onUpdate({...bot, settings: {...bot.settings, adminMessageTemplate: e.target.value}})} placeholder="Напр: 👤 {{name}}\n🆔 {{id}}\n💬 {{text}}" />
-                  {/* Fix: Wrap literal double curly braces in strings to prevent JSX from interpreting them as object shorthand property expressions */}
                   <p className="text-[8px] text-zinc-600 mt-2 font-bold uppercase">Доступно: {"{{id}}, {{name}}, {{username}}, {{text}}"}</p>
                 </label>
               </div>
@@ -114,6 +113,13 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                         <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer">
                             <span className="text-xs font-bold text-zinc-400">Поддержка топиков (Forum)</span>
                             <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={bot.settings?.useTopics} onChange={e => onUpdate({...bot, settings: {...bot.settings, useTopics: e.target.checked}})} />
+                        </label>
+                        <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer group">
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-zinc-400">Анонимные топики</span>
+                                <EyeOff className="w-3 h-3 text-zinc-600 group-hover:text-blue-500 transition-colors" />
+                            </div>
+                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={bot.settings?.anonymousTopics} onChange={e => onUpdate({...bot, settings: {...bot.settings, anonymousTopics: e.target.checked}})} />
                         </label>
                         <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer">
                             <span className="text-xs font-bold text-zinc-400">Топик на каждую заявку</span>
