@@ -35,7 +35,8 @@ def get_anon_id(user_id: int) -> str:
 
 def format_admin_header(template: str, m: Message, settings: dict, is_first: bool = False, btn_text: str = "") -> str:
     """Формирование заголовка сообщения для администратора."""
-    if is_first:
+    # Если это первый контакт или нажатие кнопки-заявки — используем расширенный шаблон
+    if is_first or btn_text:
         if not template:
             template = "👤 <b>{{name}}</b>\n🆔 <code>{{id}}</code>\n💬 {{text}}"
         
@@ -44,8 +45,11 @@ def format_admin_header(template: str, m: Message, settings: dict, is_first: boo
         res = res.replace("{{username}}", f"@{m.from_user.username}" if m.from_user.username else "none")
         res = res.replace("{{button}}", btn_text or "—")
         res = res.replace("{{text}}", m.text or m.caption or "[Медиа]")
-        return f"🆕 <b>НОВОЕ ОБРАЩЕНИЕ</b>\n\n{res}\n\n"
+        
+        prefix = "🆕 <b>НОВОЕ ОБРАЩЕНИЕ</b>" if not btn_text else f"📩 <b>ЗАЯВКА: {btn_text}</b>"
+        return f"{prefix}\n\n{res}\n\n"
 
+    # Иначе компактный заголовок
     parts = []
     show_name = settings.get('showHeaderName', True)
     show_user = settings.get('showHeaderUsername', True)
@@ -83,6 +87,7 @@ class BotInstance:
         
         self.admin_id = None
         self.use_topics = False
+        self.topic_per_request = False
         self.settings = {}
         self.stats = {}
         self.buttons = []
@@ -108,7 +113,9 @@ class BotInstance:
         self.welcome_message = conf.get('welcomeMessage') or data.get('welcomeMessage', 'Привет!')
         self.settings = conf.get('settings', {})
         
+        # Обновляем флаги режимов
         self.use_topics = self.settings.get('useTopics', False)
+        self.topic_per_request = self.settings.get('topicPerRequest', False)
         self.admin_template = self.settings.get('adminMessageTemplate', "")
         self.auto_ban_threshold = int(self.settings.get('autoBanThreshold', 0))
 
@@ -132,7 +139,7 @@ class BotInstance:
             "totalMessages": 0, "incomingToday": 0, "outgoingToday": 0, "history": []
         }
         
-        logger.info(f"[{self.bot_id}] Config Refreshed: Admin={self.admin_id}, AutoBanThreshold={self.auto_ban_threshold}")
+        logger.info(f"[{self.bot_id}] Settings Sync: Admin={self.admin_id}, Topics={self.use_topics}, PerReq={self.topic_per_request}")
 
     async def remote_sync_poller(self):
         async with httpx.AsyncClient() as client:
@@ -221,19 +228,29 @@ class BotInstance:
             await self.sync_queue.put(("config", {}))
         return user, is_new
 
-    async def ensure_topic(self, user):
+    async def ensure_topic(self, user, force_new: bool = False):
+        """Гарантирует наличие топика. Если force_new=True или topicPerRequest=True, создает новый."""
         if not self.use_topics or not self.admin_id: 
             return None
             
-        if user.get("last_topic_id"): 
+        # Если НЕ просим новый и топик уже закреплен за юзером — используем его
+        if not force_new and user.get("last_topic_id"): 
             return user["last_topic_id"]
         
         try:
-            name = f"{user['first_name']} [{user['id']}]"
-            topic = await self.bot.create_forum_topic(self.admin_id, name)
+            # Формируем имя топика
+            topic_name = f"{user['first_name']} [{user['id']}]"
+            topic = await self.bot.create_forum_topic(self.admin_id, topic_name)
+            
+            # Обновляем данные пользователя
             user["last_topic_id"] = topic.message_thread_id
+            
+            # КРИТИЧНО: Сбрасываем время последнего заголовка, 
+            # чтобы в НОВОМ топике бот сразу напечатал инфо о юзере
             self.last_header_time[user['id']] = 0 
+            
             await self.sync_queue.put(("config", {}))
+            logger.info(f"Created topic {topic.message_thread_id} for user {user['id']}")
             return topic.message_thread_id
         except Exception as e:
             logger.error(f"Topic creation error: {e}")
@@ -242,12 +259,18 @@ class BotInstance:
     async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = ""):
         if not self.admin_id: return
         
-        thread_id = await self.ensure_topic(user)
+        # Определяем, нужно ли создавать новый топик прямо сейчас
+        # force_new срабатывает если включена настройка "топик на каждый запрос" и это реально новый запрос
+        force_new = self.topic_per_request and (is_first or btn_text != "")
+        
+        thread_id = await self.ensure_topic(user, force_new=force_new)
+        
         now = time.time()
         last_sent = self.last_header_time.get(user['id'], 0)
         
         header = ""
-        if is_first or (now - last_sent) > 600:
+        # Отправляем заголовок если это первый контакт, нажата кнопка или прошло 10 минут
+        if is_first or btn_text or (now - last_sent) > 600:
             header = format_admin_header(self.admin_template, m, self.settings, is_first, btn_text)
             if header: self.last_header_time[user['id']] = now
 
@@ -269,14 +292,16 @@ class BotInstance:
                 self.msg_map[sent.message_id] = user['id']
                 if len(self.msg_map) > 5000: self.msg_map.pop(next(iter(self.msg_map)))
         except Exception as e:
-            logger.error(f"Forward error: {e}")
+            logger.error(f"Forward error (thread {thread_id}): {e}")
 
     async def handle_admin_reply(self, m: Message):
         target_id = None
+        # В режиме топиков ищем юзера, за которым закреплен этот thread_id
         if m.message_thread_id:
             u = next((u for u in self.connected_users if u.get("last_topic_id") == m.message_thread_id), None)
             if u: target_id = u["id"]
         
+        # Если не нашли по топику, пробуем классический Reply-маппинг
         if not target_id and m.reply_to_message:
             target_id = self.msg_map.get(m.reply_to_message.message_id)
             if not target_id:
@@ -288,7 +313,7 @@ class BotInstance:
                 await self.bot.copy_message(target_id, m.chat.id, m.message_id)
                 await self.log_it(target_id, "Admin", m.text or "[Медиа]", is_admin=True)
             except Exception as e:
-                await m.reply(f"❌ Не удалось отправить: {e}")
+                await m.reply(f"❌ Не удалось отправить пользователю {target_id}: {e}")
 
     async def register_handlers(self):
         @self.router.message(CommandStart())
@@ -300,6 +325,7 @@ class BotInstance:
 
         @self.router.message(F.chat.id == self.admin_id)
         async def admin_input(m: Message):
+            # Обработка команд модерации
             if m.text and m.text.startswith(("/", "!")):
                 cmd_full = m.text.lower().split()
                 cmd = cmd_full[0][1:]
@@ -311,10 +337,7 @@ class BotInstance:
                 if not target and m.reply_to_message:
                     uid = self.msg_map.get(m.reply_to_message.message_id)
                     if uid: target = next((u for u in self.connected_users if u['id'] == uid), None)
-                    else:
-                        match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
-                        if match: target = next((u for u in self.connected_users if u['id'] == int(match.group(1))), None)
-
+                
                 if target:
                     uid = target['id']
                     if cmd == "ban":
@@ -329,30 +352,24 @@ class BotInstance:
                         await m.reply(f"✅ Пользователь <code>{uid}</code> разбанен.")
                     elif cmd == "warn":
                         target['warns'] = target.get('warns', 0) + 1
-                        current_warns = target['warns']
-                        
-                        # Логика авто-бана
-                        is_auto_banned = False
-                        if self.auto_ban_threshold > 0 and current_warns >= self.auto_ban_threshold:
-                            target['is_banned'] = True
-                            is_auto_banned = True
-                        
+                        curr = target['warns']
+                        is_auto = self.auto_ban_threshold > 0 and curr >= self.auto_ban_threshold
+                        if is_auto: target['is_banned'] = True
                         try:
-                            msg = f"⚠️ <b>Вам выдано предупреждение!</b>\nВсего варнов: {current_warns}/{self.auto_ban_threshold or '∞'}"
-                            if is_auto_banned:
-                                msg += "\n\n🚫 Вы автоматически заблокированы за превышение лимита предупреждений."
+                            msg = f"⚠️ <b>Вам выдано предупреждение!</b> ({curr}/{self.auto_ban_threshold or '∞'})"
+                            if is_auto: msg += "\n\n🚫 Авто-бан за лимит варнов."
                             await self.bot.send_message(uid, msg)
                         except: pass
-                        
-                        await m.reply(f"✅ Варн выдан ({current_warns})." + (" [AUTO-BAN]" if is_auto_banned else ""))
+                        await m.reply(f"✅ Варн ({curr})." + (" [AUTO-BAN]" if is_auto: else ""))
                     elif cmd == "unwarn":
                         target['warns'] = max(0, target.get('warns', 0) - 1)
-                        await m.reply(f"✅ Варн снят. Текущее количество: {target['warns']}")
+                        await m.reply(f"✅ Варн снят ({target['warns']})")
                     
                     await self.sync_queue.put(("config", {}))
                     return
-            
-            if m.reply_to_message or m.message_thread_id:
+
+            # Обычный ответ пользователю
+            if m.reply_to_message or (self.use_topics and m.message_thread_id):
                 await self.handle_admin_reply(m)
 
         @self.router.message()
@@ -365,15 +382,16 @@ class BotInstance:
                 txt = m.text.lower().strip()
                 for b in self.buttons:
                     if b.get('text') and b['text'].lower() == txt:
-                        if b.get('type') == 'request':
-                            await self.forward_to_admin(m, user, is_first=True, btn_text=b['text'])
+                        # Если кнопка типа "request" — форсим создание нового топика (если включено)
+                        is_req = b.get('type') == 'request'
+                        await self.forward_to_admin(m, user, is_first=is_new, btn_text=b['text'] if is_req else "")
                         if b.get('response'): await m.answer(b['response'])
-                        await self.log_it(user['id'], m.from_user.full_name, f"BTN: {b['text']}")
+                        await self.log_it(user['id'], m.from_user.full_name, f"Кнопка: {b['text']}")
                         return
                 for t in self.triggers:
                     if t.get('keyword') and t['keyword'].lower() in txt:
                         await m.answer(t['response'])
-                        await self.log_it(user['id'], m.from_user.full_name, f"TRG: {t['keyword']}")
+                        await self.log_it(user['id'], m.from_user.full_name, f"Триггер: {t['keyword']}")
                         return
 
             await self.forward_to_admin(m, user, is_first=is_new)
@@ -392,7 +410,7 @@ class BotInstance:
         asyncio.create_task(self.remote_sync_poller())
         await self.register_handlers()
         self.dp.include_router(self.router)
-        logger.info(f"✨ Бот {self.bot_id} готов к работе.")
+        logger.info(f"🚀 Инстанс {self.bot_id} запущен (Топики: {self.use_topics}, По заявкам: {self.topic_per_request})")
         await self.dp.start_polling(self.bot)
 
 if __name__ == "__main__":
