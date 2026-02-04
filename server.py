@@ -121,19 +121,35 @@ async def save_bot(bot: dict):
     db_bot = res.json()[0] if res.status_code == 200 and res.json() else {}
     db_config = db_bot.get("config") or {}
 
-    # УМНОЕ СЛИЯНИЕ СТАТИСТИКИ: берем только те данные, которые не обнуляют бота
+    # МЕРЖ ПОЛЬЗОВАТЕЛЕЙ: Приоритет данным из панели по варнам/банам
+    incoming_users = bot.get("connectedUsers") or []
+    db_users = db_config.get("connectedUsers") or []
+    
+    # Создаем карту существующих юзеров из БД
+    users_map = {u['id']: u for u in db_users}
+    
+    # Обновляем их данными из входящего запроса (модерация)
+    for iu in incoming_users:
+        uid = iu['id']
+        if uid in users_map:
+            # Обновляем только поля модерации
+            users_map[uid].update({
+                "is_banned": iu.get("is_banned", users_map[uid].get("is_banned", False)),
+                "warns": iu.get("warns", users_map[uid].get("warns", 0)),
+                "is_active": iu.get("is_active", users_map[uid].get("is_active", True))
+            })
+        else:
+            users_map[uid] = iu
+            
+    final_users = list(users_map.values())
+
+    # Статистика
     incoming_stats = bot.get("stats") or {}
     db_stats = db_config.get("stats") or {}
-    
-    # Если в базе стата новее/больше сообщений — оставляем её, а не ту, что прислал браузер
     if db_stats.get("totalMessages", 0) > incoming_stats.get("totalMessages", 0):
         final_stats = db_stats
     else:
         final_stats = incoming_stats
-
-    incoming_users = bot.get("connectedUsers") or []
-    db_users = db_config.get("connectedUsers") or []
-    final_users = incoming_users if len(incoming_users) >= len(db_users) else db_users
 
     config_keys = ["description", "adminChatId", "welcomeMessage", "triggers", "buttons", "settings", "subscribers"]
     config = {k: bot.get(k) for k in config_keys if k in bot}
@@ -195,6 +211,32 @@ async def get_user_bots(user_id: str):
 
 @app.get("/api/bots/logs/{bot_id}")
 async def logs(bot_id: str): return {"logs": pm.get_logs(bot_id)}
+
+@app.post("/api/bots/broadcast")
+async def broadcast(data: dict, background_tasks: BackgroundTasks):
+    bot_ids = data.get("botIds", [])
+    message = data.get("message", "")
+    if not bot_ids or not message: return {"success": 0, "failed": 0}
+    
+    success, failed = 0, 0
+    async with httpx.AsyncClient() as client:
+        for bid in bot_ids:
+            res = await db.get("bots", params={"id": f"eq.{bid}"})
+            if res.status_code == 200 and res.json():
+                bot_data = res.json()[0]
+                token = bot_data.get("token")
+                config = bot_data.get("config") or {}
+                users = config.get("connectedUsers") or []
+                subscribers = [u['id'] for u in users if u.get('is_active') and not u.get('is_banned')]
+                
+                for uid in subscribers:
+                    try:
+                        url = f"https://api.telegram.org/bot{token}/sendMessage"
+                        r = await client.post(url, json={"chat_id": uid, "text": message, "parse_mode": "HTML"}, timeout=5)
+                        if r.status_code == 200: success += 1
+                        else: failed += 1
+                    except: failed += 1
+    return {"success": success, "failed": failed}
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
