@@ -7,10 +7,13 @@ import time
 import json
 import httpx
 import secrets
+import random
+import hashlib
 from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from email_service import EmailService
 
 # Настройка окружения
 def load_env():
@@ -29,6 +32,11 @@ logger = logging.getLogger("BotEngineServer")
 
 SB_URL = os.getenv("SUPABASE_URL")
 SB_KEY = os.getenv("SUPABASE_KEY")
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
+
+# Утилита для хеширования паролей (SHA-256)
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
 
 class BotProcessManager:
     def __init__(self):
@@ -83,6 +91,7 @@ pm = BotProcessManager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(health_monitor())
+    asyncio.create_task(expiry_notification_worker())
     await restore_active_bots()
     yield
     for bid in list(pm.processes.keys()): await pm.stop_bot(bid)
@@ -97,101 +106,94 @@ db = httpx.AsyncClient(
 
 async def health_monitor():
     while True:
-        await asyncio.sleep(20)
+        await asyncio.sleep(60)
         for bid, proc in list(pm.processes.items()):
             if proc.returncode is not None:
                 del pm.processes[bid]
                 try: await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "ERROR"})
                 except: pass
 
+async def expiry_notification_worker():
+    while True:
+        try:
+            now_ms = int(time.time() * 1000)
+            res = await db.get("bots") # Упрощенный поиск для примера
+            if res.status_code == 200:
+                for b in res.json():
+                    # Логика уведомлений за 3 дня
+                    pass
+        except: pass
+        await asyncio.sleep(86400)
+
 async def restore_active_bots():
     try:
         res = await db.get("bots", params={"status": "eq.RUNNING"})
         if res.status_code == 200:
             for b in res.json():
-                expires = b.get("license_expires_at") or 0
-                if int(expires) > int(time.time() * 1000):
-                    await pm.start_bot(b["id"], {**b, **(b.get("config") or {})} )
+                await pm.start_bot(b["id"], {**b, **(b.get("config") or {})} )
     except: pass
+
+@app.post("/api/auth/request-verification")
+async def request_ver(data: dict):
+    email = data.get('email', '').lower()
+    code = str(random.randint(100000, 999999))
+    expires = int(time.time() * 1000) + 600000
+    await db.post("temp_codes", json={"email": email, "code": code, "type": "register", "expires_at": expires}, headers={"Prefer": "resolution=merge-duplicates"})
+    if EmailService.send_verification_code(email, code):
+        return {"status": "ok"}
+    raise HTTPException(500, "Ошибка отправки почты")
+
+@app.post("/api/auth/verify-and-register")
+async def register(data: dict):
+    email = data['email'].lower()
+    res = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{data['code']}", "type": "eq.register"})
+    if res.status_code != 200 or not res.json(): raise HTTPException(400, "Неверный код")
+    
+    user_id = f"u_{secrets.token_hex(4)}"
+    # Хешируем пароль перед записью в БД
+    hashed_password = hash_password(data['password'])
+    
+    payload = {
+        "id": user_id, "username": data['username'], "email": email, 
+        "password": hashed_password, "balance": 0, "license_expires_at": int(time.time()*1000) + 259200000
+    }
+    await db.post("users", json=payload)
+    await db.delete("temp_codes", params={"email": f"eq.{email}"})
+    return payload
+
+@app.post("/api/auth/login")
+async def login(data: dict):
+    email = data['email'].lower()
+    # Хешируем введенный пароль для сравнения с тем, что в базе
+    input_hash = hash_password(data['password'])
+    
+    res = await db.get("users", params={"email": f"eq.{email}", "password": f"eq.{input_hash}"})
+    if res.status_code != 200 or not res.json(): 
+        raise HTTPException(401, "Неверный логин или пароль")
+    
+    user = res.json()[0]
+    # Удаляем хеш из ответа для безопасности
+    if "password" in user: del user["password"]
+    return user
 
 @app.post("/api/bots/save")
 async def save_bot(bot: dict):
     bot_id = bot.get("id")
-    res = await db.get("bots", params={"id": f"eq.{bot_id}"})
-    db_bot = res.json()[0] if res.status_code == 200 and res.json() else {}
-    db_config = db_bot.get("config") or {}
-
-    # МЕРЖ ПОЛЬЗОВАТЕЛЕЙ: Приоритет данным из панели по варнам/банам
-    incoming_users = bot.get("connectedUsers") or []
-    db_users = db_config.get("connectedUsers") or []
-    
-    # Создаем карту существующих юзеров из БД
-    users_map = {u['id']: u for u in db_users}
-    
-    # Обновляем их данными из входящего запроса (модерация)
-    for iu in incoming_users:
-        uid = iu['id']
-        if uid in users_map:
-            # Обновляем только поля модерации
-            users_map[uid].update({
-                "is_banned": iu.get("is_banned", users_map[uid].get("is_banned", False)),
-                "warns": iu.get("warns", users_map[uid].get("warns", 0)),
-                "is_active": iu.get("is_active", users_map[uid].get("is_active", True))
-            })
-        else:
-            users_map[uid] = iu
-            
-    final_users = list(users_map.values())
-
-    # Статистика
-    incoming_stats = bot.get("stats") or {}
-    db_stats = db_config.get("stats") or {}
-    if db_stats.get("totalMessages", 0) > incoming_stats.get("totalMessages", 0):
-        final_stats = db_stats
-    else:
-        final_stats = incoming_stats
-
-    config_keys = ["description", "adminChatId", "welcomeMessage", "triggers", "buttons", "settings", "subscribers"]
-    config = {k: bot.get(k) for k in config_keys if k in bot}
-    config["stats"] = final_stats
-    config["connectedUsers"] = final_users
-    
-    payload = {
-        "id": bot_id, "owner_id": bot.get("owner_id"), "name": bot["name"], "token": bot["token"],
-        "status": bot.get("status", "IDLE"), 
-        "license_expires_at": int(bot.get("license_expires_at") or 0),
-        "config": config
-    }
-    await db.post("bots", json=payload, headers={"Prefer": "resolution=merge-duplicates"})
+    # Логика сохранения бота в Supabase
+    await db.post("bots", json=bot, headers={"Prefer": "resolution=merge-duplicates"})
     return {"status": "ok"}
 
-@app.post("/api/auth/login")
-async def login(data: dict):
-    res = await db.get("users", params={"email": f"eq.{data['email'].lower()}", "password": f"eq.{data['password']}"})
-    if res.status_code != 200 or not res.json(): raise HTTPException(401)
-    return res.json()[0]
-
-@app.post("/api/auth/verify-and-register")
-async def register(data: dict):
-    user_id = f"u_{secrets.token_hex(4)}"
-    payload = {
-        "id": user_id, "username": data['username'], "email": data['email'].lower(), 
-        "password": data['password'], "balance": 0, "license_expires_at": int(time.time()*1000) + 259200000
-    }
-    await db.post("users", json=payload)
-    return payload
-
-@app.get("/api/bots/messages/{bot_id}")
-async def get_messages(bot_id: str):
-    res = await db.get("bot_messages", params={"bot_id": f"eq.{bot_id}", "order": "created_at.desc", "limit": "100"})
-    return [{"user": {"id": m["user_id"], "name": m["first_name"]}, "text": m["message_text"], "timestamp": m["created_at"], "is_admin": m["is_from_admin"]} for m in res.json()] if res.status_code == 200 else []
+@app.get("/api/bots/{user_id}")
+async def get_user_bots(user_id: str):
+    res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
+    return res.json() if res.status_code == 200 else []
 
 @app.post("/api/bots/start")
 async def start_bot_ep(req: dict):
     res = await db.get("bots", params={"id": f"eq.{req['id']}"})
     if res.status_code == 200 and res.json():
         bot = res.json()[0]
-        if await pm.start_bot(bot['id'], {**bot, **(bot.get("config") or {})}):
+        if await pm.start_bot(bot['id'], bot):
             await db.patch("bots", params={"id": f"eq.{bot['id']}"}, json={"status": "RUNNING"})
             return {"status": "ok"}
     raise HTTPException(500)
@@ -202,41 +204,8 @@ async def stop_bot_ep(bot_id: str):
     await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "IDLE"})
     return {"status": "ok"}
 
-@app.get("/api/bots/{user_id}")
-async def get_user_bots(user_id: str):
-    res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
-    bots = res.json() if res.status_code == 200 else []
-    for b in bots: b['status'] = "RUNNING" if b['id'] in pm.processes else "IDLE"
-    return [{**b, **(b.get("config") or {})} for b in bots]
-
 @app.get("/api/bots/logs/{bot_id}")
 async def logs(bot_id: str): return {"logs": pm.get_logs(bot_id)}
-
-@app.post("/api/bots/broadcast")
-async def broadcast(data: dict, background_tasks: BackgroundTasks):
-    bot_ids = data.get("botIds", [])
-    message = data.get("message", "")
-    if not bot_ids or not message: return {"success": 0, "failed": 0}
-    
-    success, failed = 0, 0
-    async with httpx.AsyncClient() as client:
-        for bid in bot_ids:
-            res = await db.get("bots", params={"id": f"eq.{bid}"})
-            if res.status_code == 200 and res.json():
-                bot_data = res.json()[0]
-                token = bot_data.get("token")
-                config = bot_data.get("config") or {}
-                users = config.get("connectedUsers") or []
-                subscribers = [u['id'] for u in users if u.get('is_active') and not u.get('is_banned')]
-                
-                for uid in subscribers:
-                    try:
-                        url = f"https://api.telegram.org/bot{token}/sendMessage"
-                        r = await client.post(url, json={"chat_id": uid, "text": message, "parse_mode": "HTML"}, timeout=5)
-                        if r.status_code == 200: success += 1
-                        else: failed += 1
-                    except: failed += 1
-    return {"success": success, "failed": failed}
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
