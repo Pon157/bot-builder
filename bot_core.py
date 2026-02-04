@@ -56,25 +56,32 @@ class BotInstance:
         self.sync_queue = asyncio.Queue()
         self.is_running = True
 
+    def get_main_kb(self):
+        """Создает клавиатуру на основе настроек кнопок."""
+        vbs = [b for b in self.buttons if b.get('text')]
+        if not vbs: return None
+        rows = []
+        for i in range(0, len(vbs), 2):
+            rows.append([KeyboardButton(text=b['text']) for b in vbs[i:i+2]])
+        return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
     def refresh_config(self, data):
         conf = data.get('config') or data
         self.buttons = conf.get('buttons', [])
         self.triggers = conf.get('triggers', [])
         self.welcome_message = conf.get('welcomeMessage', 'Привет!')
         
-        # Умное обновление списка пользователей
+        # Обновление списка пользователей
         new_users = conf.get('connectedUsers', [])
         if not hasattr(self, 'connected_users'):
             self.connected_users = new_users
         else:
-            # Обновляем только тех, кто изменился в БД (варны, баны), но сохраняем thread_id из памяти
             for nu in new_users:
                 found = False
                 for ou in self.connected_users:
                     if ou['id'] == nu['id']:
                         ou['is_banned'] = nu.get('is_banned', False)
                         ou['warns'] = nu.get('warns', 0)
-                        # Не затираем last_topic_id если он есть в памяти
                         found = True
                         break
                 if not found:
@@ -162,7 +169,6 @@ class BotInstance:
             if point.get("date") == today:
                 point[direction] = point.get(direction, 0) + 1
                 point["totalUsers"] = len(self.connected_users)
-        # Пуш будет в stats_history_manager
 
     async def log_message(self, user_id, name, text, is_admin=False):
         payload = {
@@ -192,7 +198,6 @@ class BotInstance:
             name = f"User #{hashlib.md5(str(user['id']).encode()).hexdigest()[:4].upper()}" if self.anonymous_topics else f"{user['first_name']} [{user['id']}]"
             if suffix: name = f"{suffix} | {name}"
             topic = await self.bot.create_forum_topic(self.admin_id, name)
-            # Обновляем последний активный топик для юзера
             user['last_topic_id'] = topic.message_thread_id
             await self.sync_queue.put(("bot_config", {}))
             return topic.message_thread_id
@@ -201,7 +206,6 @@ class BotInstance:
             return None
 
     async def ensure_active_topic(self, user):
-        """Возвращает текущий активный топик или создает новый общий."""
         if not self.admin_id or not self.use_topics: return None
         if user.get("last_topic_id"): return user["last_topic_id"]
         return await self.create_new_topic(user)
@@ -219,7 +223,6 @@ class BotInstance:
             if not self.admin_id or m.chat.id != self.admin_id: return
             target_user = None
             if m.message_thread_id:
-                # Ищем юзера, у которого ЭТОТ топик был последним активным
                 target_user = next((u for u in self.connected_users if u.get("last_topic_id") == m.message_thread_id), None)
             
             if not target_user and m.reply_to_message:
@@ -234,8 +237,10 @@ class BotInstance:
                 target_user['warns'] = target_user.get('warns', 0) + 1
                 ban = self.auto_ban_threshold > 0 and target_user['warns'] >= self.auto_ban_threshold
                 target_user['is_banned'] = ban
-                try: await self.bot.send_message(uid, f"⚠️ <b>Вам выдано предупреждение!</b>\nВсего: {target_user['warns']}/{self.auto_ban_threshold or '∞'}")
-                except: pass
+                try: 
+                    await self.bot.send_message(uid, f"⚠️ <b>Вам выдано предупреждение!</b>\nВсего: {target_user['warns']}/{self.auto_ban_threshold or '∞'}")
+                except Exception as e:
+                    logger.error(f"Failed to send warn notification: {e}")
                 await m.reply(f"✅ Варн выдан. Текущее кол-во: {target_user['warns']}")
             elif cmd == "unwarn":
                 target_user['warns'] = max(0, target_user.get('warns', 0) - 1)
@@ -257,7 +262,6 @@ class BotInstance:
             if m.is_topic_message and not m.reply_to_message: return
             tid = m.message_thread_id
             target_id = None
-            # Ищем юзера по топику
             u = next((u for u in self.connected_users if u.get("last_topic_id") == tid), None)
             if u: target_id = u["id"]
             if not target_id:
@@ -276,13 +280,12 @@ class BotInstance:
             user = await self.get_or_create_user(m)
             if user.get("is_banned"): return
 
-            # Обработка кнопок
             if m.text:
                 low = m.text.lower().strip()
                 for btn in self.buttons:
                     if btn.get("text") and btn["text"].lower() == low:
                         if btn.get("type") == "request" and self.admin_id:
-                            # ПРИНУДИТЕЛЬНО создаем НОВЫЙ топик для каждой заявки
+                            # ПРИНУДИТЕЛЬНО создаем НОВЫЙ топик для каждой новой заявки
                             t_id = await self.create_new_topic(user, suffix=f"ЗАЯВКА: {btn['text']}")
                             await self.bot.send_message(self.admin_id, format_msg(btn.get("adminTemplate", self.admin_template), m, btn['text']), message_thread_id=t_id)
                         
@@ -295,7 +298,6 @@ class BotInstance:
                         await self.log_message(m.from_user.id, m.from_user.full_name, f"Триггер: {t['keyword']}")
                         return
 
-            # Обычное сообщение -> в последний активный топик
             if self.admin_id:
                 thread = await self.ensure_active_topic(user)
                 header = format_msg(self.admin_template, m)
