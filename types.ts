@@ -22,6 +22,8 @@ export interface StatPoint {
   date: string;
   incoming: number;
   outgoing: number;
+  totalUsers?: number;
+  activeUsers?: number;
 }
 
 export interface BotStats {
@@ -43,12 +45,12 @@ export interface MessageLog {
 
 export interface BotConfig {
   id: string;
-  ownerId: string;
+  owner_id: string;
   name: string;
   token: string;
   status: BotStatus;
-  createdAt: number;
-  licenseExpiresAt: number; // Лицензия теперь тут
+  created_at: number;
+  license_expires_at: number;
   usersCount: number;
   description: string;
   adminChatId: string;
@@ -73,7 +75,8 @@ export interface BotConfig {
     showUsername: boolean;
     autoApproveJoin: boolean;
     rateLimit: number;
-    autoBanThreshold: number; // Порог автобана
+    autoBanThreshold: number;
+    adminMessageTemplate?: string; // Новое поле
   };
 }
 
@@ -84,7 +87,7 @@ export interface User {
   password?: string;
   balance: number;
   botsCreated: number;
-  // Added properties to fix missing property errors in Sidebar.tsx and Auth.tsx
-  licenseExpiresAt: number;
+  license_expires_at: number;
   trialUsed?: boolean;
 }
+
