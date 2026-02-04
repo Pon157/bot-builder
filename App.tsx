@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { BotConfig, BotStatus, User } from './types';
 import Dashboard from './components/Dashboard';
@@ -19,6 +20,22 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  const syncData = async (userId: string) => {
+    try {
+      const [serverBots, updatedUser] = await Promise.all([
+        api.getBots(userId),
+        api.getUser(userId)
+      ]);
+      setBots(serverBots || []);
+      if (updatedUser) {
+        setUser(updatedUser);
+        localStorage.setItem('active_session_user', JSON.stringify(updatedUser));
+      }
+    } catch (e) {
+      console.error("Sync error:", e);
+    }
+  };
+
   useEffect(() => {
     const init = async () => {
       try {
@@ -27,8 +44,7 @@ const App: React.FC = () => {
           const parsedUser = JSON.parse(savedUserStr);
           if (parsedUser && parsedUser.id) {
             setUser(parsedUser);
-            const serverBots = await api.getBots(parsedUser.id);
-            setBots(serverBots || []);
+            await syncData(parsedUser.id);
           }
         }
       } catch (e) {
@@ -43,8 +59,7 @@ const App: React.FC = () => {
   const handleLogin = async (newUser: User) => {
     setUser(newUser);
     localStorage.setItem('active_session_user', JSON.stringify(newUser));
-    const serverBots = await api.getBots(newUser.id);
-    setBots(serverBots || []);
+    await syncData(newUser.id);
     setActiveTab('dashboard');
   };
 
@@ -80,7 +95,6 @@ const App: React.FC = () => {
       settings: { 
         useTopics: false, 
         topicPerRequest: false, 
-        // Added missing required property 'anonymousTopics'
         anonymousTopics: false,
         autoApproveJoin: false, 
         forwardToAdmin: true, 
@@ -88,7 +102,10 @@ const App: React.FC = () => {
         rateLimit: 15, 
         showUserInfo: true, 
         showUsername: true, 
-        autoBanThreshold: 0 
+        autoBanThreshold: 0,
+        showHeaderId: true,
+        showHeaderName: true,
+        showHeaderUsername: true
       }
     };
     try {
@@ -122,8 +139,8 @@ const App: React.FC = () => {
         <main className="flex-1 overflow-y-auto p-4 md:p-12 no-scrollbar">
           <div className="max-w-6xl mx-auto">
             {activeTab === 'dashboard' && <Dashboard bots={bots} onSelectBot={(id) => { setSelectedBotId(id); setActiveTab('editor'); }} onAddBot={() => setIsModalOpen(true)} />}
-            {activeTab === 'profile' && <Profile user={user} bots={bots} onUpdateBots={setBots} />}
-            {activeTab === 'editor' && activeBot && <BotEditor bot={activeBot} onUpdate={(u) => setBots(prev => prev.map(b => b.id === u.id ? u : b))} onDelete={() => api.deleteBot(user.id, activeBot.id)} />}
+            {activeTab === 'profile' && <Profile user={user} bots={bots} onUpdateBots={(updated) => { setBots(updated); syncData(user.id); }} />}
+            {activeTab === 'editor' && activeBot && <BotEditor bot={activeBot} onUpdate={(u) => setBots(prev => prev.map(b => b.id === u.id ? u : b))} onDelete={() => { api.deleteBot(user.id, activeBot.id); syncData(user.id); }} />}
             {activeTab === 'broadcast' && <BroadcastManager bots={bots} />}
           </div>
         </main>
