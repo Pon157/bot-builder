@@ -31,6 +31,7 @@ logger = logging.getLogger("BotCore")
 
 # --- Утилиты ---
 def get_anon_id(user_id: int) -> str:
+    """Генерирует уникальный короткий хеш для анонимности."""
     return hashlib.md5(str(user_id).encode()).hexdigest()[:6].upper()
 
 def format_header(m: Message, settings: dict, is_anon: bool = False) -> str:
@@ -52,7 +53,11 @@ def format_header(m: Message, settings: dict, is_anon: bool = False) -> str:
     if show_id:
         parts.append(f"ID: <code>{m.from_user.id}</code>")
     
-    return "📩 " + " | ".join(parts) if parts else "📩 Сообщение"
+    # Если не выбрано ни одного поля — генерируем анонимный ID
+    if not parts:
+        return f"👤 <b>User #{get_anon_id(m.from_user.id)}</b>"
+    
+    return "📩 " + " | ".join(parts)
 
 class RateLimiter:
     """Простая защита от флуда."""
