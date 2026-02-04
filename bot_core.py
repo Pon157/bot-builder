@@ -18,7 +18,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger("BotCore")
 
 def format_msg(template: str, m: Message, btn_text: str = "", extra_text: str = "") -> str:
+    """Универсальный форматер для уведомлений админа и приветствий."""
     if not template: 
+        # Дефолтный шаблон, если пользователь ничего не ввел
         return f"📩 <b>Сообщение от {m.from_user.full_name}</b>\nID: <code>{m.from_user.id}</code>"
     
     res = template.replace("{{id}}", str(m.from_user.id))
@@ -64,6 +66,7 @@ class BotInstance:
         self.sync_queue = asyncio.Queue()
 
     async def db_sync_worker(self):
+        """Фоновый процесс для записи статистики и сообщений в Supabase."""
         async with httpx.AsyncClient() as client:
             headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}", "Content-Type": "application/json"}
             while True:
@@ -78,7 +81,8 @@ class BotInstance:
                                 **self.config.get("config", {}),
                                 "connectedUsers": self.connected_users,
                                 "subscribers": self.subscribers,
-                                "stats": self.stats
+                                "stats": self.stats,
+                                "settings": self.settings
                             }
                         }
                         await client.patch(f"{self.sb_url.rstrip('/')}/rest/v1/bots?id=eq.{self.bot_id}", json=payload, headers=headers)
@@ -120,6 +124,7 @@ class BotInstance:
         return user_obj
 
     async def ensure_thread(self, user):
+        """Гарантирует, что у пользователя есть свой топик в админ-чате."""
         if not self.admin_id or not self.use_topics: return None
         if user.get("thread_id"): return user["thread_id"]
         
@@ -128,13 +133,15 @@ class BotInstance:
                 self.admin_id, 
                 f"{user['first_name']} [{user['id']}]"
             )
-            user["thread_id"] = topic.message_thread_id
+            thread_id = topic.message_thread_id
+            user["thread_id"] = thread_id
+            # Обновляем в списке
             for u in self.connected_users:
-                if u['id'] == user['id']: u['thread_id'] = topic.message_thread_id
+                if u['id'] == user['id']: u['thread_id'] = thread_id
             await self.sync_queue.put(("bot_config", {}))
-            return topic.message_thread_id
+            return thread_id
         except Exception as e:
-            logger.error(f"Topic error: {e}")
+            logger.error(f"Topic creation failed: {e}")
             return None
 
     def get_main_kb(self):
@@ -163,7 +170,7 @@ class BotInstance:
                 match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
                 if match: target_user = next((u for u in self.connected_users if u["id"] == int(match.group(1))), None)
 
-            if not target_user: return await m.reply("❌ Юзер не найден")
+            if not target_user: return await m.reply("❌ Пользователь не найден в базе данных.")
             
             cmd = m.text.split()[0].replace("/", "").lower()
             uid = target_user['id']
@@ -171,26 +178,32 @@ class BotInstance:
                 target_user['warns'] = target_user.get('warns', 0) + 1
                 ban = self.auto_ban_threshold > 0 and target_user['warns'] >= self.auto_ban_threshold
                 target_user['is_banned'] = ban
-                await self.bot.send_message(uid, f"⚠️ Варн! Всего: {target_user['warns']}" + ("\n🚫 Бан." if ban else ""))
-                await m.reply(f"✅ Выдан варн. Всего: {target_user['warns']}")
+                try: await self.bot.send_message(uid, f"⚠️ Вы получили предупреждение от администратора.\nВсего варнов: {target_user['warns']}" + ("\n🚫 Вы автоматически заблокированы." if ban else ""))
+                except: pass
+                await m.reply(f"✅ Варн выдан. Текущее кол-во: {target_user['warns']}")
             elif cmd == "ban":
                 target_user['is_banned'] = True
-                await self.bot.send_message(uid, "🚫 Вы забанены.")
-                await m.reply("✅ Бан.")
+                try: await self.bot.send_message(uid, "🚫 Вы были заблокированы администратором.")
+                except: pass
+                await m.reply(f"✅ Пользователь {uid} забанен.")
             elif cmd == "unban":
                 target_user['is_banned'] = False
-                await self.bot.send_message(uid, "✅ Разбан.")
-                await m.reply("✅ Разбан.")
+                try: await self.bot.send_message(uid, "✅ Вы были разблокированы администратором!")
+                except: pass
+                await m.reply(f"✅ Пользователь {uid} разбанен.")
             await self.sync_queue.put(("bot_config", {}))
 
         @self.router.message(F.chat.id == self.admin_id, F.reply_to_message)
         async def admin_reply(m: Message):
+            """Ответ админа пользователю."""
             if m.is_topic_message and not m.reply_to_message: return
             tid = m.message_thread_id
             target_id = None
+            # 1. Поиск по топику
             if tid:
                 u = next((u for u in self.connected_users if u.get("thread_id") == tid), None)
                 if u: target_id = u["id"]
+            # 2. Поиск по тексту в реплае
             if not target_id:
                 match = re.search(r"ID: (\d+)", m.reply_to_message.text or m.reply_to_message.caption or "")
                 if match: target_id = int(match.group(1))
@@ -199,14 +212,17 @@ class BotInstance:
                 try:
                     await self.bot.copy_message(target_id, m.chat.id, m.message_id)
                     await self.log_message(target_id, "Admin", m.text or "[Медиа]", is_admin=True)
-                except Exception as e: await m.reply(f"❌ Ошибка: {e}")
+                except Exception as e: 
+                    await m.reply(f"❌ Ошибка отправки: {e}")
 
         @self.router.message()
         async def main_handler(m: Message):
+            """Основной обработчик сообщений от пользователей."""
             if self.admin_id and m.chat.id == self.admin_id: return
             user = await self.get_or_create_user(m)
             if user.get("is_banned"): return
 
+            # Логика кнопок и триггеров
             if m.text:
                 low = m.text.lower().strip()
                 for btn in self.buttons:
@@ -215,18 +231,20 @@ class BotInstance:
                             thread = await self.ensure_thread(user)
                             txt = format_msg(btn.get("adminTemplate", self.admin_template), m, btn['text'])
                             await self.bot.send_message(self.admin_id, txt, message_thread_id=thread)
-                        await m.answer(btn.get("response", "Ок"), reply_markup=self.get_main_kb())
-                        await self.log_message(m.from_user.id, m.from_user.full_name, f"Кнопка: {btn['text']}")
+                        await m.answer(btn.get("response", "Запрос принят."), reply_markup=self.get_main_kb())
+                        await self.log_message(m.from_user.id, m.from_user.full_name, f"Нажата кнопка: {btn['text']}")
                         return
                 for t in self.triggers:
                     if t.get("keyword") and t["keyword"].lower() in low:
                         await m.answer(t["response"])
-                        await self.log_message(m.from_user.id, m.from_user.full_name, f"Триггер: {t['keyword']}")
+                        await self.log_message(m.from_user.id, m.from_user.full_name, f"Сработал триггер: {t['keyword']}")
                         return
 
+            # Livegram Mode (Пересылка админу)
             if self.admin_id:
                 thread = await self.ensure_thread(user)
                 header = format_msg(self.admin_template, m)
+                # Отправляем уведомление и копируем сообщение В ТОТ ЖЕ ТОПИК
                 await self.bot.send_message(self.admin_id, header, message_thread_id=thread)
                 await self.bot.copy_message(self.admin_id, m.chat.id, m.message_id, message_thread_id=thread)
                 await self.log_message(m.from_user.id, m.from_user.full_name, m.text or "[Медиа]")
@@ -235,6 +253,7 @@ class BotInstance:
         asyncio.create_task(self.db_sync_worker())
         await self.register_handlers()
         self.dp.include_router(self.router)
+        logger.info(f"BotInstance {self.bot_id} started polling.")
         await self.dp.start_polling(self.bot)
 
 if __name__ == "__main__":
@@ -242,4 +261,5 @@ if __name__ == "__main__":
     try:
         with open(sys.argv[1], 'r', encoding='utf-8') as f: cfg = json.load(f)
         asyncio.run(BotInstance(cfg).run())
-    except Exception as e: logger.error(f"FATAL: {e}")
+    except Exception as e: 
+        logger.error(f"FATAL ERROR IN CORE: {e}")
