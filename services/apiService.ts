@@ -48,7 +48,6 @@ export const api = {
     return await response.json();
   },
 
-  // Fix: Add missing requestVerification method
   requestVerification: async (email: string) => {
     const response = await fetchWithTimeout(`${API_BASE}/auth/request-verification`, {
       method: 'POST',
@@ -61,9 +60,8 @@ export const api = {
     return true;
   },
 
-  // Fix: Add missing verifyAndRegister method
   verifyAndRegister: async (data: any): Promise<User | null> => {
-    const response = await fetchWithTimeout(`${API_BASE}/auth/verify-register`, {
+    const response = await fetchWithTimeout(`${API_BASE}/auth/verify-and-register`, {
       method: 'POST',
       body: JSON.stringify(data)
     });
@@ -74,7 +72,6 @@ export const api = {
     return await response.json();
   },
 
-  // Fix: Add missing forgotPassword method
   forgotPassword: async (email: string) => {
     const response = await fetchWithTimeout(`${API_BASE}/auth/forgot-password`, {
       method: 'POST',
@@ -87,7 +84,6 @@ export const api = {
     return true;
   },
 
-  // Fix: Add missing resetPassword method
   resetPassword: async (data: any) => {
     const response = await fetchWithTimeout(`${API_BASE}/auth/reset-password`, {
       method: 'POST',
@@ -106,7 +102,14 @@ export const api = {
       const response = await fetchWithTimeout(`${API_BASE}/bots/${userId}`, { method: 'GET' });
       if (!response.ok) return [];
       const data = await response.json();
-      return data.map((b: any) => ({ ...b, settings: b.config?.settings || b.settings, ...b.config }));
+      return data.map((b: any) => ({ 
+        ...b, 
+        settings: b.config?.settings || b.settings,
+        buttons: b.config?.buttons || [],
+        triggers: b.config?.triggers || [],
+        stats: b.config?.stats || b.stats,
+        connectedUsers: b.config?.connectedUsers || []
+      }));
     } catch (e) { return []; }
   },
 
@@ -140,7 +143,8 @@ export const api = {
   },
 
   getBotMessages: async (bot_id: string): Promise<any[]> => {
-    return []; // Заглушка, если эндпоинт еще не реализован полностью
+    const response = await fetchWithTimeout(`${API_BASE}/bots/messages/${bot_id}`, { method: 'GET' });
+    return response.ok ? await response.json() : [];
   },
 
   sendBroadcast: async (botIds: string[], message: string) => {
