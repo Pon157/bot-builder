@@ -1,4 +1,3 @@
-
 import asyncio
 import logging
 import os
@@ -156,7 +155,6 @@ async def verify_and_register(data: dict):
 async def login(data: dict):
     email = data.get("email", "").lower().strip()
     password = data.get("password")
-    # Используем params вместо ручных фильтров в URL
     params = {"email": f"eq.{email}", "password": f"eq.{password}"}
     res = await db.request("GET", "users", params=params)
     if not res: raise HTTPException(401, "Неверный Email или пароль")
@@ -193,6 +191,12 @@ async def save_bot(bot: dict):
     if not res: raise HTTPException(500, "Ошибка сохранения")
     return {"status": "ok"}
 
+@app.delete("/api/bots/delete/{user_id}/{bot_id}")
+async def delete_bot(user_id: str, bot_id: str):
+    pm.stop_bot(bot_id)
+    await db.request("DELETE", "bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}"})
+    return {"status": "ok"}
+
 @app.post("/api/bots/start")
 async def start_bot_endpoint(req: dict):
     bot_id, token, code = req.get('id'), req.get('token'), req.get('code')
@@ -206,6 +210,43 @@ async def stop_bot_endpoint(bot_id: str):
     pm.stop_bot(bot_id)
     await db.request("PATCH", "bots", params={"id": f"eq.{bot_id}"}, json_data={"status": "IDLE"})
     return {"status": "ok"}
+
+@app.post("/api/admin/generate-key")
+async def generate_key(req: dict, x_admin_token: str = Header(None)):
+    if x_admin_token != ADMIN_SECRET:
+        raise HTTPException(401, "Invalid secret")
+    months = req.get("months", 1)
+    new_key = f"BOT-{months}-{''.join(random.choices('ABCDEF0123456789', k=8))}"
+    payload = {"key": new_key, "months": months, "used": False}
+    await db.request("POST", "license_keys", json_data=payload)
+    return {"key": new_key}
+
+@app.post("/api/license/activate")
+async def activate_license(req: dict):
+    bot_id = req.get("botId")
+    key_str = req.get("key")
+    res = await db.request("GET", "license_keys", params={"key": f"eq.{key_str}", "used": "is.false"})
+    if not res: raise HTTPException(400, "Ключ недействителен или уже использован")
+    key_data = res[0]
+    
+    bot_res = await db.request("GET", "bots", params={"id": f"eq.{bot_id}"})
+    if not bot_res: raise HTTPException(404, "Бот не найден")
+    bot_data = bot_res[0]
+    
+    current_expiry = bot_data.get("license_expires_at", int(time.time() * 1000))
+    now_ms = int(time.time() * 1000)
+    base_time = max(current_expiry, now_ms)
+    new_expiry = base_time + (key_data["months"] * 30 * 24 * 3600 * 1000)
+    
+    await db.request("PATCH", "bots", params={"id": f"eq.{bot_id}"}, json_data={"license_expires_at": new_expiry})
+    await db.request("PATCH", "license_keys", params={"key": f"eq.{key_str}"}, json_data={"used": True})
+    
+    return {"status": "ok", "newExpiry": new_expiry}
+
+@app.post("/api/bots/broadcast")
+async def broadcast_endpoint(req: dict):
+    # Skeleton implementation
+    return {"success": len(req.get('botIds', [])), "failed": 0}
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
