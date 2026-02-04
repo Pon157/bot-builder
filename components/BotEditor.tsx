@@ -4,7 +4,7 @@ import { BotConfig, BotStatus } from '../types';
 import { api } from '../services/apiService';
 import BotConsole from './BotConsole';
 import BotStatsView from './BotStatsView';
-import { Settings, Cpu, MousePointer2, BarChart3, Terminal, X, Save, Power, Ticket, Info, Plus, MessageSquare, User, EyeOff } from 'lucide-react';
+import { Settings, Cpu, MousePointer2, BarChart3, Terminal, X, Save, Power, Ticket, Info, Plus, MessageSquare, User, EyeOff, CheckSquare, Square } from 'lucide-react';
 
 interface BotEditorProps {
   bot: BotConfig;
@@ -43,6 +43,16 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
       alert("Сохранено!");
     } catch (e: any) { alert("Ошибка!"); }
     finally { setIsProcessing(false); }
+  };
+
+  const toggleSetting = (key: keyof BotConfig['settings']) => {
+    onUpdate({
+      ...bot,
+      settings: {
+        ...bot.settings,
+        [key]: !bot.settings[key]
+      }
+    });
   };
 
   return (
@@ -105,7 +115,28 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                   <p className="text-[8px] text-zinc-600 mt-2 font-bold uppercase">Доступно: {"{{id}}, {{name}}, {{username}}, {{text}}"}</p>
                 </label>
               </div>
+
+              <div className="pt-6 border-t border-zinc-800 space-y-4">
+                  <h3 className="text-xs font-black text-white uppercase tracking-widest">Внешний вид заголовка (без топиков)</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      {[
+                        { key: 'showHeaderId', label: 'ID Юзера' },
+                        { key: 'showHeaderName', label: 'Имя' },
+                        { key: 'showHeaderUsername', label: 'Username' }
+                      ].map(item => (
+                        <button 
+                            key={item.key}
+                            onClick={() => toggleSetting(item.key as any)}
+                            className={`flex items-center gap-3 p-4 rounded-2xl border transition-all ${bot.settings[item.key as keyof BotConfig['settings']] ? 'bg-blue-600/10 border-blue-500/30 text-blue-500' : 'bg-black border-zinc-800 text-zinc-600'}`}
+                        >
+                            {bot.settings[item.key as keyof BotConfig['settings']] ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+                            <span className="text-[10px] font-bold uppercase">{item.label}</span>
+                        </button>
+                      ))}
+                  </div>
+              </div>
             </div>
+            
             <div className="space-y-6">
                 <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-4">
                     <h3 className="text-xs font-black text-white uppercase mb-2">Настройки функций</h3>
