@@ -1,5 +1,5 @@
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { Terminal, RefreshCw, Zap } from 'lucide-react';
 import { api } from '../services/apiService';
 
@@ -11,6 +11,22 @@ const BotConsole: React.FC<BotConsoleProps> = ({ botId }) => {
   const [logs, setLogs] = useState<string>('Подключение к серверу логов...');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const scrollRef = useRef<HTMLPreElement>(null);
+
+  // Функция для маскирования конфиденциальных данных
+  const maskSensitiveInfo = (text: string) => {
+    if (!text) return text;
+    
+    // 1. Маскируем поддомены supabase.co (например, hjureycxvbprcfyfeeir.supabase.co)
+    let masked = text.replace(/https:\/\/([a-z0-9]+)\.supabase\.co/gi, 'https://[SECURE_DATABASE_ENDPOINT].supabase.co');
+    
+    // 2. Маскируем токены ботов, если они вдруг попали в логи (формат 123456:ABC-DEF...)
+    masked = masked.replace(/\d{8,10}:[a-zA-Z0-9_-]{35}/g, '[BOT_TOKEN_HIDDEN]');
+
+    // 3. Маскируем Bearer токены в заголовках, если они видны
+    masked = masked.replace(/Bearer\s+[a-zA-Z0-9._-]{20,}/g, 'Bearer [AUTH_TOKEN_MASKED]');
+
+    return masked;
+  };
 
   const fetchLogs = async () => {
     setIsRefreshing(true);
@@ -31,6 +47,9 @@ const BotConsole: React.FC<BotConsoleProps> = ({ botId }) => {
     }
   }, [logs]);
 
+  // Используем useMemo для эффективной обработки текста
+  const processedLogs = useMemo(() => maskSensitiveInfo(logs), [logs]);
+
   return (
     <div className="bg-[#0a0a0a] border border-zinc-800 rounded-3xl overflow-hidden flex flex-col h-[500px] shadow-2xl">
       <div className="bg-[#111] px-6 py-4 border-b border-zinc-800 flex items-center justify-between">
@@ -44,6 +63,10 @@ const BotConsole: React.FC<BotConsoleProps> = ({ botId }) => {
           </div>
         </div>
         <div className="flex items-center gap-4">
+            <div className="flex items-center gap-1 bg-emerald-500/10 px-2 py-1 rounded-md border border-emerald-500/20">
+              <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></div>
+              <span className="text-[8px] font-black text-emerald-500 uppercase">Privacy Filter Active</span>
+            </div>
             <button 
                 onClick={fetchLogs}
                 disabled={isRefreshing}
@@ -59,7 +82,7 @@ const BotConsole: React.FC<BotConsoleProps> = ({ botId }) => {
             ref={scrollRef}
             className="h-full overflow-y-auto no-scrollbar text-zinc-400 whitespace-pre-wrap leading-relaxed"
         >
-            {logs || 'Логи пусты.'}
+            {processedLogs || 'Логи пусты.'}
         </pre>
       </div>
       
