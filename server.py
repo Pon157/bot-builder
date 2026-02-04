@@ -11,11 +11,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 
-# Настройка логов
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+# Настройка логов для PM2
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 logger = logging.getLogger("BotEngine")
 
-# Менеджер процессов ботов
 class BotProcessManager:
     def __init__(self):
         self.processes: Dict[str, subprocess.Popen] = {}
@@ -27,42 +30,36 @@ class BotProcessManager:
         with open(filename, "w", encoding="utf-8") as f:
             f.write(code)
         try:
-            # Запускаем в новом процессе
             process = subprocess.Popen([sys.executable, filename])
             self.processes[bot_id] = process
-            logger.info(f"Bot {bot_id} started (PID: {process.pid})")
+            logger.info(f"🚀 Бот {bot_id} запущен (PID: {process.pid})")
             return True
         except Exception as e:
-            logger.error(f"Failed to start bot {bot_id}: {e}")
+            logger.error(f"❌ Ошибка запуска бота {bot_id}: {e}")
             return False
 
     def stop_bot(self, bot_id: str):
         if bot_id in self.processes:
             p = self.processes[bot_id]
             p.terminate()
-            try:
-                p.wait(timeout=5)
-            except:
-                p.kill()
             del self.processes[bot_id]
-            logger.info(f"Bot {bot_id} stopped")
+            logger.info(f"🛑 Бот {bot_id} остановлен")
             return True
         return False
 
-    def stop_all(self):
-        for bid in list(self.processes.keys()): self.stop_bot(bid)
-
 pm = BotProcessManager()
 
-# Инициализация FastAPI с отключенными редиректами
-app = FastAPI(title="BotEngine API", redirect_slashes=False)
+# redirect_slashes=True поможет FastAPI ловить пути и со слешем и без
+app = FastAPI(title="BotEngine API", redirect_slashes=True)
 
-# Middleware для отладки: выводит все запросы в консоль PM2
 @app.middleware("http")
-async def log_requests(request: Request, call_next):
-    logger.info(f"Incoming request: {request.method} {request.url.path}")
+async def log_every_single_request(request: Request, call_next):
+    # Это появится в pm2 logs 29
+    logger.info(f"📥 Входящий запрос: {request.method} {request.url.path}")
+    start_time = time.time()
     response = await call_next(request)
-    logger.info(f"Response status: {response.status_code}")
+    process_time = time.time() - start_time
+    logger.info(f"📤 Ответ: {response.status_code} (время: {process_time:.4f}s)")
     return response
 
 app.add_middleware(
@@ -73,21 +70,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Модели
-class BotStartReq(BaseModel):
-    id: str
-    token: str
-    code: str
-
-# --- ЭНДПОИНТЫ ---
+# --- РОУТЫ ---
 
 @app.get("/api/ping")
+@app.get("/api/ping/")
 async def ping():
-    return {"status": "online", "timestamp": time.time()}
+    return {"status": "online", "server_time": time.time()}
 
 @app.post("/api/auth/login")
+@app.post("/api/auth/login/")
 async def login(data: dict):
-    # Демо-вход
+    logger.info(f"Попытка входа: {data.get('email')}")
     return {
         "id": "admin", 
         "username": "Admin", 
@@ -98,10 +91,11 @@ async def login(data: dict):
     }
 
 @app.post("/api/auth/request-verification")
+@app.post("/api/auth/request-verification/")
 async def verify(data: dict):
     email = data.get("email", "unknown")
-    logger.info(f"!!! Verification hit !!! Email: {email}")
-    return {"status": "ok", "message": "Code sent (simulated)"}
+    logger.info(f"✅ ВЕРИФИКАЦИЯ ВЫЗВАНА для: {email}")
+    return {"status": "ok", "message": "Verification simulated"}
 
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
@@ -109,34 +103,21 @@ async def get_bots(user_id: str):
 
 @app.post("/api/bots/save")
 async def save_bot(bot: dict):
+    logger.info(f"Сохранение бота: {bot.get('name')}")
     return {"status": "ok"}
 
 @app.post("/api/bots/start")
-async def start_bot(req: BotStartReq):
-    if pm.start_bot(req.id, req.token, req.code):
+async def start_bot_endpoint(req: dict):
+    # Используем dict для гибкости
+    if pm.start_bot(req['id'], req['token'], req['code']):
         return {"status": "ok"}
-    raise HTTPException(status_code=500, detail="Failed to start bot process")
+    raise HTTPException(status_code=500, detail="Start failed")
 
 @app.post("/api/bots/stop/{bot_id}")
 async def stop_bot_endpoint(bot_id: str):
     pm.stop_bot(bot_id)
     return {"status": "ok"}
 
-@app.delete("/api/bots/{user_id}/{bot_id}")
-async def delete_bot(user_id: str, bot_id: str):
-    pm.stop_bot(bot_id)
-    return {"status": "ok"}
-
-@app.post("/api/license/activate")
-async def activate_lic(data: dict):
-    return {"status": "ok", "newExpiry": int(time.time()*1000) + 2592000000}
-
-# Эндпоинт для генерации ключей (вызывается из license_bot.py)
-@app.post("/api/admin/generate-key")
-async def gen_key(data: dict, x_admin_token: str = Header(None)):
-    if x_admin_token != "MRAKOTIK":
-        raise HTTPException(status_code=403)
-    return {"key": f"KEY-{int(time.time())}"}
-
 if __name__ == "__main__":
+    logger.info("🔥 Сервер запускается на порту 8000...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
