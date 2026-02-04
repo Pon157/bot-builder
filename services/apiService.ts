@@ -91,8 +91,7 @@ export const api = {
   },
 
   deleteBot: async (userId: string, botId: string): Promise<void> => {
-    // Implement delete on backend if needed
-    // await fetchWithTimeout(`${getApiBase()}/bots/${userId}/${botId}`, { method: 'DELETE' });
+    // Optional: add delete logic
   },
 
   startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
@@ -122,23 +121,37 @@ export const api = {
     return response.ok ? await response.json() : { status: 'error' };
   },
 
-  // Fix: Added missing sendBroadcast method to match usage in BroadcastManager.tsx
   sendBroadcast: async (botIds: string[], message: string): Promise<{ success: number; failed: number } | null> => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/bots/broadcast`, {
         method: 'POST',
         body: JSON.stringify({ botIds, message })
       });
-      if (response.ok) {
-        return await response.json();
-      }
-      return null;
-    } catch (e) {
-      console.error('Broadcast Error:', e);
-      return null;
-    }
+      return response.ok ? await response.json() : null;
+    } catch (e) { return null; }
   },
 
-  forgotPassword: async (email: string) => true,
-  resetPassword: async (data: any) => true,
+  forgotPassword: async (email: string): Promise<boolean | string> => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/auth/forgot-password`, {
+        method: 'POST',
+        body: JSON.stringify({ email })
+      });
+      if (response.ok) return true;
+      const err = await response.json();
+      return err.detail || 'Error';
+    } catch (err: any) { return err.message; }
+  },
+
+  resetPassword: async (data: any): Promise<boolean> => {
+    const response = await fetchWithTimeout(`${getApiBase()}/auth/reset-password`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+    if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || 'Reset failed');
+    }
+    return true;
+  },
 };
