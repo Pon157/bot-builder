@@ -21,12 +21,12 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
     try {
       const res = await api.activateLicense(selectedBotId, activationKey);
       if (res && res.status === 'ok') {
-        const updatedBots = bots.map(b => b.id === selectedBotId ? { ...b, license_expires_at: Number(res.newExpiry) } : b);
+        const updatedBots = bots.map(b => b.id === selectedBotId ? { ...b, licenseExpiresAt: res.newExpiry } : b);
         onUpdateBots(updatedBots);
         alert("Лицензия бота успешно продлена!");
         setActivationKey('');
       } else {
-        alert("Ошибка активации: " + (res.message || "Неверный ключ"));
+        alert("Ошибка активации: Неверный формат или ключ не найден");
       }
     } catch (e) {
       alert("Ошибка сервера при активации");
@@ -39,7 +39,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
     <div className="space-y-8 md:space-y-12 animate-in fade-in duration-500 pb-10">
       <header>
         <h1 className="text-2xl md:text-3xl font-bold mb-2 text-white">Управление лицензиями</h1>
-        <p className="text-sm text-zinc-500">Активируйте ключи или промокоды для конкретных ботов.</p>
+        <p className="text-sm text-zinc-500">Активируйте ключи для конкретных ботов. Один ключ — один бот.</p>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 md:gap-8">
@@ -51,8 +51,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
                 </h3>
                 <div className="space-y-3">
                     {bots.map(bot => {
-                        const expiry = Number(bot.license_expires_at || 0);
-                        const days = Math.max(0, Math.ceil((expiry - Date.now()) / (1000 * 3600 * 24)));
+                        const days = Math.max(0, Math.ceil((bot.licenseExpiresAt - Date.now()) / (1000 * 3600 * 24)));
                         const expired = days === 0;
                         return (
                             <div key={bot.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-black border border-zinc-800 rounded-2xl gap-3">
@@ -64,7 +63,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
                                     <p className={`text-xs font-black uppercase tracking-widest ${expired ? 'text-red-500' : 'text-green-500'}`}>
                                         {expired ? 'Истекла' : `${days} дн.`}
                                     </p>
-                                    <p className="text-[9px] text-zinc-600">До {expiry > 0 ? new Date(expiry).toLocaleDateString() : '---'}</p>
+                                    <p className="text-[9px] text-zinc-600">До {new Date(bot.licenseExpiresAt).toLocaleDateString()}</p>
                                 </div>
                             </div>
                         );
@@ -76,7 +75,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
             <section className="bg-[#111] border border-zinc-800 rounded-[1.5rem] md:rounded-[2.5rem] p-5 md:p-8 space-y-6">
                 <h3 className="text-lg md:text-xl font-bold flex items-center gap-2 text-white">
                     <Key className="w-5 h-5 text-blue-500" />
-                    Активация ключа / Промокода
+                    Активация ключа
                 </h3>
                 <div className="space-y-4">
                     <label className="block">
@@ -94,7 +93,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
                     <div className="flex flex-col gap-4">
                         <input 
                             className="w-full bg-black border border-zinc-800 rounded-xl p-4 text-sm font-mono text-white outline-none focus:border-blue-500 transition-colors"
-                            placeholder="BOT-X-XXXX-XXXX"
+                            placeholder="BOT-1-XXXX-XXXX"
                             value={activationKey}
                             onChange={e => setActivationKey(e.target.value)}
                         />
@@ -107,6 +106,9 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
                         </button>
                     </div>
                 </div>
+                <p className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest text-center leading-relaxed">
+                    Ключ привязывается только к выбранному боту и не может быть перенесен
+                </p>
             </section>
         </div>
 
@@ -115,6 +117,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
                 <ShoppingCart className="w-10 h-10 md:w-12 md:h-12 text-blue-500 mb-4" />
                 <h3 className="text-lg font-bold text-white mb-2">Ценообразование</h3>
                 <div className="text-xs text-zinc-400 mb-6 space-y-2">
+                    <p>Каждый бот требует отдельной подписки.</p>
                     <div className="py-2 bg-black/40 rounded-xl border border-blue-500/10 mt-2">
                       <p className="text-white font-bold">1 бот / 1 мес — 50 звезд ⭐</p>
                       <p className="text-white font-bold">1 бот / 3 мес — 120 звезд ⭐</p>
