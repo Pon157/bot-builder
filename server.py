@@ -5,9 +5,8 @@ import os
 import subprocess
 import sys
 import time
-import secrets
-from typing import Dict, List
-from fastapi import FastAPI, HTTPException, Header, Request
+from typing import Dict
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -16,7 +15,7 @@ import uvicorn
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("BotEngine")
 
-# Менеджер процессов
+# Менеджер процессов ботов
 class BotProcessManager:
     def __init__(self):
         self.processes: Dict[str, subprocess.Popen] = {}
@@ -28,6 +27,7 @@ class BotProcessManager:
         with open(filename, "w", encoding="utf-8") as f:
             f.write(code)
         try:
+            # Запускаем в новом процессе
             process = subprocess.Popen([sys.executable, filename])
             self.processes[bot_id] = process
             logger.info(f"Bot {bot_id} started (PID: {process.pid})")
@@ -40,7 +40,12 @@ class BotProcessManager:
         if bot_id in self.processes:
             p = self.processes[bot_id]
             p.terminate()
+            try:
+                p.wait(timeout=5)
+            except:
+                p.kill()
             del self.processes[bot_id]
+            logger.info(f"Bot {bot_id} stopped")
             return True
         return False
 
@@ -49,8 +54,16 @@ class BotProcessManager:
 
 pm = BotProcessManager()
 
-# FastAPI
-app = FastAPI(title="BotEngine API")
+# Инициализация FastAPI с отключенными редиректами
+app = FastAPI(title="BotEngine API", redirect_slashes=False)
+
+# Middleware для отладки: выводит все запросы в консоль PM2
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"Incoming request: {request.method} {request.url.path}")
+    response = await call_next(request)
+    logger.info(f"Response status: {response.status_code}")
+    return response
 
 app.add_middleware(
     CORSMiddleware,
@@ -66,14 +79,15 @@ class BotStartReq(BaseModel):
     token: str
     code: str
 
-# --- Эндпоинты (Прямо в app для избежания проблем с роутером) ---
+# --- ЭНДПОИНТЫ ---
 
 @app.get("/api/ping")
 async def ping():
-    return {"status": "online"}
+    return {"status": "online", "timestamp": time.time()}
 
 @app.post("/api/auth/login")
 async def login(data: dict):
+    # Демо-вход
     return {
         "id": "admin", 
         "username": "Admin", 
@@ -85,8 +99,9 @@ async def login(data: dict):
 
 @app.post("/api/auth/request-verification")
 async def verify(data: dict):
-    logger.info(f"Verification requested for: {data.get('email')}")
-    return {"status": "ok"}
+    email = data.get("email", "unknown")
+    logger.info(f"!!! Verification hit !!! Email: {email}")
+    return {"status": "ok", "message": "Code sent (simulated)"}
 
 @app.get("/api/bots/{user_id}")
 async def get_bots(user_id: str):
@@ -100,10 +115,10 @@ async def save_bot(bot: dict):
 async def start_bot(req: BotStartReq):
     if pm.start_bot(req.id, req.token, req.code):
         return {"status": "ok"}
-    raise HTTPException(status_code=500, detail="Start failed")
+    raise HTTPException(status_code=500, detail="Failed to start bot process")
 
 @app.post("/api/bots/stop/{bot_id}")
-async def stop_bot(bot_id: str):
+async def stop_bot_endpoint(bot_id: str):
     pm.stop_bot(bot_id)
     return {"status": "ok"}
 
@@ -113,8 +128,15 @@ async def delete_bot(user_id: str, bot_id: str):
     return {"status": "ok"}
 
 @app.post("/api/license/activate")
-async def activate(data: dict):
+async def activate_lic(data: dict):
     return {"status": "ok", "newExpiry": int(time.time()*1000) + 2592000000}
+
+# Эндпоинт для генерации ключей (вызывается из license_bot.py)
+@app.post("/api/admin/generate-key")
+async def gen_key(data: dict, x_admin_token: str = Header(None)):
+    if x_admin_token != "MRAKOTIK":
+        raise HTTPException(status_code=403)
+    return {"key": f"KEY-{int(time.time())}"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
