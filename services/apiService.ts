@@ -11,7 +11,6 @@ const getApiBase = () => {
 const fetchWithTimeout = async (url: string, options: any = {}, timeout = 30000) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
-  
   try {
     const response = await fetch(url, { 
       ...options, 
@@ -31,7 +30,7 @@ const fetchWithTimeout = async (url: string, options: any = {}, timeout = 30000)
 };
 
 export const api = {
-  checkConnection: async (): Promise<boolean> => {
+  checkConnection: async () => {
     try {
       const res = await fetchWithTimeout(`${getApiBase()}/ping`, { method: 'GET' }, 5000);
       return res.ok;
@@ -43,25 +42,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email, password })
     });
-    if (!response.ok) {
-        const err = await response.json().catch(() => ({ detail: 'Login failed' }));
-        throw new Error(err.detail || 'Неверный Email или пароль');
-    }
-    const userData = await response.json();
-    if (!userData || !userData.id) throw new Error("Сервер вернул пустой профиль");
-    return userData;
+    if (!response.ok) throw new Error("Login failed");
+    return await response.json();
   },
 
-  requestVerification: async (email: string): Promise<boolean | string> => {
-    try {
-      const response = await fetchWithTimeout(`${getApiBase()}/auth/request-verification`, {
-        method: 'POST',
-        body: JSON.stringify({ email })
-      });
-      if (response.ok) return true;
-      const err = await response.json().catch(() => ({ detail: 'Ошибка сервера' }));
-      return err.detail || 'Error';
-    } catch (err: any) { return err.message; }
+  requestVerification: async (email: string) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/auth/request-verification`, {
+      method: 'POST',
+      body: JSON.stringify({ email })
+    });
+    return response.ok;
   },
 
   verifyAndRegister: async (data: any): Promise<User> => {
@@ -69,60 +59,76 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data)
     });
-    if (!response.ok) {
-        const err = await response.json().catch(() => ({ detail: 'Ошибка регистрации' }));
-        throw new Error(err.detail || 'Registration failed');
-    }
-    const userData = await response.json();
-    if (!userData || !userData.id) throw new Error("Ошибка БД: пользователь не создан");
-    return userData;
+    if (!response.ok) throw new Error("Registration failed");
+    return await response.json();
+  },
+
+  forgotPassword: async (email: string) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/auth/forgot-password`, {
+      method: 'POST',
+      body: JSON.stringify({ email })
+    });
+    return response.ok;
+  },
+
+  resetPassword: async (data: any) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/auth/reset-password`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+    return response.ok;
   },
 
   getBots: async (userId: string): Promise<BotConfig[]> => {
-    // ЖЕСТКИЙ ПРЕДОХРАНИТЕЛЬ: никогда не делаем запрос, если userId некорректен
-    if (!userId || userId === "new" || userId === "undefined" || userId === "null") {
-      console.warn("apiService: Aborting getBots call due to invalid userId:", userId);
-      return [];
-    }
+    if (!userId || userId === "new") return [];
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/bots/${userId}`, { method: 'GET' });
       return response.ok ? await response.json() : [];
-    } catch (e) { 
-      console.error("apiService: Fetch bots error:", e);
-      return []; 
-    }
+    } catch (e) { return []; }
   },
 
-  saveBot: async (userId: string, bot: BotConfig): Promise<void> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/bots/save`, {
+  saveBot: async (userId: string, bot: BotConfig) => {
+    await fetchWithTimeout(`${getApiBase()}/bots/save`, {
       method: 'POST',
       body: JSON.stringify(bot)
     });
-    if (!response.ok) throw new Error("Не удалось сохранить бота");
   },
 
-  deleteBot: async (userId: string, botId: string): Promise<void> => {
+  deleteBot: async (userId: string, botId: string) => {
     await fetchWithTimeout(`${getApiBase()}/bots/delete/${userId}/${botId}`, { method: 'DELETE' });
   },
 
-  startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
+  startBotOnServer: async (bot: BotConfig) => {
     try {
-      const code = generatePythonCode(bot);
       const response = await fetchWithTimeout(`${getApiBase()}/bots/start`, {
         method: 'POST',
-        body: JSON.stringify({ id: bot.id, token: bot.token, code })
+        body: JSON.stringify({ id: bot.id, token: bot.token })
       });
       return response.ok ? true : 'Failed to start';
     } catch (err: any) { return err.message; }
   },
 
-  stopBotOnServer: async (botId: string): Promise<void> => {
+  stopBotOnServer: async (botId: string) => {
     await fetchWithTimeout(`${getApiBase()}/bots/stop/${botId}`, { method: 'POST' });
   },
 
-  getBotMessages: async (botId: string): Promise<any[]> => [],
+  getBotLogs: async (botId: string): Promise<string> => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/bots/logs/${botId}`, { method: 'GET' });
+      if (!response.ok) return "Ошибка получения логов.";
+      const data = await response.json();
+      return data.logs || "Логов пока нет.";
+    } catch (e) { return "Ошибка связи с сервером."; }
+  },
 
-  activateLicense: async (botId: string, key: string): Promise<any> => {
+  getBotMessages: async (botId: string): Promise<any[]> => {
+    try {
+        const response = await fetchWithTimeout(`${getApiBase()}/bots/messages/${botId}`, { method: 'GET' });
+        return response.ok ? await response.json() : [];
+    } catch (e) { return []; }
+  },
+
+  activateLicense: async (botId: string, key: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/license/activate`, {
       method: 'POST',
       body: JSON.stringify({ botId, key })
@@ -130,37 +136,11 @@ export const api = {
     return response.ok ? await response.json() : { status: 'error' };
   },
 
-  sendBroadcast: async (botIds: string[], message: string): Promise<{ success: number; failed: number } | null> => {
-    try {
-      const response = await fetchWithTimeout(`${getApiBase()}/bots/broadcast`, {
-        method: 'POST',
-        body: JSON.stringify({ botIds, message })
-      });
-      return response.ok ? await response.json() : null;
-    } catch (e) { return null; }
-  },
-
-  forgotPassword: async (email: string): Promise<boolean | string> => {
-    try {
-      const response = await fetchWithTimeout(`${getApiBase()}/auth/forgot-password`, {
-        method: 'POST',
-        body: JSON.stringify({ email })
-      });
-      if (response.ok) return true;
-      const err = await response.json();
-      return err.detail || 'Error';
-    } catch (err: any) { return err.message; }
-  },
-
-  resetPassword: async (data: any): Promise<boolean> => {
-    const response = await fetchWithTimeout(`${getApiBase()}/auth/reset-password`, {
+  sendBroadcast: async (botIds: string[], message: string) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/bots/broadcast`, {
       method: 'POST',
-      body: JSON.stringify(data)
+      body: JSON.stringify({ botIds, message })
     });
-    if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.detail || 'Reset failed');
-    }
-    return true;
-  },
+    return response.ok ? await response.json() : null;
+  }
 };
