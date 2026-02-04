@@ -18,9 +18,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
   const [messages, setMessages] = useState<any[]>([]);
 
   useEffect(() => {
-    if (activeTab === 'chat') {
-        api.getBotMessages(bot.id).then(setMessages);
-    }
+    if (activeTab === 'chat') api.getBotMessages(bot.id).then(setMessages);
   }, [activeTab, bot.id]);
 
   const handleToggleServer = async () => {
@@ -32,14 +30,9 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         onUpdate({ ...bot, status: BotStatus.IDLE });
       } else {
         await api.saveBot(bot.owner_id, bot);
-        const result = await api.startBotOnServer(bot);
-        if (result === true) {
-            onUpdate({ ...bot, status: BotStatus.RUNNING });
-        } else {
-            alert(`Ошибка запуска: ${result}`);
-        }
+        if (await api.startBotOnServer(bot) === true) onUpdate({ ...bot, status: BotStatus.RUNNING });
       }
-    } catch (e: any) { alert("Ошибка сервера: " + (e.message || "Неизвестно")); }
+    } catch (e: any) { alert("Ошибка сервера: " + e.message); }
     finally { setIsProcessing(false); }
   };
 
@@ -47,10 +40,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
     setIsProcessing(true);
     try {
       await api.saveBot(bot.owner_id, bot);
-      alert("Конфигурация успешно сохранена в облаке!");
-    } catch (e: any) { 
-      alert("Ошибка при сохранении: " + (e.message || "Проверьте подключение")); 
-    }
+      alert("Сохранено!");
+    } catch (e: any) { alert("Ошибка!"); }
     finally { setIsProcessing(false); }
   };
 
@@ -70,7 +61,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
           </div>
         </div>
         <div className="flex gap-4 relative z-10">
-           <button onClick={save} disabled={isProcessing} className="px-6 py-4 bg-zinc-800 text-white rounded-2xl text-[10px] font-bold uppercase tracking-widest hover:bg-zinc-700 flex items-center gap-2 transition-all border border-transparent hover:border-zinc-600 shadow-lg">
+           <button onClick={save} disabled={isProcessing} className="px-6 py-4 bg-zinc-800 text-white rounded-2xl text-[10px] font-bold uppercase tracking-widest hover:bg-zinc-700 flex items-center gap-2 transition-all shadow-lg">
              <Save className="w-4 h-4" /> Сохранить в БД
            </button>
            <button onClick={handleToggleServer} disabled={isProcessing} className={`px-10 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center gap-2 shadow-lg ${bot.status === BotStatus.RUNNING ? 'bg-red-500/10 text-red-500 border border-red-500/20' : 'bg-blue-600 text-white shadow-blue-600/20'}`}>
@@ -95,11 +86,53 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
       </div>
 
       <div className="min-h-[400px]">
+        {activeTab === 'settings' && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
+              <h2 className="text-xl font-black text-white uppercase">Основные данные</h2>
+              <div className="space-y-5">
+                <label className="block">
+                  <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Telegram Bot Token</span>
+                  <input type="password" className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white font-mono focus:border-blue-500/50 outline-none transition-all" value={bot.token} onChange={e => onUpdate({...bot, token: e.target.value})} />
+                </label>
+                <label className="block">
+                  <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">ID Администратора</span>
+                  <input type="text" className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white focus:border-blue-500/50 outline-none transition-all" value={bot.adminChatId} onChange={e => onUpdate({...bot, adminChatId: e.target.value})} />
+                </label>
+                <label className="block">
+                  <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Шаблон уведомлений админу</span>
+                  <textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] focus:border-blue-500/50 outline-none transition-all resize-none shadow-inner text-xs" value={bot.settings?.adminMessageTemplate || ""} onChange={e => onUpdate({...bot, settings: {...bot.settings, adminMessageTemplate: e.target.value}})} placeholder="Напр: 👤 {{name}}\n🆔 {{id}}\n💬 {{text}}" />
+                  {/* Fix: Wrap literal double curly braces in strings to prevent JSX from interpreting them as object shorthand property expressions */}
+                  <p className="text-[8px] text-zinc-600 mt-2 font-bold uppercase">Доступно: {"{{id}}, {{name}}, {{username}}, {{text}}"}</p>
+                </label>
+              </div>
+            </div>
+            <div className="space-y-6">
+                <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-4">
+                    <h3 className="text-xs font-black text-white uppercase mb-2">Настройки функций</h3>
+                    <div className="space-y-3">
+                        <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer">
+                            <span className="text-xs font-bold text-zinc-400">Поддержка топиков (Forum)</span>
+                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={bot.settings?.useTopics} onChange={e => onUpdate({...bot, settings: {...bot.settings, useTopics: e.target.checked}})} />
+                        </label>
+                        <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer">
+                            <span className="text-xs font-bold text-zinc-400">Топик на каждую заявку</span>
+                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={bot.settings?.topicPerRequest} onChange={e => onUpdate({...bot, settings: {...bot.settings, topicPerRequest: e.target.checked}})} />
+                        </label>
+                        <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer">
+                            <span className="text-xs font-bold text-zinc-400">Автобан (варнов)</span>
+                            <input type="number" className="w-16 bg-zinc-900 border border-zinc-800 rounded p-1 text-center text-xs text-white" value={bot.settings?.autoBanThreshold || 0} onChange={e => onUpdate({...bot, settings: {...bot.settings, autoBanThreshold: parseInt(e.target.value) || 0}})} />
+                        </label>
+                    </div>
+                </div>
+            </div>
+          </div>
+        )}
         {activeTab === 'chat' && (
             <div className="bg-[#111] border border-zinc-800 rounded-[2.5rem] overflow-hidden flex flex-col h-[600px]">
                 <div className="p-6 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/20">
                     <h2 className="text-sm font-black text-white uppercase flex items-center gap-2">
-                        <MessageSquare className="w-4 h-4 text-blue-500" /> Активные диалоги (Livegram Mode)
+                        <MessageSquare className="w-4 h-4 text-blue-500" /> Активные диалоги
                     </h2>
                 </div>
                 <div className="flex-1 overflow-y-auto p-6 space-y-4 no-scrollbar">
@@ -116,7 +149,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                             <div>
                                 <div className="flex items-center gap-2 mb-1">
                                     <span className="text-xs font-bold text-white">{m.user.name}</span>
-                                    {!m.is_admin && <span className="text-[10px] text-zinc-600 font-mono">ID: {m.user.id}</span>}
                                     <span className="text-[9px] text-zinc-500">{new Date(m.timestamp).toLocaleTimeString()}</span>
                                 </div>
                                 <p className="text-sm text-zinc-300 leading-relaxed">{m.text}</p>
@@ -124,48 +156,28 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                         </div>
                     ))}
                 </div>
-                <div className="p-6 bg-zinc-900/10 border-t border-zinc-800 text-center">
-                    <p className="text-[10px] text-zinc-500 font-bold uppercase">Отвечайте в Telegram пересылкой сообщения юзеру</p>
-                </div>
             </div>
         )}
-
         {activeTab === 'interface' && (
           <div className="space-y-6">
              <div className="flex justify-between items-center mb-4">
                 <h2 className="text-xl font-black text-white uppercase tracking-tight">Редактор меню</h2>
-                <button onClick={() => onUpdate({...bot, buttons: [...(bot.buttons || []), {text: '', response: '', type: 'message'}]})} className="bg-blue-600 hover:bg-blue-700 px-8 py-3.5 rounded-2xl text-[11px] font-black text-white uppercase tracking-widest flex items-center gap-2 transition-all shadow-xl shadow-blue-600/20">
+                <button onClick={() => onUpdate({...bot, buttons: [...(bot.buttons || []), {text: '', response: '', type: 'message'}]})} className="bg-blue-600 hover:bg-blue-700 px-8 py-3.5 rounded-2xl text-[11px] font-black text-white uppercase flex items-center gap-2 transition-all">
                     <Plus className="w-4 h-4" /> Добавить кнопку
                 </button>
              </div>
-
              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                {(bot.buttons || []).map((btn, i) => (
                  <div key={i} className="bg-[#0d0d0d] border border-zinc-800 rounded-[2.5rem] p-8 space-y-6 relative transition-all group hover:border-zinc-700">
-                    <button onClick={() => onUpdate({...bot, buttons: bot.buttons.filter((_, idx) => idx !== i)})} className="absolute top-6 right-6 text-zinc-600 hover:text-red-500 transition-colors">
+                    <button onClick={() => onUpdate({...bot, buttons: bot.buttons.filter((_, idx) => idx !== i)})} className="absolute top-6 right-6 text-zinc-600 hover:text-red-500">
                       <X className="w-5 h-5" />
                     </button>
-                    
                     <div className="space-y-4">
-                        <input 
-                          placeholder="Текст кнопки" 
-                          className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-black focus:border-blue-500/40 outline-none transition-all" 
-                          value={btn.text} 
-                          onChange={e => { const nb = [...bot.buttons]; nb[i].text = e.target.value; onUpdate({...bot, buttons: nb}); }} 
-                        />
-                        <textarea 
-                          placeholder="Текст ответа при нажатии..."
-                          className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm min-h-[120px] focus:border-blue-500/40 outline-none transition-all resize-none" 
-                          value={btn.response} 
-                          onChange={e => { const nb = [...bot.buttons]; nb[i].response = e.target.value; onUpdate({...bot, buttons: nb}); }} 
-                        />
+                        <input placeholder="Текст кнопки" className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-black outline-none" value={btn.text} onChange={e => { const nb = [...bot.buttons]; nb[i].text = e.target.value; onUpdate({...bot, buttons: nb}); }} />
+                        <textarea placeholder="Текст ответа..." className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm min-h-[120px] outline-none resize-none" value={btn.response} onChange={e => { const nb = [...bot.buttons]; nb[i].response = e.target.value; onUpdate({...bot, buttons: nb}); }} />
                         <div className="flex items-center gap-2">
                              <span className="text-[9px] font-bold text-zinc-500 uppercase">Тип:</span>
-                             <select 
-                                className="bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-[10px] text-white"
-                                value={btn.type || 'message'}
-                                onChange={e => { const nb = [...bot.buttons]; nb[i].type = e.target.value as any; onUpdate({...bot, buttons: nb}); }}
-                             >
+                             <select className="bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-[10px] text-white" value={btn.type || 'message'} onChange={e => { const nb = [...bot.buttons]; nb[i].type = e.target.value as any; onUpdate({...bot, buttons: nb}); }}>
                                  <option value="message">Обычное сообщение</option>
                                  <option value="request">Заявка админу (Ticket)</option>
                              </select>
@@ -176,87 +188,27 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
              </div>
           </div>
         )}
-
         {activeTab === 'logic' && (
           <div className="space-y-6">
             <div className="flex justify-between items-end mb-4">
-               <div>
-                  <h2 className="text-xl font-black text-white uppercase">Триггеры (Автоответы)</h2>
-                  <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest mt-1">Ответы на ключевые слова в сообщениях</p>
-               </div>
-               <button onClick={() => onUpdate({...bot, triggers: [...(bot.triggers || []), {keyword: '', response: ''}]})} className="bg-blue-600 hover:bg-blue-700 px-6 py-3.5 rounded-2xl text-[10px] font-black text-white uppercase tracking-widest flex items-center gap-2 transition-all shadow-lg">
+               <h2 className="text-xl font-black text-white uppercase">Триггеры</h2>
+               <button onClick={() => onUpdate({...bot, triggers: [...(bot.triggers || []), {keyword: '', response: ''}]})} className="bg-blue-600 px-6 py-3.5 rounded-2xl text-[10px] font-black text-white uppercase tracking-widest flex items-center gap-2">
                   <Plus className="w-4 h-4" /> Новый триггер
                </button>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                {(bot.triggers || []).map((trig, i) => (
                  <div key={i} className="bg-[#0d0d0d] border border-zinc-800 rounded-[2.5rem] p-8 space-y-5 relative group hover:border-zinc-700 transition-all">
-                    <button onClick={() => onUpdate({...bot, triggers: bot.triggers.filter((_, idx) => idx !== i)})} className="absolute top-6 right-6 text-zinc-600 hover:text-red-500 transition-colors">
+                    <button onClick={() => onUpdate({...bot, triggers: bot.triggers.filter((_, idx) => idx !== i)})} className="absolute top-6 right-6 text-zinc-600 hover:text-red-500">
                       <X className="w-5 h-5" />
                     </button>
-                    <div>
-                        <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">Ключевое слово (или часть слова)</span>
-                        <input placeholder="Напр: тарифы" className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-xl text-white text-sm font-bold focus:border-blue-500/40 outline-none transition-all" value={trig.keyword} onChange={e => { const nt = [...bot.triggers]; nt[i].keyword = e.target.value; onUpdate({...bot, triggers: nt}); }} />
-                    </div>
-                    <div>
-                        <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">Ответ бота</span>
-                        <textarea placeholder="Бот ответит этим текстом..." className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-xl text-white text-sm focus:border-blue-500/40 outline-none transition-all min-h-[100px] resize-none" value={trig.response} onChange={e => { const nt = [...bot.triggers]; nt[i].response = e.target.value; onUpdate({...bot, triggers: nt}); }} />
-                    </div>
+                    <input placeholder="Ключевое слово" className="w-full bg-black border border-zinc-800 p-4 rounded-xl text-white text-sm font-bold outline-none" value={trig.keyword} onChange={e => { const nt = [...bot.triggers]; nt[i].keyword = e.target.value; onUpdate({...bot, triggers: nt}); }} />
+                    <textarea placeholder="Ответ..." className="w-full bg-black border border-zinc-800 p-4 rounded-xl text-white text-sm outline-none min-h-[100px] resize-none" value={trig.response} onChange={e => { const nt = [...bot.triggers]; nt[i].response = e.target.value; onUpdate({...bot, triggers: nt}); }} />
                  </div>
                ))}
             </div>
           </div>
         )}
-
-        {activeTab === 'settings' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
-              <h2 className="text-xl font-black text-white uppercase">Основные данные</h2>
-              <div className="space-y-5">
-                <label className="block">
-                  <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Telegram Bot Token</span>
-                  <input type="password" className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white font-mono focus:border-blue-500/50 outline-none transition-all shadow-inner" value={bot.token} onChange={e => onUpdate({...bot, token: e.target.value})} />
-                </label>
-                <label className="block">
-                  <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">ID Администратора (для Livegram)</span>
-                  <input type="text" className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white focus:border-blue-500/50 outline-none transition-all shadow-inner" value={bot.adminChatId} onChange={e => onUpdate({...bot, adminChatId: e.target.value})} placeholder="Получите через @userinfobot" />
-                </label>
-                <label className="block">
-                  <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Приветствие (/start)</span>
-                  <textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[140px] focus:border-blue-500/50 outline-none transition-all resize-none shadow-inner" value={bot.welcomeMessage} onChange={e => onUpdate({...bot, welcomeMessage: e.target.value})} />
-                </label>
-              </div>
-            </div>
-            <div className="space-y-6">
-                <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-4">
-                    <h3 className="text-xs font-black text-white uppercase mb-2">Настройки безопасности</h3>
-                    <div className="space-y-3">
-                        <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer">
-                            <span className="text-xs font-bold text-zinc-400">Автобан при варнах (0 = откл)</span>
-                            <div className="flex items-center gap-3">
-                                <input type="number" className="w-16 bg-zinc-900 border border-zinc-800 rounded p-1 text-center text-xs text-white" value={bot.settings?.autoBanThreshold || 0} onChange={e => onUpdate({...bot, settings: {...bot.settings, autoBanThreshold: parseInt(e.target.value) || 0}})} />
-                            </div>
-                        </label>
-                        <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer">
-                            <span className="text-xs font-bold text-zinc-400">Поддержка топиков (Forum)</span>
-                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={bot.settings?.useTopics} onChange={e => onUpdate({...bot, settings: {...bot.settings, useTopics: e.target.checked}})} />
-                        </label>
-                        <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer">
-                            <span className="text-xs font-bold text-zinc-400">Топик на каждую заявку</span>
-                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={bot.settings?.topicPerRequest} onChange={e => onUpdate({...bot, settings: {...bot.settings, topicPerRequest: e.target.checked}})} />
-                        </label>
-                    </div>
-                </div>
-                <div className="bg-blue-600/5 border border-blue-500/20 p-8 rounded-[2.5rem] flex flex-col items-center text-center space-y-4">
-                    <div className="w-16 h-16 bg-blue-600/10 rounded-2xl flex items-center justify-center text-blue-500">
-                        <Info className="w-8 h-8" />
-                    </div>
-                    <p className="text-xs text-zinc-400 leading-relaxed font-medium">После нажатия <b>"Сохранить в БД"</b>, настройки применяются в облаке. Для активации изменений в запущенном боте нажмите <b>"Остановить"</b> и снова <b>"Запустить"</b>.</p>
-                </div>
-            </div>
-          </div>
-        )}
-
         {activeTab === 'stats' && <BotStatsView bot={bot} onUpdate={onUpdate} />}
         {activeTab === 'logs' && <BotConsole botId={bot.id} />}
       </div>
