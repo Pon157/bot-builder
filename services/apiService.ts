@@ -43,12 +43,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email, password })
     });
-    
     if (!response.ok) {
         const err = await response.json().catch(() => ({ detail: 'Login failed' }));
         throw new Error(err.detail || 'Неверный Email или пароль');
     }
-    
     const userData = await response.json();
     if (!userData || !userData.id) throw new Error("Сервер вернул пустой профиль");
     return userData;
@@ -63,9 +61,7 @@ export const api = {
       if (response.ok) return true;
       const err = await response.json().catch(() => ({ detail: 'Ошибка сервера' }));
       return err.detail || 'Error';
-    } catch (err: any) { 
-      return err.message; 
-    }
+    } catch (err: any) { return err.message; }
   },
 
   verifyAndRegister: async (data: any): Promise<User> => {
@@ -73,24 +69,26 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data)
     });
-    
     if (!response.ok) {
         const err = await response.json().catch(() => ({ detail: 'Ошибка регистрации' }));
         throw new Error(err.detail || 'Registration failed');
     }
-    
     const userData = await response.json();
-    if (!userData || !userData.id) throw new Error("Ошибка: данные пользователя не созданы в БД");
+    if (!userData || !userData.id) throw new Error("Ошибка БД: пользователь не создан");
     return userData;
   },
 
   getBots: async (userId: string): Promise<BotConfig[]> => {
-    if (!userId || userId === "new") return [];
+    // ЖЕСТКИЙ ПРЕДОХРАНИТЕЛЬ: никогда не делаем запрос, если userId некорректен
+    if (!userId || userId === "new" || userId === "undefined" || userId === "null") {
+      console.warn("apiService: Aborting getBots call due to invalid userId:", userId);
+      return [];
+    }
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/bots/${userId}`, { method: 'GET' });
       return response.ok ? await response.json() : [];
     } catch (e) { 
-      console.error("Fetch bots error:", e);
+      console.error("apiService: Fetch bots error:", e);
       return []; 
     }
   },
@@ -100,15 +98,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(bot)
     });
-    if (!response.ok) {
-      throw new Error("Не удалось сохранить конфигурацию бота");
-    }
+    if (!response.ok) throw new Error("Не удалось сохранить бота");
   },
 
   deleteBot: async (userId: string, botId: string): Promise<void> => {
-    await fetchWithTimeout(`${getApiBase()}/bots/delete/${userId}/${botId}`, {
-      method: 'DELETE'
-    });
+    await fetchWithTimeout(`${getApiBase()}/bots/delete/${userId}/${botId}`, { method: 'DELETE' });
   },
 
   startBotOnServer: async (bot: BotConfig): Promise<boolean | string> => {
@@ -126,10 +120,7 @@ export const api = {
     await fetchWithTimeout(`${getApiBase()}/bots/stop/${botId}`, { method: 'POST' });
   },
 
-  getBotMessages: async (botId: string): Promise<any[]> => {
-    // В текущей реализации логи хранятся в BotConfig.logs
-    return [];
-  },
+  getBotMessages: async (botId: string): Promise<any[]> => [],
 
   activateLicense: async (botId: string, key: string): Promise<any> => {
     const response = await fetchWithTimeout(`${getApiBase()}/license/activate`, {
