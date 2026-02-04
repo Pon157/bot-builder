@@ -102,10 +102,12 @@ class SupabaseDB:
         headers = {**self.headers, **(extra_headers or {})}
         async with httpx.AsyncClient() as client:
             try:
+                logger.info(f"📡 Supabase {method} {table} | Data: {json_data} | Params: {params}")
                 resp = await client.request(method, url, headers=headers, json=json_data, params=params)
                 if resp.status_code >= 400:
-                    logger.error(f"🔴 Supabase {resp.status_code}: {resp.text}")
+                    logger.error(f"🔴 Supabase ERROR {resp.status_code}: {resp.text}")
                     return None
+                logger.info(f"🟢 Supabase SUCCESS {resp.status_code}")
                 return resp.json()
             except Exception as e:
                 logger.error(f"🔴 Supabase Connection Error: {str(e)}")
@@ -214,11 +216,20 @@ async def stop_bot_endpoint(bot_id: str):
 @app.post("/api/admin/generate-key")
 async def generate_key(req: dict, x_admin_token: str = Header(None)):
     if x_admin_token != ADMIN_SECRET:
+        logger.warning(f"🕵️ Attempt to generate key with invalid secret: {x_admin_token}")
         raise HTTPException(401, "Invalid secret")
+    
     months = req.get("months", 1)
     new_key = f"BOT-{months}-{''.join(random.choices('ABCDEF0123456789', k=8))}"
     payload = {"key": new_key, "months": months, "used": False}
-    await db.request("POST", "license_keys", json_data=payload)
+    
+    # Пытаемся сохранить в БД
+    res = await db.request("POST", "license_keys", json_data=payload)
+    if res is None:
+        logger.error(f"❌ Failed to save key {new_key} to Supabase!")
+        raise HTTPException(500, "Ошибка базы данных при сохранении ключа")
+    
+    logger.info(f"✅ Key {new_key} successfully saved to DB")
     return {"key": new_key}
 
 @app.post("/api/license/activate")
@@ -245,7 +256,6 @@ async def activate_license(req: dict):
 
 @app.post("/api/bots/broadcast")
 async def broadcast_endpoint(req: dict):
-    # Skeleton implementation
     return {"success": len(req.get('botIds', [])), "failed": 0}
 
 @app.get("/api/ping")
