@@ -20,6 +20,14 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  const syncData = async (userId: string) => {
+    try {
+        const serverBots = await api.getBots(userId);
+        setBots(serverBots || []);
+        // Также можно запросить обновленные данные профиля здесь, если нужно
+    } catch (e) { console.error(e); }
+  };
+
   useEffect(() => {
     const init = async () => {
       try {
@@ -28,8 +36,7 @@ const App: React.FC = () => {
           const parsedUser = JSON.parse(savedUserStr);
           if (parsedUser && parsedUser.id) {
             setUser(parsedUser);
-            const serverBots = await api.getBots(parsedUser.id);
-            setBots(serverBots || []);
+            await syncData(parsedUser.id);
           }
         }
       } catch (e) {
@@ -44,8 +51,7 @@ const App: React.FC = () => {
   const handleLogin = async (newUser: User) => {
     setUser(newUser);
     localStorage.setItem('active_session_user', JSON.stringify(newUser));
-    const serverBots = await api.getBots(newUser.id);
-    setBots(serverBots || []);
+    await syncData(newUser.id);
     setActiveTab('dashboard');
   };
 
@@ -67,7 +73,7 @@ const App: React.FC = () => {
       token,
       status: BotStatus.IDLE,
       created_at: Date.now(),
-      license_expires_at: Date.now() + (3 * 24 * 3600 * 1000),
+      license_expires_at: Date.now() + (3 * 24 * 3600 * 1000), // Триальный период 3 дня
       usersCount: 0,
       description: 'Новый бот BotEngine',
       adminChatId: '',
@@ -111,7 +117,17 @@ const App: React.FC = () => {
   return (
     <div className="flex h-screen bg-[#0a0a0a] text-zinc-300 overflow-hidden font-sans relative">
       {isSidebarOpen && <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden" onClick={() => setIsSidebarOpen(false)} />}
-      <Sidebar activeTab={activeTab} setActiveTab={(tab) => { setActiveTab(tab); setIsSidebarOpen(false); }} bots={bots} selectedBotId={selectedBotId} setSelectedBotId={(id) => { setSelectedBotId(id); setActiveTab('editor'); setIsSidebarOpen(false); }} onAddBot={() => { setIsModalOpen(true); setIsSidebarOpen(false); }} user={user} onLogout={handleLogout} isOpen={isSidebarOpen} />
+      <Sidebar 
+        activeTab={activeTab} 
+        setActiveTab={(tab) => { setActiveTab(tab); setIsSidebarOpen(false); }} 
+        bots={bots} 
+        selectedBotId={selectedBotId} 
+        setSelectedBotId={(id) => { setSelectedBotId(id); setActiveTab('editor'); setIsSidebarOpen(false); }} 
+        onAddBot={() => { setIsModalOpen(true); setIsSidebarOpen(false); }} 
+        user={user} 
+        onLogout={handleLogout} 
+        isOpen={isSidebarOpen} 
+      />
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
         <header className="md:hidden flex items-center justify-between p-4 bg-[#121212] border-b border-zinc-800 shrink-0">
           <div className="flex items-center gap-2">
@@ -126,7 +142,13 @@ const App: React.FC = () => {
           <div className="max-w-6xl mx-auto">
             {activeTab === 'dashboard' && <Dashboard bots={bots} onSelectBot={(id) => { setSelectedBotId(id); setActiveTab('editor'); }} onAddBot={() => setIsModalOpen(true)} />}
             {activeTab === 'profile' && <Profile user={user} bots={bots} onUpdateBots={setBots} />}
-            {activeTab === 'editor' && activeBot && <BotEditor bot={activeBot} onUpdate={(u) => setBots(prev => prev.map(b => b.id === u.id ? u : b))} onDelete={() => api.deleteBot(user.id, activeBot.id)} />}
+            {activeTab === 'editor' && activeBot && (
+                <BotEditor 
+                    bot={activeBot} 
+                    onUpdate={(u) => setBots(prev => prev.map(b => b.id === u.id ? u : b))} 
+                    onDelete={() => setBots(prev => prev.filter(b => b.id !== activeBot.id))} 
+                />
+            )}
             {activeTab === 'broadcast' && <BroadcastManager bots={bots} />}
           </div>
         </main>
