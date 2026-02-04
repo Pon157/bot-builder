@@ -4,7 +4,7 @@ import { BotConfig, BotStatus } from '../types';
 import { api } from '../services/apiService';
 import BotConsole from './BotConsole';
 import BotStatsView from './BotStatsView';
-import { Settings, Cpu, MousePointer2, BarChart3, Terminal, X, Save, Power, Ticket, Info, Plus, MessageSquare, User, EyeOff } from 'lucide-react';
+import { Settings, Cpu, MousePointer2, BarChart3, Terminal, X, Save, Power, Ticket, Info, Plus, MessageSquare, User, EyeOff, CheckSquare, Square } from 'lucide-react';
 
 interface BotEditorProps {
   bot: BotConfig;
@@ -43,6 +43,16 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
       alert("Сохранено!");
     } catch (e: any) { alert("Ошибка!"); }
     finally { setIsProcessing(false); }
+  };
+
+  const toggleSetting = (key: keyof BotConfig['settings']) => {
+    onUpdate({
+      ...bot,
+      settings: {
+        ...bot.settings,
+        [key]: !bot.settings[key]
+      }
+    });
   };
 
   return (
@@ -100,12 +110,17 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                   <input type="text" className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white focus:border-blue-500/50 outline-none transition-all" value={bot.adminChatId} onChange={e => onUpdate({...bot, adminChatId: e.target.value})} />
                 </label>
                 <label className="block">
+                  <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Приветственное сообщение (/start)</span>
+                  <textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] focus:border-blue-500/50 outline-none transition-all resize-none shadow-inner text-xs" value={bot.welcomeMessage || ""} onChange={e => onUpdate({...bot, welcomeMessage: e.target.value})} placeholder="Напр: Привет! Я ваш бот обратной связи." />
+                </label>
+                <label className="block">
                   <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Шаблон уведомлений админу</span>
                   <textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] focus:border-blue-500/50 outline-none transition-all resize-none shadow-inner text-xs" value={bot.settings?.adminMessageTemplate || ""} onChange={e => onUpdate({...bot, settings: {...bot.settings, adminMessageTemplate: e.target.value}})} placeholder="Напр: 👤 {{name}}\n🆔 {{id}}\n💬 {{text}}" />
                   <p className="text-[8px] text-zinc-600 mt-2 font-bold uppercase">Доступно: {"{{id}}, {{name}}, {{username}}, {{text}}"}</p>
                 </label>
               </div>
             </div>
+            
             <div className="space-y-6">
                 <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-4">
                     <h3 className="text-xs font-black text-white uppercase mb-2">Настройки функций</h3>
@@ -125,11 +140,32 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                             <span className="text-xs font-bold text-zinc-400">Топик на каждую заявку</span>
                             <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={bot.settings?.topicPerRequest} onChange={e => onUpdate({...bot, settings: {...bot.settings, topicPerRequest: e.target.checked}})} />
                         </label>
-                        <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer">
-                            <span className="text-xs font-bold text-zinc-400">Автобан (варнов)</span>
-                            <input type="number" className="w-16 bg-zinc-900 border border-zinc-800 rounded p-1 text-center text-xs text-white" value={bot.settings?.autoBanThreshold || 0} onChange={e => onUpdate({...bot, settings: {...bot.settings, autoBanThreshold: parseInt(e.target.value) || 0}})} />
-                        </label>
                     </div>
+                </div>
+
+                <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-4">
+                    <h3 className="text-xs font-black text-white uppercase mb-2">Отображение данных о пользователе</h3>
+                    <p className="text-[10px] text-zinc-600 uppercase font-bold mb-4">Выберите, что показывать в заголовке сообщения админу:</p>
+                    <div className="grid grid-cols-1 gap-3">
+                        {[
+                            { key: 'showHeaderId', label: 'Показывать ID пользователя', icon: User },
+                            { key: 'showHeaderName', label: 'Показывать Имя Фамилию', icon: User },
+                            { key: 'showHeaderUsername', label: 'Показывать @Username', icon: User }
+                        ].map((item) => (
+                            <button 
+                                key={item.key}
+                                onClick={() => toggleSetting(item.key as any)}
+                                className={`flex items-center justify-between p-4 rounded-2xl border transition-all ${bot.settings[item.key as keyof BotConfig['settings']] ? 'bg-blue-600/10 border-blue-500/40 text-blue-400' : 'bg-black border-zinc-800 text-zinc-500'}`}
+                            >
+                                <span className="text-xs font-bold">{item.label}</span>
+                                {bot.settings[item.key as keyof BotConfig['settings']] ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                <div className="bg-red-500/5 border border-red-500/10 p-8 rounded-[2.5rem] flex flex-col items-center">
+                    <button onClick={onDelete} className="text-[10px] font-black uppercase text-red-500 hover:underline">Удалить этот инстанс</button>
                 </div>
             </div>
           </div>
@@ -138,7 +174,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
             <div className="bg-[#111] border border-zinc-800 rounded-[2.5rem] overflow-hidden flex flex-col h-[600px]">
                 <div className="p-6 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/20">
                     <h2 className="text-sm font-black text-white uppercase flex items-center gap-2">
-                        <MessageSquare className="w-4 h-4 text-blue-500" /> Активные диалоги
+                        <MessageSquare className="w-4 h-4 text-blue-500" /> Активные диалоги (последние 50)
                     </h2>
                 </div>
                 <div className="flex-1 overflow-y-auto p-6 space-y-4 no-scrollbar">
@@ -152,12 +188,12 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                             <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${m.is_admin ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400'}`}>
                                 {m.is_admin ? <Cpu className="w-5 h-5" /> : <User className="w-5 h-5" />}
                             </div>
-                            <div>
+                            <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2 mb-1">
-                                    <span className="text-xs font-bold text-white">{m.user.name}</span>
+                                    <span className="text-xs font-bold text-white truncate">{m.user?.name || "Пользователь"}</span>
                                     <span className="text-[9px] text-zinc-500">{new Date(m.timestamp).toLocaleTimeString()}</span>
                                 </div>
-                                <p className="text-sm text-zinc-300 leading-relaxed">{m.text}</p>
+                                <p className="text-sm text-zinc-300 leading-relaxed break-words">{m.text}</p>
                             </div>
                         </div>
                     ))}
