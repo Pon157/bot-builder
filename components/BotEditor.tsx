@@ -18,10 +18,11 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
   const [messages, setMessages] = useState<any[]>([]);
 
   useEffect(() => {
-    if (activeTab === 'chat') api.getBotMessages(bot.id).then(setMessages);
+    if (activeTab === 'chat') {
+      api.getBotMessages(bot.id).then(setMessages);
+    }
   }, [activeTab, bot.id]);
 
-  // Fix: Provide a complete default object for settings to satisfy BotConfig type requirements
   const safeSettings = bot.settings || {
     useTopics: false,
     topicPerRequest: false,
@@ -50,10 +51,13 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         await api.saveBot(bot.owner_id, bot);
         const result = await api.startBotOnServer(bot);
         if (result === true) onUpdate({ ...bot, status: BotStatus.RUNNING });
-        else alert("Ошибка: " + result);
+        else alert("Ошибка запуска: " + result);
       }
-    } catch (e: any) { alert("Ошибка сервера: " + e.message); }
-    finally { setIsProcessing(false); }
+    } catch (e: any) {
+      alert("Ошибка сервера: " + e.message);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const save = async () => {
@@ -61,8 +65,11 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
     try {
       await api.saveBot(bot.owner_id, bot);
       alert("Конфигурация сохранена!");
-    } catch (e: any) { alert("Ошибка при сохранении!"); }
-    finally { setIsProcessing(false); }
+    } catch (e: any) {
+      alert("Ошибка при сохранении!");
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const toggleSetting = (key: string) => {
@@ -74,6 +81,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500 pb-20">
+      {/* Header Section */}
       <header className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] flex flex-col md:flex-row justify-between items-center gap-6 shadow-xl relative overflow-hidden">
         <div className="flex items-center gap-6 relative z-10">
           <div className={`w-16 h-16 rounded-2xl flex items-center justify-center border-2 ${bot.status === BotStatus.RUNNING ? 'bg-green-500/10 border-green-500/30 text-green-500' : 'bg-zinc-900 border-zinc-800 text-zinc-600'}`}>
@@ -97,6 +105,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         </div>
       </header>
 
+      {/* Tabs Navigation */}
       <div className="flex gap-2 border-b border-zinc-800 overflow-x-auto no-scrollbar">
         {[
           {id: 'settings', label: 'Настройки', icon: Settings},
@@ -106,12 +115,17 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
           {id: 'stats', label: 'Статистика', icon: BarChart3},
           {id: 'logs', label: 'Консоль', icon: Terminal}
         ].map((t) => (
-          <button key={t.id} onClick={() => setActiveTab(t.id as any)} className={`px-6 py-4 text-[10px] font-black uppercase tracking-widest border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${activeTab === t.id ? 'border-blue-500 text-blue-500' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}>
+          <button 
+            key={t.id} 
+            onClick={() => setActiveTab(t.id as any)} 
+            className={`px-6 py-4 text-[10px] font-black uppercase tracking-widest border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${activeTab === t.id ? 'border-blue-500 text-blue-500' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+          >
             <t.icon className="w-3.5 h-3.5" /> {t.label}
           </button>
         ))}
       </div>
 
+      {/* Main Content Area */}
       <div className="min-h-[400px]">
         {activeTab === 'settings' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -231,3 +245,12 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                 </div>
             </div>
         )}
+
+        {activeTab === 'stats' && <BotStatsView bot={bot} onUpdate={onUpdate} />}
+        {activeTab === 'logs' && <BotConsole botId={bot.id} />}
+      </div>
+    </div>
+  );
+};
+
+export default BotEditor;
