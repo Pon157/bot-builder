@@ -257,6 +257,6 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
       </div>
     </div>
   );
-};
+}; 
 
 export default BotStatsView;
