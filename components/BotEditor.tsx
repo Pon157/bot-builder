@@ -17,9 +17,22 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
 
+  // Автоматический рефреш бота для получения живой статистики при переключении вкладок
   useEffect(() => {
+    const refreshBotData = async () => {
+        try {
+            const serverBots = await api.getBots(bot.owner_id);
+            const current = serverBots.find(b => b.id === bot.id);
+            if (current) onUpdate(current);
+        } catch(e) {}
+    };
+
+    if (activeTab === 'stats' || activeTab === 'chat') {
+        refreshBotData();
+    }
+    
     if (activeTab === 'chat') api.getBotMessages(bot.id).then(setMessages);
-  }, [activeTab, bot.id]);
+  }, [activeTab]);
 
   const handleToggleServer = async () => {
     if (isProcessing) return;
@@ -40,7 +53,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
     setIsProcessing(true);
     try {
       await api.saveBot(bot.owner_id, bot);
-      alert("Сохранено!");
+      alert("Настройки сохранены! Статистика и модерация защищены.");
     } catch (e: any) { alert("Ошибка!"); }
     finally { setIsProcessing(false); }
   };
@@ -72,7 +85,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         </div>
         <div className="flex gap-4 relative z-10">
            <button onClick={save} disabled={isProcessing} className="px-6 py-4 bg-zinc-800 text-white rounded-2xl text-[10px] font-bold uppercase tracking-widest hover:bg-zinc-700 flex items-center gap-2 transition-all shadow-lg">
-             <Save className="w-4 h-4" /> Сохранить в БД
+             <Save className="w-4 h-4" /> Сохранить
            </button>
            <button onClick={handleToggleServer} disabled={isProcessing} className={`px-10 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center gap-2 shadow-lg ${bot.status === BotStatus.RUNNING ? 'bg-red-500/10 text-red-500 border border-red-500/20' : 'bg-blue-600 text-white shadow-blue-600/20'}`}>
              <Power className="w-4 h-4" /> {bot.status === BotStatus.RUNNING ? 'Остановить' : 'Запустить'}
@@ -201,16 +214,16 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                             <p className="text-[10px] font-black uppercase">Нет сообщений</p>
                         </div>
                     ) : messages.map((m, i) => (
-                        <div key={i} className={`flex gap-4 items-start p-5 rounded-3xl border ${m.is_admin ? 'bg-blue-600/5 border-blue-500/20 ml-10' : 'bg-black/40 border-zinc-800/50 mr-10'}`}>
-                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${m.is_admin ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400'}`}>
-                                {m.is_admin ? <Cpu className="w-5 h-5" /> : <User className="w-5 h-5" />}
+                        <div key={i} className={`flex gap-4 items-start p-5 rounded-3xl border ${m.is_from_admin ? 'bg-blue-600/5 border-blue-500/20 ml-10' : 'bg-black/40 border-zinc-800/50 mr-10'}`}>
+                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${m.is_from_admin ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400'}`}>
+                                {m.is_from_admin ? <Cpu className="w-5 h-5" /> : <User className="w-5 h-5" />}
                             </div>
                             <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2 mb-1">
-                                    <span className="text-xs font-bold text-white truncate">{m.user?.name || "Пользователь"}</span>
-                                    <span className="text-[9px] text-zinc-500">{new Date(m.timestamp).toLocaleTimeString()}</span>
+                                    <span className="text-xs font-bold text-white truncate">{m.first_name || "Пользователь"}</span>
+                                    <span className="text-[9px] text-zinc-500">{new Date(m.created_at).toLocaleTimeString()}</span>
                                 </div>
-                                <p className="text-sm text-zinc-300 leading-relaxed break-words">{m.text}</p>
+                                <p className="text-sm text-zinc-300 leading-relaxed break-words">{m.message_text}</p>
                             </div>
                         </div>
                     ))}
