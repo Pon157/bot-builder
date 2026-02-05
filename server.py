@@ -176,7 +176,7 @@ async def moderate_user(data: dict):
     if target_user:
         await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"config": {**config, "connectedUsers": users}})
         return {"status": "ok", "user": target_user}
-    raise HTTPException(404, "User not found in bot base")
+    raise HTTPException(404, "User not found")
 
 @app.post("/api/bots/activate-license")
 async def activate_license(data: dict):
@@ -199,7 +199,6 @@ async def start_bot(req: dict):
     res = await db.get("bots", params={"id": f"eq.{req['id']}"})
     if res.json():
         bot = res.json()[0]
-        # Проверка лицензии перед запуском
         if bot.get("license_expires_at", 0) < int(time.time()*1000):
             raise HTTPException(402, "License expired")
         if await pm.start_bot(bot['id'], {**bot, **(bot.get("config") or {})}):
@@ -225,7 +224,7 @@ async def bot_logs_api(bot_id: str): return {"logs": pm.get_logs(bot_id)}
 async def broadcast(data: dict, background_tasks: BackgroundTasks):
     bot_ids, message = data.get("botIds", []), data.get("message", "")
     background_tasks.add_task(run_broadcast_task, bot_ids, message)
-    return {"status": "queued", "success": 0, "failed": 0} # Для UX возвращаем сразу
+    return {"status": "queued"}
 
 async def run_broadcast_task(bot_ids: List[str], message: str):
     success, failed = 0, 0
@@ -243,10 +242,13 @@ async def run_broadcast_task(bot_ids: List[str], message: str):
                         async with httpx.AsyncClient() as client:
                             r = await client.post(url, json={"chat_id": u["id"], "text": message, "parse_mode": "HTML"}, timeout=10)
                             if r.status_code == 200: success += 1
-                            elif r.status_code == 403: u["is_active"] = False; any_changes = True; failed += 1
+                            elif r.status_code == 403: 
+                                u["is_active"] = False
+                                any_changes = True
+                                failed += 1
                             else: failed += 1
                     except: failed += 1
-                    await asyncio.sleep(0.05) # Rate limit для Telegram API
+                    await asyncio.sleep(0.05)
             if any_changes:
                 await db.patch("bots", params={"id": f"eq.{bid}"}, json={"config": {**config, "connectedUsers": users}})
     logger.info(f"Broadcast task finished. S:{success} F:{failed}")
