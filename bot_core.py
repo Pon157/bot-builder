@@ -274,9 +274,11 @@ class BotInstance:
         last_sent = self.last_header_time.get(user['id'], 0)
         
         header = ""
-        # Показываем уведомление о первом контакте/кнопке только если задан шаблон.
-        # Если шаблон пуст, просто приклеиваем стандартную компактную шапку.
-        if is_first or btn_text or (now - last_sent) > 600:
+        # КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ:
+        # Если топики выключены (self.use_topics == False), мы ВСЕГДА шлем шапку, 
+        # чтобы сообщения от разных юзеров в одном чате не перемешивались визуально.
+        # Если топики включены, сохраняем логику "раз в 10 минут" или по событию.
+        if not self.use_topics or is_first or btn_text or (now - last_sent) > 600:
             header = format_admin_header(self.admin_template, m, self.settings, is_first, btn_text)
             if header: self.last_header_time[user['id']] = now
 
