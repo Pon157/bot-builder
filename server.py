@@ -167,7 +167,6 @@ async def get_user_bots(user_id: str):
 @app.post("/api/bots/save")
 async def save_bot(bot: dict):
     bid = bot.get("id")
-    # КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: Не затираем статистику и юзеров из БД данными с фронтенда
     res = await db.get("bots", params={"id": f"eq.{bid}"})
     db_bot = res.json()[0] if res.status_code == 200 and res.json() else {}
     db_config = db_bot.get("config", {})
@@ -175,7 +174,7 @@ async def save_bot(bot: dict):
     sys_keys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
     incoming_config = {k: v for k, v in bot.items() if k not in sys_keys}
     
-    # Сохраняем статистику и юзеров из базы, если они там новее или отсутствуют в запросе
+    # Умное слияние: приоритет отдаем живым данным из базы для статистики и юзеров
     merged_config = {
         **incoming_config,
         "stats": db_config.get("stats", bot.get("stats", {})),
