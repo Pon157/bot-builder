@@ -55,7 +55,6 @@ class BotProcessManager:
             env["SUPABASE_URL"] = SB_URL
             env["SUPABASE_KEY"] = SB_KEY
             
-            # Очищаем лог перед запуском
             with open(log_path, "w") as f: f.write(f"--- Запуск инстанса {bot_id} ---\n")
             
             log_file = open(log_path, "a", encoding="utf-8")
@@ -106,15 +105,6 @@ db = httpx.AsyncClient(
     timeout=30
 )
 
-# --- ADMIN API ---
-@app.post("/api/admin/generate-key")
-async def generate_key(data: dict, x_admin_token: str = Header(None)):
-    if x_admin_token != ADMIN_SECRET: raise HTTPException(401, "Unauthorized")
-    new_key = f"BE-{secrets.token_hex(3).upper()}-{secrets.token_hex(3).upper()}"
-    payload = {"key": new_key, "months": data.get("months", 0), "days": data.get("days", 0), "used": False}
-    await db.post("issued_keys", json=payload)
-    return {"key": new_key}
-
 # --- AUTH API ---
 @app.post("/api/auth/login")
 async def login(data: dict):
@@ -153,17 +143,26 @@ async def get_user_info(user_id: str):
 async def get_user_bots(user_id: str):
     res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
     bots = res.json() if res.status_code == 200 else []
+    # Расплющиваем для фронтенда
     return [{**b, **(b.get("config") or {})} for b in bots]
 
 @app.post("/api/bots/save")
 async def save_bot(bot: dict):
     bid = bot.get("id")
-    sys_keys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at']
+    # Список системных ключей, которые идут в колонки таблицы
+    sys_keys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
+    
+    # Формируем конфиг, исключая системные поля и старый вложенный конфиг
+    config_payload = {k: v for k, v in bot.items() if k not in sys_keys}
+    
     payload = {
-        "id": bid, "owner_id": bot.get("owner_id"), "name": bot["name"], 
-        "token": bot["token"], "status": bot.get("status", "IDLE"),
+        "id": bid, 
+        "owner_id": bot.get("owner_id"), 
+        "name": bot["name"], 
+        "token": bot["token"], 
+        "status": bot.get("status", "IDLE"),
         "license_expires_at": int(bot.get("license_expires_at") or 0),
-        "config": {k: v for k, v in bot.items() if k not in sys_keys}
+        "config": config_payload
     }
     await db.post("bots", json=payload, headers={"Prefer": "resolution=merge-duplicates"})
     return {"status": "ok"}
@@ -179,6 +178,7 @@ async def start_bot(req: dict):
     res = await db.get("bots", params={"id": f"eq.{req['id']}"})
     if res.json():
         bot = res.json()[0]
+        # Передаем "расплющенный" конфиг для корректной инициализации бота
         if await pm.start_bot(bot['id'], {**bot, **(bot.get("config") or {})}):
             await db.patch("bots", params={"id": f"eq.{bot['id']}"}, json={"status": "RUNNING"})
             return {"status": "ok"}
@@ -217,21 +217,6 @@ async def broadcast(data: dict):
                             else: failed += 1
                     except: failed += 1
     return {"success": success, "failed": failed}
-
-@app.post("/api/license/activate")
-async def activate_lic(data: dict):
-    res_key = await db.get("issued_keys", params={"key": f"eq.{data['key']}", "used": "eq.false"})
-    if not res_key.json(): return {"status": "error", "message": "Invalid key"}
-    k = res_key.json()[0]
-    add_ms = (k.get("months", 0) * 30 + k.get("days", 0)) * 24 * 3600 * 1000
-    res_bot = await db.get("bots", params={"id": f"eq.{data['botId']}"})
-    if res_bot.json():
-        bot = res_bot.json()[0]
-        new_exp = max(int(bot.get("license_expires_at") or 0), int(time.time()*1000)) + add_ms
-        await db.patch("bots", params={"id": f"eq.{bot['id']}"}, json={"license_expires_at": new_exp})
-        await db.patch("issued_keys", params={"key": f"eq.{data['key']}"}, json={"used": True, "used_by_bot": bot['id']})
-        return {"status": "ok", "newExpiry": new_exp}
-    return {"status": "error"}
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
