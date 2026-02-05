@@ -135,27 +135,51 @@ async def verify_reg(data: dict):
 @app.post("/api/auth/forgot-password")
 async def forgot_password(data: dict):
     email = data.get("email", "").lower()
-    # Проверяем существование пользователя
+    logger.info(f"Password reset requested for: {email}")
     res_user = await db.get("users", params={"email": f"eq.{email}"})
-    if not res_user.json(): return {"status": "ok"} # Не палим наличие почты
+    if not res_user.json(): 
+        logger.warning(f"User {email} not found, but returning OK to prevent enumeration")
+        return {"status": "ok"}
     
     code = "".join([str(random.randint(0, 9)) for _ in range(6)])
     expires = int(time.time() * 1000) + (15 * 60 * 1000)
     await db.post("temp_codes", json={"email": email, "code": code, "type": "RESET", "expires_at": expires}, headers={"Prefer": "resolution=merge-duplicates"})
-    EmailService.send_password_reset(email, code)
-    return {"status": "ok"}
+    
+    sent = EmailService.send_password_reset(email, code)
+    if not sent:
+        logger.error(f"Failed to send email to {email}. Check SMTP settings or ports.")
+    
+    return {"status": "ok", "debug_sent": sent}
 
 @app.post("/api/auth/reset-password")
 async def reset_password(data: dict):
     email = data.get("email", "").lower()
-    code = data.get("code")
+    code = str(data.get("code", "")).strip()
     new_password = data.get("newPassword")
     
-    res_code = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{code}", "type": "eq.RESET"})
-    if not res_code.json(): raise HTTPException(400, "Invalid or expired reset code")
+    logger.info(f"Attempting password reset for {email} with code {code}")
+    
+    # Ищем код в базе. Важно: PostgREST чувствителен к типам.
+    res_code = await db.get("temp_codes", params={
+        "email": f"eq.{email}", 
+        "code": f"eq.{code}", 
+        "type": "eq.RESET"
+    })
+    
+    found_codes = res_code.json()
+    if not found_codes:
+        logger.warning(f"Reset code {code} for {email} not found in DB or wrong type")
+        raise HTTPException(400, "Неверный код или срок действия истек")
+    
+    code_data = found_codes[0]
+    if int(code_data.get("expires_at", 0)) < int(time.time() * 1000):
+        logger.warning(f"Reset code {code} for {email} expired")
+        await db.delete("temp_codes", params={"email": f"eq.{email}"})
+        raise HTTPException(400, "Срок действия кода истек")
     
     await db.patch("users", params={"email": f"eq.{email}"}, json={"password": new_password})
     await db.delete("temp_codes", params={"email": f"eq.{email}"})
+    logger.info(f"Password successfully reset for {email}")
     return {"status": "ok"}
 
 @app.get("/api/auth/user/{user_id}")
@@ -195,67 +219,103 @@ async def moderate_user(data: dict):
     action = data.get("action")
     
     res = await db.get("bots", params={"id": f"eq.{bot_id}"})
-    if not res.json(): raise HTTPException(404, "Bot not found")
+    if not res.json(): raise HTTPException(404, "Бот не найден")
     bot = res.json()[0]
     config = bot.get("config") or {}
     users = config.get("connectedUsers", [])
     settings = config.get("settings", {})
     
     target_user = next((u for u in users if u['id'] == user_id), None)
-    if not target_user: raise HTTPException(404, "User not found")
+    if not target_user: raise HTTPException(404, "Пользователь не найден")
     
     tg_msg = ""
     if action == "ban":
         target_user["is_banned"] = True
-        tg_msg = "🚫 <b>Вы заблокированы администратором.</b>"
+        tg_msg = "🚫 <b>Вы были заблокированы администратором.</b>"
     elif action == "unban":
         target_user["is_banned"] = False
-        tg_msg = "✅ <b>Блокировка снята.</b>"
+        tg_msg = "✅ <b>Ваша блокировка была снята.</b>"
     elif action == "warn":
         target_user["warns"] = target_user.get("warns", 0) + 1
         threshold = int(settings.get("autoBanThreshold", 0))
-        msg = f"⚠️ <b>Предупреждение!</b> ({target_user['warns']}/{threshold or '∞'})"
+        msg = f"⚠️ <b>Вам выдано предупреждение!</b> ({target_user['warns']}/{threshold or '∞'})"
         if threshold > 0 and target_user["warns"] >= threshold:
             target_user["is_banned"] = True
-            msg += "\n\n🚫 Авто-бан."
+            msg += "\n\n🚫 Автоматическая блокировка за превышение лимита предупреждений."
         tg_msg = msg
     elif action == "unwarn":
         target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
-        tg_msg = f"✅ <b>Предупреждение снято.</b>"
+        tg_msg = f"✅ <b>Одно из ваших предупреждений было снято.</b>"
 
     await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"config": config})
     if tg_msg:
         url = f"https://api.telegram.org/bot{bot['token']}/sendMessage"
-        async with httpx.AsyncClient() as client:
-            await client.post(url, json={"chat_id": user_id, "text": tg_msg, "parse_mode": "HTML"})
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(url, json={"chat_id": user_id, "text": tg_msg, "parse_mode": "HTML"}, timeout=10)
+        except Exception as e:
+            logger.error(f"Failed to notify user via TG: {e}")
+            
     return {"status": "ok", "user": target_user}
 
 @app.post("/api/bots/broadcast")
 async def send_broadcast(data: dict):
     bot_ids = data.get("botIds", [])
     message = data.get("message", "")
-    if not bot_ids or not message: return {"success": 0, "failed": 0}
+    if not bot_ids or not message: 
+        logger.warning("Broadcast: Empty bot list or message")
+        return {"success": 0, "failed": 0}
 
+    logger.info(f"Starting broadcast to {len(bot_ids)} bots. Message: {message[:50]}...")
     results = {"success": 0, "failed": 0}
+    
     async with httpx.AsyncClient() as client:
         for bid in bot_ids:
             res = await db.get("bots", params={"id": f"eq.{bid}"})
-            if not res.json(): continue
-            bot = res.json()[0]
-            token = bot["token"]
-            config = bot.get("config", {})
-            users = config.get("connectedUsers", [])
+            bot_list = res.json()
+            if not bot_list:
+                logger.warning(f"Broadcast: Bot {bid} not found in DB")
+                continue
+                
+            bot = bot_list[0]
+            token = bot.get("token")
+            config = bot.get("config") or {}
+            # Пользователи могут быть в config или connectedUsers
+            users = config.get("connectedUsers") or bot.get("connectedUsers") or []
+            
+            if not isinstance(users, list):
+                logger.warning(f"Broadcast: User list for bot {bid} is not a list")
+                continue
+
+            logger.info(f"Bot {bot.get('name')} ({bid}): Sending to {len(users)} users...")
             
             for u in users:
-                if u.get("is_active") and not u.get("is_banned"):
+                # Только активные и не забаненные
+                if u.get("is_active", True) and not u.get("is_banned", False):
                     try:
+                        uid = u.get("id")
+                        if not uid: continue
+                        
                         url = f"https://api.telegram.org/bot{token}/sendMessage"
-                        r = await client.post(url, json={"chat_id": u["id"], "text": message, "parse_mode": "HTML"}, timeout=5)
-                        if r.status_code == 200: results["success"] += 1
-                        else: results["failed"] += 1
-                    except: results["failed"] += 1
-                    # Небольшая задержка чтобы не спамить API телеграма слишком быстро
+                        r = await client.post(url, json={
+                            "chat_id": uid, 
+                            "text": message, 
+                            "parse_mode": "HTML"
+                        }, timeout=10)
+                        
+                        if r.status_code == 200:
+                            results["success"] += 1
+                        else:
+                            logger.error(f"TG API Error for user {uid}: {r.status_code} {r.text}")
+                            results["failed"] += 1
+                    except Exception as e:
+                        logger.error(f"Broadcast failed for user {u.get('id')}: {e}")
+                        results["failed"] += 1
+                    
+                    # Защита от Flood Limit Telegram (30 сообщений в секунду)
                     await asyncio.sleep(0.05) 
+                    
+    logger.info(f"Broadcast finished. Results: {results}")
     return results
 
 @app.post("/api/bots/activate-license")
@@ -264,13 +324,15 @@ async def activate_license(data: dict):
     key_str = data.get("key")
     
     res_key = await db.get("issued_keys", params={"key": f"eq.{key_str}", "used": "is.false"})
-    if not res_key.json(): return {"status": "error", "message": "Invalid or used key"}
+    keys = res_key.json()
+    if not keys: return {"status": "error", "message": "Неверный или уже использованный ключ"}
     
-    key_data = res_key.json()[0]
+    key_data = keys[0]
     res_bot = await db.get("bots", params={"id": f"eq.{bid}"})
-    if not res_bot.json(): return {"status": "error", "message": "Bot not found"}
+    bots = res_bot.json()
+    if not bots: return {"status": "error", "message": "Бот не найден"}
     
-    bot = res_bot.json()[0]
+    bot = bots[0]
     current_expiry = int(bot.get("license_expires_at") or time.time()*1000)
     if current_expiry < time.time()*1000: current_expiry = int(time.time()*1000)
     
@@ -286,7 +348,7 @@ async def activate_license(data: dict):
 
 @app.post("/api/admin/generate-key")
 async def generate_key(data: dict, x_admin_token: str = Header(None)):
-    if x_admin_token != ADMIN_SECRET: raise HTTPException(403)
+    if x_admin_token != ADMIN_SECRET: raise HTTPException(403, "Forbidden")
     months = data.get("months", 0)
     days = data.get("days", 0)
     new_key = f"PRO-{months}M-{secrets.token_hex(4).upper()}"
@@ -302,12 +364,13 @@ async def delete_bot(user_id: str, bot_id: str):
 @app.post("/api/bots/start")
 async def start_bot(req: dict):
     res = await db.get("bots", params={"id": f"eq.{req['id']}"})
-    if res.json():
-        bot = res.json()[0]
+    bots = res.json()
+    if bots:
+        bot = bots[0]
         if await pm.start_bot(bot['id'], {**bot, **(bot.get("config") or {})}):
             await db.patch("bots", params={"id": f"eq.{bot['id']}"}, json={"status": "RUNNING"})
             return {"status": "ok"}
-    raise HTTPException(500, "Start failed")
+    raise HTTPException(500, "Ошибка запуска")
 
 @app.post("/api/bots/stop/{bot_id}")
 async def stop_bot(bot_id: str):
