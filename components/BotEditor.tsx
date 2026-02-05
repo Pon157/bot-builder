@@ -5,9 +5,9 @@ import { api } from '../services/apiService';
 import BotConsole from './BotConsole';
 import BotStatsView from './BotStatsView';
 import { 
-  Settings, Cpu, MousePointer2, BarChart3, Terminal, X, Save, Power, 
-  Ticket, Info, Plus, MessageSquare, User, EyeOff, CheckSquare, 
-  Square, ShieldAlert, Zap, Bell, Shield, Sliders, Layout
+  Settings, Cpu, BarChart3, Terminal, X, Save, Power, 
+  Ticket, Plus, MessageSquare, User, CheckSquare, 
+  Square, Zap, Bell, Shield, Sliders, Layout, ShieldAlert
 } from 'lucide-react';
 
 interface BotEditorProps {
@@ -67,6 +67,12 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
       alert("Сохранено!");
     } catch (e: any) { alert("Ошибка!"); }
     finally { setIsProcessing(false); }
+  };
+
+  const handleDelete = () => {
+    if (window.confirm(`Вы действительно хотите удалить инстанс "${bot.name}"? Это действие необратимо.`)) {
+      onDelete();
+    }
   };
 
   const toggleSetting = (key: keyof typeof defaultSettings) => {
@@ -130,11 +136,11 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                 <div className="space-y-5">
                   <label className="block">
                     <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Telegram Bot Token</span>
-                    <input type="password" className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white font-mono focus:border-blue-500 outline-none transition-all" value={bot.token} onChange={e => onUpdate({...bot, token: e.target.value})} />
+                    <input type="password" placeholder="Токен из @BotFather" className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white font-mono focus:border-blue-500 outline-none transition-all" value={bot.token} onChange={e => onUpdate({...bot, token: e.target.value})} />
                   </label>
                   <label className="block">
                     <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">ID Администратора / Группы</span>
-                    <input type="text" className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white focus:border-blue-500 outline-none transition-all" value={bot.adminChatId} onChange={e => onUpdate({...bot, adminChatId: e.target.value})} />
+                    <input type="text" placeholder="ID или @username группы" className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white focus:border-blue-500 outline-none transition-all" value={bot.adminChatId} onChange={e => onUpdate({...bot, adminChatId: e.target.value})} />
                   </label>
                   <label className="block">
                     <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Приветствие (/start)</span>
@@ -158,51 +164,48 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                     ID {safeSettings.showHeaderId ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
                   </button>
                 </div>
-                <p className="text-[8px] text-zinc-600 mt-3 font-bold uppercase px-2 italic">Если выключить всё — будет отображаться только анонимный ID.</p>
               </section>
             </div>
             
             <div className="space-y-8">
                 <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
                     <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
-                      <Shield className="w-4 h-4 text-emerald-500" /> Безопасность и Анти-спам
+                      <ShieldAlert className="w-4 h-4 text-emerald-500" /> Темы и Управление топиками
                     </h3>
                     <div className="space-y-4">
-                        <div className="p-5 bg-black rounded-2xl border border-zinc-800 flex items-center justify-between">
-                            <div>
-                                <p className="text-xs font-bold text-white">Анти-флуд задержка</p>
-                                <p className="text-[9px] text-zinc-600 font-bold uppercase">Интервал между сообщениями (сек)</p>
+                        <button onClick={() => toggleSetting('useTopics')} className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${safeSettings.useTopics ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
+                            <div className="text-left">
+                                <p className="text-xs font-bold">Использовать топики</p>
+                                <p className="text-[9px] font-bold uppercase opacity-50">Для групп с Forum Enable</p>
                             </div>
-                            <input type="number" step="0.1" className="w-16 bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs text-center text-white outline-none" value={safeSettings.rateLimit} onChange={e => onUpdate({...bot, settings: {...safeSettings, rateLimit: parseFloat(e.target.value) || 0}})} />
-                        </div>
-                        <div className="p-5 bg-black rounded-2xl border border-zinc-800 flex items-center justify-between">
-                            <div>
-                                <p className="text-xs font-bold text-white">Авто-бан (Warnings)</p>
-                                <p className="text-[9px] text-zinc-600 font-bold uppercase">Лимит варнов до блокировки</p>
+                            {safeSettings.useTopics ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+                        </button>
+                        <button onClick={() => toggleSetting('topicPerRequest')} className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${safeSettings.topicPerRequest ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
+                            <div className="text-left">
+                                <p className="text-xs font-bold">Новый топик на каждое обращение</p>
+                                <p className="text-[9px] font-bold uppercase opacity-50">Создавать новый чат при /start или кнопке</p>
                             </div>
-                            <input type="number" className="w-16 bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs text-center text-white outline-none" value={safeSettings.autoBanThreshold} onChange={e => onUpdate({...bot, settings: {...safeSettings, autoBanThreshold: parseInt(e.target.value) || 0}})} />
-                        </div>
+                            {safeSettings.topicPerRequest ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+                        </button>
                     </div>
                 </div>
 
                 <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
                     <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
-                      <MessageSquare className="w-4 h-4 text-purple-500" /> Настройки топиков (Темы)
+                      <Bell className="w-4 h-4 text-amber-500" /> Системные уведомления
                     </h3>
-                    <div className="space-y-3">
-                        <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer">
-                            <span className="text-xs font-bold text-zinc-400">Использовать Темы (Forum)</span>
-                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={safeSettings.useTopics} onChange={() => toggleSetting('useTopics')} />
-                        </label>
-                        <label className={`flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer ${!safeSettings.useTopics ? 'opacity-30 pointer-events-none' : ''}`}>
-                            <span className="text-xs font-bold text-zinc-400">Анонимные темы</span>
-                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={safeSettings.anonymousTopics} onChange={() => toggleSetting('anonymousTopics')} />
-                        </label>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <button onClick={() => toggleSetting('notifyOnStart')} className={`flex items-center justify-between p-4 rounded-xl border text-[9px] font-bold uppercase transition-all ${safeSettings.notifyOnStart ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
+                           Новый юзер {safeSettings.notifyOnStart ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
+                        </button>
+                        <button onClick={() => toggleSetting('notifyOnBlock')} className={`flex items-center justify-between p-4 rounded-xl border text-[9px] font-bold uppercase transition-all ${safeSettings.notifyOnBlock ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
+                           Блокировка {safeSettings.notifyOnBlock ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
+                        </button>
                     </div>
                 </div>
 
-                <div className="bg-red-500/5 border border-red-500/10 p-8 rounded-[2.5rem] flex flex-col items-center">
-                    <button onClick={onDelete} className="text-[10px] font-black uppercase text-red-500 hover:underline">Удалить узел безвозвратно</button>
+                <div className="p-8 bg-red-500/5 border border-red-500/10 rounded-[2.5rem] flex flex-col items-center">
+                    <button onClick={handleDelete} className="text-[10px] font-black uppercase text-red-500 hover:underline">Удалить инстанс безвозвратно</button>
                 </div>
             </div>
           </div>
