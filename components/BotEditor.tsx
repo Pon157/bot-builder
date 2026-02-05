@@ -8,7 +8,7 @@ import {
   Settings, Cpu, BarChart3, Terminal, X, Save, Power, 
   Ticket, Plus, MessageSquare, User, CheckSquare, 
   Square, Zap, Bell, Shield, Sliders, Layout, ShieldAlert, Lock, Trash2, ShieldCheck, AlertCircle, Type as TypeIcon
-} from 'lucide-center';
+} from 'lucide-react';
 
 interface BotEditorProps {
   bot: BotConfig;
@@ -59,7 +59,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         onUpdate({ ...bot, status: BotStatus.IDLE });
       } else {
         // При запуске всегда сначала сохраняем конфиг
-        await api.saveBot(bot.owner_id, bot);
+        const updated = await api.saveBot(bot.owner_id, bot);
+        if (updated) onUpdate(updated);
         setHasUnsavedChanges(false);
         const res = await api.startBotOnServer(bot);
         if (res === true) {
@@ -74,9 +75,10 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
   const syncState = async () => {
     setIsProcessing(true);
     try {
-        await api.saveBot(bot.owner_id, bot);
+        const updated = await api.saveBot(bot.owner_id, bot);
+        if (updated) onUpdate(updated);
         setHasUnsavedChanges(false);
-        alert("Конфигурация успешно сохранена в облаке!");
+        alert("Конфигурация успешно сохранена и синхронизирована!");
     } catch {
         alert("Ошибка сети при сохранении");
     } finally {
@@ -99,8 +101,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
       {hasUnsavedChanges && (
         <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[100] bg-blue-600 text-white px-8 py-4 rounded-2xl shadow-2xl flex items-center gap-4 animate-bounce">
             <AlertCircle className="w-5 h-5" />
-            <span className="text-xs font-black uppercase tracking-widest">У вас есть несохраненные изменения!</span>
-            <button onClick={syncState} disabled={isProcessing} className="bg-white text-blue-600 px-4 py-1.5 rounded-xl font-black text-[10px] uppercase">Сохранить сейчас</button>
+            <span className="text-xs font-black uppercase tracking-widest">Несохраненные изменения!</span>
+            <button onClick={syncState} disabled={isProcessing} className="bg-white text-blue-600 px-4 py-1.5 rounded-xl font-black text-[10px] uppercase">Сохранить</button>
         </div>
       )}
 
@@ -301,7 +303,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
 
         {activeTab === 'chat' && (
           <div className="bg-[#111] border border-zinc-800 rounded-[2.5rem] h-[700px] overflow-hidden flex flex-col p-8 shadow-2xl relative">
-            <h2 className="text-sm font-black text-white uppercase mb-6 flex items-center gap-2"><MessageSquare className="w-4 h-4 text-blue-500" /> Последние диалоги (CRM View)</h2>
+            <h2 className="text-sm font-black text-white uppercase mb-6 flex items-center gap-2"><MessageSquare className="w-4 h-4 text-blue-500" /> CRM История сообщений</h2>
             <div className="flex-1 overflow-y-auto no-scrollbar space-y-6 pr-4">
               {messages.length === 0 ? <p className="text-center text-zinc-700 py-32 uppercase text-[10px] font-black tracking-widest opacity-20">История пуста</p> : messages.map((m, i) => (
                 <div key={i} className={`flex gap-4 items-start ${m.is_admin ? 'flex-row-reverse text-right' : ''} animate-in slide-in-from-bottom-2 duration-300`}>
