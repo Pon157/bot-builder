@@ -69,20 +69,26 @@ export const api = {
     return await response.json();
   },
 
-  forgotPassword: async (email: string) => {
-    const response = await fetchWithTimeout(`${getApiBase()}/auth/forgot-password`, {
-      method: 'POST',
-      body: JSON.stringify({ email })
-    });
-    return response.ok;
+  // Added: forgotPassword method for Auth component
+  forgotPassword: async (email: string): Promise<boolean> => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/auth/forgot-password`, {
+        method: 'POST',
+        body: JSON.stringify({ email })
+      });
+      return response.ok;
+    } catch (e) { return false; }
   },
 
-  resetPassword: async (data: any) => {
-    const response = await fetchWithTimeout(`${getApiBase()}/auth/reset-password`, {
-      method: 'POST',
-      body: JSON.stringify(data)
-    });
-    return response.ok;
+  // Added: resetPassword method for Auth component
+  resetPassword: async (data: any): Promise<boolean> => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/auth/reset-password`, {
+        method: 'POST',
+        body: JSON.stringify(data)
+      });
+      return response.ok;
+    } catch (e) { return false; }
   },
 
   getBots: async (userId: string): Promise<BotConfig[]> => {
@@ -100,7 +106,14 @@ export const api = {
     });
   },
 
-  // Added deleteBot to fix error in App.tsx on line 143
+  moderateUser: async (botId: string, userId: number, action: 'ban' | 'unban' | 'warn' | 'unwarn') => {
+    const response = await fetchWithTimeout(`${getApiBase()}/bots/moderate`, {
+        method: 'POST',
+        body: JSON.stringify({ botId, userId, action })
+    });
+    return response.ok ? await response.json() : null;
+  },
+
   deleteBot: async (userId: string, botId: string): Promise<void> => {
     await fetchWithTimeout(`${getApiBase()}/bots/delete/${userId}/${botId}`, { method: 'DELETE' });
   },
@@ -127,20 +140,11 @@ export const api = {
     } catch (e) { return "Ошибка связи."; }
   },
 
-  // Added getBotMessages to fix error in BotEditor.tsx on line 21
   getBotMessages: async (botId: string): Promise<any[]> => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/bots/messages/${botId}`, { method: 'GET' });
       return response.ok ? await response.json() : [];
     } catch (e) { return []; }
-  },
-
-  activateLicense: async (botId: string, key: string) => {
-    const response = await fetchWithTimeout(`${getApiBase()}/license/activate`, {
-      method: 'POST',
-      body: JSON.stringify({ botId, key })
-    });
-    return response.ok ? await response.json() : { status: 'error' };
   },
 
   sendBroadcast: async (botIds: string[], message: string) => {
@@ -149,5 +153,16 @@ export const api = {
       body: JSON.stringify({ botIds, message })
     });
     return response.ok ? await response.json() : null;
+  },
+
+  // Added: activateLicense method for Profile component
+  activateLicense: async (botId: string, key: string): Promise<any> => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/bots/activate-license`, {
+        method: 'POST',
+        body: JSON.stringify({ botId, key })
+      });
+      return response.ok ? await response.json() : { status: 'error', message: 'Failed to connect' };
+    } catch (e) { return { status: 'error', message: 'Connection error' }; }
   }
 };
