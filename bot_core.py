@@ -97,26 +97,34 @@ class BotInstance:
         self.refresh_config(config_data)
 
     def refresh_config(self, data: dict):
-        conf = data.get('config') if isinstance(data.get('config'), dict) else data
+        # Если объект пришел расплющенным (от API), данные могут быть в корне.
+        # Если объект сырой из БД, они в ключе 'config'.
+        # Мы объединяем их, отдавая приоритет корню (самым свежим данным).
         
-        raw_admin = conf.get('adminChatId') or data.get('adminChatId')
+        inner_config = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
+        # Создаем плоский словарь со всеми полями
+        flat_data = {**inner_config, **data}
+        
+        raw_admin = flat_data.get('adminChatId')
         try:
             if raw_admin:
                 self.admin_id = int(str(raw_admin).strip())
         except:
             pass
 
-        self.buttons = conf.get('buttons', [])
-        self.triggers = conf.get('triggers', [])
-        self.welcome_message = conf.get('welcomeMessage') or data.get('welcomeMessage', 'Привет!')
-        self.settings = conf.get('settings', {})
+        self.buttons = flat_data.get('buttons', [])
+        self.triggers = flat_data.get('triggers', [])
+        self.welcome_message = flat_data.get('welcomeMessage', 'Привет!')
+        self.settings = flat_data.get('settings', {})
         
+        # Обновляем важные флаги
         self.use_topics = self.settings.get('useTopics', False)
         self.topic_per_request = self.settings.get('topicPerRequest', False)
         self.admin_template = self.settings.get('adminMessageTemplate', "")
         self.auto_ban_threshold = int(self.settings.get('autoBanThreshold', 0))
 
-        new_users = conf.get('connectedUsers', [])
+        # Синхронизация списка пользователей (чтобы не затирать локальный кеш)
+        new_users = flat_data.get('connectedUsers', [])
         if not self.connected_users:
             self.connected_users = new_users
         else:
@@ -132,11 +140,11 @@ class BotInstance:
                 if not found:
                     self.connected_users.append(nu)
 
-        self.stats = conf.get('stats') or {
+        self.stats = flat_data.get('stats') or {
             "totalMessages": 0, "incomingToday": 0, "outgoingToday": 0, "history": []
         }
         
-        logger.info(f"[{self.bot_id}] Settings Sync: Admin={self.admin_id}, Topics={self.use_topics}, PerReq={self.topic_per_request}")
+        logger.info(f"[{self.bot_id}] Sync Done. Topics={self.use_topics}, PerReq={self.topic_per_request}, Admin={self.admin_id}")
 
     async def remote_sync_poller(self):
         async with httpx.AsyncClient() as client:
@@ -162,10 +170,12 @@ class BotInstance:
                     if action == "msg":
                         await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=data, headers=headers)
                     elif action == "config":
+                        # Перед сохранением берем актуальный конфиг из БД, чтобы не затереть настройки
                         res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
                         if res.status_code == 200 and res.json():
                             db_bot = res.json()[0]
                             db_config = db_bot.get("config", {})
+                            # Обновляем только те поля, за которые отвечает бот (юзеры и стата)
                             new_config = {
                                 **db_config,
                                 "connectedUsers": self.connected_users,
@@ -247,12 +257,14 @@ class BotInstance:
     async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = ""):
         if not self.admin_id: return
         
-        # Если включено 'Топик на каждый запрос' И это нажатие кнопки или новый контакт - форсим новый топик
+        # Форсим новый топик, если включена настройка "топик на каждый запрос"
         force_new_topic = self.topic_per_request and (btn_text != "" or is_first)
         
-        # Если мы ВООБЩЕ не используем топики, thread_id должен быть None для отправки в General
-        thread_id = await self.ensure_topic(user, force_new=force_new_topic) if self.use_topics else None
-        
+        # Определяем thread_id только если топики включены
+        thread_id = None
+        if self.use_topics:
+            thread_id = await self.ensure_topic(user, force_new=force_new_topic)
+
         now = time.time()
         last_sent = self.last_header_time.get(user['id'], 0)
         
@@ -279,7 +291,7 @@ class BotInstance:
                 self.msg_map[sent.message_id] = user['id']
                 if len(self.msg_map) > 5000: self.msg_map.pop(next(iter(self.msg_map)))
         except Exception as e:
-            logger.error(f"Forward error: {e}")
+            logger.error(f"Forward error (topic {thread_id}): {e}")
 
     async def handle_admin_reply(self, m: Message):
         target_id = None
@@ -392,7 +404,7 @@ class BotInstance:
         asyncio.create_task(self.remote_sync_poller())
         await self.register_handlers()
         self.dp.include_router(self.router)
-        logger.info(f"🚀 Инстанс {self.bot_id} запущен (Топики: {self.use_topics}, По заявкам: {self.topic_per_request})")
+        logger.info(f"🚀 Инстанс {self.bot_id} запущен (Топики: {self.use_topics})")
         await self.dp.start_polling(self.bot)
 
 if __name__ == "__main__":
