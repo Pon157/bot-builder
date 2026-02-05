@@ -39,15 +39,12 @@ class BotProcessManager:
         self.log_paths: Dict[str, str] = {}
 
     async def start_bot(self, bot_id: str, config: dict):
-        # Если бот уже запущен в этом инстансе менеджера - стопаем
         await self.stop_bot(bot_id)
-        
         active_dir = os.path.join(os.getcwd(), "active_bots")
         os.makedirs(active_dir, exist_ok=True)
         config_path = os.path.join(active_dir, f"config_{bot_id}.json")
         log_path = os.path.join(active_dir, f"bot_{bot_id}.log")
         
-        # Сохраняем актуальный конфиг в файл для запуска ядра
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
         
@@ -76,12 +73,10 @@ class BotProcessManager:
         if bot_id in self.processes:
             p = self.processes[bot_id]
             logger.info(f"Stopping bot {bot_id}...")
-            # Посылаем SIGTERM, чтобы бот успел сохранить статистику через save_final_state
             p.terminate()
             try: 
                 await asyncio.wait_for(p.wait(), timeout=7.0)
             except: 
-                logger.warning(f"Бот {bot_id} не завершился вовремя, убиваем...")
                 p.kill()
             del self.processes[bot_id]
             return True
@@ -100,7 +95,6 @@ class BotProcessManager:
 pm = BotProcessManager()
 
 async def auto_restart_active_bots():
-    """Фоновая задача для автоматического запуска ботов при старте сервера."""
     logger.info("🔄 Инициализация автозапуска активных ботов из БД...")
     async with httpx.AsyncClient(
         base_url=f"{SB_URL}/rest/v1/",
@@ -111,26 +105,19 @@ async def auto_restart_active_bots():
             res = await client.get("bots", params={"status": "eq.RUNNING"})
             if res.status_code == 200:
                 active_bots = res.json()
-                logger.info(f"🔎 Найдено активных ботов в БД: {len(active_bots)}")
                 for bot_data in active_bots:
                     config = {**bot_data, **(bot_data.get("config") or {})}
                     await pm.start_bot(bot_data['id'], config)
-                    await asyncio.sleep(0.5) # Пауза чтобы не нагружать CPU
+                    await asyncio.sleep(0.5)
                 logger.info("✨ Автозапуск завершен.")
-            else:
-                logger.error(f"Ошибка получения ботов для автозапуска: {res.status_code}")
         except Exception as e:
             logger.error(f"Критическая ошибка автозапуска: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # При старте API бэкенда восстанавливаем ботов
     asyncio.create_task(auto_restart_active_bots())
     yield
-    # При выключении корректно стопаем всех ботов
-    logger.info("🛑 Выключение сервера. Остановка ботов...")
-    for bid in list(pm.processes.keys()): 
-        await pm.stop_bot(bid)
+    for bid in list(pm.processes.keys()): await pm.stop_bot(bid)
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -165,11 +152,10 @@ async def verify_reg(data: dict):
     res = await db.get("temp_codes", params={"email": f"eq.{email}", "type": "eq.REG"})
     codes = res.json()
     target = next((c for c in codes if str(c.get('code')).strip() == code), None)
-    if not target: raise HTTPException(400, "Неверный код подтверждения")
+    if not target: raise HTTPException(400, "Неверный код")
     user_id = f"u_{secrets.token_hex(4)}"
     payload = {"id": user_id, "username": data['username'], "email": email, "password": data['password'], "license_expires_at": int(time.time()*1000) + 259200000}
     await db.post("users", json=payload)
-    await db.delete("temp_codes", params={"email": f"eq.{email}"})
     return payload
 
 @app.get("/api/bots/{user_id}")
@@ -181,24 +167,56 @@ async def get_user_bots(user_id: str):
 @app.post("/api/bots/save")
 async def save_bot(bot: dict):
     bid = bot.get("id")
+    # КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: Не затираем статистику и юзеров из БД данными с фронтенда
+    res = await db.get("bots", params={"id": f"eq.{bid}"})
+    db_bot = res.json()[0] if res.status_code == 200 and res.json() else {}
+    db_config = db_bot.get("config", {})
+
     sys_keys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
-    config_payload = {k: v for k, v in bot.items() if k not in sys_keys}
+    incoming_config = {k: v for k, v in bot.items() if k not in sys_keys}
+    
+    # Сохраняем статистику и юзеров из базы, если они там новее или отсутствуют в запросе
+    merged_config = {
+        **incoming_config,
+        "stats": db_config.get("stats", bot.get("stats", {})),
+        "connectedUsers": db_config.get("connectedUsers", bot.get("connectedUsers", []))
+    }
+    
     payload = {
         "id": bid, 
         "owner_id": bot.get("owner_id"), 
         "name": bot["name"], 
         "token": bot["token"], 
-        "status": bot.get("status", "IDLE"),
-        "license_expires_at": int(bot.get("license_expires_at") or 0),
-        "config": config_payload
+        "status": bot.get("status", db_bot.get("status", "IDLE")),
+        "license_expires_at": int(bot.get("license_expires_at") or db_bot.get("license_expires_at", 0)),
+        "config": merged_config
     }
     await db.post("bots", json=payload, headers={"Prefer": "resolution=merge-duplicates"})
     return {"status": "ok"}
 
-@app.delete("/api/bots/delete/{user_id}/{bot_id}")
-async def delete_bot(user_id: str, bot_id: str):
-    await pm.stop_bot(bot_id)
-    await db.delete("bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}"})
+@app.post("/api/bots/moderate")
+async def moderate_bot_user(data: dict):
+    bot_id = data.get("botId")
+    user_id = int(data.get("userId"))
+    action = data.get("action")
+    
+    res = await db.get("bots", params={"id": f"eq.{bot_id}"})
+    if res.status_code != 200 or not res.json(): raise HTTPException(404, "Bot not found")
+    
+    bot_data = res.json()[0]
+    config = bot_data.get("config", {})
+    users = config.get("connectedUsers", [])
+    
+    for u in users:
+        if u['id'] == user_id:
+            if action == 'ban': u['is_banned'] = True
+            elif action == 'unban': u['is_banned'] = False
+            elif action == 'warn': u['warns'] = u.get('warns', 0) + 1
+            elif action == 'unwarn': u['warns'] = max(0, u.get('warns', 0) - 1)
+            break
+            
+    config["connectedUsers"] = users
+    await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"config": config})
     return {"status": "ok"}
 
 @app.post("/api/bots/start")
@@ -225,11 +243,6 @@ async def bot_logs_api(bot_id: str): return {"logs": pm.get_logs(bot_id)}
 async def get_bot_messages(bot_id: str):
     res = await db.get("bot_messages", params={"bot_id": f"eq.{bot_id}", "order": "created_at.desc", "limit": "50"})
     return res.json() if res.status_code == 200 else []
-
-@app.post("/api/bots/moderate")
-async def moderate_bot_user(data: dict):
-    # Заглушка модерации (в реальности бот_коре ловит изменения через полер)
-    return {"status": "ok"}
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
