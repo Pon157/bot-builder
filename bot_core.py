@@ -12,12 +12,12 @@ from datetime import datetime
 from typing import Dict, Optional, List, Any, Union
 
 from aiogram import Bot, Dispatcher, Router, F
-from aiogram.enums import ParseMode, ContentType
-from aiogram.filters import CommandStart, Command
+from aiogram.enums import ParseMode, ContentType, ChatMemberStatus
+from aiogram.filters import CommandStart, Command, ChatMemberUpdatedFilter
 from aiogram.types import (
     Message, ReplyKeyboardMarkup, KeyboardButton, 
     InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,
-    ReplyKeyboardRemove, ForumTopicCreated
+    ReplyKeyboardRemove, ForumTopicCreated, ChatMemberUpdated
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
@@ -235,6 +235,8 @@ class BotInstance:
                 sent_msg = await self.bot.send_photo(self.admin_chat_id, m.photo[-1].file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
             elif m.video:
                 sent_msg = await self.bot.send_video(self.admin_chat_id, m.video.file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
+            elif m.voice:
+                sent_msg = await self.bot.send_voice(self.admin_chat_id, m.voice.file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
             else:
                 if header_text:
                     await self.bot.send_message(self.admin_chat_id, header_text, message_thread_id=thread_id)
@@ -303,6 +305,22 @@ class BotInstance:
         return False
 
     async def core_handlers_setup(self):
+        # 1. ОБРАБОТЧИК БЛОКИРОВКИ БОТА ЮЗЕРОМ
+        @self.router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=ChatMemberStatus.KICKED))
+        async def on_user_blocked_bot(event: ChatMemberUpdated):
+            user_id = event.from_user.id
+            user = next((u for u in self.users_list if u['id'] == user_id), None)
+            if user:
+                user["is_active"] = False
+                await self.sync_queue.put(("sync_state", None))
+                # Уведомляем админа
+                if self.admin_chat_id:
+                    thread_id = user.get("last_topic_id")
+                    text = f"🔴 <b>Внимание!</b>\nПользователь <b>{event.from_user.full_name}</b> (@{event.from_user.username or '---'}) заблокировал бота."
+                    try: await self.bot.send_message(self.admin_chat_id, text, message_thread_id=thread_id)
+                    except: pass
+            logger.info(f"[!] Пользователь {user_id} заблокировал бота.")
+
         @self.router.message(CommandStart())
         async def handle_start(m: Message):
             user, is_new = await self.get_user_state(m)
@@ -325,11 +343,18 @@ class BotInstance:
                 
             if target_id:
                 try:
-                    # FIX: Улучшенный механизм пересылки (copy_message fallback)
+                    # FIX: Улучшенный механизм пересылки с уведомлением о блоке
                     try:
                         await self.bot.copy_message(target_id, m.chat.id, m.message_id)
+                    except TelegramForbiddenError:
+                        # Если поймали блок именно в момент отправки
+                        await m.reply("❌ <b>Ошибка:</b> Пользователь заблокировал бота. Сообщение не доставлено.")
+                        user = next((u for u in self.users_list if u['id'] == target_id), None)
+                        if user:
+                            user["is_active"] = False
+                            await self.sync_queue.put(("sync_state", None))
+                        return
                     except TelegramBadRequest:
-                        # Если copy_message упал, шлем контент вручную
                         if m.text: await self.bot.send_message(target_id, m.text)
                         elif m.photo: await self.bot.send_photo(target_id, m.photo[-1].file_id, caption=m.caption)
                         elif m.video: await self.bot.send_video(target_id, m.video.file_id, caption=m.caption)
