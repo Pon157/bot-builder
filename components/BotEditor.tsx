@@ -30,7 +30,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
     showUserInfo: true,
     showUsername: true,
     autoApproveJoin: false,
-    rateLimit: 15,
+    rateLimit: 1,
     autoBanThreshold: 3,
     showHeaderId: true,
     showHeaderName: true,
@@ -173,10 +173,10 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                     <div className="space-y-4">
                         <div className="p-5 bg-black rounded-2xl border border-zinc-800 flex items-center justify-between">
                             <div>
-                                <p className="text-xs font-bold text-white">Анти-флуд лимит</p>
-                                <p className="text-[9px] text-zinc-600 font-bold uppercase">Сообщений в минуту от юзера</p>
+                                <p className="text-xs font-bold text-white">Анти-флуд задержка</p>
+                                <p className="text-[9px] text-zinc-600 font-bold uppercase">Интервал между сообщениями (сек)</p>
                             </div>
-                            <input type="number" className="w-16 bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs text-center text-white outline-none" value={safeSettings.rateLimit} onChange={e => onUpdate({...bot, settings: {...safeSettings, rateLimit: parseInt(e.target.value) || 0}})} />
+                            <input type="number" step="0.1" className="w-16 bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs text-center text-white outline-none" value={safeSettings.rateLimit} onChange={e => onUpdate({...bot, settings: {...safeSettings, rateLimit: parseFloat(e.target.value) || 0}})} />
                         </div>
                         <div className="p-5 bg-black rounded-2xl border border-zinc-800 flex items-center justify-between">
                             <div>
