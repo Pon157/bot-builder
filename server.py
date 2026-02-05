@@ -243,7 +243,7 @@ async def run_broadcast_task(bot_ids: List[str], message: str):
                             r = await client.post(url, json={"chat_id": u["id"], "text": message, "parse_mode": "HTML"}, timeout=10)
                             if r.status_code == 200: success += 1
                             elif r.status_code == 403: 
-                                u["is_active"] = False
+                                u["is_active"] = False # Юзер заблокал — помечаем как "Лив"
                                 any_changes = True
                                 failed += 1
                             else: failed += 1
