@@ -31,7 +31,6 @@ logger = logging.getLogger("BotEngineServer")
 
 SB_URL = os.getenv("SUPABASE_URL", "").rstrip('/')
 SB_KEY = os.getenv("SUPABASE_KEY", "")
-ADMIN_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
 
 class BotProcessManager:
     def __init__(self):
@@ -56,66 +55,43 @@ class BotProcessManager:
             env["SUPABASE_KEY"] = SB_KEY
             
             log_file = open(log_path, "a", encoding="utf-8")
-            log_file.write(f"\n--- [{time.ctime()}] Запуск инстанса {bot_id} ---\n")
+            log_file.write(f"\n--- [{time.ctime()}] Instance {bot_id} Started ---\n")
             
             process = await asyncio.create_subprocess_exec(
                 sys.executable, "bot_core.py", config_path,
                 stdout=log_file, stderr=log_file, env=env, cwd=os.getcwd()
             )
             self.processes[bot_id] = process
-            logger.info(f"✅ Бот {bot_id} успешно запущен. PID: {process.pid}")
+            logger.info(f"Bot {bot_id} started. PID: {process.pid}")
             return True
         except Exception as e:
-            logger.error(f"❌ Ошибка запуска бота {bot_id}: {e}")
+            logger.error(f"Error starting {bot_id}: {e}")
             return str(e)
 
     async def stop_bot(self, bot_id: str):
         if bot_id in self.processes:
             p = self.processes[bot_id]
-            logger.info(f"Stopping bot {bot_id}...")
             p.terminate()
-            try: 
-                await asyncio.wait_for(p.wait(), timeout=7.0)
-            except: 
-                p.kill()
+            try: await asyncio.wait_for(p.wait(), timeout=5.0)
+            except: p.kill()
             del self.processes[bot_id]
             return True
         return False
 
     def get_logs(self, bot_id: str, lines: int = 500):
         path = self.log_paths.get(bot_id)
-        if not path or not os.path.exists(path): return "Лог пуст. Запустите бота."
+        if not path or not os.path.exists(path): return "Logs empty."
         try:
             with open(path, "r", encoding="utf-8") as f:
                 content = f.readlines()
                 return "".join(content[-lines:])
-        except Exception as e:
-            return f"Ошибка чтения логов: {e}"
+        except Exception as e: return f"Error reading: {e}"
 
 pm = BotProcessManager()
 
-async def auto_restart_active_bots():
-    logger.info("🔄 Инициализация автозапуска активных ботов из БД...")
-    async with httpx.AsyncClient(
-        base_url=f"{SB_URL}/rest/v1/",
-        headers={"apikey": SB_KEY, "Authorization": f"Bearer {SB_KEY}"},
-        timeout=60
-    ) as client:
-        try:
-            res = await client.get("bots", params={"status": "eq.RUNNING"})
-            if res.status_code == 200:
-                active_bots = res.json()
-                for bot_data in active_bots:
-                    config = {**bot_data, **(bot_data.get("config") or {})}
-                    await pm.start_bot(bot_data['id'], config)
-                    await asyncio.sleep(0.5)
-                logger.info("✨ Автозапуск завершен.")
-        except Exception as e:
-            logger.error(f"Критическая ошибка автозапуска: {e}")
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    asyncio.create_task(auto_restart_active_bots())
+    # Автозапуск ботов можно добавить сюда
     yield
     for bid in list(pm.processes.keys()): await pm.stop_bot(bid)
 
@@ -128,7 +104,10 @@ db = httpx.AsyncClient(
     timeout=30
 )
 
-# --- API ENDPOINTS ---
+# --- API ---
+
+@app.get("/api/ping")
+async def ping(): return {"status": "online"}
 
 @app.post("/api/auth/login")
 async def login(data: dict):
@@ -143,7 +122,7 @@ async def req_verif(data: dict):
     expires = int(time.time() * 1000) + (10 * 60 * 1000)
     await db.post("temp_codes", json={"email": email, "code": code, "type": "REG", "expires_at": expires}, headers={"Prefer": "resolution=merge-duplicates"})
     EmailService.send_verification_code(email, code)
-    return {"status": "ok"}
+    return True
 
 @app.post("/api/auth/verify-and-register")
 async def verify_reg(data: dict):
@@ -152,7 +131,7 @@ async def verify_reg(data: dict):
     res = await db.get("temp_codes", params={"email": f"eq.{email}", "type": "eq.REG"})
     codes = res.json()
     target = next((c for c in codes if str(c.get('code')).strip() == code), None)
-    if not target: raise HTTPException(400, "Неверный код")
+    if not target: raise HTTPException(400, "Invalid code")
     user_id = f"u_{secrets.token_hex(4)}"
     payload = {"id": user_id, "username": data['username'], "email": email, "password": data['password'], "license_expires_at": int(time.time()*1000) + 259200000}
     await db.post("users", json=payload)
@@ -174,7 +153,7 @@ async def save_bot(bot: dict):
     sys_keys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
     incoming_config = {k: v for k, v in bot.items() if k not in sys_keys}
     
-    # Умное слияние: приоритет отдаем живым данным из базы для статистики и юзеров
+    # Слияние: не затираем статистику и юзеров если они новее в БД
     merged_config = {
         **incoming_config,
         "stats": db_config.get("stats", bot.get("stats", {})),
@@ -182,12 +161,8 @@ async def save_bot(bot: dict):
     }
     
     payload = {
-        "id": bid, 
-        "owner_id": bot.get("owner_id"), 
-        "name": bot["name"], 
-        "token": bot["token"], 
-        "status": bot.get("status", db_bot.get("status", "IDLE")),
-        "license_expires_at": int(bot.get("license_expires_at") or db_bot.get("license_expires_at", 0)),
+        "id": bid, "owner_id": bot.get("owner_id"), "name": bot["name"], "token": bot["token"], 
+        "status": db_bot.get("status", "IDLE"), "license_expires_at": int(db_bot.get("license_expires_at", 0)),
         "config": merged_config
     }
     await db.post("bots", json=payload, headers={"Prefer": "resolution=merge-duplicates"})
@@ -200,7 +175,7 @@ async def moderate_bot_user(data: dict):
     action = data.get("action")
     
     res = await db.get("bots", params={"id": f"eq.{bot_id}"})
-    if res.status_code != 200 or not res.json(): raise HTTPException(404, "Bot not found")
+    if not res.json(): raise HTTPException(404, "Bot not found")
     
     bot_data = res.json()[0]
     config = bot_data.get("config", {})
@@ -226,14 +201,14 @@ async def start_bot(req: dict):
         config = {**bot_data, **(bot_data.get("config") or {})}
         if await pm.start_bot(bot_data['id'], config):
             await db.patch("bots", params={"id": f"eq.{bot_data['id']}"}, json={"status": "RUNNING"})
-            return {"status": "ok"}
-    raise HTTPException(500, "Start failed")
+            return True
+    return False
 
 @app.post("/api/bots/stop/{bot_id}")
 async def stop_bot(bot_id: str):
     await pm.stop_bot(bot_id)
     await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "IDLE"})
-    return {"status": "ok"}
+    return True
 
 @app.get("/api/bots/logs/{bot_id}")
 async def bot_logs_api(bot_id: str): return {"logs": pm.get_logs(bot_id)}
@@ -242,9 +217,6 @@ async def bot_logs_api(bot_id: str): return {"logs": pm.get_logs(bot_id)}
 async def get_bot_messages(bot_id: str):
     res = await db.get("bot_messages", params={"bot_id": f"eq.{bot_id}", "order": "created_at.desc", "limit": "50"})
     return res.json() if res.status_code == 200 else []
-
-@app.get("/api/ping")
-async def ping(): return {"status": "online"}
 
 if __name__ == "__main__":
     import uvicorn
