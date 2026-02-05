@@ -8,7 +8,7 @@ import {
   Settings, Cpu, BarChart3, Terminal, X, Save, Power, 
   Ticket, Plus, MessageSquare, User, CheckSquare, 
   Square, Zap, Bell, Shield, Sliders, Layout, ShieldAlert, Lock, Trash2, ShieldCheck, AlertCircle, Type as TypeIcon
-} from 'lucide-react';
+} from 'lucide-center';
 
 interface BotEditorProps {
   bot: BotConfig;
@@ -19,6 +19,7 @@ interface BotEditorProps {
 const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
   const [activeTab, setActiveTab] = useState<'settings' | 'logic' | 'interface' | 'logs' | 'stats' | 'chat'>('settings');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
 
   const defaultSettings: BotConfig['settings'] = {
@@ -57,7 +58,9 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         await api.stopBotOnServer(bot.id);
         onUpdate({ ...bot, status: BotStatus.IDLE });
       } else {
+        // При запуске всегда сначала сохраняем конфиг
         await api.saveBot(bot.owner_id, bot);
+        setHasUnsavedChanges(false);
         const res = await api.startBotOnServer(bot);
         if (res === true) {
             onUpdate({ ...bot, status: BotStatus.RUNNING });
@@ -72,20 +75,35 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
     setIsProcessing(true);
     try {
         await api.saveBot(bot.owner_id, bot);
-        alert("Конфигурация синхронизирована!");
+        setHasUnsavedChanges(false);
+        alert("Конфигурация успешно сохранена в облаке!");
     } catch {
-        alert("Ошибка сети");
+        alert("Ошибка сети при сохранении");
     } finally {
         setIsProcessing(false);
     }
   };
 
   const updateSetting = (key: keyof typeof defaultSettings, val: any) => {
+    setHasUnsavedChanges(true);
     onUpdate({ ...bot, settings: { ...safeSettings, [key]: val } });
+  };
+
+  const handleLocalUpdate = (updatedBot: BotConfig) => {
+    setHasUnsavedChanges(true);
+    onUpdate(updatedBot);
   };
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500 pb-20">
+      {hasUnsavedChanges && (
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[100] bg-blue-600 text-white px-8 py-4 rounded-2xl shadow-2xl flex items-center gap-4 animate-bounce">
+            <AlertCircle className="w-5 h-5" />
+            <span className="text-xs font-black uppercase tracking-widest">У вас есть несохраненные изменения!</span>
+            <button onClick={syncState} disabled={isProcessing} className="bg-white text-blue-600 px-4 py-1.5 rounded-xl font-black text-[10px] uppercase">Сохранить сейчас</button>
+        </div>
+      )}
+
       <header className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] flex flex-col md:flex-row justify-between items-center gap-6 shadow-2xl relative overflow-hidden">
         <div className="flex items-center gap-6 relative z-10">
           <div className={`w-16 h-16 rounded-2xl flex items-center justify-center border-2 ${bot.status === BotStatus.RUNNING ? 'bg-blue-500/10 border-blue-500/30 text-blue-500' : 'bg-zinc-900 border-zinc-800 text-zinc-600'}`}>
@@ -100,7 +118,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
           </div>
         </div>
         <div className="flex gap-4 relative z-10">
-           <button onClick={syncState} disabled={isProcessing} className="px-6 py-4 bg-zinc-800 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-700 flex items-center gap-2 transition-all">
+           <button onClick={syncState} disabled={isProcessing} className={`px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all ${hasUnsavedChanges ? 'bg-blue-600 text-white animate-pulse' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}>
              <Save className="w-4 h-4" /> Сохранить
            </button>
            <button onClick={handleToggleServer} disabled={isProcessing} className={`px-10 py-4 rounded-2xl font-black text-xs uppercase transition-all flex items-center gap-2 shadow-xl ${bot.status === BotStatus.RUNNING ? 'bg-red-500/10 text-red-500 border border-red-500/20' : 'bg-blue-600 text-white'}`}>
@@ -135,15 +153,15 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                 <div className="space-y-5">
                   <label className="block">
                     <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Telegram Bot Token</span>
-                    <input type="password" placeholder="Токен от @BotFather" className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white font-mono outline-none focus:border-blue-500 transition-all" value={bot.token} onChange={e => onUpdate({...bot, token: e.target.value})} />
+                    <input type="password" placeholder="Токен от @BotFather" className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white font-mono outline-none focus:border-blue-500 transition-all" value={bot.token} onChange={e => handleLocalUpdate({...bot, token: e.target.value})} />
                   </label>
                   <label className="block">
                     <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">ID Группы Админов (Forum)</span>
-                    <input type="text" placeholder="-100..." className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-blue-500 transition-all" value={bot.adminChatId} onChange={e => onUpdate({...bot, adminChatId: e.target.value})} />
+                    <input type="text" placeholder="-100..." className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-blue-500 transition-all" value={bot.adminChatId} onChange={e => handleLocalUpdate({...bot, adminChatId: e.target.value})} />
                   </label>
                   <label className="block">
                     <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Приветствие (/start)</span>
-                    <textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] outline-none text-xs focus:border-blue-500 transition-all resize-none" value={bot.welcomeMessage || ""} onChange={e => onUpdate({...bot, welcomeMessage: e.target.value})} />
+                    <textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] outline-none text-xs focus:border-blue-500 transition-all resize-none" value={bot.welcomeMessage || ""} onChange={e => handleLocalUpdate({...bot, welcomeMessage: e.target.value})} />
                   </label>
                 </div>
               </section>
@@ -243,20 +261,20 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
           <div className="space-y-6">
              <div className="flex justify-between items-center mb-6">
                 <h2 className="text-2xl font-black text-white uppercase tracking-tight">Конструктор Кнопок</h2>
-                <button onClick={() => onUpdate({...bot, buttons: [...(bot.buttons || []), {text: '', response: '', type: 'message'}]})} className="bg-blue-600 px-8 py-4 rounded-2xl text-[11px] font-black text-white uppercase flex items-center gap-2 shadow-lg shadow-blue-600/20">
+                <button onClick={() => handleLocalUpdate({...bot, buttons: [...(bot.buttons || []), {text: '', response: '', type: 'message'}]})} className="bg-blue-600 px-8 py-4 rounded-2xl text-[11px] font-black text-white uppercase flex items-center gap-2 shadow-lg shadow-blue-600/20">
                     <Plus className="w-4 h-4" /> Новая кнопка
                 </button>
              </div>
              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                {(bot.buttons || []).map((btn, i) => (
                  <div key={i} className="bg-[#0d0d0d] border border-zinc-800 rounded-[2.5rem] p-8 space-y-6 relative group border-t-4 border-t-blue-500/20 shadow-xl">
-                    <button onClick={() => onUpdate({...bot, buttons: bot.buttons.filter((_, idx) => idx !== i)})} className="absolute top-6 right-6 text-zinc-600 hover:text-rose-500 transition-colors"><X className="w-5 h-5" /></button>
+                    <button onClick={() => handleLocalUpdate({...bot, buttons: bot.buttons.filter((_, idx) => idx !== i)})} className="absolute top-6 right-6 text-zinc-600 hover:text-rose-500 transition-colors"><X className="w-5 h-5" /></button>
                     <div className="space-y-5">
-                        <label className="block"><span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Текст на кнопке</span><input className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-blue-500" value={btn.text} onChange={e => { const nb = [...bot.buttons]; nb[i].text = e.target.value; onUpdate({...bot, buttons: nb}); }} /></label>
-                        <label className="block"><span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Ответ системы</span><textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm min-h-[120px] outline-none focus:border-blue-500 resize-none" value={btn.response} onChange={e => { const nb = [...bot.buttons]; nb[i].response = e.target.value; onUpdate({...bot, buttons: nb}); }} /></label>
+                        <label className="block"><span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Текст на кнопке</span><input className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-blue-500" value={btn.text} onChange={e => { const nb = [...bot.buttons]; nb[i].text = e.target.value; handleLocalUpdate({...bot, buttons: nb}); }} /></label>
+                        <label className="block"><span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Ответ системы</span><textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm min-h-[120px] outline-none focus:border-blue-500 resize-none" value={btn.response} onChange={e => { const nb = [...bot.buttons]; nb[i].response = e.target.value; handleLocalUpdate({...bot, buttons: nb}); }} /></label>
                         <div className="flex bg-black p-1 rounded-xl border border-zinc-800">
                           {['message', 'request'].map(type => (
-                            <button key={type} onClick={() => { const nb = [...bot.buttons]; nb[i].type = type as any; onUpdate({...bot, buttons: nb}); }} className={`flex-1 py-2.5 rounded-lg text-[9px] font-black uppercase transition-all ${btn.type === type ? 'bg-blue-600 text-white' : 'text-zinc-600'}`}>{type === 'message' ? 'Обычный ответ' : '🆘 Заявка (Тикет)'}</button>
+                            <button key={type} onClick={() => { const nb = [...bot.buttons]; nb[i].type = type as any; handleLocalUpdate({...bot, buttons: nb}); }} className={`flex-1 py-2.5 rounded-lg text-[9px] font-black uppercase transition-all ${btn.type === type ? 'bg-blue-600 text-white' : 'text-zinc-600'}`}>{type === 'message' ? 'Обычный ответ' : '🆘 Заявка (Тикет)'}</button>
                           ))}
                         </div>
                     </div>
@@ -268,13 +286,13 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
 
         {activeTab === 'logic' && (
           <div className="space-y-6">
-            <div className="flex justify-between items-end mb-6"><h2 className="text-2xl font-black text-white uppercase">Триггеры авто-ответа</h2><button onClick={() => onUpdate({...bot, triggers: [...(bot.triggers || []), {keyword: '', response: ''}]})} className="bg-emerald-600 px-8 py-4 rounded-2xl text-[10px] font-black text-white uppercase flex items-center gap-2 transition-all"><Plus className="w-4 h-4" /> Новый триггер</button></div>
+            <div className="flex justify-between items-end mb-6"><h2 className="text-2xl font-black text-white uppercase">Триггеры авто-ответа</h2><button onClick={() => handleLocalUpdate({...bot, triggers: [...(bot.triggers || []), {keyword: '', response: ''}]})} className="bg-emerald-600 px-8 py-4 rounded-2xl text-[10px] font-black text-white uppercase flex items-center gap-2 transition-all"><Plus className="w-4 h-4" /> Новый триггер</button></div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                {(bot.triggers || []).map((trig, i) => (
                  <div key={i} className="bg-[#0d0d0d] border border-zinc-800 rounded-[2.5rem] p-8 space-y-5 relative border-t-4 border-t-emerald-500/20 shadow-xl">
-                    <button onClick={() => onUpdate({...bot, triggers: bot.triggers.filter((_, idx) => idx !== i)})} className="absolute top-6 right-6 text-zinc-600 hover:text-rose-500"><X className="w-5 h-5" /></button>
-                    <input placeholder="Ключевое слово (например: цена)" className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-emerald-500" value={trig.keyword} onChange={e => { const nt = [...bot.triggers]; nt[i].keyword = e.target.value; onUpdate({...bot, triggers: nt}); }} />
-                    <textarea placeholder="Что бот должен ответить..." className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm outline-none min-h-[120px] focus:border-emerald-500" value={trig.response} onChange={e => { const nt = [...bot.triggers]; nt[i].response = e.target.value; onUpdate({...bot, triggers: nt}); }} />
+                    <button onClick={() => handleLocalUpdate({...bot, triggers: bot.triggers.filter((_, idx) => idx !== i)})} className="absolute top-6 right-6 text-zinc-600 hover:text-rose-500"><X className="w-5 h-5" /></button>
+                    <input placeholder="Ключевое слово (например: цена)" className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-emerald-500" value={trig.keyword} onChange={e => { const nt = [...bot.triggers]; nt[i].keyword = e.target.value; handleLocalUpdate({...bot, triggers: nt}); }} />
+                    <textarea placeholder="Что бот должен ответить..." className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm outline-none min-h-[120px] focus:border-emerald-500" value={trig.response} onChange={e => { const nt = [...bot.triggers]; nt[i].response = e.target.value; handleLocalUpdate({...bot, triggers: nt}); }} />
                  </div>
                ))}
             </div>
