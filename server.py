@@ -31,6 +31,7 @@ logger = logging.getLogger("BotEngineServer")
 
 SB_URL = os.getenv("SUPABASE_URL", "").rstrip('/')
 SB_KEY = os.getenv("SUPABASE_KEY", "")
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
 
 class BotProcessManager:
     def __init__(self):
@@ -97,6 +98,24 @@ db = httpx.AsyncClient(
     timeout=30
 )
 
+# --- ADMIN API (FOR LICENSE BOT) ---
+@app.post("/api/admin/generate-key")
+async def generate_key(data: dict, x_admin_token: str = Header(None)):
+    if x_admin_token != ADMIN_SECRET:
+        raise HTTPException(403, "Invalid admin token")
+    
+    months = data.get("months", 1)
+    new_key = f"PRO-{months}M-{secrets.token_hex(4).upper()}"
+    
+    payload = {
+        "key": new_key,
+        "months": months,
+        "days": 0,
+        "used": False
+    }
+    await db.post("issued_keys", json=payload)
+    return {"status": "ok", "key": new_key}
+
 # --- AUTH API ---
 @app.post("/api/auth/login")
 async def login(data: dict):
@@ -156,28 +175,6 @@ async def delete_bot(user_id: str, bot_id: str):
     await db.delete("bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}"})
     return {"status": "ok"}
 
-@app.post("/api/bots/moderate")
-async def moderate_user(data: dict):
-    bot_id, user_id, action = data['botId'], data['userId'], data['action']
-    res = await db.get("bots", params={"id": f"eq.{bot_id}"})
-    if not res.json(): raise HTTPException(404)
-    bot = res.json()[0]
-    config = bot.get("config") or {}
-    users = config.get("connectedUsers", [])
-    target_user = None
-    for u in users:
-        if u['id'] == user_id:
-            if action == 'ban': u['is_banned'] = True
-            elif action == 'unban': u['is_banned'] = False
-            elif action == 'warn': u['warns'] = u.get('warns', 0) + 1
-            elif action == 'unwarn': u['warns'] = max(0, u.get('warns', 0) - 1)
-            target_user = u
-            break
-    if target_user:
-        await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"config": {**config, "connectedUsers": users}})
-        return {"status": "ok", "user": target_user}
-    raise HTTPException(404, "User not found")
-
 @app.post("/api/bots/activate-license")
 async def activate_license(data: dict):
     bot_id, key = data['botId'], data['key']
@@ -227,13 +224,13 @@ async def broadcast(data: dict, background_tasks: BackgroundTasks):
     return {"status": "queued"}
 
 async def run_broadcast_task(bot_ids: List[str], message: str):
-    success, failed = 0, 0
     for bid in bot_ids:
         res = await db.get("bots", params={"id": f"eq.{bid}"})
         if res.json():
             bot = res.json()[0]
             config = bot.get("config") or {}
             users = config.get("connectedUsers", [])
+            success, failed = 0, 0
             any_changes = False
             for u in users:
                 if not u.get("is_banned") and u.get("is_active", True):
@@ -243,15 +240,18 @@ async def run_broadcast_task(bot_ids: List[str], message: str):
                             r = await client.post(url, json={"chat_id": u["id"], "text": message, "parse_mode": "HTML"}, timeout=10)
                             if r.status_code == 200: success += 1
                             elif r.status_code == 403: 
-                                u["is_active"] = False # Юзер заблокал — помечаем как "Лив"
+                                u["is_active"] = False 
                                 any_changes = True
                                 failed += 1
                             else: failed += 1
                     except: failed += 1
                     await asyncio.sleep(0.05)
-            if any_changes:
-                await db.patch("bots", params={"id": f"eq.{bid}"}, json={"config": {**config, "connectedUsers": users}})
-    logger.info(f"Broadcast task finished. S:{success} F:{failed}")
+            
+            # Обновляем статистику в БД для фронтенда
+            stats = config.get("stats", {})
+            stats["last_broadcast_result"] = {"success": success, "failed": failed, "at": int(time.time())}
+            await db.patch("bots", params={"id": f"eq.{bid}"}, json={"config": {**config, "connectedUsers": users, "stats": stats}})
+    logger.info(f"Broadcast finished for {len(bot_ids)} bots.")
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
