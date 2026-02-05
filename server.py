@@ -31,7 +31,6 @@ logger = logging.getLogger("BotEngineServer")
 
 SB_URL = os.getenv("SUPABASE_URL", "").rstrip('/')
 SB_KEY = os.getenv("SUPABASE_KEY", "")
-ADMIN_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
 
 class BotProcessManager:
     def __init__(self):
@@ -143,18 +142,13 @@ async def get_user_info(user_id: str):
 async def get_user_bots(user_id: str):
     res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
     bots = res.json() if res.status_code == 200 else []
-    # Расплющиваем для фронтенда
     return [{**b, **(b.get("config") or {})} for b in bots]
 
 @app.post("/api/bots/save")
 async def save_bot(bot: dict):
     bid = bot.get("id")
-    # Список системных ключей, которые идут в колонки таблицы
     sys_keys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
-    
-    # Формируем конфиг, исключая системные поля и старый вложенный конфиг
     config_payload = {k: v for k, v in bot.items() if k not in sys_keys}
-    
     payload = {
         "id": bid, 
         "owner_id": bot.get("owner_id"), 
@@ -167,6 +161,56 @@ async def save_bot(bot: dict):
     await db.post("bots", json=payload, headers={"Prefer": "resolution=merge-duplicates"})
     return {"status": "ok"}
 
+@app.post("/api/bots/moderate")
+async def moderate_user(data: dict):
+    """Симметричная модерация: обновление конфига + уведомление в TG."""
+    bot_id = data.get("botId")
+    user_id = data.get("userId")
+    action = data.get("action") # ban, unban, warn, unwarn
+    
+    res = await db.get("bots", params={"id": f"eq.{bot_id}"})
+    if not res.json(): raise HTTPException(404, "Bot not found")
+    bot = res.json()[0]
+    config = bot.get("config") or {}
+    users = config.get("connectedUsers", [])
+    settings = config.get("settings", {})
+    
+    target_user = next((u for u in users if u['id'] == user_id), None)
+    if not target_user: raise HTTPException(404, "User not found in bot database")
+    
+    tg_msg = ""
+    if action == "ban":
+        target_user["is_banned"] = True
+        tg_msg = "🚫 <b>Вы были заблокированы администратором через панель управления.</b>"
+    elif action == "unban":
+        target_user["is_banned"] = False
+        tg_msg = "✅ <b>Ваша блокировка снята администратором через панель управления.</b>"
+    elif action == "warn":
+        target_user["warns"] = target_user.get("warns", 0) + 1
+        threshold = int(settings.get("autoBanThreshold", 0))
+        msg = f"⚠️ <b>Вам выдано предупреждение через панель управления!</b> ({target_user['warns']}/{threshold or '∞'})"
+        if threshold > 0 and target_user["warns"] >= threshold:
+            target_user["is_banned"] = True
+            msg += "\n\n🚫 Авто-бан за лимит варнов."
+        tg_msg = msg
+    elif action == "unwarn":
+        target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
+        tg_msg = f"✅ <b>Одно из ваших предупреждений было снято администратором.</b> (Осталось: {target_user['warns']})"
+
+    # Сохраняем обновленный конфиг
+    await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"config": config})
+    
+    # Отправляем уведомление в Telegram (Симметрия!)
+    if tg_msg:
+        url = f"https://api.telegram.org/bot{bot['token']}/sendMessage"
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(url, json={"chat_id": user_id, "text": tg_msg, "parse_mode": "HTML"})
+        except Exception as e:
+            logger.error(f"Failed to send TG notification: {e}")
+            
+    return {"status": "ok", "user": target_user}
+
 @app.delete("/api/bots/delete/{user_id}/{bot_id}")
 async def delete_bot(user_id: str, bot_id: str):
     await pm.stop_bot(bot_id)
@@ -178,7 +222,6 @@ async def start_bot(req: dict):
     res = await db.get("bots", params={"id": f"eq.{req['id']}"})
     if res.json():
         bot = res.json()[0]
-        # Передаем "расплющенный" конфиг для корректной инициализации бота
         if await pm.start_bot(bot['id'], {**bot, **(bot.get("config") or {})}):
             await db.patch("bots", params={"id": f"eq.{bot['id']}"}, json={"status": "RUNNING"})
             return {"status": "ok"}
@@ -197,26 +240,6 @@ async def get_bot_msgs(bot_id: str):
 
 @app.get("/api/bots/logs/{bot_id}")
 async def bot_logs_api(bot_id: str): return {"logs": pm.get_logs(bot_id)}
-
-@app.post("/api/bots/broadcast")
-async def broadcast(data: dict):
-    bot_ids, message = data.get("botIds", []), data.get("message", "")
-    success, failed = 0, 0
-    for bid in bot_ids:
-        res = await db.get("bots", params={"id": f"eq.{bid}"})
-        if res.json():
-            bot = res.json()[0]
-            users = (bot.get("config") or {}).get("connectedUsers", [])
-            for u in users:
-                if not u.get("is_banned") and u.get("is_active"):
-                    url = f"https://api.telegram.org/bot{bot['token']}/sendMessage"
-                    try:
-                        async with httpx.AsyncClient() as client:
-                            r = await client.post(url, json={"chat_id": u["id"], "text": message, "parse_mode": "HTML"})
-                            if r.status_code == 200: success += 1
-                            else: failed += 1
-                    except: failed += 1
-    return {"success": success, "failed": failed}
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
