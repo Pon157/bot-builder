@@ -61,11 +61,15 @@ def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_
 
     # Определение статуса (Тикет, Первое сообщение или обычный текст)
     if btn_text:
-        status_line = f"🆘 <b>ЗАЯВКА [Кнопка: {btn_text}]:</b>"
+        status_line = settings.get('ticketMessageHeader', "🆘 <b>ЗАЯВКА</b>")
+        if "{btn}" in status_line:
+            status_line = status_line.replace("{btn}", btn_text)
+        elif "[Кнопка" not in status_line:
+            status_line += f" [Кнопка: {btn_text}]:"
     elif is_first:
-        status_line = "🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ:</b>"
+        status_line = settings.get('firstMessageHeader', "🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ:</b>")
     else:
-        status_line = "📩 <b>СООБЩЕНИЕ:</b>"
+        status_line = settings.get('commonMessageHeader', "📩 <b>СООБЩЕНИЕ:</b>")
 
     return f"{status_line}\n{user_info}\n\n"
 
@@ -150,7 +154,7 @@ class BotInstance:
         now = time.time()
         last_time = self.flood_cache.get(user_id, 0)
         if now - last_time < self.rate_limit:
-            return True # Заблокировать (слишком часто)
+            return True # Заблокировать
         self.flood_cache[user_id] = now
         return False
 
@@ -171,7 +175,7 @@ class BotInstance:
         await self.sync_queue.put(("sync_state", None))
 
     async def get_user_state(self, m: Message):
-        """Получает объект пользователя или создает его при первом обращении."""
+        """Получает объект пользователя или создает его."""
         uid = m.from_user.id
         user = next((u for u in self.users_list if u['id'] == uid), None)
         is_first_time = False
@@ -219,66 +223,41 @@ class BotInstance:
         """Пересылка сообщения администратору с формированием шапки."""
         if not self.admin_chat_id: return
         
-        # Определяем, нужно ли создавать новый топик (для тикетов или первого входа)
         force_new_topic = self.topic_per_req and (btn_text != "" or is_first)
         thread_id = await self.resolve_thread(user, force_new=force_new_topic)
-        
         header_text = format_admin_header(m, self.settings, is_first, btn_text)
         
         try:
             sent_msg = None
             if m.text:
-                sent_msg = await self.bot.send_message(
-                    self.admin_chat_id, 
-                    f"{header_text}{m.text}", 
-                    message_thread_id=thread_id
-                )
+                sent_msg = await self.bot.send_message(self.admin_chat_id, f"{header_text}{m.text}", message_thread_id=thread_id)
             elif m.photo:
-                sent_msg = await self.bot.send_photo(
-                    self.admin_chat_id, 
-                    m.photo[-1].file_id, 
-                    caption=f"{header_text}{m.caption or ''}", 
-                    message_thread_id=thread_id
-                )
+                sent_msg = await self.bot.send_photo(self.admin_chat_id, m.photo[-1].file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
             elif m.video:
-                sent_msg = await self.bot.send_video(
-                    self.admin_chat_id, 
-                    m.video.file_id, 
-                    caption=f"{header_text}{m.caption or ''}", 
-                    message_thread_id=thread_id
-                )
+                sent_msg = await self.bot.send_video(self.admin_chat_id, m.video.file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
             else:
-                # Для документов, стикеров и прочего - сначала шапку, потом само сообщение
                 if header_text:
                     await self.bot.send_message(self.admin_chat_id, header_text, message_thread_id=thread_id)
-                sent_msg = await self.bot.copy_message(
-                    self.admin_chat_id, 
-                    m.chat.id, 
-                    m.message_id, 
-                    message_thread_id=thread_id
-                )
+                sent_msg = await self.bot.copy_message(self.admin_chat_id, m.chat.id, m.message_id, message_thread_id=thread_id)
             
             if sent_msg:
-                # Запоминаем ID сообщения админа, чтобы знать, кому отвечать реплаем
                 self.msg_map[sent_msg.message_id] = user['id']
                 
         except Exception as e:
-            logger.error(f"Forwarding Critical Error: {e}")
+            logger.error(f"Forwarding Error: {e}")
 
     async def admin_control_logic(self, m: Message):
-        """Логика команд модерации прямо из чата (реплаем или в топике)."""
+        """Логика команд модерации прямо из чата."""
         if not m.text or not (m.text.startswith("/") or m.text.startswith("!")):
             return False
             
         cmd_parts = m.text.lower().split()
-        command = cmd_parts[0][1:] # ban, warn, unban и т.д.
+        command = cmd_parts[0][1:]
         
         target_user = None
-        # Поиск юзера по топику
         if m.message_thread_id:
             target_user = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
         
-        # Поиск юзера по реплаю
         if not target_user and m.reply_to_message:
             uid = self.msg_map.get(m.reply_to_message.message_id)
             if uid:
@@ -297,44 +276,45 @@ class BotInstance:
         elif command == "unban":
             target_user["is_banned"] = False
             await self.sync_queue.put(("sync_state", None))
+            try: await self.bot.send_message(uid, "✅ <b>Ваш доступ восстановлен администратором.</b>")
+            except: pass
             await m.reply(f"✅ Пользователь {uid} разблокирован.")
             return True
         elif command == "warn":
             target_user["warns"] = target_user.get("warns", 0) + 1
             await self.sync_queue.put(("sync_state", None))
-            
             if self.auto_ban_limit > 0 and target_user["warns"] >= self.auto_ban_limit:
                 target_user["is_banned"] = True
                 await self.sync_queue.put(("sync_state", None))
                 try: await self.bot.send_message(uid, f"🚫 <b>Авто-бан:</b> Лимит предупреждений ({target_user['warns']}) исчерпан.")
                 except: pass
-                await m.reply(f"🚨 <b>АВТО-БАН!</b> Пользователь {uid} забанен (Варнов: {target_user['warns']}).")
+                await m.reply(f"🚨 АВТО-БАН! Юзер {uid} (Варнов: {target_user['warns']}).")
             else:
                 try: await self.bot.send_message(uid, f"⚠️ <b>Предупреждение!</b> ({target_user['warns']}/{self.auto_ban_limit})")
                 except: pass
-                await m.reply(f"⚠️ Предупреждение выдано. Всего: {target_user['warns']}/{self.auto_ban_limit}")
+                await m.reply(f"⚠️ Варн выдан. Всего: {target_user['warns']}/{self.auto_ban_limit}")
+            return True
+        elif command == "unwarn":
+            target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
+            await self.sync_queue.put(("sync_state", None))
+            await m.reply(f"✅ Предупреждение снято. Текущее кол-во: {target_user['warns']}")
             return True
             
         return False
 
     async def core_handlers_setup(self):
-        """Регистрация всех обработчиков aiogram."""
-        
         @self.router.message(CommandStart())
         async def handle_start(m: Message):
             user, is_new = await self.get_user_state(m)
             if user.get("is_banned"): return
-            
             await m.answer(self.welcome_text, reply_markup=self.get_main_keyboard())
             await self.forward_to_admin(m, user, is_first=is_new)
             await self.log_and_update(user['id'], m.from_user.full_name, "/start")
 
         @self.router.message(F.chat.id == self.admin_chat_id)
         async def handle_admin_input(m: Message):
-            # 1. Проверка команд модерации
             if await self.admin_control_logic(m): return
             
-            # 2. Обычный ответ пользователю
             target_id = None
             if m.message_thread_id:
                 u = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
@@ -345,72 +325,57 @@ class BotInstance:
                 
             if target_id:
                 try:
-                    await self.bot.copy_message(target_id, m.chat.id, m.message_id)
+                    # FIX: Улучшенный механизм пересылки (copy_message fallback)
+                    try:
+                        await self.bot.copy_message(target_id, m.chat.id, m.message_id)
+                    except TelegramBadRequest:
+                        # Если copy_message упал, шлем контент вручную
+                        if m.text: await self.bot.send_message(target_id, m.text)
+                        elif m.photo: await self.bot.send_photo(target_id, m.photo[-1].file_id, caption=m.caption)
+                        elif m.video: await self.bot.send_video(target_id, m.video.file_id, caption=m.caption)
+                        elif m.voice: await self.bot.send_voice(target_id, m.voice.file_id)
+                        elif m.video_note: await self.bot.send_video_note(target_id, m.video_note.file_id)
+                        else: await self.bot.forward_message(target_id, m.chat.id, m.message_id)
+                            
                     await self.log_and_update(target_id, "Admin", m.text or "[Медиа]", is_admin=True)
-                except TelegramForbiddenError:
-                    # Уведомление о том, что бот заблокирован пользователем
-                    await m.reply("❌ <b>Ошибка:</b> Пользователь заблокировал бота или удалил чат.")
-                    u = next((u for u in self.users_list if u['id'] == target_id), None)
-                    if u: 
-                        u["is_active"] = False
-                        await self.sync_queue.put(("sync_state", None))
+                except Exception as e:
+                    await m.reply(f"❌ <b>Ошибка отправки:</b> {e}")
 
         @self.router.message()
         async def handle_user_input(m: Message):
             if self.admin_chat_id and m.chat.id == self.admin_chat_id: return
-            
             user, is_new = await self.get_user_state(m)
-            if user.get("is_banned"): return
-            
-            # Анти-спам
-            if await self.check_antispam(user['id']): return
+            if user.get("is_banned") or await self.check_antispam(user['id']): return
 
-            # Обработка текстовых триггеров и кнопок
             if m.text:
                 clean_text = m.text.lower().strip()
-                
-                # Поиск по кнопкам
                 for btn in self.buttons:
                     if btn.get('text') and btn['text'].lower() == clean_text:
-                        if btn.get('type') == 'request':
-                            await self.forward_to_admin(m, user, btn_text=btn['text'])
-                        if btn.get('response'):
-                            await m.answer(btn['response'])
-                        await self.log_and_update(user['id'], m.from_user.full_name, f"КНОПКА: {btn['text']}")
-                        return
+                        if btn.get('type') == 'request': await self.forward_to_admin(m, user, btn_text=btn['text'])
+                        if btn.get('response'): await m.answer(btn['response'])
+                        await self.log_and_update(user['id'], m.from_user.full_name, f"КНОПКА: {btn['text']}"); return
                 
-                # Поиск по триггерам
                 for trig in self.triggers:
                     if trig.get('keyword') and trig['keyword'].lower() in clean_text:
-                        await m.answer(trig['response'])
-                        await self.log_and_update(user['id'], m.from_user.full_name, f"ТРИГГЕР: {trig['keyword']}")
-                        return
+                        await m.answer(trig['response']); await self.log_and_update(user['id'], m.from_user.full_name, f"ТРИГГЕР: {trig['keyword']}"); return
 
-            # Если ничего не сработало — просто пересылаем
             await self.forward_to_admin(m, user, is_first=is_new)
             await self.log_and_update(user['id'], m.from_user.full_name, m.text or "[Медиа]")
 
     def get_main_keyboard(self):
-        """Сборка Reply-клавиатуры из настроек инстанса."""
         active_btns = [b for b in self.buttons if b.get('text')]
         if not active_btns: return ReplyKeyboardRemove()
-        
         keyboard_rows = []
-        # Размещаем по 2 кнопки в ряд
         for i in range(0, len(active_btns), 2):
-            row = [KeyboardButton(text=b['text']) for b in active_btns[i:i+2]]
-            keyboard_rows.append(row)
-            
+            keyboard_rows.append([KeyboardButton(text=b['text']) for b in active_btns[i:i+2]])
         return ReplyKeyboardMarkup(keyboard=keyboard_rows, resize_keyboard=True)
 
     async def run_instance(self):
-        """Запуск цикла событий инстанса."""
         asyncio.create_task(self.database_sync_worker())
         await self.core_handlers_setup()
         self.dp.include_router(self.router)
-        logger.info(f"[*] Бот-инстанс {self.bot_id} успешно инициализирован.")
-        try:
-            await self.dp.start_polling(self.bot)
+        logger.info(f"[*] Бот-инстанс {self.bot_id} запущен.")
+        try: await self.dp.start_polling(self.bot)
         finally:
             self.is_running = False
             await self.bot.session.close()
@@ -418,8 +383,6 @@ class BotInstance:
 if __name__ == "__main__":
     if len(sys.argv) < 2: sys.exit(1)
     try:
-        with open(sys.argv[1], 'r', encoding='utf-8') as config_file:
-            instance_cfg = json.load(config_file)
-        asyncio.run(BotInstance(instance_cfg).run_instance())
-    except Exception as fatal_error:
-        logger.error(f"КРИТИЧЕСКИЙ СБОЙ ЯДРА: {fatal_error}")
+        with open(sys.argv[1], 'r', encoding='utf-8') as f: cfg = json.load(f)
+        asyncio.run(BotInstance(cfg).run_instance())
+    except Exception as e: logger.error(f"FATAL ERROR: {e}")
