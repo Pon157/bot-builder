@@ -15,6 +15,12 @@ from fastapi import FastAPI, HTTPException, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from email_service import EmailService
 
+# Импорты для корректной работы рассылки через aiogram
+from aiogram import Bot
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter, TelegramBadRequest
+
 def init_env():
     env = '.env'
     if os.path.exists(env):
@@ -43,7 +49,6 @@ class BotManager:
         os.makedirs("active_bots", exist_ok=True)
         cp = f"active_bots/cfg_{bid}.json"
         lp = f"active_bots/bot_{bid}.log"
-        # Убеждаемся что статус в конфиге правильный
         config['status'] = 'RUNNING'
         with open(cp, "w", encoding="utf-8") as f: json.dump(config, f, indent=4)
         self.logs[bid] = lp
@@ -187,51 +192,71 @@ async def save_bot(b: dict):
 async def broadcast(d: dict):
     bot_ids = d.get('botIds', [])
     message = d.get('message', '')
-    if not bot_ids or not message: raise HTTPException(400)
+    if not bot_ids or not message: raise HTTPException(400, "Empty request")
     
     success_total = 0
     failed_total = 0
     
-    from aiogram import Bot
-    from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
-    
     for bid in bot_ids:
+        # Загружаем самые актуальные данные из БД для каждого бота
         r = await db.get("bots", params={"id": f"eq.{bid}"})
-        if not r.json(): continue
+        if not r.json(): 
+            logger.error(f"Broadcast: Bot {bid} not found in DB")
+            continue
+            
         bot_data = r.json()[0]
         token = bot_data.get('token')
         config = bot_data.get('config') or {}
         users = config.get('connectedUsers', [])
         
+        logger.info(f"Broadcast: Starting for bot {bid}. Found {len(users)} users in list.")
+        
+        users_updated = False
+        
         try:
-            async with Bot(token=token, default={"parse_mode": "HTML"}) as bot:
+            # Используем aiogram 3.x инициализацию
+            async with Bot(
+                token=token, 
+                default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+            ) as bot:
                 for u in users:
-                    # Корректное извлечение ID пользователя
-                    target_id = u.get('id')
-                    if not target_id: continue
+                    raw_id = u.get('id')
+                    if not raw_id: continue
                     
-                    if not u.get('is_active', True) or u.get('is_banned'): continue
+                    # Пропускаем тех, кто в бане или уже неактивен
+                    if not u.get('is_active', True) or u.get('is_banned'):
+                        continue
+                        
                     try:
-                        await bot.send_message(int(target_id), message)
+                        target_id = int(raw_id)
+                        await bot.send_message(target_id, message)
                         success_total += 1
-                        await asyncio.sleep(0.05)
+                        await asyncio.sleep(0.05) # Плавная отправка
                     except TelegramForbiddenError:
+                        logger.warning(f"Leaver control: User {raw_id} blocked bot {bid}. Disabling.")
                         u['is_active'] = False
+                        users_updated = True
                         failed_total += 1
                     except TelegramRetryAfter as e:
+                        logger.warning(f"Flood limit for bot {bid}. Sleep {e.retry_after}s")
                         await asyncio.sleep(e.retry_after)
                         try: 
-                            await bot.send_message(int(target_id), message)
+                            await bot.send_message(int(raw_id), message)
                             success_total += 1
                         except: failed_total += 1
                     except Exception as e:
-                        logger.error(f"Broadcast error for user {target_id}: {e}")
+                        logger.error(f"Error sending to {raw_id} on {bid}: {e}")
                         failed_total += 1
             
-            await db.patch("bots", params={"id": f"eq.{bid}"}, json={"config": config})
+            # Если статус пользователей изменился (кто-то заблочил), сохраняем в БД
+            if users_updated:
+                config['connectedUsers'] = users
+                await db.patch("bots", params={"id": f"eq.{bid}"}, json={"config": config})
+                
         except Exception as e:
-            logger.error(f"Broadcast failed for bot {bid}: {e}")
+            logger.error(f"Broadcast failed for bot {bid} completely: {e}")
         
+    logger.info(f"Broadcast finished. Success: {success_total}, Failed: {failed_total}")
     return {"success": success_total, "failed": failed_total}
 
 @app.delete("/api/bots/delete/{uid}/{bid}")
@@ -279,6 +304,11 @@ async def activate(req: dict):
     await db.patch("bots", params={"id": f"eq.{bid}"}, json={"license_expires_at": cur + add})
     await db.patch("issued_keys", params={"key": f"eq.{k}"}, json={"used": True, "used_by_bot": bid})
     return {"status": "ok"}
+
+# Алиас для эндпоинта активации лицензии (на случай обращения по /api/license/activate)
+@app.post("/api/license/activate")
+async def activate_alias(req: dict):
+    return await activate(req)
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
