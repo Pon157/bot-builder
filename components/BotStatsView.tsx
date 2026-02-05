@@ -1,17 +1,9 @@
 
 import React, { useState, useMemo } from 'react';
 import { BotConfig, TelegramUser } from '../types';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { Users, UserMinus, Ban, UserCheck, Activity, AlertTriangle, Loader2, TrendingUp, ShieldCheck, Undo2, Search, Filter, Fingerprint } from 'lucide-react';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, BarChart, Bar } from 'recharts';
+import { Users, UserMinus, Ban, UserCheck, Activity, AlertTriangle, Loader2, TrendingUp, ShieldCheck, Undo2, Search, Filter, Fingerprint, RefreshCcw } from 'lucide-react';
 import { api } from '../services/apiService';
-
-// Функция хеширования для UI (должна совпадать с bot_core.py)
-const calculateAnonId = (id: number) => {
-    // В реальности на фронте мы не можем сделать честный MD5 без библиотек так же легко, 
-    // поэтому будем полагаться на то, что бот пришлет нам его или мы просто выведем ID
-    // Но для консистентности используем простую реализацию если нужно.
-    return id.toString().slice(-6).toUpperCase(); 
-};
 
 interface BotStatsViewProps {
   bot: BotConfig;
@@ -39,17 +31,19 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
             incoming: pt.incoming || 0,
             outgoing: pt.outgoing || 0,
             totalUsers: pt.totalUsers || 0,
+            activeUsers: pt.activeUsers || 0,
             date: pt.date || '??'
         }));
     }
-    return [{ date: new Date().toLocaleDateString('ru-RU', {day:'2-digit', month:'2-digit'}), incoming: 0, outgoing: 0, totalUsers: 0 }];
+    const today = new Date().toLocaleDateString('ru-RU', {day:'2-digit', month:'2-digit'});
+    return [{ date: today, incoming: 0, outgoing: 0, totalUsers: 0, activeUsers: 0 }];
   }, [stats.history]);
 
   const connectedUsers = Array.isArray(bot.connectedUsers) ? bot.connectedUsers : [];
   
   const filteredUsers = useMemo(() => {
     return connectedUsers.filter(u => {
-        const anonId = u.id.toString().slice(-6).toUpperCase(); // Упрощенный анон ID для поиска
+        const anonId = u.id.toString().slice(-6).toUpperCase();
         const matchesSearch = search === '' || 
             u.first_name?.toLowerCase().includes(search.toLowerCase()) || 
             u.username?.toLowerCase().includes(search.toLowerCase()) || 
@@ -74,15 +68,13 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
   const handleModeration = async (userId: number, action: 'unban' | 'warn' | 'unwarn' | 'ban') => {
     setIsSyncing(userId);
     try {
-        // Теперь используем специальный эндпоинт модерации для "симметрии"
         const result = await api.moderateUser(bot.id, userId, action);
         if (result && result.status === 'ok') {
-            // Обновляем локальное состояние бота
             const updatedUsers = connectedUsers.map(u => u.id === userId ? result.user : u);
             onUpdate({ ...bot, connectedUsers: updatedUsers });
         }
     } catch (e) { 
-        alert("Ошибка модерации: " + (e instanceof Error ? e.message : "Неизвестная ошибка")); 
+        alert("Ошибка модерации"); 
     } finally { 
         setIsSyncing(null); 
     }
@@ -92,10 +84,10 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
     <div className="space-y-8 animate-in fade-in duration-500 pb-12">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Всего вступило', value: totalCount, color: 'text-white', icon: Users, sub: 'За все время', active: filter === 'all', onClick: () => setFilter('all') },
-          { label: 'Чистая база', value: netActiveCount, color: 'text-emerald-500', icon: UserCheck, sub: 'Живые + Не в бане', active: filter === 'active', onClick: () => setFilter('active') },
-          { label: 'Отписались', value: blockedByMeCount, color: 'text-rose-500', icon: UserMinus, sub: 'Заблокировали бота', active: filter === 'unsubscribed', onClick: () => setFilter('unsubscribed') },
-          { label: 'В черном списке', value: bannedCount, color: 'text-amber-500', icon: Ban, sub: 'Забанены вами', active: filter === 'banned', onClick: () => setFilter('banned') },
+          { label: 'Аудитория', value: totalCount, color: 'text-white', icon: Users, sub: 'Всего вступило', active: filter === 'all', onClick: () => setFilter('all') },
+          { label: 'Живые', value: netActiveCount, color: 'text-emerald-500', icon: UserCheck, sub: 'Не забанены + Активны', active: filter === 'active', onClick: () => setFilter('active') },
+          { label: 'Ливы', value: blockedByMeCount, color: 'text-rose-500', icon: UserMinus, sub: 'Заблокировали бота', active: filter === 'unsubscribed', onClick: () => setFilter('unsubscribed') },
+          { label: 'Бан-лист', value: bannedCount, color: 'text-amber-500', icon: Ban, sub: 'Заблокированы вами', active: filter === 'banned', onClick: () => setFilter('banned') },
         ].map((stat, i) => (
           <div 
             key={i} 
@@ -114,17 +106,29 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] shadow-2xl">
-          <h3 className="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2 mb-8">
-            <Activity className="w-4 h-4 text-blue-500" /> Активность (сообщения)
-          </h3>
+          <div className="flex items-center justify-between mb-8">
+            <h3 className="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2">
+              <Activity className="w-4 h-4 text-blue-500" /> Трафик сообщений
+            </h3>
+            <div className="flex gap-4">
+                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-blue-500"></div><span className="text-[9px] text-zinc-500 uppercase font-bold">Входящие</span></div>
+                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-purple-500"></div><span className="text-[9px] text-zinc-500 uppercase font-bold">Исходящие</span></div>
+            </div>
+          </div>
           <div className="h-[250px] w-full">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={safeHistory}>
+                <defs>
+                    <linearGradient id="colorInc" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                    </linearGradient>
+                </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
                 <XAxis dataKey="date" stroke="#444" fontSize={10} tickLine={false} axisLine={false} />
                 <YAxis stroke="#444" fontSize={10} tickLine={false} axisLine={false} />
                 <Tooltip contentStyle={{ backgroundColor: '#111', border: '1px solid #333', borderRadius: '12px', fontSize: '12px' }} />
-                <Area type="monotone" dataKey="incoming" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.1} strokeWidth={3} name="Входящие" />
+                <Area type="monotone" dataKey="incoming" stroke="#3b82f6" fill="url(#colorInc)" strokeWidth={3} name="Входящие" />
                 <Area type="monotone" dataKey="outgoing" stroke="#a855f7" fillOpacity={0} strokeWidth={2} name="Исходящие" />
               </AreaChart>
             </ResponsiveContainer>
@@ -132,9 +136,15 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
         </div>
 
         <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] shadow-2xl">
-          <h3 className="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2 mb-8">
-            <TrendingUp className="w-4 h-4 text-emerald-500" /> Рост аудитории
-          </h3>
+           <div className="flex items-center justify-between mb-8">
+            <h3 className="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-emerald-500" /> Динамика аудитории
+            </h3>
+            <div className="flex gap-4">
+                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-emerald-500"></div><span className="text-[9px] text-zinc-500 uppercase font-bold">Общая</span></div>
+                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-zinc-400"></div><span className="text-[9px] text-zinc-500 uppercase font-bold">Живая</span></div>
+            </div>
+          </div>
           <div className="h-[250px] w-full">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={safeHistory}>
@@ -142,7 +152,8 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
                 <XAxis dataKey="date" stroke="#444" fontSize={10} tickLine={false} axisLine={false} />
                 <YAxis stroke="#444" fontSize={10} tickLine={false} axisLine={false} />
                 <Tooltip contentStyle={{ backgroundColor: '#111', border: '1px solid #333', borderRadius: '12px', fontSize: '12px' }} />
-                <Line type="monotone" dataKey="totalUsers" stroke="#10b981" strokeWidth={3} dot={false} name="Пользователи" />
+                <Line type="monotone" dataKey="totalUsers" stroke="#10b981" strokeWidth={3} dot={{ r: 4, fill: '#10b981', strokeWidth: 0 }} name="Всего" />
+                <Line type="monotone" dataKey="activeUsers" stroke="#52525b" strokeWidth={2} dot={false} strokeDasharray="5 5" name="Живых" />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -153,10 +164,10 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
         <div className="p-6 border-b border-zinc-800 space-y-4 bg-zinc-900/20">
           <div className="flex justify-between items-center">
             <h3 className="text-xs font-bold text-white uppercase flex items-center gap-2">
-                <Users className="w-4 h-4 text-blue-500" /> Управление пользователями
+                <ShieldCheck className="w-4 h-4 text-blue-500" /> Модерация пользователей
             </h3>
-            <span className="text-[10px] text-zinc-500 font-mono flex items-center gap-1">
-                <ShieldCheck className="w-3 h-3" /> SYNCED WITH CLOUD
+            <span className="text-[10px] text-zinc-600 font-bold flex items-center gap-1 uppercase tracking-tighter">
+                <RefreshCcw className="w-3 h-3" /> Auto-Sync Active
             </span>
           </div>
           
@@ -200,8 +211,8 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
                   <div>
                     <div className="flex items-center gap-2">
                         <p className="text-sm font-bold text-white">{u.first_name || "Без имени"}</p>
-                        {!u.is_active && <span className="text-[7px] bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded font-black uppercase">Unsubscribed</span>}
-                        {u.is_banned && <span className="text-[7px] bg-rose-500/10 text-rose-500 px-1.5 py-0.5 rounded font-black uppercase">Banned</span>}
+                        {!u.is_active && <span className="text-[7px] bg-rose-500/10 text-rose-500 px-1.5 py-0.5 rounded font-black uppercase">Blocked Bot</span>}
+                        {u.is_banned && <span className="text-[7px] bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded font-black uppercase">Banned</span>}
                     </div>
                     <div className="text-[10px] text-zinc-500 font-mono mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1">
                         <span className="flex items-center gap-1"><Fingerprint className="w-3 h-3 opacity-40" /> #{u.id.toString().slice(-6).toUpperCase()}</span>
