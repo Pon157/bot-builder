@@ -4,7 +4,6 @@ import { BotConfig, BotStatus } from '../types';
 import { api } from '../services/apiService';
 import BotConsole from './BotConsole';
 import BotStatsView from './BotStatsView';
-// Added Plus to the imports below
 import { Settings, Cpu, MousePointer2, BarChart3, Terminal, X, Save, Power, Ticket, MessageSquare, User, EyeOff, CheckSquare, Square, ShieldAlert, Plus } from 'lucide-react';
 
 interface BotEditorProps {
@@ -18,8 +17,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
 
-  // Ensure settings exists to prevent crashes
-  const safeSettings = bot.settings || {
+  // Безопасный доступ к настройкам с дефолтными значениями
+  const safeSettings = bot?.settings || {
     useTopics: false,
     topicPerRequest: false,
     anonymousTopics: false,
@@ -64,11 +63,13 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
   };
 
   const toggleSetting = (key: keyof BotConfig['settings']) => {
+    const currentVal = bot.settings?.[key] ?? (safeSettings as any)[key] ?? true;
     onUpdate({
       ...bot,
       settings: {
         ...safeSettings,
-        [key]: !safeSettings[key]
+        ...bot.settings,
+        [key]: !currentVal
       }
     });
   };
@@ -133,7 +134,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                 </label>
                 <label className="block">
                   <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Шаблон уведомлений админу</span>
-                  <textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] focus:border-blue-500/50 outline-none transition-all resize-none shadow-inner text-xs" value={safeSettings.adminMessageTemplate || ""} onChange={e => onUpdate({...bot, settings: {...safeSettings, adminMessageTemplate: e.target.value}})} placeholder="Напр: 👤 {{name}}\n🆔 {{id}}\n💬 {{text}}" />
+                  <textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] focus:border-blue-500/50 outline-none transition-all resize-none shadow-inner text-xs" value={bot.settings?.adminMessageTemplate || ""} onChange={e => onUpdate({...bot, settings: {...safeSettings, ...bot.settings, adminMessageTemplate: e.target.value}})} placeholder="Напр: 👤 {{name}}\n🆔 {{id}}\n💬 {{text}}" />
                   <p className="text-[8px] text-zinc-600 mt-2 font-bold uppercase">Доступно: {"{{id}}, {{name}}, {{username}}, {{text}}"}</p>
                 </label>
               </div>
@@ -145,7 +146,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                     <div className="space-y-3">
                         <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer">
                             <span className="text-xs font-bold text-zinc-400">Поддержка топиков (Forum)</span>
-                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={safeSettings.useTopics} onChange={e => onUpdate({...bot, settings: {...safeSettings, useTopics: e.target.checked}})} />
+                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={bot.settings?.useTopics ?? false} onChange={e => onUpdate({...bot, settings: {...safeSettings, ...bot.settings, useTopics: e.target.checked}})} />
                         </label>
                         <div className="p-4 bg-black rounded-2xl border border-zinc-800 space-y-3">
                             <div className="flex items-center justify-between">
@@ -158,8 +159,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                                     min="0"
                                     max="99"
                                     className="w-16 bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs text-center text-white outline-none focus:border-blue-500"
-                                    value={safeSettings.autoBanThreshold || 0}
-                                    onChange={e => onUpdate({...bot, settings: {...safeSettings, autoBanThreshold: parseInt(e.target.value) || 0}})}
+                                    value={bot.settings?.autoBanThreshold || 0}
+                                    onChange={e => onUpdate({...bot, settings: {...safeSettings, ...bot.settings, autoBanThreshold: parseInt(e.target.value) || 0}})}
                                 />
                             </div>
                             <p className="text-[9px] text-zinc-600 uppercase font-bold">Если 0 — авто-бан отключен. Пользователь забанится при достижении этого числа варнов.</p>
@@ -169,11 +170,11 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                                 <span className="text-xs font-bold text-zinc-400">Анонимные топики</span>
                                 <EyeOff className="w-3 h-3 text-zinc-600 group-hover:text-blue-500 transition-colors" />
                             </div>
-                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={safeSettings.anonymousTopics} onChange={e => onUpdate({...bot, settings: {...safeSettings, anonymousTopics: e.target.checked}})} />
+                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={bot.settings?.anonymousTopics ?? false} onChange={e => onUpdate({...bot, settings: {...safeSettings, ...bot.settings, anonymousTopics: e.target.checked}})} />
                         </label>
                         <label className="flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer">
                             <span className="text-xs font-bold text-zinc-400">Топик на каждую заявку</span>
-                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={safeSettings.topicPerRequest} onChange={e => onUpdate({...bot, settings: {...safeSettings, topicPerRequest: e.target.checked}})} />
+                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={bot.settings?.topicPerRequest ?? false} onChange={e => onUpdate({...bot, settings: {...safeSettings, ...bot.settings, topicPerRequest: e.target.checked}})} />
                         </label>
                     </div>
                 </div>
@@ -190,10 +191,10 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                             <button 
                                 key={item.key}
                                 onClick={() => toggleSetting(item.key as any)}
-                                className={`flex items-center justify-between p-4 rounded-2xl border transition-all ${safeSettings[item.key as keyof BotConfig['settings']] ? 'bg-blue-600/10 border-blue-500/40 text-blue-400' : 'bg-black border-zinc-800 text-zinc-500'}`}
+                                className={`flex items-center justify-between p-4 rounded-2xl border transition-all ${ (bot.settings?.[item.key as keyof BotConfig['settings']] ?? true) ? 'bg-blue-600/10 border-blue-500/40 text-blue-400' : 'bg-black border-zinc-800 text-zinc-500'}`}
                             >
                                 <span className="text-xs font-bold">{item.label}</span>
-                                {safeSettings[item.key as keyof BotConfig['settings']] ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+                                { (bot.settings?.[item.key as keyof BotConfig['settings']] ?? true) ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
                             </button>
                         ))}
                     </div>
