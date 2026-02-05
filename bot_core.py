@@ -8,7 +8,7 @@ import os
 import sys
 import hashlib
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Any, Union
 
 from aiogram import Bot, Dispatcher, Router, F
@@ -31,14 +31,9 @@ logging.basicConfig(
 logger = logging.getLogger("BotCoreEngine")
 
 def get_anon_id(user_id: int) -> str:
-    """Генерирует уникальный короткий хеш для анонимного режима (Anon ID)."""
     return hashlib.md5(str(user_id).encode()).hexdigest()[:6].upper()
 
 def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_text: str = "") -> str:
-    """
-    Сборка шапки сообщения для администратора. 
-    Учитывает настройки анонимности, отображения ID, Имени и Юзернейма.
-    """
     is_anon = settings.get('anonymousTopics', False)
     uid = m.from_user.id
     anon_tag = f"#{get_anon_id(uid)}"
@@ -59,7 +54,6 @@ def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_
             
         user_info = " | ".join(info_parts) if info_parts else f"Юзер {anon_tag}"
 
-    # Определение статуса (Тикет, Первое сообщение или обычный текст)
     if btn_text:
         status_line = settings.get('ticketMessageHeader', "🆘 <b>ЗАЯВКА</b>")
         if "{btn}" in status_line:
@@ -80,21 +74,18 @@ class BotInstance:
         self.sb_url = os.getenv("SUPABASE_URL", "").rstrip('/')
         self.sb_key = os.getenv("SUPABASE_KEY", "")
         
-        # Инициализация бота с поддержкой HTML и Forum
         self.bot = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
         self.dp = Dispatcher()
         self.router = Router()
         
-        # Внутренние механизмы
-        self.msg_map = {} # Связка admin_message_id -> user_id
-        self.flood_cache = {} # user_id -> last_message_time
+        self.msg_map = {}
+        self.flood_cache = {}
         self.is_running = True
         self.sync_queue = asyncio.Queue()
         
         self.apply_config(config_data)
 
     def apply_config(self, data: dict):
-        """Применяет настройки из JSON-конфигурации."""
         raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
         full_cfg = {**raw_cfg, **data}
         
@@ -123,21 +114,28 @@ class BotInstance:
             self.stats_data["history"] = []
 
     async def daily_stats_rotator(self):
-        """Фоновая задача для обновления графиков аналитики."""
         last_date = datetime.now().strftime("%d.%m")
         while self.is_running:
-            await asyncio.sleep(3600) # Проверка раз в час
+            await asyncio.sleep(3600)
             now = datetime.now()
             current_date = now.strftime("%d.%m")
             
+            # Обновляем показатель активных за 24 часа
+            day_ago = int((now - timedelta(days=1)).timestamp())
+            active_count = 0
+            for u in self.users_list:
+                # Если у пользователя есть поле last_seen (нужно добавить его обновление)
+                if u.get('last_seen', 0) > day_ago:
+                    active_count += 1
+            self.stats_data["activeUsers24h"] = active_count
+
             if current_date != last_date:
-                # Наступил новый день. Сохраняем вчерашние итоги в историю.
                 history_point = {
                     "date": last_date,
                     "incoming": self.stats_data.get("incomingToday", 0),
                     "outgoing": self.stats_data.get("outgoingToday", 0),
                     "totalUsers": len(self.users_list),
-                    "activeUsers": len([u for u in self.users_list if u.get('is_active', True)])
+                    "activeUsers": active_count
                 }
                 
                 self.stats_data["history"].append(history_point)
@@ -147,11 +145,10 @@ class BotInstance:
                 self.stats_data["incomingToday"] = 0
                 self.stats_data["outgoingToday"] = 0
                 last_date = current_date
-                
-                await self.sync_queue.put(("sync_state", None))
+            
+            await self.sync_queue.put(("sync_state", None))
 
     async def database_sync_worker(self):
-        """Фоновый воркер для синхронизации состояния с БД Supabase."""
         async with httpx.AsyncClient() as client:
             headers = {
                 "apikey": self.sb_key, 
@@ -164,7 +161,6 @@ class BotInstance:
                     if action == "log_message":
                         await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
                     elif action == "sync_state":
-                        # Синхронизируем ПОЛНЫЙ конфиг, чтобы не затирать изменения на фронте
                         update_payload = {
                             "config": {
                                 "connectedUsers": self.users_list, 
@@ -220,13 +216,16 @@ class BotInstance:
                 "is_active": True, 
                 "warns": 0, 
                 "joined_at": int(time.time()),
+                "last_seen": int(time.time()),
                 "last_topic_id": None
             }
             self.users_list.append(user)
             await self.sync_queue.put(("sync_state", None))
-        elif not user.get("is_active", True):
-            user["is_active"] = True
-            await self.sync_queue.put(("sync_state", None))
+        else:
+            user["last_seen"] = int(time.time())
+            if not user.get("is_active", True):
+                user["is_active"] = True
+                await self.sync_queue.put(("sync_state", None))
             
         return user, is_first_time
 
