@@ -8,6 +8,7 @@ import json
 import httpx
 import secrets
 import random
+from datetime import datetime
 from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Header, BackgroundTasks
@@ -105,88 +106,103 @@ db = httpx.AsyncClient(
     timeout=30
 )
 
-# --- AUTH API ---
+# --- API ---
+
+@app.get("/api/ping")
+async def ping(): return {"status": "online"}
+
 @app.post("/api/auth/login")
 async def login(data: dict):
     res = await db.get("users", params={"email": f"eq.{data['email'].lower()}", "password": f"eq.{data['password']}"})
     if not res.json(): raise HTTPException(401, "Invalid credentials")
     return res.json()[0]
 
-@app.post("/api/auth/request-verification")
-async def req_verif(data: dict):
-    email = data.get("email", "").lower()
-    code = "".join([str(random.randint(0, 9)) for _ in range(6)])
-    expires = int(time.time() * 1000) + (10 * 60 * 1000)
-    await db.post("temp_codes", json={"email": email, "code": code, "type": "REG", "expires_at": expires}, headers={"Prefer": "resolution=merge-duplicates"})
-    EmailService.send_verification_code(email, code)
-    return {"status": "ok"}
-
-@app.post("/api/auth/verify-and-register")
-async def verify_reg(data: dict):
-    email = data.get("email", "").lower()
-    res_code = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{data['code']}"})
-    if not res_code.json(): raise HTTPException(400, "Invalid code")
-    user_id = f"u_{secrets.token_hex(4)}"
-    payload = {"id": user_id, "username": data['username'], "email": email, "password": data['password'], "license_expires_at": int(time.time()*1000) + 259200000}
-    await db.post("users", json=payload)
-    await db.delete("temp_codes", params={"email": f"eq.{email}"})
-    return payload
-
-@app.post("/api/auth/forgot-password")
-async def forgot_password(data: dict):
-    email = data.get("email", "").lower()
-    # Проверяем существование пользователя
-    res_user = await db.get("users", params={"email": f"eq.{email}"})
-    if not res_user.json(): return {"status": "ok"} # Не палим наличие почты
-    
-    code = "".join([str(random.randint(0, 9)) for _ in range(6)])
-    expires = int(time.time() * 1000) + (15 * 60 * 1000)
-    await db.post("temp_codes", json={"email": email, "code": code, "type": "RESET", "expires_at": expires}, headers={"Prefer": "resolution=merge-duplicates"})
-    EmailService.send_password_reset(email, code)
-    return {"status": "ok"}
-
-@app.post("/api/auth/reset-password")
-async def reset_password(data: dict):
-    email = data.get("email", "").lower()
-    code = data.get("code")
-    new_password = data.get("newPassword")
-    
-    res_code = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{code}", "type": "eq.RESET"})
-    if not res_code.json(): raise HTTPException(400, "Invalid or expired reset code")
-    
-    await db.patch("users", params={"email": f"eq.{email}"}, json={"password": new_password})
-    await db.delete("temp_codes", params={"email": f"eq.{email}"})
-    return {"status": "ok"}
-
-@app.get("/api/auth/user/{user_id}")
-async def get_user_info(user_id: str):
-    res = await db.get("users", params={"id": f"eq.{user_id}"})
-    if res.json(): return res.json()[0]
-    raise HTTPException(404)
-
-# --- BOTS API ---
-@app.get("/api/bots/{user_id}")
-async def get_user_bots(user_id: str):
-    res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
-    bots = res.json() if res.status_code == 200 else []
-    return [{**b, **(b.get("config") or {})} for b in bots]
-
 @app.post("/api/bots/save")
 async def save_bot(bot: dict):
     bid = bot.get("id")
+    res = await db.get("bots", params={"id": f"eq.{bid}"})
+    db_bot = res.json()[0] if res.status_code == 200 and res.json() else {}
+    db_config = db_bot.get("config", {})
+
     sys_keys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
-    config_payload = {k: v for k, v in bot.items() if k not in sys_keys}
+    incoming_config = {k: v for k, v in bot.items() if k not in sys_keys}
+    
+    # Глубокое слияние: сохраняем самые свежие данные о юзерах и стате
+    merged_config = {
+        **incoming_config,
+        "stats": db_config.get("stats", bot.get("stats", {})),
+        "connectedUsers": db_config.get("connectedUsers", bot.get("connectedUsers", []))
+    }
+    
     payload = {
-        "id": bid, 
-        "owner_id": bot.get("owner_id"), 
-        "name": bot["name"], 
-        "token": bot["token"], 
-        "status": bot.get("status", "IDLE"),
-        "license_expires_at": int(bot.get("license_expires_at") or 0),
-        "config": config_payload
+        "id": bid, "owner_id": bot.get("owner_id"), "name": bot["name"], "token": bot["token"], 
+        "status": db_bot.get("status", "IDLE"), "license_expires_at": int(db_bot.get("license_expires_at", 0)),
+        "config": merged_config
     }
     await db.post("bots", json=payload, headers={"Prefer": "resolution=merge-duplicates"})
     return {"status": "ok"}
+
+@app.post("/api/bots/broadcast")
+async def send_broadcast(data: dict):
+    bot_ids = data.get("botIds", [])
+    message = data.get("message", "")
+    if not bot_ids or not message: return {"success": 0, "failed": 0}
+
+    results = {"success": 0, "failed": 0}
+    today = datetime.now().strftime("%d.%m")
+
+    async with httpx.AsyncClient() as client:
+        for bid in bot_ids:
+            res = await db.get("bots", params={"id": f"eq.{bid}"})
+            if not res.json(): continue
+            bot = res.json()[0]
+            token = bot["token"]
+            config = bot.get("config", {})
+            users = config.get("connectedUsers", [])
+            stats = config.get("stats", {"totalMessages": 0, "outgoingToday": 0, "history": []})
+            
+            changes_made = False
+            for u in users:
+                # Отправляем только активным
+                if u.get("is_active", True) and not u.get("is_banned", False):
+                    try:
+                        url = f"https://api.telegram.org/bot{token}/sendMessage"
+                        r = await client.post(url, json={"chat_id": u["id"], "text": message, "parse_mode": "HTML"}, timeout=10)
+                        
+                        if r.status_code == 200:
+                            results["success"] += 1
+                            stats["totalMessages"] = stats.get("totalMessages", 0) + 1
+                            stats["outgoingToday"] = stats.get("outgoingToday", 0) + 1
+                            
+                            # Обновляем историю для графиков
+                            history = stats.get("history", [])
+                            found_day = False
+                            for day_pt in history:
+                                if day_pt.get("date") == today:
+                                    day_pt["outgoing"] = day_pt.get("outgoing", 0) + 1
+                                    found_day = True
+                                    break
+                            if not found_day:
+                                history.append({"date": today, "incoming": 0, "outgoing": 1, "totalUsers": len(users), "activeUsers": len([x for x in users if x.get('is_active', True)])})
+                            stats["history"] = history[-14:]
+                            changes_made = True
+                        elif r.status_code == 403: # БОТ ЗАБЛОКИРОВАН ПОЛЬЗОВАТЕЛЕМ
+                            u["is_active"] = False
+                            results["failed"] += 1
+                            changes_made = True
+                        else:
+                            results["failed"] += 1
+                    except Exception as e:
+                        logger.error(f"Broadcast error for user {u['id']}: {e}")
+                        results["failed"] += 1
+                    await asyncio.sleep(0.04) # Anti-flood
+            
+            if changes_made:
+                config["connectedUsers"] = users
+                config["stats"] = stats
+                await db.patch("bots", params={"id": f"eq.{bid}"}, json={"config": config})
+                
+    return results
 
 @app.post("/api/bots/moderate")
 async def moderate_user(data: dict):
@@ -199,105 +215,17 @@ async def moderate_user(data: dict):
     bot = res.json()[0]
     config = bot.get("config") or {}
     users = config.get("connectedUsers", [])
-    settings = config.get("settings", {})
     
     target_user = next((u for u in users if u['id'] == user_id), None)
     if not target_user: raise HTTPException(404, "User not found")
     
-    tg_msg = ""
-    if action == "ban":
-        target_user["is_banned"] = True
-        tg_msg = "🚫 <b>Вы заблокированы администратором.</b>"
-    elif action == "unban":
-        target_user["is_banned"] = False
-        tg_msg = "✅ <b>Блокировка снята.</b>"
-    elif action == "warn":
-        target_user["warns"] = target_user.get("warns", 0) + 1
-        threshold = int(settings.get("autoBanThreshold", 0))
-        msg = f"⚠️ <b>Предупреждение!</b> ({target_user['warns']}/{threshold or '∞'})"
-        if threshold > 0 and target_user["warns"] >= threshold:
-            target_user["is_banned"] = True
-            msg += "\n\n🚫 Авто-бан."
-        tg_msg = msg
-    elif action == "unwarn":
-        target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
-        tg_msg = f"✅ <b>Предупреждение снято.</b>"
+    if action == "ban": target_user["is_banned"] = True
+    elif action == "unban": target_user["is_banned"] = False
+    elif action == "warn": target_user["warns"] = target_user.get("warns", 0) + 1
+    elif action == "unwarn": target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
 
     await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"config": config})
-    if tg_msg:
-        url = f"https://api.telegram.org/bot{bot['token']}/sendMessage"
-        async with httpx.AsyncClient() as client:
-            await client.post(url, json={"chat_id": user_id, "text": tg_msg, "parse_mode": "HTML"})
     return {"status": "ok", "user": target_user}
-
-@app.post("/api/bots/broadcast")
-async def send_broadcast(data: dict):
-    bot_ids = data.get("botIds", [])
-    message = data.get("message", "")
-    if not bot_ids or not message: return {"success": 0, "failed": 0}
-
-    results = {"success": 0, "failed": 0}
-    async with httpx.AsyncClient() as client:
-        for bid in bot_ids:
-            res = await db.get("bots", params={"id": f"eq.{bid}"})
-            if not res.json(): continue
-            bot = res.json()[0]
-            token = bot["token"]
-            config = bot.get("config", {})
-            users = config.get("connectedUsers", [])
-            
-            for u in users:
-                if u.get("is_active") and not u.get("is_banned"):
-                    try:
-                        url = f"https://api.telegram.org/bot{token}/sendMessage"
-                        r = await client.post(url, json={"chat_id": u["id"], "text": message, "parse_mode": "HTML"}, timeout=5)
-                        if r.status_code == 200: results["success"] += 1
-                        else: results["failed"] += 1
-                    except: results["failed"] += 1
-                    # Небольшая задержка чтобы не спамить API телеграма слишком быстро
-                    await asyncio.sleep(0.05) 
-    return results
-
-@app.post("/api/bots/activate-license")
-async def activate_license(data: dict):
-    bid = data.get("botId")
-    key_str = data.get("key")
-    
-    res_key = await db.get("issued_keys", params={"key": f"eq.{key_str}", "used": "is.false"})
-    if not res_key.json(): return {"status": "error", "message": "Invalid or used key"}
-    
-    key_data = res_key.json()[0]
-    res_bot = await db.get("bots", params={"id": f"eq.{bid}"})
-    if not res_bot.json(): return {"status": "error", "message": "Bot not found"}
-    
-    bot = res_bot.json()[0]
-    current_expiry = int(bot.get("license_expires_at") or time.time()*1000)
-    if current_expiry < time.time()*1000: current_expiry = int(time.time()*1000)
-    
-    months = key_data.get("months") or 0
-    days = key_data.get("days") or 0
-    added_ms = (months * 30 * 24 * 3600 * 1000) + (days * 24 * 3600 * 1000)
-    new_expiry = current_expiry + added_ms
-    
-    await db.patch("bots", params={"id": f"eq.{bid}"}, json={"license_expires_at": new_expiry})
-    await db.patch("issued_keys", params={"key": f"eq.{key_str}"}, json={"used": True, "used_by_bot": bid})
-    
-    return {"status": "ok", "new_expiry": new_expiry}
-
-@app.post("/api/admin/generate-key")
-async def generate_key(data: dict, x_admin_token: str = Header(None)):
-    if x_admin_token != ADMIN_SECRET: raise HTTPException(403)
-    months = data.get("months", 0)
-    days = data.get("days", 0)
-    new_key = f"PRO-{months}M-{secrets.token_hex(4).upper()}"
-    await db.post("issued_keys", json={"key": new_key, "months": months, "days": days})
-    return {"key": new_key}
-
-@app.delete("/api/bots/delete/{user_id}/{bot_id}")
-async def delete_bot(user_id: str, bot_id: str):
-    await pm.stop_bot(bot_id)
-    await db.delete("bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}"})
-    return {"status": "ok"}
 
 @app.post("/api/bots/start")
 async def start_bot(req: dict):
@@ -315,16 +243,13 @@ async def stop_bot(bot_id: str):
     await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "IDLE"})
     return {"status": "ok"}
 
+@app.get("/api/bots/logs/{bot_id}")
+async def bot_logs_api(bot_id: str): return {"logs": pm.get_logs(bot_id)}
+
 @app.get("/api/bots/messages/{bot_id}")
 async def get_bot_msgs(bot_id: str):
     res = await db.get("bot_messages", params={"bot_id": f"eq.{bot_id}", "order": "created_at.desc", "limit": "50"})
     return [{"text": m["message_text"], "timestamp": m["created_at"], "is_admin": m["is_from_admin"], "user": {"name": m["first_name"]}} for m in res.json()][::-1]
-
-@app.get("/api/bots/logs/{bot_id}")
-async def bot_logs_api(bot_id: str): return {"logs": pm.get_logs(bot_id)}
-
-@app.get("/api/ping")
-async def ping(): return {"status": "online"}
 
 if __name__ == "__main__":
     import uvicorn
