@@ -17,7 +17,7 @@ if not logger.handlers:
 class EmailService:
     @staticmethod
     def send_email(subject: str, recipient: str, html_content: str):
-        # Считываем переменные прямо здесь, чтобы они подхватились после загрузки .env
+        # Считываем переменные прямо здесь
         gmail_user = os.getenv('GMAIL_EMAIL')
         gmail_pass = os.getenv('GMAIL_PASSWORD')
         smtp_server = os.getenv('SMTP_SERVER')
@@ -28,11 +28,12 @@ class EmailService:
         except (ValueError, TypeError):
             smtp_port = 587
 
-        logger.info(f"📧 Попытка отправки письма на {recipient} с темой '{subject}'...")
+        logger.info(f"📧 Попытка отправки письма на {recipient} (Сервер: {smtp_server}:{smtp_port})...")
         
         if not gmail_user or not gmail_pass:
-            logger.error("❌ Ошибка: Данные почты (GMAIL_EMAIL/GMAIL_PASSWORD) не найдены в окружении!")
+            logger.error("❌ Ошибка конфигурации: GMAIL_EMAIL или GMAIL_PASSWORD отсутствуют!")
             return False
+            
         try:
             msg = MIMEMultipart()
             msg['From'] = f"BotEngine Pro <{gmail_user}>"
@@ -40,16 +41,26 @@ class EmailService:
             msg['Subject'] = subject
             msg.attach(MIMEText(html_content, 'html'))
 
-            with smtplib.SMTP(smtp_server, smtp_port, timeout=10) as server:
+            # Для порта 465 обычно нужен SMTP_SSL, для 587 - SMTP + starttls
+            if smtp_port == 465:
+                server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=15)
+            else:
+                server = smtplib.SMTP(smtp_server, smtp_port, timeout=15)
                 server.starttls()
+                
+            with server:
                 server.login(gmail_user, gmail_pass)
                 server.send_message(msg)
             
-            logger.info(f"✅ Письмо успешно отправлено на {recipient}")
+            logger.info(f"✅ Письмо успешно доставлено на {recipient}")
             return True
+        except smtplib.SMTPAuthenticationError:
+            logger.error("❌ Ошибка авторизации Gmail: Проверьте Пароль Приложения (App Password).")
         except Exception as e:
-            logger.error(f"❌ Ошибка SMTP при отправке на {recipient}: {str(e)}")
-            return False
+            logger.error(f"❌ Критическая ошибка SMTP при отправке на {recipient}: {str(e)}")
+            if "No route to host" in str(e) or "113" in str(e):
+                logger.error("💡 СОВЕТ: Ваш хостинг блокирует порт {}. Попробуйте порт 465 или обратитесь в поддержку хостинга.".format(smtp_port))
+        return False
 
     @classmethod
     def send_verification_code(cls, recipient: str, code: str):
@@ -75,6 +86,7 @@ class EmailService:
             <div style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #fff; background: #111; padding: 30px; text-align: center; border-radius: 15px; margin: 30px 0; border: 1px solid #ef4444;">
                 {code}
             </div>
+            <p style="font-size: 12px; color: #555;">Если вы не запрашивали сброс, просто проигнорируйте это письмо.</p>
         </div>
         """
         return cls.send_email(subject, recipient, content)
