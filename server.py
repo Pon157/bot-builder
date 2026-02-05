@@ -107,24 +107,6 @@ async def verify_reg(d: dict):
     await db.post("users", json=p)
     return p
 
-@app.post("/api/auth/forgot-password")
-async def forgot(d: dict):
-    email = d['email'].lower()
-    r = await db.get("users", params={"email": f"eq.{email}"})
-    if not r.json(): raise HTTPException(404)
-    code = str(random.randint(100000, 999999))
-    await db.post("temp_codes", json={"email": email, "code": code, "type": "RESET", "expires_at": int(time.time()*1000)+600000}, headers={"Prefer": "resolution=merge-duplicates"})
-    EmailService.send_password_reset(email, code)
-    return True
-
-@app.post("/api/auth/reset-password")
-async def reset(d: dict):
-    email = d['email'].lower()
-    r = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{d['code']}"})
-    if not r.json(): raise HTTPException(400)
-    await db.patch("users", params={"email": f"eq.{email}"}, json={"password": d['newPassword']})
-    return True
-
 # --- BOTS MANAGEMENT ---
 @app.get("/api/bots/{uid}")
 async def get_bots(uid: str):
@@ -134,11 +116,75 @@ async def get_bots(uid: str):
 @app.post("/api/bots/save")
 async def save_bot(b: dict):
     bid, owner = b['id'], b['owner_id']
-    sys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
-    cfg = {k: v for k, v in b.items() if k not in sys}
-    p = {"id": bid, "owner_id": owner, "name": b["name"], "token": b["token"], "status": b.get("status", "IDLE"), "license_expires_at": int(b.get("license_expires_at") or 0), "config": cfg}
+    
+    # 1. Сначала загружаем текущий бот из БД, чтобы не затереть живую статистику
+    current_res = await db.get("bots", params={"id": f"eq.{bid}"})
+    current_data = current_res.json()[0] if current_res.json() else {}
+    current_config = current_data.get("config") or {}
+
+    sys_fields = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
+    
+    # Собираем новый конфиг из полей, которых нет в основных колонках
+    new_cfg = {k: v for k, v in b.items() if k not in sys_fields}
+    
+    # 2. МЕРДЖ: Сохраняем live-поля (connectedUsers, stats), если они есть в БД и нет в новом конфиге
+    # Или просто доверяем бэкенду, если он их прислал (но бэкенд шлет только настройки)
+    merged_config = {**current_config, **new_cfg}
+    
+    p = {
+        "id": bid, 
+        "owner_id": owner, 
+        "name": b["name"], 
+        "token": b["token"], 
+        "status": b.get("status", current_data.get("status", "IDLE")), 
+        "license_expires_at": int(b.get("license_expires_at") or current_data.get("license_expires_at", 0)), 
+        "config": merged_config
+    }
+    
     await db.post("bots", json=p, headers={"Prefer": "resolution=merge-duplicates"})
     return {"status": "ok"}
+
+@app.post("/api/bots/broadcast")
+async def broadcast(d: dict):
+    bot_ids = d.get('botIds', [])
+    message = d.get('message', '')
+    if not bot_ids or not message: raise HTTPException(400)
+    
+    success_total = 0
+    failed_total = 0
+    
+    from aiogram import Bot
+    from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+    
+    for bid in bot_ids:
+        r = await db.get("bots", params={"id": f"eq.{bid}"})
+        if not r.json(): continue
+        bot_data = r.json()[0]
+        token = bot_data.get('token')
+        config = bot_data.get('config') or {}
+        users = config.get('connectedUsers', [])
+        
+        async with Bot(token=token, default={"parse_mode": "HTML"}) as bot:
+            for u in users:
+                if not u.get('is_active', True) or u.get('is_banned'): continue
+                try:
+                    await bot.send_message(u['id'], message)
+                    success_total += 1
+                    await asyncio.sleep(0.05) # Защита от спам-фильтра
+                except TelegramForbiddenError:
+                    u['is_active'] = False
+                    failed_total += 1
+                except TelegramRetryAfter as e:
+                    await asyncio.sleep(e.retry_after)
+                    try: await bot.send_message(u['id'], message); success_total += 1
+                    except: failed_total += 1
+                except Exception:
+                    failed_total += 1
+        
+        # Сохраняем обновленных "ливеров" в БД
+        await db.patch("bots", params={"id": f"eq.{bid}"}, json={"config": config})
+        
+    return {"success": success_total, "failed": failed_total}
 
 @app.delete("/api/bots/delete/{uid}/{bid}")
 async def del_bot(uid: str, bid: str):
@@ -163,7 +209,6 @@ async def stop_bot(bid: str):
     await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "IDLE"})
     return True
 
-# --- CRM & UTILS ---
 @app.get("/api/bots/logs/{bid}")
 async def get_logs(bid: str): return {"logs": pm.get_logs(bid)}
 
@@ -171,14 +216,6 @@ async def get_logs(bid: str): return {"logs": pm.get_logs(bid)}
 async def get_msgs(bid: str):
     r = await db.get("bot_messages", params={"bot_id": f"eq.{bid}", "order": "created_at.desc", "limit": "50"})
     return [{"text": m["message_text"], "timestamp": m["created_at"], "is_admin": m["is_from_admin"], "user": {"name": m["first_name"]}} for m in r.json()][::-1]
-
-@app.post("/api/admin/generate-key")
-async def gen_key(req: dict, x_admin_token: str = Header(None)):
-    if x_admin_token != A_SECRET: raise HTTPException(403)
-    m, d = req.get('months', 1), req.get('days', 0)
-    key = f"PRO-{m}M-{secrets.token_hex(4).upper()}"
-    await db.post("issued_keys", json={"key": key, "months": m, "days": d, "used": False})
-    return {"key": key}
 
 @app.post("/api/bots/activate-license")
 async def activate(req: dict):
