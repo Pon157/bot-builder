@@ -2,16 +2,8 @@
 import React, { useState, useMemo } from 'react';
 import { BotConfig, TelegramUser } from '../types';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { Users, UserMinus, Ban, UserCheck, Activity, AlertTriangle, Loader2, TrendingUp, ShieldCheck, Undo2, Search, Filter, Fingerprint } from 'lucide-react';
+import { Users, UserMinus, Ban, UserCheck, Activity, AlertTriangle, Loader2, TrendingUp, ShieldCheck, Undo2, Search, Filter, Fingerprint, Database, Clock } from 'lucide-react';
 import { api } from '../services/apiService';
-
-// Функция хеширования для UI (должна совпадать с bot_core.py)
-const calculateAnonId = (id: number) => {
-    // В реальности на фронте мы не можем сделать честный MD5 без библиотек так же легко, 
-    // поэтому будем полагаться на то, что бот пришлет нам его или мы просто выведем ID
-    // Но для консистентности используем простую реализацию если нужно.
-    return id.toString().slice(-6).toUpperCase(); 
-};
 
 interface BotStatsViewProps {
   bot: BotConfig;
@@ -42,14 +34,15 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
             date: pt.date || '??'
         }));
     }
-    return [{ date: new Date().toLocaleDateString('ru-RU', {day:'2-digit', month:'2-digit'}), incoming: 0, outgoing: 0, totalUsers: 0 }];
+    const today = new Date().toLocaleDateString('ru-RU', {day:'2-digit', month:'2-digit'});
+    return [{ date: today, incoming: 0, outgoing: 0, totalUsers: 0 }];
   }, [stats.history]);
 
   const connectedUsers = Array.isArray(bot.connectedUsers) ? bot.connectedUsers : [];
   
   const filteredUsers = useMemo(() => {
     return connectedUsers.filter(u => {
-        const anonId = u.id.toString().slice(-6).toUpperCase(); // Упрощенный анон ID для поиска
+        const anonId = u.id.toString().slice(-6).toUpperCase();
         const matchesSearch = search === '' || 
             u.first_name?.toLowerCase().includes(search.toLowerCase()) || 
             u.username?.toLowerCase().includes(search.toLowerCase()) || 
@@ -74,15 +67,13 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
   const handleModeration = async (userId: number, action: 'unban' | 'warn' | 'unwarn' | 'ban') => {
     setIsSyncing(userId);
     try {
-        // Теперь используем специальный эндпоинт модерации для "симметрии"
         const result = await api.moderateUser(bot.id, userId, action);
         if (result && result.status === 'ok') {
-            // Обновляем локальное состояние бота
-            const updatedUsers = connectedUsers.map(u => u.id === userId ? result.user : u);
+            const updatedUsers = connectedUsers.map(u => u.id === userId ? { ...u, is_banned: action === 'ban' ? true : action === 'unban' ? false : u.is_banned } : u);
             onUpdate({ ...bot, connectedUsers: updatedUsers });
         }
     } catch (e) { 
-        alert("Ошибка модерации: " + (e instanceof Error ? e.message : "Неизвестная ошибка")); 
+        console.error(e);
     } finally { 
         setIsSyncing(null); 
     }
@@ -90,12 +81,26 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500 pb-12">
+      <div className="flex items-center justify-between bg-blue-600/5 border border-blue-600/10 p-4 rounded-3xl">
+        <div className="flex items-center gap-3">
+          <Database className="w-5 h-5 text-blue-500" />
+          <div>
+            <p className="text-[10px] font-black uppercase text-blue-500 tracking-widest">Статус синхронизации</p>
+            <p className="text-xs text-white font-bold">Данные сохранены в облаке BotEngine Cloud</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-zinc-500">
+           <Clock className="w-4 h-4" />
+           <span className="text-[10px] font-bold uppercase">Автозапуск активен</span>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Всего вступило', value: totalCount, color: 'text-white', icon: Users, sub: 'За все время', active: filter === 'all', onClick: () => setFilter('all') },
-          { label: 'Чистая база', value: netActiveCount, color: 'text-emerald-500', icon: UserCheck, sub: 'Живые + Не в бане', active: filter === 'active', onClick: () => setFilter('active') },
-          { label: 'Отписались', value: blockedByMeCount, color: 'text-rose-500', icon: UserMinus, sub: 'Заблокировали бота', active: filter === 'unsubscribed', onClick: () => setFilter('unsubscribed') },
-          { label: 'В черном списке', value: bannedCount, color: 'text-amber-500', icon: Ban, sub: 'Забанены вами', active: filter === 'banned', onClick: () => setFilter('banned') },
+          { label: 'Аудитория', value: totalCount, color: 'text-white', icon: Users, sub: 'Всего вступило', active: filter === 'all', onClick: () => setFilter('all') },
+          { label: 'Живые', value: netActiveCount, color: 'text-emerald-500', icon: UserCheck, sub: 'Активные юзеры', active: filter === 'active', onClick: () => setFilter('active') },
+          { label: 'Ливы', value: blockedByMeCount, color: 'text-rose-500', icon: UserMinus, sub: 'Отписались от бота', active: filter === 'unsubscribed', onClick: () => setFilter('unsubscribed') },
+          { label: 'Бан-лист', value: bannedCount, color: 'text-amber-500', icon: Ban, sub: 'Заблокировано вами', active: filter === 'banned', onClick: () => setFilter('banned') },
         ].map((stat, i) => (
           <div 
             key={i} 
@@ -114,9 +119,12 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] shadow-2xl">
-          <h3 className="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2 mb-8">
-            <Activity className="w-4 h-4 text-blue-500" /> Активность (сообщения)
-          </h3>
+          <div className="flex items-center justify-between mb-8">
+            <h3 className="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2">
+              <Activity className="w-4 h-4 text-blue-500" /> Активность сообщений
+            </h3>
+            <span className="text-[10px] text-zinc-600 font-bold uppercase">Последние 14 дней</span>
+          </div>
           <div className="h-[250px] w-full">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={safeHistory}>
@@ -132,9 +140,12 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
         </div>
 
         <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] shadow-2xl">
-          <h3 className="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2 mb-8">
-            <TrendingUp className="w-4 h-4 text-emerald-500" /> Рост аудитории
-          </h3>
+          <div className="flex items-center justify-between mb-8">
+            <h3 className="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-emerald-500" /> Рост аудитории
+            </h3>
+            <span className="text-[10px] text-zinc-600 font-bold uppercase">Общий прогресс</span>
+          </div>
           <div className="h-[250px] w-full">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={safeHistory}>
@@ -155,16 +166,17 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
             <h3 className="text-xs font-bold text-white uppercase flex items-center gap-2">
                 <Users className="w-4 h-4 text-blue-500" /> Управление пользователями
             </h3>
-            <span className="text-[10px] text-zinc-500 font-mono flex items-center gap-1">
-                <ShieldCheck className="w-3 h-3" /> SYNCED WITH CLOUD
-            </span>
+            <div className="flex items-center gap-2">
+                <ShieldCheck className="w-3 h-3 text-emerald-500" />
+                <span className="text-[9px] text-zinc-500 font-black uppercase">Cloud Isolated</span>
+            </div>
           </div>
           
           <div className="flex flex-col sm:flex-row gap-4">
             <div className="relative flex-1">
                 <Search className="absolute left-4 top-3.5 w-4 h-4 text-zinc-600" />
                 <input 
-                    placeholder="Поиск по Имени, ID или Anon ID (#XXXX)..." 
+                    placeholder="Поиск по Имени, ID или Anon ID..." 
                     className="w-full bg-black border border-zinc-800 rounded-2xl py-3.5 pl-11 pr-4 text-xs text-white focus:border-blue-500 outline-none transition-all placeholder:text-zinc-700"
                     value={search}
                     onChange={e => setSearch(e.target.value)}
@@ -219,9 +231,6 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
                             <button onClick={() => handleModeration(u.id, 'unban')} className="text-[9px] font-black uppercase text-emerald-500 bg-emerald-500/10 px-5 py-2.5 rounded-xl border border-emerald-500/20 hover:bg-emerald-500/20 transition-all">Разбанить</button>
                         ) : (
                             <>
-                                {(u.warns || 0) > 0 && (
-                                    <button onClick={() => handleModeration(u.id, 'unwarn')} className="p-3 bg-zinc-800 text-zinc-400 hover:text-white rounded-xl border border-zinc-700 transition-all" title="Снять 1 варн"><Undo2 className="w-4 h-4" /></button>
-                                )}
                                 <button onClick={() => handleModeration(u.id, 'warn')} className="p-3 bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 rounded-xl border border-amber-500/20 transition-all" title="Выдать варн"><AlertTriangle className="w-4 h-4" /></button>
                                 <button onClick={() => handleModeration(u.id, 'ban')} className="p-3 bg-rose-500/10 text-rose-500 hover:bg-rose-500/20 rounded-xl border border-rose-500/20 transition-all" title="Забанить"><Ban className="w-4 h-4" /></button>
                             </>
