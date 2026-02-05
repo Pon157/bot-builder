@@ -121,22 +121,22 @@ class BotInstance:
                 old_u = old_users.get(u['id'])
                 if old_u:
                     if u.get('is_banned') and not old_u.get('is_banned'):
-                        asyncio.create_task(self.notify_user(u['id'], "🚫 <b>Вы были заблокированы администратором.</b>"))
+                        asyncio.create_task(self.notify_user(u['id'], "🚫 <b>Доступ ограничен.</b>\nВы заблокированы администратором."))
                     elif not u.get('is_banned') and old_u.get('is_banned'):
-                        asyncio.create_task(self.notify_user(u['id'], "✅ <b>Блокировка снята.</b>"))
-                    if u.get('warns', 0) > old_u.get('warns', 0):
-                        asyncio.create_task(self.notify_user(u['id'], f"⚠️ <b>Вам выдано предупреждение!</b> Всего: {u['warns']}"))
+                        asyncio.create_task(self.notify_user(u['id'], "✅ <b>Доступ восстановлен.</b>\nВы снова можете отправлять сообщения."))
 
-        # Продвинутое обновление статистики
+        # Обновление статистики
         incoming_stats = flat_data.get('stats')
         if incoming_stats and isinstance(incoming_stats, dict):
-            for key in ["totalMessages", "incomingToday", "outgoingToday"]:
-                self.stats[key] = max(self.stats.get(key, 0), int(incoming_stats.get(key, 0)))
+            # Синхронизируем общие счетчики
+            self.stats["totalMessages"] = max(self.stats.get("totalMessages", 0), int(incoming_stats.get("totalMessages", 0)))
+            self.stats["incomingToday"] = int(incoming_stats.get("incomingToday", 0))
+            self.stats["outgoingToday"] = int(incoming_stats.get("outgoingToday", 0))
+            
             if incoming_stats.get("history"):
                 self.stats["history"] = incoming_stats["history"]
         
         if not self.stats.get("history"): self.stats["history"] = []
-        logger.info(f"[{self.bot_id}] Synced. History: {len(self.stats['history'])} days.")
 
     async def notify_user(self, user_id: int, text: str):
         try:
@@ -146,27 +146,30 @@ class BotInstance:
         except Exception: pass
 
     async def mark_user_inactive(self, user_id: int):
+        """Помечает пользователя как 'Лив' (заблокировал бота)."""
         for u in self.connected_users:
             if u['id'] == user_id:
                 if u.get('is_active', True):
                     u['is_active'] = False
-                    logger.info(f"User {user_id} marked as INACTIVE (bot blocked)")
+                    logger.info(f"User {user_id} marked as INACTIVE (blocked bot)")
                     await self.sync_queue.put(("config", {}))
                 break
 
     async def remote_sync_poller(self):
+        """Опрос БД для синхронизации модерации и конфига."""
         async with httpx.AsyncClient() as client:
             headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
             while self.is_running:
-                await asyncio.sleep(5) # Быстрая синхронизация модерации
+                await asyncio.sleep(5)
                 try:
                     res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
                     if res.status_code == 200 and res.json():
                         self.refresh_config(res.json()[0])
                 except Exception as e:
-                    logger.error(f"Poller error: {e}")
+                    logger.error(f"Sync error: {e}")
 
     async def db_sync_worker(self):
+        """Пуш изменений в Supabase."""
         async with httpx.AsyncClient() as client:
             headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}", "Content-Type": "application/json"}
             while self.is_running:
@@ -175,15 +178,17 @@ class BotInstance:
                     if action == "msg":
                         await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=data, headers=headers)
                     elif action == "config":
+                        # Перед сохранением берем актуальный конфиг из базы, чтобы не затереть чужие изменения
                         res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
                         if res.status_code == 200 and res.json():
                             db_bot = res.json()[0]
                             db_config = db_bot.get("config", {})
+                            # Сливаем локальных юзеров и стату
                             new_config = {**db_config, "connectedUsers": self.connected_users, "stats": self.stats}
                             await client.patch(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", json={"config": new_config}, headers=headers)
                     self.sync_queue.task_done()
                 except Exception as e:
-                    logger.error(f"Sync error: {e}")
+                    logger.error(f"Worker error: {e}")
                     await asyncio.sleep(2)
 
     async def update_counters(self, direction: str):
@@ -192,11 +197,13 @@ class BotInstance:
         self.stats[key] += 1
         
         today = datetime.now().strftime("%d.%m")
+        # Считаем живых: активны (не удалили бота) И не забанены нами
         active_count = len([u for u in self.connected_users if u.get('is_active', True) and not u.get('is_banned', False)])
         total_count = len(self.connected_users)
         
+        history = self.stats.get("history", [])
         found = False
-        for pt in self.stats["history"]:
+        for pt in history:
             if pt.get("date") == today:
                 pt[direction] = pt.get(direction, 0) + 1
                 pt["totalUsers"] = total_count
@@ -205,15 +212,16 @@ class BotInstance:
                 break
         
         if not found:
-            self.stats["history"].append({
+            history.append({
                 "date": today, 
                 "incoming": 1 if direction=="incoming" else 0, 
                 "outgoing": 1 if direction=="outgoing" else 0, 
                 "totalUsers": total_count,
                 "activeUsers": active_count
             })
-            if len(self.stats["history"]) > 14: self.stats["history"].pop(0)
+            if len(history) > 14: history.pop(0)
         
+        self.stats["history"] = history
         await self.sync_queue.put(("config", {}))
 
     async def log_it(self, user_id, name, text, is_admin=False):
@@ -238,30 +246,18 @@ class BotInstance:
             self.connected_users.append(user)
             await self.sync_queue.put(("config", {}))
         else:
-            # Если юзер написал нам, значит он разблокировал бота (active=True)
+            # Если юзер написал нам, значит он разблокировал бота
             if not user.get('is_active', True):
                 user['is_active'] = True
                 await self.sync_queue.put(("config", {}))
         return user, is_new
 
-    async def ensure_topic(self, user, force_new: bool = False):
-        if not self.use_topics or not self.admin_id: return None
-        if not force_new and user.get("last_topic_id"): return user["last_topic_id"]
-        try:
-            is_anon = self.settings.get('anonymousTopics', False)
-            topic_name = f"User #{get_anon_id(user['id'])}" if is_anon else f"{user['first_name']} [{user['id']}]"
-            topic = await self.bot.create_forum_topic(self.admin_id, topic_name)
-            user["last_topic_id"] = topic.message_thread_id
-            await self.sync_queue.put(("config", {}))
-            return topic.message_thread_id
-        except Exception as e:
-            logger.error(f"Topic error: {e}")
-            return None
-
     async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = ""):
         if not self.admin_id: return
-        force_new_topic = self.topic_per_request and (btn_text != "" or is_first)
-        thread_id = await self.ensure_topic(user, force_new=force_new_topic) if self.use_topics else None
+        thread_id = None
+        if self.use_topics:
+            force_new = self.topic_per_request and (btn_text != "" or is_first)
+            thread_id = await self.ensure_topic(user, force_new=force_new)
 
         now = time.time()
         header = ""
@@ -279,7 +275,19 @@ class BotInstance:
                 await self.bot.copy_message(self.admin_id, m.chat.id, m.message_id, message_thread_id=thread_id)
         except TelegramForbiddenError:
             await self.mark_user_inactive(user['id'])
-        except Exception as e: logger.error(f"Forward error: {e}")
+        except Exception: pass
+
+    async def ensure_topic(self, user, force_new: bool = False):
+        if not self.use_topics or not self.admin_id: return None
+        if not force_new and user.get("last_topic_id"): return user["last_topic_id"]
+        try:
+            is_anon = self.settings.get('anonymousTopics', False)
+            topic_name = f"User #{get_anon_id(user['id'])}" if is_anon else f"{user['first_name']} [{user['id']}]"
+            topic = await self.bot.create_forum_topic(self.admin_id, topic_name)
+            user["last_topic_id"] = topic.message_thread_id
+            await self.sync_queue.put(("config", {}))
+            return topic.message_thread_id
+        except Exception: return None
 
     async def handle_admin_reply(self, m: Message):
         target_id = None
@@ -296,8 +304,8 @@ class BotInstance:
                 await self.log_it(target_id, "Admin", m.text or "[Медиа]", is_admin=True)
             except TelegramForbiddenError:
                 await self.mark_user_inactive(target_id)
-                await m.reply("❌ Пользователь заблокировал бота. Сообщение не доставлено.")
-            except Exception as e: await m.reply(f"❌ Ошибка отправки: {e}")
+                await m.reply("❌ Бот заблокирован пользователем. Сообщение не доставлено.")
+            except Exception as e: await m.reply(f"❌ Ошибка: {e}")
 
     async def register_handlers(self):
         @self.router.message(CommandStart())
@@ -327,7 +335,7 @@ class BotInstance:
                         target['warns'] = max(0, target.get('warns', 0) - 1)
                     
                     await self.sync_queue.put(("config", {}))
-                    await m.reply("✅ Выполнено")
+                    await m.reply("✅ Изменения применены")
                     return
             await self.handle_admin_reply(m)
 
@@ -342,7 +350,7 @@ class BotInstance:
                     if b.get('text') and b['text'].lower() == txt:
                         await self.forward_to_admin(m, user, is_first=is_new, btn_text=b['text'] if b.get('type')=='request' else "")
                         if b.get('response'): await m.answer(b['response'])
-                        await self.log_it(user['id'], m.from_user.full_name, f"Кнопка: {b['text']}")
+                        await self.log_it(user['id'], m.from_user.full_name, f"Меню: {b['text']}")
                         return
                 for t in self.triggers:
                     if t.get('keyword') and t['keyword'].lower() in txt:
@@ -373,7 +381,7 @@ class BotInstance:
         asyncio.create_task(self.remote_sync_poller())
         await self.register_handlers()
         self.dp.include_router(self.router)
-        logger.info(f"🚀 Бот {self.bot_id} запущен.")
+        logger.info(f"🚀 Бот {self.bot_id} готов к работе.")
         await self.dp.start_polling(self.bot)
 
 if __name__ == "__main__":
