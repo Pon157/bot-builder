@@ -35,7 +35,6 @@ def get_anon_id(user_id: int) -> str:
     return hashlib.md5(str(user_id).encode()).hexdigest()[:6].upper()
 
 def format_admin_header(template: str, m: Message, settings: dict, is_first: bool = False, btn_text: str = "") -> str:
-    """Формирование заголовка сообщения для администратора."""
     is_anon = settings.get('anonymousTopics', False)
     anon_id = get_anon_id(m.from_user.id)
     
@@ -117,23 +116,27 @@ class BotInstance:
         # Обновление списка юзеров
         self.connected_users = flat_data.get('connectedUsers', [])
 
-        # Умное обновление статистики: не перезаписываем старыми данными из БД то, что уже в памяти
+        # Продвинутое обновление статистики (сравнение значений)
         incoming_stats = flat_data.get('stats')
         if incoming_stats and isinstance(incoming_stats, dict):
             for key in ["totalMessages", "incomingToday", "outgoingToday"]:
                 db_val = int(incoming_stats.get(key, 0))
                 self.stats[key] = max(self.stats.get(key, 0), db_val)
             
-            if incoming_stats.get("history") and not self.stats.get("history"):
+            if incoming_stats.get("history"):
                 self.stats["history"] = incoming_stats["history"]
+        
+        # Если история пуста - инициализируем
+        if not self.stats.get("history"):
+             self.stats["history"] = []
 
-        logger.info(f"[{self.bot_id}] Config refreshed. Stats synced: {self.stats['totalMessages']} total.")
+        logger.info(f"[{self.bot_id}] Config refreshed. Total: {self.stats['totalMessages']}")
 
     async def remote_sync_poller(self):
         async with httpx.AsyncClient() as client:
             headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
             while self.is_running:
-                await asyncio.sleep(60) 
+                await asyncio.sleep(45) # Чаще проверяем модерацию
                 try:
                     res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
                     if res.status_code == 200 and res.json():
@@ -142,8 +145,7 @@ class BotInstance:
                     logger.error(f"Poller error: {e}")
 
     async def save_final_state(self):
-        """Гарантированное сохранение статистики перед выходом процесса."""
-        logger.info("💾 Сохранение финального состояния в БД...")
+        logger.info("💾 Сохранение перед выходом...")
         async with httpx.AsyncClient() as client:
             headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}", "Content-Type": "application/json"}
             try:
@@ -151,11 +153,10 @@ class BotInstance:
                 if res.status_code == 200 and res.json():
                     db_bot = res.json()[0]
                     db_config = db_bot.get("config", {})
+                    # Сохраняем ТОЛЬКО наши живые счетчики и юзеров
                     new_config = {**db_config, "connectedUsers": self.connected_users, "stats": self.stats}
                     await client.patch(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", json={"config": new_config}, headers=headers)
-                    logger.info("✅ Состояние в БД успешно обновлено.")
-            except Exception as e:
-                logger.error(f"❌ Критическая ошибка при сохранении состояния: {e}")
+            except Exception as e: logger.error(f"Error saving final state: {e}")
 
     async def db_sync_worker(self):
         async with httpx.AsyncClient() as client:
@@ -174,7 +175,7 @@ class BotInstance:
                             await client.patch(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", json={"config": new_config}, headers=headers)
                     self.sync_queue.task_done()
                 except Exception as e:
-                    logger.error(f"Worker sync error: {e}")
+                    logger.error(f"Sync worker error: {e}")
                     await asyncio.sleep(2)
 
     async def update_counters(self, direction: str):
@@ -183,9 +184,6 @@ class BotInstance:
         self.stats[key] += 1
         
         today = datetime.now().strftime("%d.%m")
-        if "history" not in self.stats or not isinstance(self.stats["history"], list):
-            self.stats["history"] = []
-        
         found = False
         for pt in self.stats["history"]:
             if pt.get("date") == today:
@@ -198,7 +196,6 @@ class BotInstance:
             self.stats["history"].append({"date": today, "incoming": 1 if direction=="incoming" else 0, "outgoing": 1 if direction=="outgoing" else 0, "totalUsers": len(self.connected_users)})
             if len(self.stats["history"]) > 14: self.stats["history"].pop(0)
         
-        # Очередь на синхронизацию с БД
         await self.sync_queue.put(("config", {}))
 
     async def log_it(self, user_id, name, text, is_admin=False):
@@ -236,7 +233,7 @@ class BotInstance:
             await self.sync_queue.put(("config", {}))
             return topic.message_thread_id
         except Exception as e:
-            logger.error(f"Topic creation error: {e}")
+            logger.error(f"Topic error: {e}")
             return None
 
     async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = ""):
@@ -296,7 +293,7 @@ class BotInstance:
                         target['warns'] = target.get('warns', 0) + 1
                         if self.auto_ban_threshold > 0 and target['warns'] >= self.auto_ban_threshold: target['is_banned'] = True
                     await self.sync_queue.put(("config", {}))
-                    await m.reply("✅ Действие выполнено")
+                    await m.reply("✅ Выполнено")
                     return
             await self.handle_admin_reply(m)
 
@@ -328,23 +325,20 @@ class BotInstance:
         return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
     async def shutdown(self, signal_type):
-        logger.info(f"👋 Получен сигнал {signal_type}. Завершение работы...")
         self.is_running = False
         await self.save_final_state()
         await self.bot.session.close()
         sys.exit(0)
 
     async def run(self):
-        # Регистрация сигналов завершения для сохранения статистики
         loop = asyncio.get_running_loop()
         for s in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(s, lambda sig=s: asyncio.create_task(self.shutdown(sig)))
-        
         asyncio.create_task(self.db_sync_worker())
         asyncio.create_task(self.remote_sync_poller())
         await self.register_handlers()
         self.dp.include_router(self.router)
-        logger.info(f"🚀 Инстанс {self.bot_id} запущен и готов к работе.")
+        logger.info(f"🚀 Бот {self.bot_id} запущен.")
         await self.dp.start_polling(self.bot)
 
 if __name__ == "__main__":
@@ -352,4 +346,4 @@ if __name__ == "__main__":
     try:
         with open(sys.argv[1], 'r', encoding='utf-8') as f: cfg = json.load(f)
         asyncio.run(BotInstance(cfg).run())
-    except Exception as e: logger.error(f"Критическая ошибка: {e}")
+    except Exception as e: logger.error(f"FATAL: {e}")
