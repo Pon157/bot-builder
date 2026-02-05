@@ -15,7 +15,7 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'active' | 'banned' | 'unsubscribed'>('all');
 
-  const stats = bot.stats || { 
+  const stats = bot?.stats || { 
     totalMessages: 0, 
     incomingToday: 0, 
     outgoingToday: 0, 
@@ -37,16 +37,16 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
     return [{ date: today, incoming: 0, outgoing: 0, totalUsers: 0, activeUsers: 0 }];
   }, [stats.history]);
 
-  const connectedUsers = Array.isArray(bot.connectedUsers) ? bot.connectedUsers : [];
+  const connectedUsers = Array.isArray(bot?.connectedUsers) ? bot.connectedUsers : [];
   
   const filteredUsers = useMemo(() => {
     return connectedUsers.filter(u => {
         if (!u) return false;
-        const anonId = u.id.toString().slice(-6).toUpperCase();
+        const anonId = u.id?.toString().slice(-6).toUpperCase() || '????';
         const matchesSearch = search === '' || 
             u.first_name?.toLowerCase().includes(search.toLowerCase()) || 
             u.username?.toLowerCase().includes(search.toLowerCase()) || 
-            u.id.toString().includes(search) || anonId.includes(search.toUpperCase());
+            u.id?.toString().includes(search) || anonId.includes(search.toUpperCase());
         
         const matchesFilter = 
             filter === 'all' ? true :
@@ -206,7 +206,7 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
                         {u.is_banned && <span className="text-[7px] bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded font-black uppercase tracking-widest">Banned</span>}
                     </div>
                     <div className="text-[10px] text-zinc-500 font-mono mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1">
-                        <span className="flex items-center gap-1"><Fingerprint className="w-3 h-3 opacity-40" /> #{u.id.toString().slice(-6).toUpperCase()}</span>
+                        <span className="flex items-center gap-1"><Fingerprint className="w-3 h-3 opacity-40" /> #{u.id?.toString().slice(-6).toUpperCase() || '????'}</span>
                         <span>ID: <code>{u.id}</code></span>
                         {(u.warns || 0) > 0 && <span className="text-amber-500 font-black">[{u.warns} WARNS]</span>}
                     </div>
@@ -257,6 +257,6 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
       </div>
     </div>
   );
-}; 
+};
 
 export default BotStatsView;
