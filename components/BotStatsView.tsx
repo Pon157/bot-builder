@@ -4,10 +4,8 @@ import { BotConfig, TelegramUser } from '../types';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { 
   Users, UserMinus, Ban, UserCheck, Activity, AlertTriangle, 
-  Loader2, TrendingUp, ShieldCheck, Undo2, Search, Filter,
-  ExternalLink, Mail, UserX, UserPlus
+  TrendingUp, ShieldCheck, Search, Filter, ShieldAlert
 } from 'lucide-react';
-import { api } from '../services/apiService';
 
 interface BotStatsViewProps {
   bot: BotConfig;
@@ -15,7 +13,6 @@ interface BotStatsViewProps {
 }
 
 const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
-  const [isSyncing, setIsSyncing] = useState<number | null>(null);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'active' | 'banned' | 'unsubscribed'>('all');
 
@@ -65,33 +62,6 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
     banned: connectedUsers.filter(u => u.is_banned).length,
     leaves: connectedUsers.filter(u => !u.is_active).length
   }), [connectedUsers]);
-
-  const handleModeration = async (userId: number, action: 'unban' | 'warn' | 'unwarn' | 'ban') => {
-    setIsSyncing(userId);
-    try {
-        const result = await api.moderateUser(bot.id, userId, action);
-        if (result && result.status === 'ok') {
-            const updatedUsers = connectedUsers.map(u => u.id === userId ? { ...u, ...result.user } : u);
-            onUpdate({ ...bot, connectedUsers: updatedUsers });
-        } else {
-          // Fallback if API not fully ready
-          const updatedUsers = connectedUsers.map(u => {
-            if (u.id === userId) {
-              if (action === 'ban') return { ...u, is_banned: true };
-              if (action === 'unban') return { ...u, is_banned: false };
-              if (action === 'warn') return { ...u, warns: (u.warns || 0) + 1 };
-              if (action === 'unwarn') return { ...u, warns: Math.max(0, (u.warns || 0) - 1) };
-            }
-            return u;
-          });
-          onUpdate({ ...bot, connectedUsers: updatedUsers });
-        }
-    } catch (e) { 
-        alert("Ошибка модерации"); 
-    } finally { 
-        setIsSyncing(null); 
-    }
-  };
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500 pb-12">
@@ -159,7 +129,7 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
         <div className="p-8 border-b border-zinc-800 bg-zinc-900/20 space-y-6">
           <div className="flex justify-between items-center">
             <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
-              <ShieldCheck className="w-5 h-5 text-blue-500" /> Модерация и CRM
+              <ShieldCheck className="w-5 h-5 text-blue-500" /> Список участников (CRM)
             </h3>
             <div className="flex bg-black p-1 rounded-xl border border-zinc-800">
               <button onClick={() => setFilter('all')} className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase transition-all ${filter === 'all' ? 'bg-zinc-800 text-white' : 'text-zinc-600'}`}>Все</button>
@@ -200,24 +170,25 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
                     </div>
                     <div className="flex items-center gap-4">
                       <p className="text-[10px] text-zinc-500 font-mono">ID: {u.id} {u.username && <span className="text-blue-500/60 ml-1">@{u.username}</span>}</p>
-                      {(u.warns || 0) > 0 && <span className="text-[9px] text-amber-500 bg-amber-500/5 px-2 rounded font-black border border-amber-500/10">{u.warns} WARNS</span>}
                     </div>
                   </div>
                 </div>
-                <div className="flex gap-2">
-                    {isSyncing === u.id ? <Loader2 className="w-5 h-5 text-blue-500 animate-spin m-2" /> : (
-                        u.is_banned ? (
-                            <button onClick={() => handleModeration(u.id, 'unban')} className="text-[10px] font-black uppercase text-emerald-500 bg-emerald-500/10 px-6 py-3 rounded-xl border border-emerald-500/20 hover:bg-emerald-500/20 transition-all">Разбанить</button>
-                        ) : (
-                            <div className="flex gap-2">
-                                {(u.warns || 0) > 0 && (
-                                    <button onClick={() => handleModeration(u.id, 'unwarn')} className="p-3 bg-zinc-800 text-zinc-400 hover:text-white rounded-xl border border-zinc-700" title="Снять 1 варн"><Undo2 className="w-5 h-5" /></button>
-                                )}
-                                <button onClick={() => handleModeration(u.id, 'warn')} className="p-3 bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 rounded-xl border border-amber-500/30" title="Выдать варн"><AlertTriangle className="w-5 h-5" /></button>
-                                <button onClick={() => handleModeration(u.id, 'ban')} className="p-3 bg-rose-500/10 text-rose-500 hover:bg-rose-500/20 rounded-xl border border-rose-500/30" title="Заблокировать навсегда"><Ban className="w-5 h-5" /></button>
-                            </div>
-                        )
+                
+                <div className="flex flex-col items-end gap-1">
+                    {u.is_banned ? (
+                        <div className="flex items-center gap-2 text-rose-500 bg-rose-500/10 px-3 py-1.5 rounded-xl border border-rose-500/20">
+                            <ShieldAlert className="w-3.5 h-3.5" />
+                            <span className="text-[9px] font-black uppercase">В ЧЕРНОМ СПИСКЕ</span>
+                        </div>
+                    ) : (u.warns || 0) > 0 ? (
+                        <div className="flex items-center gap-2 text-amber-500 bg-amber-500/10 px-3 py-1.5 rounded-xl border border-amber-500/20">
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            <span className="text-[9px] font-black uppercase">{u.warns} ПРЕДУПРЕЖДЕНИЙ</span>
+                        </div>
+                    ) : (
+                        <div className="text-[9px] font-bold text-zinc-600 uppercase">Обычный статус</div>
                     )}
+                    <p className="text-[8px] text-zinc-700 font-bold uppercase mt-1 italic">Управление: /ban или /warn реплаем в TG</p>
                 </div>
               </div>
             ))
