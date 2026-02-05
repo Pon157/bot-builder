@@ -7,7 +7,7 @@ import BotStatsView from './BotStatsView';
 import { 
   Settings, Cpu, MousePointer2, BarChart3, Terminal, X, Save, Power, 
   Ticket, Info, Plus, MessageSquare, User, EyeOff, CheckSquare, 
-  Square, ShieldAlert, Zap, Bell, Shield, Sliders
+  Square, ShieldAlert, Zap, Bell, Shield, Sliders, Layout
 } from 'lucide-react';
 
 interface BotEditorProps {
@@ -145,23 +145,20 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
 
               <section>
                 <h2 className="text-sm font-black text-white uppercase flex items-center gap-2 mb-6">
-                  <Bell className="w-4 h-4 text-amber-500" /> Уведомления и шаблоны
+                  <Layout className="w-4 h-4 text-emerald-500" /> Настройка заголовка сообщений
                 </h2>
-                <div className="space-y-4">
-                  <label className="block">
-                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Шаблон сообщения админу</span>
-                    <textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] focus:border-blue-500 outline-none transition-all resize-none text-xs font-mono" value={safeSettings.adminMessageTemplate || ""} onChange={e => onUpdate({...bot, settings: {...safeSettings, adminMessageTemplate: e.target.value}})} placeholder="👤 {{name}}\n🆔 {{id}}\n💬 {{text}}" />
-                    <p className="text-[8px] text-zinc-600 mt-2 font-bold uppercase">Доступные теги: {"{{id}}, {{name}}, {{username}}, {{text}}, {{button}}"}</p>
-                  </label>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <button onClick={() => toggleSetting('notifyOnStart')} className={`flex items-center justify-between p-4 rounded-xl border text-[10px] font-bold uppercase ${safeSettings.notifyOnStart ? 'bg-blue-600/10 border-blue-500/30 text-blue-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
-                      Уведомлять о /start {safeSettings.notifyOnStart ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
-                    </button>
-                    <button onClick={() => toggleSetting('notifyOnBlock')} className={`flex items-center justify-between p-4 rounded-xl border text-[10px] font-bold uppercase ${safeSettings.notifyOnBlock ? 'bg-blue-600/10 border-blue-500/30 text-blue-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
-                      Уведомлять о блоке {safeSettings.notifyOnBlock ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
-                    </button>
-                  </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <button onClick={() => toggleSetting('showHeaderName')} className={`flex items-center justify-between p-4 rounded-xl border text-[9px] font-bold uppercase transition-all ${safeSettings.showHeaderName ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
+                    Имя {safeSettings.showHeaderName ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
+                  </button>
+                  <button onClick={() => toggleSetting('showHeaderUsername')} className={`flex items-center justify-between p-4 rounded-xl border text-[9px] font-bold uppercase transition-all ${safeSettings.showHeaderUsername ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
+                    Юзер {safeSettings.showHeaderUsername ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
+                  </button>
+                  <button onClick={() => toggleSetting('showHeaderId')} className={`flex items-center justify-between p-4 rounded-xl border text-[9px] font-bold uppercase transition-all ${safeSettings.showHeaderId ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
+                    ID {safeSettings.showHeaderId ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
+                  </button>
                 </div>
+                <p className="text-[8px] text-zinc-600 mt-3 font-bold uppercase px-2 italic">Если выключить всё — будет отображаться только анонимный ID.</p>
               </section>
             </div>
             
@@ -200,10 +197,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                         <label className={`flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer ${!safeSettings.useTopics ? 'opacity-30 pointer-events-none' : ''}`}>
                             <span className="text-xs font-bold text-zinc-400">Анонимные темы</span>
                             <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={safeSettings.anonymousTopics} onChange={() => toggleSetting('anonymousTopics')} />
-                        </label>
-                        <label className={`flex items-center justify-between p-4 bg-black rounded-2xl border border-zinc-800 cursor-pointer ${!safeSettings.useTopics ? 'opacity-30 pointer-events-none' : ''}`}>
-                            <span className="text-xs font-bold text-zinc-400">Тема на каждый запрос</span>
-                            <input type="checkbox" className="w-4 h-4 rounded border-zinc-800 bg-black text-blue-600" checked={safeSettings.topicPerRequest} onChange={() => toggleSetting('topicPerRequest')} />
                         </label>
                     </div>
                 </div>
