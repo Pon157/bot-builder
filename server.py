@@ -43,6 +43,8 @@ class BotManager:
         os.makedirs("active_bots", exist_ok=True)
         cp = f"active_bots/cfg_{bid}.json"
         lp = f"active_bots/bot_{bid}.log"
+        # Убеждаемся что статус в конфиге правильный
+        config['status'] = 'RUNNING'
         with open(cp, "w", encoding="utf-8") as f: json.dump(config, f, indent=4)
         self.logs[bid] = lp
         try:
@@ -75,7 +77,23 @@ pm = BotManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # АВТОЗАПУСК ПРИ СТАРТЕ СЕРВЕРА
+    logger.info("[*] Проверка ботов для автозапуска...")
+    try:
+        async with httpx.AsyncClient(base_url=f"{S_URL}/rest/v1/", headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}"}) as client:
+            r = await client.get("bots", params={"status": "eq.RUNNING"})
+            if r.status_code == 200:
+                running_bots = r.json()
+                for b_data in running_bots:
+                    bid = b_data['id']
+                    config = {**(b_data.get("config") or {}), **b_data}
+                    logger.info(f"[*] Автозапуск бота {bid} ({b_data['name']})")
+                    await pm.start_bot(bid, config)
+    except Exception as e:
+        logger.error(f"[!] Ошибка автозапуска: {e}")
+        
     yield
+    # Остановка при выключении сервера
     for b in list(pm.procs.keys()): await pm.stop_bot(b)
 
 app = FastAPI(lifespan=lifespan)
@@ -97,6 +115,22 @@ async def req_ver(d: dict):
     if EmailService.send_verification_code(email, code): return True
     raise HTTPException(500, "Ошибка почты")
 
+@app.post("/api/auth/forgot-password")
+async def forgot_password(d: dict):
+    email = d['email'].lower()
+    code = str(random.randint(100000, 999999))
+    await db.post("temp_codes", json={"email": email, "code": code, "type": "RESET", "expires_at": int(time.time()*1000)+600000}, headers={"Prefer": "resolution=merge-duplicates"})
+    if EmailService.send_password_reset(email, code): return True
+    raise HTTPException(500, "Ошибка почты")
+
+@app.post("/api/auth/reset-password")
+async def reset_password(d: dict):
+    email = d['email'].lower()
+    r = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{d['code']}", "type": "eq.RESET"})
+    if not r.json(): raise HTTPException(400, "Неверный код")
+    await db.patch("users", params={"email": f"eq.{email}"}, json={"password": d['newPassword']})
+    return True
+
 @app.post("/api/auth/verify-and-register")
 async def verify_reg(d: dict):
     email = d['email'].lower()
@@ -107,6 +141,20 @@ async def verify_reg(d: dict):
     await db.post("users", json=p)
     return p
 
+# --- ADMIN API ---
+@app.post("/api/admin/generate-key")
+async def generate_key(d: dict, x_admin_token: str = Header(None)):
+    if x_admin_token != A_SECRET: raise HTTPException(401, "Unauthorized")
+    key = f"PRO-{secrets.token_hex(4).upper()}-{random.randint(100, 999)}"
+    p = {
+        "key": key, 
+        "months": d.get('months', 1), 
+        "days": d.get('days', 0), 
+        "used": False
+    }
+    await db.post("issued_keys", json=p)
+    return {"key": key}
+
 # --- BOTS MANAGEMENT ---
 @app.get("/api/bots/{uid}")
 async def get_bots(uid: str):
@@ -116,21 +164,13 @@ async def get_bots(uid: str):
 @app.post("/api/bots/save")
 async def save_bot(b: dict):
     bid, owner = b['id'], b['owner_id']
-    
-    # 1. Сначала загружаем текущий бот из БД, чтобы не затереть живую статистику
     current_res = await db.get("bots", params={"id": f"eq.{bid}"})
     current_data = current_res.json()[0] if current_res.json() else {}
     current_config = current_data.get("config") or {}
-
+    live_fields = ['stats', 'connectedUsers', 'logs']
     sys_fields = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
-    
-    # Собираем новый конфиг из полей, которых нет в основных колонках
-    new_cfg = {k: v for k, v in b.items() if k not in sys_fields}
-    
-    # 2. МЕРДЖ: Сохраняем live-поля (connectedUsers, stats), если они есть в БД и нет в новом конфиге
-    # Или просто доверяем бэкенду, если он их прислал (но бэкенд шлет только настройки)
-    merged_config = {**current_config, **new_cfg}
-    
+    new_ui_cfg = {k: v for k, v in b.items() if k not in sys_fields and k not in live_fields}
+    merged_config = {**current_config, **new_ui_cfg}
     p = {
         "id": bid, 
         "owner_id": owner, 
@@ -140,9 +180,8 @@ async def save_bot(b: dict):
         "license_expires_at": int(b.get("license_expires_at") or current_data.get("license_expires_at", 0)), 
         "config": merged_config
     }
-    
     await db.post("bots", json=p, headers={"Prefer": "resolution=merge-duplicates"})
-    return {"status": "ok"}
+    return {**p, **merged_config}
 
 @app.post("/api/bots/broadcast")
 async def broadcast(d: dict):
@@ -164,25 +203,34 @@ async def broadcast(d: dict):
         config = bot_data.get('config') or {}
         users = config.get('connectedUsers', [])
         
-        async with Bot(token=token, default={"parse_mode": "HTML"}) as bot:
-            for u in users:
-                if not u.get('is_active', True) or u.get('is_banned'): continue
-                try:
-                    await bot.send_message(u['id'], message)
-                    success_total += 1
-                    await asyncio.sleep(0.05) # Защита от спам-фильтра
-                except TelegramForbiddenError:
-                    u['is_active'] = False
-                    failed_total += 1
-                except TelegramRetryAfter as e:
-                    await asyncio.sleep(e.retry_after)
-                    try: await bot.send_message(u['id'], message); success_total += 1
-                    except: failed_total += 1
-                except Exception:
-                    failed_total += 1
-        
-        # Сохраняем обновленных "ливеров" в БД
-        await db.patch("bots", params={"id": f"eq.{bid}"}, json={"config": config})
+        try:
+            async with Bot(token=token, default={"parse_mode": "HTML"}) as bot:
+                for u in users:
+                    # Корректное извлечение ID пользователя
+                    target_id = u.get('id')
+                    if not target_id: continue
+                    
+                    if not u.get('is_active', True) or u.get('is_banned'): continue
+                    try:
+                        await bot.send_message(int(target_id), message)
+                        success_total += 1
+                        await asyncio.sleep(0.05)
+                    except TelegramForbiddenError:
+                        u['is_active'] = False
+                        failed_total += 1
+                    except TelegramRetryAfter as e:
+                        await asyncio.sleep(e.retry_after)
+                        try: 
+                            await bot.send_message(int(target_id), message)
+                            success_total += 1
+                        except: failed_total += 1
+                    except Exception as e:
+                        logger.error(f"Broadcast error for user {target_id}: {e}")
+                        failed_total += 1
+            
+            await db.patch("bots", params={"id": f"eq.{bid}"}, json={"config": config})
+        except Exception as e:
+            logger.error(f"Broadcast failed for bot {bid}: {e}")
         
     return {"success": success_total, "failed": failed_total}
 
