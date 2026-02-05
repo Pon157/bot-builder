@@ -27,9 +27,9 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, bots, select
     `}>
       <div className="p-6 border-b border-zinc-800 flex items-center gap-3">
         <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-            <span className="font-bold text-white text-xs">BE</span>
+            <span className="font-bold text-white text-xs">DE</span>
         </div>
-        <h1 className="text-xl font-bold tracking-tight text-white">BotEngine<span className="text-blue-500 text-sm ml-1 uppercase">Pro</span></h1>
+        <h1 className="text-xl font-bold tracking-tight text-white">Dialoge Engine<span className="text-blue-500 text-sm ml-1 uppercase">Beta</span></h1>
       </div>
 
       <nav className="flex-1 overflow-y-auto p-4 space-y-8 no-scrollbar">
