@@ -140,11 +140,11 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
                 <div className="text-xs text-zinc-400 mb-6 space-y-2">
                     <p>При покупке ключа срок добавляется к текущему.</p>
                     <div className="py-3 bg-black/40 rounded-xl border border-blue-500/10 mt-2">
-                      <p className="text-white font-bold text-sm">⭐ 50 — 30 дней</p>
-                      <p className="text-white font-bold text-sm">⭐ 120 — 90 дней</p>
+                      <p className="text-white font-bold text-sm">⭐ 50 | 0,7 $ — 30 дней</p>
+                      <p className="text-white font-bold text-sm">⭐ 120 | 1,5 $ — 90 дней</p>
                     </div>
                 </div>
-                <a href="https://t.me/Kotickr" target="_blank" className="w-full bg-white text-black font-black py-4 rounded-xl uppercase tracking-widest text-xs hover:bg-zinc-200 transition-all shadow-xl text-center">Купить ключ в TG</a>
+                <a href="https://t.me/dialogengine_bot" target="_blank" className="w-full bg-white text-black font-black py-4 rounded-xl uppercase tracking-widest text-xs hover:bg-zinc-200 transition-all shadow-xl text-center">Купить ключ в TG</a>
             </div>
         </div>
       </div>
