@@ -31,7 +31,6 @@ logger = logging.getLogger("BotEngineServer")
 
 SB_URL = os.getenv("SUPABASE_URL", "").rstrip('/')
 SB_KEY = os.getenv("SUPABASE_KEY", "")
-ADMIN_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
 
 class BotProcessManager:
     def __init__(self):
@@ -44,26 +43,20 @@ class BotProcessManager:
         os.makedirs(active_dir, exist_ok=True)
         config_path = os.path.join(active_dir, f"config_{bot_id}.json")
         log_path = os.path.join(active_dir, f"bot_{bot_id}.log")
-        
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
-        
         self.log_paths[bot_id] = log_path
         try:
             env = os.environ.copy()
             env["PYTHONPATH"] = os.getcwd()
             env["SUPABASE_URL"] = SB_URL
             env["SUPABASE_KEY"] = SB_KEY
-            
-            with open(log_path, "w") as f: f.write(f"--- Запуск инстанса {bot_id} ---\n")
-            
             log_file = open(log_path, "a", encoding="utf-8")
             process = await asyncio.create_subprocess_exec(
                 sys.executable, "bot_core.py", config_path,
                 stdout=log_file, stderr=log_file, env=env, cwd=os.getcwd()
             )
             self.processes[bot_id] = process
-            logger.info(f"Bot {bot_id} started. PID: {process.pid}")
             return True
         except Exception as e:
             logger.error(f"Error starting bot {bot_id}: {e}")
@@ -81,13 +74,12 @@ class BotProcessManager:
 
     def get_logs(self, bot_id: str, lines: int = 500):
         path = self.log_paths.get(bot_id)
-        if not path or not os.path.exists(path): return "Лог пуст. Запустите бота."
+        if not path or not os.path.exists(path): return "Лог пуст."
         try:
             with open(path, "r", encoding="utf-8") as f:
                 content = f.readlines()
                 return "".join(content[-lines:])
-        except Exception as e:
-            return f"Ошибка чтения логов: {e}"
+        except: return "Ошибка лога."
 
 pm = BotProcessManager()
 
@@ -143,25 +135,16 @@ async def get_user_info(user_id: str):
 async def get_user_bots(user_id: str):
     res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
     bots = res.json() if res.status_code == 200 else []
-    # Расплющиваем для фронтенда
     return [{**b, **(b.get("config") or {})} for b in bots]
 
 @app.post("/api/bots/save")
 async def save_bot(bot: dict):
     bid = bot.get("id")
-    # Список системных ключей, которые идут в колонки таблицы
     sys_keys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
-    
-    # Формируем конфиг, исключая системные поля и старый вложенный конфиг
     config_payload = {k: v for k, v in bot.items() if k not in sys_keys}
-    
     payload = {
-        "id": bid, 
-        "owner_id": bot.get("owner_id"), 
-        "name": bot["name"], 
-        "token": bot["token"], 
-        "status": bot.get("status", "IDLE"),
-        "license_expires_at": int(bot.get("license_expires_at") or 0),
+        "id": bid, "owner_id": bot.get("owner_id"), "name": bot["name"], "token": bot["token"], 
+        "status": bot.get("status", "IDLE"), "license_expires_at": int(bot.get("license_expires_at") or 0),
         "config": config_payload
     }
     await db.post("bots", json=payload, headers={"Prefer": "resolution=merge-duplicates"})
@@ -173,12 +156,52 @@ async def delete_bot(user_id: str, bot_id: str):
     await db.delete("bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}"})
     return {"status": "ok"}
 
+@app.post("/api/bots/moderate")
+async def moderate_user(data: dict):
+    bot_id, user_id, action = data['botId'], data['userId'], data['action']
+    res = await db.get("bots", params={"id": f"eq.{bot_id}"})
+    if not res.json(): raise HTTPException(404)
+    bot = res.json()[0]
+    config = bot.get("config") or {}
+    users = config.get("connectedUsers", [])
+    target_user = None
+    for u in users:
+        if u['id'] == user_id:
+            if action == 'ban': u['is_banned'] = True
+            elif action == 'unban': u['is_banned'] = False
+            elif action == 'warn': u['warns'] = u.get('warns', 0) + 1
+            elif action == 'unwarn': u['warns'] = max(0, u.get('warns', 0) - 1)
+            target_user = u
+            break
+    if target_user:
+        await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"config": {**config, "connectedUsers": users}})
+        return {"status": "ok", "user": target_user}
+    raise HTTPException(404, "User not found in bot base")
+
+@app.post("/api/bots/activate-license")
+async def activate_license(data: dict):
+    bot_id, key = data['botId'], data['key']
+    res_key = await db.get("issued_keys", params={"key": f"eq.{key}", "used": "is.false"})
+    if not res_key.json(): raise HTTPException(400, "Invalid or used key")
+    license_key = res_key.json()[0]
+    res_bot = await db.get("bots", params={"id": f"eq.{bot_id}"})
+    if not res_bot.json(): raise HTTPException(404)
+    bot = res_bot.json()[0]
+    current_expiry = max(int(time.time()*1000), bot.get("license_expires_at", 0))
+    added_time = (license_key['months'] * 30 * 24 * 3600 * 1000) + (license_key['days'] * 24 * 3600 * 1000)
+    new_expiry = current_expiry + added_time
+    await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"license_expires_at": new_expiry})
+    await db.patch("issued_keys", params={"key": f"eq.{key}"}, json={"used": True, "used_by_bot": bot_id})
+    return {"status": "ok", "new_expiry": new_expiry}
+
 @app.post("/api/bots/start")
 async def start_bot(req: dict):
     res = await db.get("bots", params={"id": f"eq.{req['id']}"})
     if res.json():
         bot = res.json()[0]
-        # Передаем "расплющенный" конфиг для корректной инициализации бота
+        # Проверка лицензии перед запуском
+        if bot.get("license_expires_at", 0) < int(time.time()*1000):
+            raise HTTPException(402, "License expired")
         if await pm.start_bot(bot['id'], {**bot, **(bot.get("config") or {})}):
             await db.patch("bots", params={"id": f"eq.{bot['id']}"}, json={"status": "RUNNING"})
             return {"status": "ok"}
@@ -199,24 +222,34 @@ async def get_bot_msgs(bot_id: str):
 async def bot_logs_api(bot_id: str): return {"logs": pm.get_logs(bot_id)}
 
 @app.post("/api/bots/broadcast")
-async def broadcast(data: dict):
+async def broadcast(data: dict, background_tasks: BackgroundTasks):
     bot_ids, message = data.get("botIds", []), data.get("message", "")
+    background_tasks.add_task(run_broadcast_task, bot_ids, message)
+    return {"status": "queued", "success": 0, "failed": 0} # Для UX возвращаем сразу
+
+async def run_broadcast_task(bot_ids: List[str], message: str):
     success, failed = 0, 0
     for bid in bot_ids:
         res = await db.get("bots", params={"id": f"eq.{bid}"})
         if res.json():
             bot = res.json()[0]
-            users = (bot.get("config") or {}).get("connectedUsers", [])
+            config = bot.get("config") or {}
+            users = config.get("connectedUsers", [])
+            any_changes = False
             for u in users:
-                if not u.get("is_banned") and u.get("is_active"):
+                if not u.get("is_banned") and u.get("is_active", True):
                     url = f"https://api.telegram.org/bot{bot['token']}/sendMessage"
                     try:
                         async with httpx.AsyncClient() as client:
-                            r = await client.post(url, json={"chat_id": u["id"], "text": message, "parse_mode": "HTML"})
+                            r = await client.post(url, json={"chat_id": u["id"], "text": message, "parse_mode": "HTML"}, timeout=10)
                             if r.status_code == 200: success += 1
+                            elif r.status_code == 403: u["is_active"] = False; any_changes = True; failed += 1
                             else: failed += 1
                     except: failed += 1
-    return {"success": success, "failed": failed}
+                    await asyncio.sleep(0.05) # Rate limit для Telegram API
+            if any_changes:
+                await db.patch("bots", params={"id": f"eq.{bid}"}, json={"config": {**config, "connectedUsers": users}})
+    logger.info(f"Broadcast task finished. S:{success} F:{failed}")
 
 @app.get("/api/ping")
 async def ping(): return {"status": "online"}
