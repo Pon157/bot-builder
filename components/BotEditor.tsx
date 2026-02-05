@@ -7,7 +7,7 @@ import BotStatsView from './BotStatsView';
 import { 
   Settings, Cpu, BarChart3, Terminal, X, Save, Power, 
   Ticket, Plus, MessageSquare, User, CheckSquare, 
-  Square, Zap, Bell, Shield, Sliders, Layout, ShieldAlert, Lock, Trash2, ShieldCheck, AlertCircle, Type
+  Square, Zap, Bell, Shield, Sliders, Layout, ShieldAlert, Lock, Trash2, ShieldCheck, AlertCircle, Type as TypeIcon
 } from 'lucide-react';
 
 interface BotEditorProps {
@@ -38,7 +38,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
     notifyOnStart: true,
     notifyOnBlock: true,
     firstMessageHeader: "🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ:</b>",
-    ticketMessageHeader: "🆘 <b>ЗАЯВКА:</b>",
+    ticketMessageHeader: "🆘 <b>ЗАЯВКА [{btn}]:</b>",
     commonMessageHeader: "📩 <b>СООБЩЕНИЕ:</b>"
   };
 
@@ -59,10 +59,25 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
       } else {
         await api.saveBot(bot.owner_id, bot);
         const res = await api.startBotOnServer(bot);
-        if (res === true) onUpdate({ ...bot, status: BotStatus.RUNNING });
-        else alert(`Ошибка запуска: ${res}`);
+        if (res === true) {
+            onUpdate({ ...bot, status: BotStatus.RUNNING });
+        } else {
+            alert(`Ошибка запуска: ${res}`);
+        }
       }
     } finally { setIsProcessing(false); }
+  };
+
+  const syncState = async () => {
+    setIsProcessing(true);
+    try {
+        await api.saveBot(bot.owner_id, bot);
+        alert("Конфигурация синхронизирована!");
+    } catch {
+        alert("Ошибка сети");
+    } finally {
+        setIsProcessing(false);
+    }
   };
 
   const updateSetting = (key: keyof typeof defaultSettings, val: any) => {
@@ -79,13 +94,13 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
           <div>
             <h1 className="text-3xl font-black text-white">{bot.name}</h1>
             <div className="flex items-center gap-2 mt-1">
-              <span className={`w-2 h-2 rounded-full ${bot.status === BotStatus.RUNNING ? 'bg-green-500 animate-pulse' : 'bg-zinc-600'}`}></span>
+              <span className={`w-2 h-2 rounded-full ${bot.status === BotStatus.RUNNING ? 'bg-blue-500 animate-pulse' : 'bg-zinc-600'}`}></span>
               <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">{bot.status}</span>
             </div>
           </div>
         </div>
         <div className="flex gap-4 relative z-10">
-           <button onClick={() => api.saveBot(bot.owner_id, bot).then(() => alert("Конфигурация сохранена!"))} disabled={isProcessing} className="px-6 py-4 bg-zinc-800 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-700 flex items-center gap-2 transition-all">
+           <button onClick={syncState} disabled={isProcessing} className="px-6 py-4 bg-zinc-800 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-700 flex items-center gap-2 transition-all">
              <Save className="w-4 h-4" /> Сохранить
            </button>
            <button onClick={handleToggleServer} disabled={isProcessing} className={`px-10 py-4 rounded-2xl font-black text-xs uppercase transition-all flex items-center gap-2 shadow-xl ${bot.status === BotStatus.RUNNING ? 'bg-red-500/10 text-red-500 border border-red-500/20' : 'bg-blue-600 text-white'}`}>
@@ -113,35 +128,68 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         {activeTab === 'settings' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-8">
-              <section className="space-y-6">
-                <h2 className="text-sm font-black text-white uppercase flex items-center gap-2">
-                  <Type className="w-4 h-4 text-amber-500" /> Шаблоны заголовков
+              <section>
+                <h2 className="text-sm font-black text-white uppercase flex items-center gap-2 mb-6">
+                  <Sliders className="w-4 h-4 text-blue-500" /> Системная конфигурация
                 </h2>
-                <div className="space-y-4">
+                <div className="space-y-5">
                   <label className="block">
-                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Первое обращение</span>
-                    <input type="text" className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-xl text-white outline-none focus:border-blue-500" value={safeSettings.firstMessageHeader} onChange={e => updateSetting('firstMessageHeader', e.target.value)} />
+                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Telegram Bot Token</span>
+                    <input type="password" placeholder="Токен от @BotFather" className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white font-mono outline-none focus:border-blue-500 transition-all" value={bot.token} onChange={e => onUpdate({...bot, token: e.target.value})} />
                   </label>
                   <label className="block">
-                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Тикет / Заявка</span>
-                    <input type="text" className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-xl text-white outline-none focus:border-blue-500" value={safeSettings.ticketMessageHeader} onChange={e => updateSetting('ticketMessageHeader', e.target.value)} />
-                    <p className="text-[9px] text-zinc-600 mt-1 ml-2 uppercase">Используйте {"{btn}"} для названия кнопки</p>
+                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">ID Группы Админов (Forum)</span>
+                    <input type="text" placeholder="-100..." className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-blue-500 transition-all" value={bot.adminChatId} onChange={e => onUpdate({...bot, adminChatId: e.target.value})} />
                   </label>
                   <label className="block">
-                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Обычное сообщение</span>
-                    <input type="text" className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-xl text-white outline-none focus:border-blue-500" value={safeSettings.commonMessageHeader} onChange={e => updateSetting('commonMessageHeader', e.target.value)} />
+                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Приветствие (/start)</span>
+                    <textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] outline-none text-xs focus:border-blue-500 transition-all resize-none" value={bot.welcomeMessage || ""} onChange={e => onUpdate({...bot, welcomeMessage: e.target.value})} />
                   </label>
                 </div>
               </section>
 
               <section className="space-y-6">
-                <h2 className="text-sm font-black text-white uppercase flex items-center gap-2">
-                  <Layout className="w-4 h-4 text-emerald-500" /> Виджет данных юзера
+                <h2 className="text-sm font-black text-white uppercase flex items-center gap-2 mb-6">
+                  <Layout className="w-4 h-4 text-emerald-500" /> Конструктор шапки сообщений
                 </h2>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  {[{k: 'showHeaderName', l: 'Имя'}, {k: 'showHeaderUsername', l: 'Юзер'}, {k: 'showHeaderId', l: 'ID'}].map(f => (
-                    <button key={f.k} onClick={() => updateSetting(f.k as any, !safeSettings[f.k as keyof typeof safeSettings])} className={`flex items-center justify-between p-4 rounded-xl border text-[9px] font-bold uppercase transition-all ${safeSettings[f.k as keyof typeof safeSettings] ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
-                      {f.l} {safeSettings[f.k as keyof typeof safeSettings] ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
+                
+                <div className="space-y-4">
+                  <div>
+                    <span className="text-[9px] font-bold text-zinc-500 uppercase ml-2">Заголовок первого обращения</span>
+                    <input 
+                      className="w-full mt-1.5 bg-black border border-zinc-800 p-4 rounded-xl text-xs text-white outline-none focus:border-emerald-500 transition-all" 
+                      value={safeSettings.firstMessageHeader || ""} 
+                      onChange={e => updateSetting('firstMessageHeader', e.target.value)}
+                      placeholder="🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ:</b>"
+                    />
+                  </div>
+                  <div>
+                    <span className="text-[9px] font-bold text-zinc-500 uppercase ml-2">Заголовок заявки (кнопки)</span>
+                    <input 
+                      className="w-full mt-1.5 bg-black border border-zinc-800 p-4 rounded-xl text-xs text-white outline-none focus:border-emerald-500 transition-all" 
+                      value={safeSettings.ticketMessageHeader || ""} 
+                      onChange={e => updateSetting('ticketMessageHeader', e.target.value)}
+                      placeholder="🆘 <b>ЗАЯВКА [{btn}]:</b>"
+                    />
+                    <p className="text-[8px] text-zinc-600 mt-1 px-2 uppercase font-bold tracking-tighter">* Используйте {'{btn}'} для подстановки названия кнопки</p>
+                  </div>
+                  <div>
+                    <span className="text-[9px] font-bold text-zinc-500 uppercase ml-2">Обычное сообщение</span>
+                    <input 
+                      className="w-full mt-1.5 bg-black border border-zinc-800 p-4 rounded-xl text-xs text-white outline-none focus:border-emerald-500 transition-all" 
+                      value={safeSettings.commonMessageHeader || ""} 
+                      onChange={e => updateSetting('commonMessageHeader', e.target.value)}
+                      placeholder="📩 <b>СООБЩЕНИЕ:</b>"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+                  {[
+                    {k: 'showHeaderName', l: 'Имя'}, {k: 'showHeaderUsername', l: 'Юзер'}, {k: 'showHeaderId', l: 'ID'}
+                  ].map(field => (
+                    <button key={field.k} onClick={() => updateSetting(field.k as any, !safeSettings[field.k as keyof typeof safeSettings])} className={`flex items-center justify-between p-4 rounded-xl border text-[9px] font-bold uppercase transition-all ${safeSettings[field.k as keyof typeof safeSettings] ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
+                      {field.l} {safeSettings[field.k as keyof typeof safeSettings] ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
                     </button>
                   ))}
                 </div>
@@ -150,34 +198,42 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
             
             <div className="space-y-8">
                 <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
-                  <h3 className="text-sm font-black text-white uppercase flex items-center gap-2"><Lock className="w-4 h-4 text-rose-500" /> Безопасность и Анти-Флуд</h3>
+                  <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
+                    <Lock className="w-4 h-4 text-rose-500" /> Безопасность и Анти-Флуд
+                  </h3>
                   <div className="space-y-4">
                     <div className="flex items-center justify-between p-5 rounded-2xl bg-black border border-zinc-800">
-                      <div><p className="text-xs font-bold text-white">Интервал спама (сек)</p><p className="text-[9px] text-zinc-500 uppercase">Между сообщениями</p></div>
+                      <div><p className="text-xs font-bold text-white">Интервал анти-спама</p><p className="text-[9px] text-zinc-500 uppercase">Сек. между сообщениями</p></div>
                       <input type="number" step="0.5" className="w-16 bg-zinc-900 border border-zinc-800 p-2 rounded-lg text-center text-xs text-white" value={safeSettings.rateLimit} onChange={e => updateSetting('rateLimit', parseFloat(e.target.value))} />
                     </div>
                     <div className="flex items-center justify-between p-5 rounded-2xl bg-black border border-zinc-800">
-                      <div><p className="text-xs font-bold text-white">Авто-бан (Лимит варнов)</p><p className="text-[9px] text-zinc-500 uppercase">До блокировки</p></div>
+                      <div><p className="text-xs font-bold text-white">Лимит Предупреждений</p><p className="text-[9px] text-zinc-500 uppercase">Варнов до авто-бана</p></div>
                       <input type="number" className="w-16 bg-zinc-900 border border-zinc-800 p-2 rounded-lg text-center text-xs text-white" value={safeSettings.autoBanThreshold} onChange={e => updateSetting('autoBanThreshold', parseInt(e.target.value))} />
                     </div>
                   </div>
                 </div>
 
                 <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
-                    <h3 className="text-sm font-black text-white uppercase flex items-center gap-2"><ShieldAlert className="w-4 h-4 text-emerald-500" /> Форум (Темы)</h3>
+                    <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
+                      <ShieldAlert className="w-4 h-4 text-emerald-500" /> Форум (Темы) и Анонимность
+                    </h3>
                     <div className="space-y-3">
                       <button onClick={() => updateSetting('useTopics', !safeSettings.useTopics)} className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${safeSettings.useTopics ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
-                        <div className="text-left"><p className="text-xs font-bold">Использовать Темы (Forum)</p></div>
+                        <div className="text-left"><p className="text-xs font-bold">Использовать Темы (Forum)</p><p className="text-[9px] uppercase opacity-50">Для супергрупп</p></div>
                         {safeSettings.useTopics ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
                       </button>
                       <button onClick={() => updateSetting('topicPerRequest', !safeSettings.topicPerRequest)} className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${safeSettings.topicPerRequest ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
-                        <div className="text-left"><p className="text-xs font-bold">Тема на каждый тикет</p></div>
+                        <div className="text-left"><p className="text-xs font-bold">Новая ветка на каждый тикет</p><p className="text-[9px] uppercase opacity-50">Ticket System Mode</p></div>
                         {safeSettings.topicPerRequest ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+                      </button>
+                      <button onClick={() => updateSetting('anonymousTopics', !safeSettings.anonymousTopics)} className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${safeSettings.anonymousTopics ? 'bg-zinc-800 text-white' : 'bg-black border-zinc-800 text-zinc-600'}`}>
+                        <div className="text-left"><p className="text-xs font-bold">Анонимные ID (Anon ID)</p><p className="text-[9px] uppercase opacity-50">Хешировать данные в группе</p></div>
+                        {safeSettings.anonymousTopics ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
                       </button>
                     </div>
                 </div>
-                <button onClick={() => window.confirm("Вы точно хотите удалить?") && onDelete()} className="w-full p-5 text-[10px] font-black uppercase text-rose-500 bg-rose-500/5 rounded-3xl border border-rose-500/10 hover:bg-rose-500/10 transition-all flex items-center justify-center gap-2">
-                    <Trash2 className="w-4 h-4" /> Удалить бота безвозвратно
+                <button onClick={() => window.confirm("Вы точно хотите удалить этот инстанс?") && onDelete()} className="w-full p-5 text-[10px] font-black uppercase text-rose-500 bg-rose-500/5 rounded-3xl border border-rose-500/10 hover:bg-rose-500/10 transition-all flex items-center justify-center gap-2">
+                    <Trash2 className="w-4 h-4" /> Удалить навсегда
                 </button>
             </div>
           </div>
@@ -185,17 +241,24 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         
         {activeTab === 'interface' && (
           <div className="space-y-6">
-             <div className="flex justify-between items-center mb-6"><h2 className="text-2xl font-black text-white uppercase">Кнопки меню</h2><button onClick={() => onUpdate({...bot, buttons: [...(bot.buttons || []), {text: '', response: '', type: 'message'}]})} className="bg-blue-600 px-8 py-4 rounded-2xl text-[11px] font-black text-white uppercase transition-all">+ Добавить кнопку</button></div>
+             <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-black text-white uppercase tracking-tight">Конструктор Кнопок</h2>
+                <button onClick={() => onUpdate({...bot, buttons: [...(bot.buttons || []), {text: '', response: '', type: 'message'}]})} className="bg-blue-600 px-8 py-4 rounded-2xl text-[11px] font-black text-white uppercase flex items-center gap-2 shadow-lg shadow-blue-600/20">
+                    <Plus className="w-4 h-4" /> Новая кнопка
+                </button>
+             </div>
              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                {(bot.buttons || []).map((btn, i) => (
-                 <div key={i} className="bg-[#0d0d0d] border border-zinc-800 rounded-[2.5rem] p-8 space-y-6 relative border-t-4 border-t-blue-500/20 shadow-xl">
+                 <div key={i} className="bg-[#0d0d0d] border border-zinc-800 rounded-[2.5rem] p-8 space-y-6 relative group border-t-4 border-t-blue-500/20 shadow-xl">
                     <button onClick={() => onUpdate({...bot, buttons: bot.buttons.filter((_, idx) => idx !== i)})} className="absolute top-6 right-6 text-zinc-600 hover:text-rose-500 transition-colors"><X className="w-5 h-5" /></button>
-                    <label className="block"><span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Текст кнопки</span><input className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-blue-500" value={btn.text} onChange={e => { const nb = [...bot.buttons]; nb[i].text = e.target.value; onUpdate({...bot, buttons: nb}); }} /></label>
-                    <label className="block"><span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Ответ бота</span><textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm min-h-[120px] outline-none focus:border-blue-500 resize-none" value={btn.response} onChange={e => { const nb = [...bot.buttons]; nb[i].response = e.target.value; onUpdate({...bot, buttons: nb}); }} /></label>
-                    <div className="flex bg-black p-1 rounded-xl border border-zinc-800">
-                      {['message', 'request'].map(type => (
-                        <button key={type} onClick={() => { const nb = [...bot.buttons]; nb[i].type = type as any; onUpdate({...bot, buttons: nb}); }} className={`flex-1 py-2.5 rounded-lg text-[9px] font-black uppercase transition-all ${btn.type === type ? 'bg-blue-600 text-white' : 'text-zinc-600'}`}>{type === 'message' ? 'Обычный ответ' : '🆘 Тикет (Заявка)'}</button>
-                      ))}
+                    <div className="space-y-5">
+                        <label className="block"><span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Текст на кнопке</span><input className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-blue-500" value={btn.text} onChange={e => { const nb = [...bot.buttons]; nb[i].text = e.target.value; onUpdate({...bot, buttons: nb}); }} /></label>
+                        <label className="block"><span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Ответ системы</span><textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm min-h-[120px] outline-none focus:border-blue-500 resize-none" value={btn.response} onChange={e => { const nb = [...bot.buttons]; nb[i].response = e.target.value; onUpdate({...bot, buttons: nb}); }} /></label>
+                        <div className="flex bg-black p-1 rounded-xl border border-zinc-800">
+                          {['message', 'request'].map(type => (
+                            <button key={type} onClick={() => { const nb = [...bot.buttons]; nb[i].type = type as any; onUpdate({...bot, buttons: nb}); }} className={`flex-1 py-2.5 rounded-lg text-[9px] font-black uppercase transition-all ${btn.type === type ? 'bg-blue-600 text-white' : 'text-zinc-600'}`}>{type === 'message' ? 'Обычный ответ' : '🆘 Заявка (Тикет)'}</button>
+                          ))}
+                        </div>
                     </div>
                  </div>
                ))}
@@ -205,13 +268,13 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
 
         {activeTab === 'logic' && (
           <div className="space-y-6">
-            <div className="flex justify-between items-end mb-6"><h2 className="text-2xl font-black text-white uppercase">Авто-ответы</h2><button onClick={() => onUpdate({...bot, triggers: [...(bot.triggers || []), {keyword: '', response: ''}]})} className="bg-emerald-600 px-8 py-4 rounded-2xl text-[10px] font-black text-white uppercase">+ Новый триггер</button></div>
+            <div className="flex justify-between items-end mb-6"><h2 className="text-2xl font-black text-white uppercase">Триггеры авто-ответа</h2><button onClick={() => onUpdate({...bot, triggers: [...(bot.triggers || []), {keyword: '', response: ''}]})} className="bg-emerald-600 px-8 py-4 rounded-2xl text-[10px] font-black text-white uppercase flex items-center gap-2 transition-all"><Plus className="w-4 h-4" /> Новый триггер</button></div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                {(bot.triggers || []).map((trig, i) => (
                  <div key={i} className="bg-[#0d0d0d] border border-zinc-800 rounded-[2.5rem] p-8 space-y-5 relative border-t-4 border-t-emerald-500/20 shadow-xl">
                     <button onClick={() => onUpdate({...bot, triggers: bot.triggers.filter((_, idx) => idx !== i)})} className="absolute top-6 right-6 text-zinc-600 hover:text-rose-500"><X className="w-5 h-5" /></button>
-                    <input placeholder="Ключевое слово" className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-emerald-500" value={trig.keyword} onChange={e => { const nt = [...bot.triggers]; nt[i].keyword = e.target.value; onUpdate({...bot, triggers: nt}); }} />
-                    <textarea placeholder="Ответ..." className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm outline-none min-h-[120px] focus:border-emerald-500 resize-none" value={trig.response} onChange={e => { const nt = [...bot.triggers]; nt[i].response = e.target.value; onUpdate({...bot, triggers: nt}); }} />
+                    <input placeholder="Ключевое слово (например: цена)" className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-emerald-500" value={trig.keyword} onChange={e => { const nt = [...bot.triggers]; nt[i].keyword = e.target.value; onUpdate({...bot, triggers: nt}); }} />
+                    <textarea placeholder="Что бот должен ответить..." className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm outline-none min-h-[120px] focus:border-emerald-500" value={trig.response} onChange={e => { const nt = [...bot.triggers]; nt[i].response = e.target.value; onUpdate({...bot, triggers: nt}); }} />
                  </div>
                ))}
             </div>
@@ -219,14 +282,14 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         )}
 
         {activeTab === 'chat' && (
-          <div className="bg-[#111] border border-zinc-800 rounded-[2.5rem] h-[700px] overflow-hidden flex flex-col p-8 shadow-2xl">
-            <h2 className="text-sm font-black text-white uppercase mb-6 flex items-center gap-2"><MessageSquare className="w-4 h-4 text-blue-500" /> CRM Чат (Последние 50)</h2>
-            <div className="flex-1 overflow-y-auto no-scrollbar space-y-6">
-              {messages.length === 0 ? <p className="text-center text-zinc-700 py-32 font-black uppercase text-[10px] tracking-widest opacity-20">История пуста</p> : messages.map((m, i) => (
-                <div key={i} className={`flex gap-4 items-start ${m.is_admin ? 'flex-row-reverse text-right' : ''}`}>
-                   <div className={`p-5 rounded-3xl max-w-[75%] text-sm ${m.is_admin ? 'bg-blue-600 text-white' : 'bg-black/60 border border-zinc-800 text-zinc-300'}`}>
+          <div className="bg-[#111] border border-zinc-800 rounded-[2.5rem] h-[700px] overflow-hidden flex flex-col p-8 shadow-2xl relative">
+            <h2 className="text-sm font-black text-white uppercase mb-6 flex items-center gap-2"><MessageSquare className="w-4 h-4 text-blue-500" /> Последние диалоги (CRM View)</h2>
+            <div className="flex-1 overflow-y-auto no-scrollbar space-y-6 pr-4">
+              {messages.length === 0 ? <p className="text-center text-zinc-700 py-32 uppercase text-[10px] font-black tracking-widest opacity-20">История пуста</p> : messages.map((m, i) => (
+                <div key={i} className={`flex gap-4 items-start ${m.is_admin ? 'flex-row-reverse text-right' : ''} animate-in slide-in-from-bottom-2 duration-300`}>
+                   <div className={`p-5 rounded-3xl max-w-[75%] text-sm shadow-lg ${m.is_admin ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-black/60 border border-zinc-800 text-zinc-300 rounded-tl-none'}`}>
                       <p className="text-[9px] font-black uppercase opacity-40 mb-2">{m.user?.name} | {new Date(m.timestamp).toLocaleTimeString()}</p>
-                      <div className="whitespace-pre-wrap leading-relaxed">{m.text}</div>
+                      <div className="leading-relaxed whitespace-pre-wrap">{m.text}</div>
                    </div>
                 </div>
               ))}
