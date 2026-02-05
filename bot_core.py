@@ -65,7 +65,6 @@ def format_admin_header(template: str, m: Message, settings: dict, is_first: boo
         show_user = settings.get('showHeaderUsername', True)
         show_id = settings.get('showHeaderId', True)
         
-        # Fallback на Anon ID если всё выключено
         if not show_name and not show_user and not show_id:
             parts.append(f"👤 <b>User #{anon_id}</b>")
         else:
@@ -266,13 +265,12 @@ class BotInstance:
         async def admin_input(m: Message):
             if not self.license_active: return
             
-            # --- КОМАНДЫ МОДЕРАЦИИ (Должны быть в приоритете) ---
+            # --- КОМАНДЫ МОДЕРАЦИИ (В САМОМ ВЕРХУ) ---
             if m.text and (m.text.startswith("/") or m.text.startswith("!")):
                 cmd_full = m.text.lower().split()
                 cmd = cmd_full[0][1:]
                 target = None
                 
-                # Поиск цели команды
                 if m.message_thread_id:
                     target = next((u for u in self.connected_users if u.get("last_topic_id") == m.message_thread_id), None)
                 if not target and m.reply_to_message:
@@ -286,7 +284,7 @@ class BotInstance:
                         try: await self.bot.send_message(uid, "🚫 <b>Ваш доступ к боту заблокирован администратором.</b>")
                         except: pass
                         await m.reply(f"✅ Пользователь {uid} забанен.")
-                        return # Прерываем, чтобы текст команды не улетел юзеру
+                        return
                     elif cmd == "unban":
                         await self.update_user_status(uid, is_banned=False)
                         try: await self.bot.send_message(uid, "✅ <b>Ваш доступ восстановлен.</b>")
@@ -315,32 +313,6 @@ class BotInstance:
             # --- ОБЫЧНЫЙ ОТВЕТ (Если не команда) ---
             if m.reply_to_message or (self.use_topics and m.message_thread_id):
                 await self.handle_admin_reply(m)
-
-        @self.router.message()
-        async def global_handler(m: Message):
-            if not self.license_active: return
-            if self.admin_id and m.chat.id == self.admin_id: return
-            user, is_new = await self.get_user(m)
-            if user.get("is_banned"): return
-            if await self.check_flood(user['id']): return
-
-            if m.text:
-                txt = m.text.lower().strip()
-                for b in self.buttons:
-                    if b.get('text') and b['text'].lower() == txt:
-                        is_req = b.get('type') == 'request'
-                        await self.forward_to_admin(m, user, is_first=is_new, btn_text=b['text'] if is_req else "")
-                        if b.get('response'): await m.answer(b['response'])
-                        await self.log_it(user['id'], m.from_user.full_name, f"BTN: {b['text']}")
-                        return
-                for t in self.triggers:
-                    if t.get('keyword') and t['keyword'].lower() in txt:
-                        await m.answer(t['response'])
-                        await self.log_it(user['id'], m.from_user.full_name, f"TRIGGER: {t['keyword']}")
-                        return
-            
-            await self.forward_to_admin(m, user, is_first=is_new)
-            await self.log_it(user['id'], m.from_user.full_name, m.text or "[Медиа]")
 
     def get_kb(self):
         vbs = [b for b in self.buttons if b.get('text')]
