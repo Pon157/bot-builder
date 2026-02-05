@@ -43,6 +43,7 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
   
   const filteredUsers = useMemo(() => {
     return connectedUsers.filter(u => {
+        if (!u) return false;
         const anonId = u.id.toString().slice(-6).toUpperCase();
         const matchesSearch = search === '' || 
             u.first_name?.toLowerCase().includes(search.toLowerCase()) || 
@@ -60,6 +61,7 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
     });
   }, [connectedUsers, search, filter]);
 
+  // Расчет счетчиков
   const totalCount = connectedUsers.length;
   const bannedCount = connectedUsers.filter(u => u && u.is_banned).length;
   const blockedByMeCount = connectedUsers.filter(u => u && !u.is_active).length;
@@ -70,7 +72,7 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
     try {
         const result = await api.moderateUser(bot.id, userId, action);
         if (result && result.status === 'ok') {
-            const updatedUsers = connectedUsers.map(u => u.id === userId ? result.user : u);
+            const updatedUsers = connectedUsers.map(u => u.id === userId ? { ...u, ...result.user } : u);
             onUpdate({ ...bot, connectedUsers: updatedUsers });
         }
     } catch (e) { 
@@ -85,7 +87,7 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: 'Аудитория', value: totalCount, color: 'text-white', icon: Users, sub: 'Всего вступило', active: filter === 'all', onClick: () => setFilter('all') },
-          { label: 'Живые', value: netActiveCount, color: 'text-emerald-500', icon: UserCheck, sub: 'Не забанены + Активны', active: filter === 'active', onClick: () => setFilter('active') },
+          { label: 'Живые', value: netActiveCount, color: 'text-emerald-400', icon: UserCheck, sub: 'Не забанены + Активны', active: filter === 'active', onClick: () => setFilter('active') },
           { label: 'Ливы', value: blockedByMeCount, color: 'text-rose-500', icon: UserMinus, sub: 'Заблокировали бота', active: filter === 'unsubscribed', onClick: () => setFilter('unsubscribed') },
           { label: 'Бан-лист', value: bannedCount, color: 'text-amber-500', icon: Ban, sub: 'Заблокированы вами', active: filter === 'banned', onClick: () => setFilter('banned') },
         ].map((stat, i) => (
@@ -160,7 +162,7 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
         </div>
       </div>
       
-      <div className="bg-[#111] border border-zinc-800 rounded-[2.5rem] overflow-hidden">
+      <div className="bg-[#111] border border-zinc-800 rounded-[2.5rem] overflow-hidden shadow-2xl">
         <div className="p-6 border-b border-zinc-800 space-y-4 bg-zinc-900/20">
           <div className="flex justify-between items-center">
             <h3 className="text-xs font-bold text-white uppercase flex items-center gap-2">
@@ -195,7 +197,7 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
           </div>
         </div>
 
-        <div className="max-h-[600px] overflow-y-auto no-scrollbar">
+        <div className="max-h-[600px] overflow-y-auto no-scrollbar bg-black/40">
           {filteredUsers.length === 0 ? (
             <div className="p-20 text-center space-y-3 opacity-30">
                 <Users className="w-12 h-12 mx-auto" />
@@ -211,8 +213,8 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
                   <div>
                     <div className="flex items-center gap-2">
                         <p className="text-sm font-bold text-white">{u.first_name || "Без имени"}</p>
-                        {!u.is_active && <span className="text-[7px] bg-rose-500/10 text-rose-500 px-1.5 py-0.5 rounded font-black uppercase">Blocked Bot</span>}
-                        {u.is_banned && <span className="text-[7px] bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded font-black uppercase">Banned</span>}
+                        {!u.is_active && <span className="text-[7px] bg-rose-500/10 text-rose-500 px-1.5 py-0.5 rounded font-black uppercase tracking-widest">Bot Blocked</span>}
+                        {u.is_banned && <span className="text-[7px] bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded font-black uppercase tracking-widest">Banned</span>}
                     </div>
                     <div className="text-[10px] text-zinc-500 font-mono mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1">
                         <span className="flex items-center gap-1"><Fingerprint className="w-3 h-3 opacity-40" /> #{u.id.toString().slice(-6).toUpperCase()}</span>
