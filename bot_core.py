@@ -35,33 +35,45 @@ def get_anon_id(user_id: int) -> str:
 
 def format_admin_header(template: str, m: Message, settings: dict, is_first: bool = False, btn_text: str = "") -> str:
     """Формирование заголовка сообщения для администратора."""
-    if is_first or btn_text:
-        if not template:
-            template = "👤 <b>{{name}}</b>\n🆔 <code>{{id}}</code>\n💬 {{text}}"
-        
-        res = template.replace("{{id}}", str(m.from_user.id))
-        res = res.replace("{{name}}", m.from_user.full_name or "User")
-        res = res.replace("{{username}}", f"@{m.from_user.username}" if m.from_user.username else "none")
+    is_anon = settings.get('anonymousTopics', False)
+    anon_id = get_anon_id(m.from_user.id)
+    
+    # Если это первый контакт или кнопка И задан шаблон уведомления
+    if (is_first or btn_text) and template:
+        res = template
+        if is_anon:
+            res = res.replace("{{id}}", f"#{anon_id}")
+            res = res.replace("{{name}}", "Аноним")
+            res = res.replace("{{username}}", "@hidden")
+        else:
+            res = res.replace("{{id}}", str(m.from_user.id))
+            res = res.replace("{{name}}", m.from_user.full_name or "User")
+            res = res.replace("{{username}}", f"@{m.from_user.username}" if m.from_user.username else "none")
+            
         res = res.replace("{{button}}", btn_text or "—")
         res = res.replace("{{text}}", m.text or m.caption or "[Медиа]")
         
         prefix = "🆕 <b>НОВОЕ ОБРАЩЕНИЕ</b>" if not btn_text else f"📩 <b>ЗАЯВКА: {btn_text}</b>"
         return f"{prefix}\n\n{res}\n\n"
 
+    # Стандартная компактная шапка (используется если шаблон пуст или это обычное сообщение)
     parts = []
     show_name = settings.get('showHeaderName', True)
     show_user = settings.get('showHeaderUsername', True)
     show_id = settings.get('showHeaderId', True)
 
-    if show_name: 
-        parts.append(f"<b>{m.from_user.full_name}</b>")
-    if show_user and m.from_user.username: 
-        parts.append(f"(@{m.from_user.username})")
-    if show_id: 
-        parts.append(f"ID: <code>{m.from_user.id}</code>")
+    if is_anon:
+        parts.append(f"👤 <b>Аноним #{anon_id}</b>")
+    else:
+        if show_name: 
+            parts.append(f"<b>{m.from_user.full_name}</b>")
+        if show_user and m.from_user.username: 
+            parts.append(f"(@{m.from_user.username})")
+        if show_id: 
+            parts.append(f"ID: <code>{m.from_user.id}</code>")
     
     if not parts:
-        parts.append(f"👤 User <code>#{get_anon_id(m.from_user.id)}</code>")
+        parts.append(f"👤 User <code>#{anon_id}</code>")
         
     return f"📩 {' | '.join(parts)}\n\n"
 
@@ -97,12 +109,7 @@ class BotInstance:
         self.refresh_config(config_data)
 
     def refresh_config(self, data: dict):
-        # Если объект пришел расплющенным (от API), данные могут быть в корне.
-        # Если объект сырой из БД, они в ключе 'config'.
-        # Мы объединяем их, отдавая приоритет корню (самым свежим данным).
-        
         inner_config = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
-        # Создаем плоский словарь со всеми полями
         flat_data = {**inner_config, **data}
         
         raw_admin = flat_data.get('adminChatId')
@@ -117,13 +124,11 @@ class BotInstance:
         self.welcome_message = flat_data.get('welcomeMessage', 'Привет!')
         self.settings = flat_data.get('settings', {})
         
-        # Обновляем важные флаги
         self.use_topics = self.settings.get('useTopics', False)
         self.topic_per_request = self.settings.get('topicPerRequest', False)
         self.admin_template = self.settings.get('adminMessageTemplate', "")
         self.auto_ban_threshold = int(self.settings.get('autoBanThreshold', 0))
 
-        # Синхронизация списка пользователей (чтобы не затирать локальный кеш)
         new_users = flat_data.get('connectedUsers', [])
         if not self.connected_users:
             self.connected_users = new_users
@@ -144,7 +149,7 @@ class BotInstance:
             "totalMessages": 0, "incomingToday": 0, "outgoingToday": 0, "history": []
         }
         
-        logger.info(f"[{self.bot_id}] Sync Done. Topics={self.use_topics}, PerReq={self.topic_per_request}, Admin={self.admin_id}")
+        logger.info(f"[{self.bot_id}] Sync Done. Topics={self.use_topics}, Admin={self.admin_id}")
 
     async def remote_sync_poller(self):
         async with httpx.AsyncClient() as client:
@@ -170,12 +175,10 @@ class BotInstance:
                     if action == "msg":
                         await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=data, headers=headers)
                     elif action == "config":
-                        # Перед сохранением берем актуальный конфиг из БД, чтобы не затереть настройки
                         res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
                         if res.status_code == 200 and res.json():
                             db_bot = res.json()[0]
                             db_config = db_bot.get("config", {})
-                            # Обновляем только те поля, за которые отвечает бот (юзеры и стата)
                             new_config = {
                                 **db_config,
                                 "connectedUsers": self.connected_users,
@@ -243,7 +246,12 @@ class BotInstance:
             return user["last_topic_id"]
         
         try:
-            topic_name = f"{user['first_name']} [{user['id']}]"
+            is_anon = self.settings.get('anonymousTopics', False)
+            if is_anon:
+                topic_name = f"User #{get_anon_id(user['id'])}"
+            else:
+                topic_name = f"{user['first_name']} [{user['id']}]"
+                
             topic = await self.bot.create_forum_topic(self.admin_id, topic_name)
             user["last_topic_id"] = topic.message_thread_id
             self.last_header_time[user['id']] = 0 
@@ -257,10 +265,7 @@ class BotInstance:
     async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = ""):
         if not self.admin_id: return
         
-        # Форсим новый топик, если включена настройка "топик на каждый запрос"
         force_new_topic = self.topic_per_request and (btn_text != "" or is_first)
-        
-        # Определяем thread_id только если топики включены
         thread_id = None
         if self.use_topics:
             thread_id = await self.ensure_topic(user, force_new=force_new_topic)
@@ -269,6 +274,8 @@ class BotInstance:
         last_sent = self.last_header_time.get(user['id'], 0)
         
         header = ""
+        # Показываем уведомление о первом контакте/кнопке только если задан шаблон.
+        # Если шаблон пуст, просто приклеиваем стандартную компактную шапку.
         if is_first or btn_text or (now - last_sent) > 600:
             header = format_admin_header(self.admin_template, m, self.settings, is_first, btn_text)
             if header: self.last_header_time[user['id']] = now
@@ -291,7 +298,7 @@ class BotInstance:
                 self.msg_map[sent.message_id] = user['id']
                 if len(self.msg_map) > 5000: self.msg_map.pop(next(iter(self.msg_map)))
         except Exception as e:
-            logger.error(f"Forward error (topic {thread_id}): {e}")
+            logger.error(f"Forward error: {e}")
 
     async def handle_admin_reply(self, m: Message):
         target_id = None
