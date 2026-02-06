@@ -1,8 +1,7 @@
-
 import React, { useState, useEffect } from 'react';
 import { User } from '../types';
 import { api } from '../services/apiService';
-import { Mail, Lock, User as UserIcon, ShieldCheck, ArrowLeft, RefreshCw } from 'lucide-react';
+import { Mail, Lock, User as UserIcon, ShieldCheck, ArrowLeft, RefreshCw, ExternalLink } from 'lucide-react';
 
 interface AuthProps {
   onLogin: (user: User) => void;
@@ -19,6 +18,9 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+
+  // Ссылка на документы в твоем репозитории
+  const GITHUB_RAW_URL = "https://raw.githubusercontent.com/Pon157/bot-builder/main";
 
   const checkServer = async () => {
     setServerStatus('checking');
@@ -225,6 +227,56 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
                 value={code} 
                 onChange={e => setCode(e.target.value)} 
               />
+              <div className="relative">
+                <Lock className="absolute left-4 top-4 w-4 h-4 text-zinc-600" />
+                <input type="password" required className="w-full bg-black border border-zinc-800 rounded-2xl p-4 pl-12 text-sm text-white focus:ring-1 focus:ring-blue-500 outline-none" placeholder="Новый пароль" value={password} onChange={e => setPassword(e.target.value)} />
+              </div>
+              <button type="submit" disabled={loading} className="w-full bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-black py-4 rounded-2xl transition-all uppercase tracking-widest text-xs">
+                {loading ? 'Обновление...' : 'Сменить пароль'}
+              </button>
+            </form>
+          )}
+        </div>
+
+        {/* НИЖНИЙ БЛОК: СТАТУС И ЮРИДИЧЕСКАЯ ИНФОРМАЦИЯ */}
+        <div className="pt-6 border-t border-zinc-800/50 space-y-5">
+          <div className="flex justify-center">
+             <button onClick={checkServer} className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.2em] text-zinc-700 hover:text-zinc-400 transition-colors">
+                <RefreshCw className={`w-3 h-3 ${serverStatus === 'checking' ? 'animate-spin' : ''}`} /> Обновить статус
+             </button>
+          </div>
+
+          <div className="flex flex-col items-center gap-3">
+            <div className="flex items-center gap-4">
+              <a 
+                href={`${GITHUB_RAW_URL}/user_agreement.pdf`} 
+                target="_blank" 
+                rel="noreferrer"
+                className="text-[10px] font-bold text-zinc-500 hover:text-blue-500 transition-colors flex items-center gap-1"
+              >
+                Соглашение
+              </a>
+              <span className="w-1 h-1 bg-zinc-800 rounded-full"></span>
+              <a 
+                href={`${GITHUB_RAW_URL}/privacy_policy.pdf`} 
+                target="_blank" 
+                rel="noreferrer"
+                className="text-[10px] font-bold text-zinc-500 hover:text-blue-500 transition-colors flex items-center gap-1"
+              >
+                Конфиденциальность
+              </a>
+            </div>
+            <p className="text-[9px] text-zinc-600 text-center leading-relaxed max-w-[240px]">
+              Продолжая работу, вы принимаете условия использования сервиса и обработки данных.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Auth;
               <div className="relative">
                 <Lock className="absolute left-4 top-4 w-4 h-4 text-zinc-600" />
                 <input type="password" required className="w-full bg-black border border-zinc-800 rounded-2xl p-4 pl-12 text-sm text-white focus:ring-1 focus:ring-blue-500 outline-none" placeholder="Новый пароль" value={password} onChange={e => setPassword(e.target.value)} />
