@@ -74,27 +74,30 @@ PERIODS = {
 # 3. ФУНКЦИИ РАБОТЫ С БД (SUPABASE)
 # ==========================================
 
-def get_user_currency(user_id: int):
-    """Получает валюту пользователя из таблицы users"""
+# --- Функции для НОВОЙ таблицы bot_users ---
+
+def get_user_currency(uid: int):
     try:
-        res = supabase.table("users").select("currency").eq("id", str(user_id)).execute()
-        if res.data and 'currency' in res.data[0] and res.data[0]['currency']:
+        # Ищем в новой таблице bot_users
+        res = supabase.table("bot_users").select("currency").eq("id", str(uid)).execute()
+        if res.data and 'currency' in res.data[0]:
             return res.data[0]['currency']
         return "RUB"
     except Exception as e:
-        logger.error(f"DB Get Error: {e}")
+        logger.error(f"Ошибка получения валюты: {e}")
         return "RUB"
 
-def sync_user(user_id: int, username: str, currency: str = None):
-    """Создает или обновляет данные пользователя (upsert)"""
+def set_user_currency(uid: int, code: str, username: str = None):
     try:
-        data = {"id": str(user_id), "username": username}
-        if currency:
-            data["currency"] = currency
-        supabase.table("users").upsert(data).execute()
+        # Пишем в новую таблицу bot_users
+        data = {"id": str(uid), "currency": code}
+        if username: 
+            data["username"] = username
+        
+        # upsert обновит валюту или создаст запись, если юзера еще нет
+        supabase.table("bot_users").upsert(data).execute()
     except Exception as e:
-        logger.error(f"DB Sync Error: {e}")
-
+        logger.error(f"Ошибка сохранения в bot_users: {e}")
 def calculate_price(months: int, currency_code: str):
     """Считает цену и возвращает красивую строку"""
     curr = CURRENCIES.get(currency_code, CURRENCIES["RUB"])
@@ -132,12 +135,12 @@ async def main():
         else:
             await message.answer(text, reply_markup=kb.as_markup(), parse_mode="HTML")
 
-    @dp.message(Command("start"))
-    async def cmd_start(m: Message):
-        """Регистрация и показ меню"""
-        sync_user(m.from_user.id, m.from_user.username)
-        await send_main_menu(m, m.from_user.id)
-
+@dp.message(Command("start"))
+async def cmd_start(m: Message):
+    # Регистрируем/обновляем юзера в НОВОЙ таблице
+    set_user_currency(m.from_user.id, get_user_currency(m.from_user.id), m.from_user.username)
+    await show_menu(m, m.from_user.id)
+    
     @dp.callback_query(F.data == "change_currency")
     async def cmd_change_curr(cb: CallbackQuery):
         """Меню выбора валюты"""
@@ -147,13 +150,13 @@ async def main():
         kb.adjust(3)
         await cb.message.edit_text("🌍 <b>Выберите вашу валюту:</b>", reply_markup=kb.as_markup(), parse_mode="HTML")
 
-    @dp.callback_query(F.data.startswith("set_curr_"))
-    async def cmd_set_curr(cb: CallbackQuery):
-        """Сохранение выбранной валюты"""
-        new_curr = cb.data.split("_")[2]
-        sync_user(cb.from_user.id, cb.from_user.username, currency=new_curr)
-        await cb.answer(f"Установлено: {new_curr}")
-        await send_main_menu(cb.message, cb.from_user.id, is_edit=True)
+@dp.callback_query(F.data.startswith("set_"))
+async def save_curr(cb: CallbackQuery):
+    code = cb.data.split("_")[1]
+    # Сохраняем валюту в новую таблицу
+    set_user_currency(cb.from_user.id, code, cb.from_user.username)
+    await cb.answer(f"Валюта: {code}")
+    await show_menu(cb.message, cb.from_user.id, edit=True)
 
     @dp.callback_query(F.data.startswith("buy_"))
     async def cmd_buy(cb: CallbackQuery):
