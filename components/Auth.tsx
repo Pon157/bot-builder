@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User } from '../types';
 import { api } from '../services/apiService';
-import { Mail, Lock, User as UserIcon, ShieldCheck, ArrowLeft, RefreshCw, ExternalLink } from 'lucide-react';
+import { Mail, Lock, User as UserIcon, ShieldCheck, ArrowLeft, RefreshCw } from 'lucide-react';
 
 interface AuthProps {
   onLogin: (user: User) => void;
@@ -19,7 +19,6 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const [loading, setLoading] = useState(false);
   const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'offline'>('checking');
 
-  // Ссылка на документы в твоем репозитории
   const GITHUB_RAW_URL = "https://raw.githubusercontent.com/Pon157/bot-builder/main";
 
   const checkServer = async () => {
@@ -28,7 +27,9 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     setServerStatus(isOnline ? 'online' : 'offline');
   };
 
-  useEffect(() => { checkServer(); }, []);
+  useEffect(() => {
+    checkServer();
+  }, []);
 
   const handleRequestVerification = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,12 +53,10 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     setLoading(true);
     setError('');
     try {
-        const user = await api.verifyAndRegister({ email, code, password, username });
-        if (user) {
-            onLogin(user);
-        }
+      const user = await api.verifyAndRegister({ email, code, password, username });
+      if (user) onLogin(user);
     } catch (err: any) {
-        setError(err.message || 'Ошибка регистрации');
+      setError(err.message || 'Ошибка регистрации');
     }
     setLoading(false);
   };
@@ -67,10 +66,10 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     setLoading(true);
     setError('');
     try {
-        const user = await api.login(email, password);
-        if (user) onLogin(user);
+      const user = await api.login(email, password);
+      if (user) onLogin(user);
     } catch (err: any) {
-        setError(err.message || 'Ошибка входа');
+      setError(err.message || 'Ошибка входа');
     }
     setLoading(false);
   };
@@ -80,11 +79,11 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     setLoading(true);
     setError('');
     try {
-        const result = await api.forgotPassword(email);
-        if (result === true) setMode('reset');
-        else setError(typeof result === 'string' ? result : 'Ошибка');
+      const result = await api.forgotPassword(email);
+      if (result === true) setMode('reset');
+      else setError(typeof result === 'string' ? result : 'Ошибка');
     } catch (err: any) {
-        setError(err.message || 'Ошибка сервера');
+      setError(err.message || 'Ошибка сервера');
     }
     setLoading(false);
   };
@@ -94,13 +93,13 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     setLoading(true);
     setError('');
     try {
-        const success = await api.resetPassword({ email, code, newPassword: password });
-        if (success) {
-            alert('Пароль успешно изменен!');
-            setMode('login');
-        }
+      const success = await api.resetPassword({ email, code, newPassword: password });
+      if (success) {
+        alert('Пароль успешно изменен!');
+        setMode('login');
+      }
     } catch (err: any) {
-        setError(err.message || 'Неверный код или ошибка сервера');
+      setError(err.message || 'Неверный код или ошибка сервера');
     }
     setLoading(false);
   };
@@ -183,15 +182,7 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
           {mode === 'verify' && (
             <form className="space-y-4 text-center" onSubmit={handleVerifyAndRegister}>
               <p className="text-zinc-500 text-xs mb-4">Мы отправили код на <b>{email.toLowerCase()}</b>. Введите его ниже.</p>
-              <input 
-                type="text" 
-                required 
-                maxLength={6} 
-                className="w-full bg-black border border-blue-500/50 rounded-2xl p-6 text-2xl font-black text-center text-white tracking-[0.5em] focus:ring-2 focus:ring-blue-500 outline-none" 
-                placeholder="000000" 
-                value={code} 
-                onChange={e => setCode(e.target.value)} 
-              />
+              <input type="text" required maxLength={6} className="w-full bg-black border border-blue-500/50 rounded-2xl p-6 text-2xl font-black text-center text-white tracking-[0.5em] focus:ring-2 focus:ring-blue-500 outline-none" placeholder="000000" value={code} onChange={e => setCode(e.target.value)} />
               <button type="submit" disabled={loading} className="w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-black py-4 rounded-2xl transition-all uppercase tracking-widest text-xs">
                 {loading ? 'Проверка...' : 'Завершить регистрацию'}
               </button>
@@ -218,15 +209,7 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
           {mode === 'reset' && (
             <form className="space-y-4" onSubmit={handleResetPassword}>
               <p className="text-zinc-500 text-xs text-center mb-4">Код сброса отправлен на почту.</p>
-              <input 
-                type="text" 
-                required 
-                maxLength={6} 
-                className="w-full bg-black border border-red-500/30 rounded-2xl p-4 text-xl font-black text-center text-white tracking-[0.3em] outline-none" 
-                placeholder="Код из письма" 
-                value={code} 
-                onChange={e => setCode(e.target.value)} 
-              />
+              <input type="text" required maxLength={6} className="w-full bg-black border border-red-500/30 rounded-2xl p-4 text-xl font-black text-center text-white tracking-[0.3em] outline-none" placeholder="Код из письма" value={code} onChange={e => setCode(e.target.value)} />
               <div className="relative">
                 <Lock className="absolute left-4 top-4 w-4 h-4 text-zinc-600" />
                 <input type="password" required className="w-full bg-black border border-zinc-800 rounded-2xl p-4 pl-12 text-sm text-white focus:ring-1 focus:ring-blue-500 outline-none" placeholder="Новый пароль" value={password} onChange={e => setPassword(e.target.value)} />
@@ -238,7 +221,6 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
           )}
         </div>
 
-        {/* НИЖНИЙ БЛОК: СТАТУС И ЮРИДИЧЕСКАЯ ИНФОРМАЦИЯ */}
         <div className="pt-6 border-t border-zinc-800/50 space-y-5">
           <div className="flex justify-center">
              <button onClick={checkServer} className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.2em] text-zinc-700 hover:text-zinc-400 transition-colors">
@@ -248,50 +230,14 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
 
           <div className="flex flex-col items-center gap-3">
             <div className="flex items-center gap-4">
-              <a 
-                href={`${GITHUB_RAW_URL}/user_agreement.pdf`} 
-                target="_blank" 
-                rel="noreferrer"
-                className="text-[10px] font-bold text-zinc-500 hover:text-blue-500 transition-colors flex items-center gap-1"
-              >
-                Соглашение
-              </a>
+              <a href={`${GITHUB_RAW_URL}/user_agreement.pdf`} target="_blank" rel="noreferrer" className="text-[10px] font-bold text-zinc-500 hover:text-blue-500 transition-colors"> Соглашение </a>
               <span className="w-1 h-1 bg-zinc-800 rounded-full"></span>
-              <a 
-                href={`${GITHUB_RAW_URL}/privacy_policy.pdf`} 
-                target="_blank" 
-                rel="noreferrer"
-                className="text-[10px] font-bold text-zinc-500 hover:text-blue-500 transition-colors flex items-center gap-1"
-              >
-                Конфиденциальность
-              </a>
+              <a href={`${GITHUB_RAW_URL}/privacy_policy.pdf`} target="_blank" rel="noreferrer" className="text-[10px] font-bold text-zinc-500 hover:text-blue-500 transition-colors"> Конфиденциальность </a>
             </div>
             <p className="text-[9px] text-zinc-600 text-center leading-relaxed max-w-[240px]">
               Продолжая работу, вы принимаете условия использования сервиса и обработки данных.
             </p>
           </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default Auth;
-              <div className="relative">
-                <Lock className="absolute left-4 top-4 w-4 h-4 text-zinc-600" />
-                <input type="password" required className="w-full bg-black border border-zinc-800 rounded-2xl p-4 pl-12 text-sm text-white focus:ring-1 focus:ring-blue-500 outline-none" placeholder="Новый пароль" value={password} onChange={e => setPassword(e.target.value)} />
-              </div>
-              <button type="submit" disabled={loading} className="w-full bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-black py-4 rounded-2xl transition-all uppercase tracking-widest text-xs">
-                {loading ? 'Обновление...' : 'Сменить пароль'}
-              </button>
-            </form>
-          )}
-        </div>
-
-        <div className="pt-6 border-t border-zinc-800/50 flex justify-center">
-             <button onClick={checkServer} className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.2em] text-zinc-700 hover:text-zinc-400 transition-colors">
-                <RefreshCw className={`w-3 h-3 ${serverStatus === 'checking' ? 'animate-spin' : ''}`} /> Обновить статус
-             </button>
         </div>
       </div>
     </div>
