@@ -58,7 +58,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ==========================================
 # 2. ЭКОНОМИКА И КОНСТАНТЫ
 # ==========================================
-BASE_PRICE_RUB = 100 
+BASE_PRICE_RUB = 89.9
 
 CURRENCIES = {
     "RUB": {"symbol": "₽", "rate": 1.0},
