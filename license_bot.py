@@ -140,30 +140,32 @@ async def cmd_start(m: Message):
     # Регистрируем/обновляем юзера в НОВОЙ таблице
     set_user_currency(m.from_user.id, get_user_currency(m.from_user.id), m.from_user.username)
     await show_menu(m, m.from_user.id)
-    
-    @dp.callback_query(F.data == "change_currency")
-    async def cmd_change_curr(cb: CallbackQuery):
-        """Меню выбора валюты"""
-        kb = InlineKeyboardBuilder()
-        for code in CURRENCIES.keys():
-            kb.add(InlineKeyboardButton(text=code, callback_data=f"set_curr_{code}"))
-        kb.adjust(3)
-        await cb.message.edit_text("🌍 <b>Выберите вашу валюту:</b>", reply_markup=kb.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(F.data == "change_currency")
+async def cmd_change_curr(cb: CallbackQuery):
+    """Меню выбора валюты"""
+    kb = InlineKeyboardBuilder()
+    for code in CURRENCIES.keys():
+        # Важно: используем простой формат set_{code} для легкости парсинга
+        kb.add(InlineKeyboardButton(text=code, callback_data=f"set_{code}"))
+    kb.adjust(3)
+    await cb.message.edit_text("🌍 <b>Выберите вашу валюту:</b>", reply_markup=kb.as_markup(), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("set_"))
 async def save_curr(cb: CallbackQuery):
+    # Теперь split("_")[1] четко достанет код валюты (RUB, USD и т.д.)
     code = cb.data.split("_")[1]
-    # Сохраняем валюту в новую таблицу
     set_user_currency(cb.from_user.id, code, cb.from_user.username)
     await cb.answer(f"Валюта: {code}")
     await show_menu(cb.message, cb.from_user.id, edit=True)
 
-    @dp.callback_query(F.data.startswith("buy_"))
-    async def cmd_buy(cb: CallbackQuery):
-        """Экран оплаты конкретного тарифа"""
-        months = int(cb.data.split("_")[1])
-        currency = get_user_currency(cb.from_user.id)
-        price_str = calculate_price(months, currency)
+@dp.callback_query(F.data.startswith("buy_"))
+async def cmd_buy(cb: CallbackQuery):
+    """Экран оплаты конкретного тарифа"""
+    # Парсим ID периода (1, 3 или 12)
+    months = int(cb.data.split("_")[1])
+    currency = get_user_currency(cb.from_user.id)
+    price_str = calculate_price(months, currency)
         
         kb = InlineKeyboardBuilder()
         kb.row(InlineKeyboardButton(text="💳 Перейти к оплате", url="https://www.donationalerts.com/r/dialoge_engine"))
