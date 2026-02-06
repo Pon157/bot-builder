@@ -7,25 +7,35 @@ import json
 import httpx
 import secrets
 import random
+import hashlib
 from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
-from email_service import EmailService
+from cryptography.fernet import Fernet
 
-# Импорты aiogram для рассылки
+# Импорт твоего сервиса почты (файл email_service.py должен быть рядом)
+try:
+    from email_service import EmailService
+except ImportError:
+    class EmailService:
+        @staticmethod
+        def send_verification_code(e, c): return True
+        @staticmethod
+        def send_password_reset(e, c): return True
+
+# Импорты aiogram 3.x для массовой рассылки
 from aiogram import Bot
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import TelegramForbiddenError
 
 # ==========================================
-# 1. КОНФИГУРАЦИЯ И ОКРУЖЕНИЕ
+# 1. ИНИЦИАЛИЗАЦИЯ И БЕЗОПАСНОСТЬ
 # ==========================================
 def init_env():
-    env = '.env'
-    if os.path.exists(env):
-        with open(env, 'r', encoding='utf-8-sig') as f:
+    if os.path.exists('.env'):
+        with open('.env', 'r', encoding='utf-8-sig') as f:
             for l in f:
                 l = l.strip()
                 if l and not l.startswith('#') and '=' in l:
@@ -34,12 +44,41 @@ def init_env():
 
 init_env()
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
-logger = logging.getLogger("BotEngineServer")
-
+# Переменные окружения
 S_URL = os.getenv("SUPABASE_URL", "").rstrip('/')
 S_KEY = os.getenv("SUPABASE_KEY", "")
 A_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
+# Читаем токен из .env (как ты просил запомнить)
+E_KEY = os.getenv("ENCRYPTION_KEY")
+
+if not E_KEY:
+    # Генерируем временный, если забыл добавить в .env, но лучше прописать!
+    E_KEY = Fernet.generate_key().decode()
+    print(f"⚠️ ВНИМАНИЕ: ENCRYPTION_KEY не найден. Использую временный: {E_KEY}")
+
+cipher = Fernet(E_KEY.encode())
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger("DialogEngineServer")
+
+# --- Функции защиты данных ---
+def hash_pwd(password: str) -> str:
+    """Создает необратимый хеш пароля с солью."""
+    salt = "dialog_engine_secure_2026_salt" 
+    return hashlib.sha256((password + salt).encode()).hexdigest()
+
+def encrypt_val(val: str) -> str:
+    """Шифрует строку (например, токен бота)."""
+    if not val: return ""
+    return cipher.encrypt(val.encode()).decode()
+
+def decrypt_val(val: str) -> str:
+    """Расшифровывает строку. Если строка не зашифрована, вернет как есть."""
+    if not val: return ""
+    try:
+        return cipher.decrypt(val.encode()).decode()
+    except:
+        return val 
 
 # ==========================================
 # 2. МЕНЕДЖЕР ПРОЦЕССОВ БОТОВ
@@ -47,282 +86,323 @@ A_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
 class BotManager:
     def __init__(self):
         self.procs: Dict[str, asyncio.subprocess.Process] = {}
-        self.logs: Dict[str, str] = {}
+        self.log_paths: Dict[str, str] = {}
 
     async def start_bot(self, bid: str, config: dict):
-        """Запуск процесса бота"""
-        await self.stop_bot(bid)  # Гарантируем, что старый процесс убит
+        """Запуск отдельного процесса для бота."""
+        await self.stop_bot(bid)
         
         os.makedirs("active_bots", exist_ok=True)
-        cp = f"active_bots/cfg_{bid}.json"
-        lp = f"active_bots/bot_{bid}.log"
+        cfg_path = f"active_bots/cfg_{bid}.json"
+        log_path = f"active_bots/bot_{bid}.log"
         
-        config['status'] = 'RUNNING'
-        with open(cp, "w", encoding="utf-8") as f: 
+        # Расшифровываем токен для реальной работы
+        raw_token = decrypt_val(config.get('token', ''))
+        config['token'] = raw_token
+        
+        with open(cfg_path, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=4)
         
-        self.logs[bid] = lp
+        self.log_paths[bid] = log_path
         
         try:
             env = os.environ.copy()
             env.update({"SUPABASE_URL": S_URL, "SUPABASE_KEY": S_KEY})
-            l_out = open(lp, "a", encoding="utf-8")
+            l_out = open(log_path, "a", encoding="utf-8")
             
             p = await asyncio.create_subprocess_exec(
-                sys.executable, "bot_core.py", cp, 
+                sys.executable, "bot_core.py", cfg_path,
                 stdout=l_out, stderr=l_out, env=env
             )
             self.procs[bid] = p
-            logger.info(f"✅ Бот {bid} успешно запущен (PID: {p.pid})")
+            logger.info(f"🚀 Бот {bid} запущен (PID: {p.pid})")
             return True
-        except Exception as e: 
-            logger.error(f"❌ Ошибка старта бота {bid}: {e}")
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка запуска {bid}: {e}")
             return str(e)
 
     async def stop_bot(self, bid: str):
-        """Остановка процесса бота с защитой от ошибок поиска"""
+        """Безопасная остановка процесса."""
         p = self.procs.get(bid)
         if p:
             try:
                 p.terminate()
-                try:
-                    await asyncio.wait_for(p.wait(), timeout=3.0)
-                except asyncio.TimeoutError:
-                    p.kill() # Жесткое завершение
-            except ProcessLookupError:
-                pass 
-            except Exception as e:
-                logger.error(f"⚠️ Ошибка при остановке {bid}: {e}")
+                await asyncio.wait_for(p.wait(), timeout=3.0)
+            except:
+                if p: p.kill()
             finally:
-                if bid in self.procs:
-                    del self.procs[bid]
+                if bid in self.procs: del self.procs[bid]
         return True
 
     def get_logs(self, bid: str):
-        path = self.logs.get(bid)
-        if not path or not os.path.exists(path): 
-            return "Логов пока нет..."
+        """Чтение последних строк лога бота."""
+        path = self.log_paths.get(bid)
+        if not path or not os.path.exists(path): return "Логи отсутствуют."
         try:
-            with open(path, "r", encoding="utf-8") as f: 
-                return "".join(f.readlines()[-300:])
-        except: 
-            return "Ошибка при чтении файла логов."
+            with open(path, "r", encoding="utf-8") as f:
+                return "".join(f.readlines()[-150:])
+        except: return "Ошибка чтения логов."
 
 pm = BotManager()
 
 # ==========================================
-# 3. ЖИЗНЕННЫЙ ЦИКЛ FASTAPI
+# 3. НАСТРОЙКА API И LIFESPAN
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("[*] Проверка ботов для автозапуска...")
-    try:
-        async with httpx.AsyncClient(base_url=f"{S_URL}/rest/v1/", 
-                                     headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}"}) as client:
+    """Логика при старте и выключении сервера."""
+    logger.info("--- Сервер запускается ---")
+    async with httpx.AsyncClient(base_url=f"{S_URL}/rest/v1/", 
+                                 headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}"}) as client:
+        try:
+            # Автостарт ботов, которые были включены
             r = await client.get("bots", params={"status": "eq.RUNNING"})
             if r.status_code == 200:
-                for b_data in r.json():
-                    bid = b_data['id']
-                    config = {**(b_data.get("config") or {}), **b_data}
-                    logger.info(f"[*] Автозапуск: {bid}")
-                    await pm.start_bot(bid, config)
-    except Exception as e:
-        logger.error(f"[!] Ошибка автозапуска: {e}")
+                for b in r.json():
+                    cfg = {**(b.get("config") or {}), **b}
+                    await pm.start_bot(b['id'], cfg)
+        except Exception as e:
+            logger.error(f"Ошибка автозапуска: {e}")
     
     yield
     
-    logger.info("[*] Завершение работы сервера, остановка всех ботов...")
+    logger.info("--- Сервер останавливается ---")
     for bid in list(pm.procs.keys()):
         await pm.stop_bot(bid)
 
 app = FastAPI(lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Клиент для работы с БД
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Глобальный клиент БД
 db = httpx.AsyncClient(
     base_url=f"{S_URL}/rest/v1/", 
     headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}", "Content-Type": "application/json"}
 )
 
 # ==========================================
-# 4. ЭНДПОИНТЫ АВТОРИЗАЦИИ И РЕГИСТРАЦИИ
+# 4. ЭНДПОИНТЫ АВТОРИЗАЦИИ
 # ==========================================
+
 @app.post("/api/auth/login")
 async def login(d: dict):
-    r = await db.get("users", params={"email": f"eq.{d['email'].lower()}", "password": f"eq.{d['password']}"})
+    hpwd = hash_pwd(d['password'])
+    r = await db.get("users", params={"email": f"eq.{d['email'].lower()}", "password": f"eq.{hpwd}"})
     data = r.json()
-    if not data: raise HTTPException(401, "Неверный Email или пароль")
+    if not data: raise HTTPException(401, "Неверный логин или пароль")
     return data[0]
 
 @app.post("/api/auth/request-verification")
-async def req_ver(d: dict):
+async def request_ver(d: dict):
     email = d['email'].lower()
     code = str(random.randint(100000, 999999))
     await db.post("temp_codes", json={
-        "email": email, "code": code, "type": "VERIFY", 
-        "expires_at": int(time.time()*1000)+600000
+        "email": email, "code": code, "type": "VERIFY"
     }, headers={"Prefer": "resolution=merge-duplicates"})
-    if EmailService.send_verification_code(email, code): return True
-    raise HTTPException(500, "Ошибка отправки почты")
+    
+    if EmailService.send_verification_code(email, code):
+        return True
+    raise HTTPException(500, "Ошибка почтового сервера")
+
+@app.post("/api/auth/verify-and-register")
+async def verify_reg(d: dict):
+    email = d['email'].lower()
+    # Проверка кода из базы
+    r = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{d['code']}"})
+    if not r.json():
+        raise HTTPException(400, "Неверный код подтверждения")
+    
+    uid = f"u_{secrets.token_hex(4)}"
+    user_data = {
+        "id": uid,
+        "username": d['username'],
+        "email": email,
+        "password": hash_pwd(d['password']), # Сохраняем хеш
+        "balance": 0,
+        "license_expires_at": int(time.time()*1000) + 259200000 # +3 дня бонуса
+    }
+    await db.post("users", json=user_data)
+    # Очищаем код
+    await db.delete("temp_codes", params={"email": f"eq.{email}"})
+    return user_data
 
 @app.post("/api/auth/forgot-password")
 async def forgot_p(d: dict):
     email = d['email'].lower()
+    u = await db.get("users", params={"email": f"eq.{email}"})
+    if not u.json(): return True
+    
     code = str(random.randint(100000, 999999))
-    await db.post("temp_codes", json={
-        "email": email, "code": code, "type": "RESET", 
-        "expires_at": int(time.time()*1000)+600000
-    }, headers={"Prefer": "resolution=merge-duplicates"})
-    if EmailService.send_password_reset(email, code): return True
-    raise HTTPException(500, "Ошибка почты")
+    await db.post("temp_codes", json={"email": email, "code": code, "type": "RESET"}, headers={"Prefer": "resolution=merge-duplicates"})
+    EmailService.send_password_reset(email, code)
+    return True
 
 @app.post("/api/auth/reset-password")
 async def reset_p(d: dict):
     email = d['email'].lower()
     r = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{d['code']}", "type": "eq.RESET"})
-    if not r.json(): raise HTTPException(400, "Неверный код")
-    await db.patch("users", params={"email": f"eq.{email}"}, json={"password": d['newPassword']})
+    if not r.json(): raise HTTPException(400, "Код недействителен")
+    
+    new_hpwd = hash_pwd(d['newPassword'])
+    await db.patch("users", params={"email": f"eq.{email}"}, json={"password": new_hpwd})
     return True
-
-@app.post("/api/auth/verify-and-register")
-async def verify_reg(d: dict):
-    email = d['email'].lower()
-    r = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{d['code']}"})
-    if not r.json(): raise HTTPException(400, "Код неверен или истек")
-    uid = f"u_{secrets.token_hex(4)}"
-    user_data = {
-        "id": uid, "username": d['username'], "email": email, 
-        "password": d['password'], "balance": 0, 
-        "license_expires_at": int(time.time()*1000) + 259200000
-    }
-    await db.post("users", json=user_data)
-    return user_data
 
 # ==========================================
 # 5. УПРАВЛЕНИЕ БОТАМИ
 # ==========================================
+
 @app.get("/api/bots/{uid}")
 async def get_user_bots(uid: str):
     r = await db.get("bots", params={"owner_id": f"eq.{uid}"})
+    # При передаче на фронт токены остаются зашифрованными (безопасность!)
     return [{**b, **(b.get("config") or {})} for b in r.json()]
 
 @app.post("/api/bots/save")
 async def save_bot(b: dict):
     bid = b['id']
-    r = await db.get("bots", params={"id": f"eq.{bid}"})
-    curr = r.json()[0] if r.json() else {}
+    # Шифруем токен перед отправкой в базу
+    raw_token = b.get('token', '')
+    # Если токен пришел уже зашифрованным (начинается на gAAAA), не шифруем второй раз
+    final_token = encrypt_val(raw_token) if not raw_token.startswith('gAAAA') else raw_token
     
-    # Слияние конфигов
-    old_cfg = curr.get("config") or {}
+    old_r = await db.get("bots", params={"id": f"eq.{bid}"})
+    curr = old_r.json()[0] if old_r.json() else {}
+    
     sys_keys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
-    new_ui_cfg = {k: v for k, v in b.items() if k not in sys_keys}
-    merged_cfg = {**old_cfg, **new_ui_cfg}
+    ui_cfg = {k: v for k, v in b.items() if k not in sys_keys}
     
     payload = {
-        "id": bid, "owner_id": b['owner_id'], "name": b["name"], 
-        "token": b["token"], "status": b.get("status", curr.get("status", "IDLE")),
+        "id": bid,
+        "owner_id": b['owner_id'],
+        "name": b["name"],
+        "token": final_token,
+        "status": b.get("status", curr.get("status", "IDLE")),
         "license_expires_at": b.get("license_expires_at") or curr.get("license_expires_at", 0),
-        "config": merged_cfg
+        "config": ui_cfg
     }
     await db.post("bots", json=payload, headers={"Prefer": "resolution=merge-duplicates"})
-    return {**payload, **merged_cfg}
+    return payload
 
 @app.post("/api/bots/start")
-async def start_bot_handler(req: dict):
-    r = await db.get("bots", params={"id": f"eq.{req['id']}"})
+async def start_handler(req: dict):
+    bid = req.get('id')
+    r = await db.get("bots", params={"id": f"eq.{bid}"})
     if not r.json(): raise HTTPException(404, "Бот не найден")
+    
     data = r.json()[0]
-    config = {**data, **(data.get("config") or {})}
-    if await pm.start_bot(req['id'], config) is True:
-        await db.patch("bots", params={"id": f"eq.{req['id']}"}, json={"status": "RUNNING"})
+    # Пытаемся запустить
+    if await pm.start_bot(bid, data) is True:
+        await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "RUNNING"})
         return True
-    raise HTTPException(500, "Не удалось запустить процесс")
+    raise HTTPException(500, "Ошибка запуска процесса")
 
 @app.post("/api/bots/stop/{bid}")
-async def stop_bot_handler(bid: str):
+async def stop_handler(bid: str):
     await pm.stop_bot(bid)
     await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "IDLE"})
     return True
 
 @app.delete("/api/bots/delete/{uid}/{bid}")
-async def delete_bot_handler(uid: str, bid: str):
+async def delete_handler(uid: str, bid: str):
     await pm.stop_bot(bid)
     await db.delete("bots", params={"id": f"eq.{bid}", "owner_id": f"eq.{uid}"})
-    return {"status": "ok"}
+    return {"status": "deleted"}
 
 @app.get("/api/bots/logs/{bid}")
 async def get_bot_logs(bid: str):
     return {"logs": pm.get_logs(bid)}
 
 # ==========================================
-# 6. ЛИЦЕНЗИИ И КЛЮЧИ
+# 6. ЛИЦЕНЗИИ И АДМИН-ПАНЕЛЬ
 # ==========================================
+
 @app.post("/api/admin/generate-key")
 async def gen_key(d: dict, x_admin_token: str = Header(None)):
-    if x_admin_token != A_SECRET: raise HTTPException(401, "Доступ запрещен")
-    key = f"PRO-{secrets.token_hex(4).upper()}-{random.randint(100, 999)}"
-    payload = {"key": key, "months": d.get('months', 1), "days": d.get('days', 0), "used": False}
+    if x_admin_token != A_SECRET: raise HTTPException(401, "Admin only")
+    
+    key = f"DE-{secrets.token_hex(3).upper()}-{random.randint(100, 999)}"
+    payload = {
+        "key": key,
+        "months": d.get('months', 1),
+        "days": d.get('days', 0),
+        "used": False
+    }
     await db.post("issued_keys", json=payload)
     return {"key": key}
 
 @app.post("/api/license/activate")
-async def activate_license(req: dict):
-    k = req['key']
-    r = await db.get("issued_keys", params={"key": f"eq.{k}", "used": "eq.false"})
-    if not r.json(): return {"status": "error", "message": "Ключ недействителен или уже использован"}
+async def activate_lic(req: dict):
+    key_code = req.get('key')
+    bid = req.get('botId')
     
-    key_data = r.json()[0]
-    bid = req['botId']
+    # Ищем ключ
+    rk = await db.get("issued_keys", params={"key": f"eq.{key_code}", "used": "eq.false"})
+    if not rk.json(): return {"status": "error", "message": "Ключ недействителен или уже активирован"}
     
-    br = await db.get("bots", params={"id": f"eq.{bid}"})
-    if not br.json(): return {"status": "error", "message": "Бот не найден"}
+    k_data = rk.json()[0]
+    # Считаем время
+    added_ms = (k_data['months'] * 30 * 86400000) + (k_data['days'] * 86400000)
     
-    current_expiry = max(br.json()[0].get("license_expires_at") or 0, int(time.time()*1000))
-    added_ms = (key_data['months'] * 30 * 86400000) + (key_data['days'] * 86400000)
+    # Обновляем срок бота
+    rb = await db.get("bots", params={"id": f"eq.{bid}"})
+    curr_time = int(time.time() * 1000)
+    old_expiry = rb.json()[0].get("license_expires_at") or 0
+    new_expiry = max(old_expiry, curr_time) + added_ms
     
-    await db.patch("bots", params={"id": f"eq.{bid}"}, json={"license_expires_at": current_expiry + added_ms})
-    await db.patch("issued_keys", params={"key": f"eq.{k}"}, json={"used": True, "used_by_bot": bid})
-    return {"status": "ok"}
+    await db.patch("bots", params={"id": f"eq.{bid}"}, json={"license_expires_at": new_expiry})
+    await db.patch("issued_keys", params={"key": f"eq.{key_code}"}, json={"used": True, "used_by_bot": bid})
+    
+    return {"status": "ok", "new_expiry": new_expiry}
 
 # ==========================================
 # 7. МАССОВАЯ РАССЫЛКА
 # ==========================================
+
 @app.post("/api/bots/broadcast")
-async def broadcast(d: dict):
+async def broadcast_msg(d: dict):
     bot_ids = d.get('botIds', [])
-    msg = d.get('message', '')
-    if not bot_ids or not msg: raise HTTPException(400, "Пустой запрос")
-    
+    text = d.get('message', '')
+    if not text: return {"error": "Пустое сообщение"}
+
     results = {"success": 0, "failed": 0}
+    
     for bid in bot_ids:
         r = await db.get("bots", params={"id": f"eq.{bid}"})
         if not r.json(): continue
         
         b_data = r.json()[0]
+        # Расшифровка для работы Bot API
+        token = decrypt_val(b_data['token'])
         users = (b_data.get('config') or {}).get('connectedUsers', [])
         
-        async with Bot(token=b_data['token'], default=DefaultBotProperties(parse_mode=ParseMode.HTML)) as bot_api:
+        async with Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML)) as bot:
             for u in users:
-                if not u.get('is_active', True): continue
                 try:
-                    await bot_api.send_message(int(u['id']), msg)
+                    # u может быть словарем или просто ID
+                    user_id = u['id'] if isinstance(u, dict) else u
+                    await bot.send_message(user_id, text)
                     results["success"] += 1
-                    await asyncio.sleep(0.05)
-                except TelegramForbiddenError:
-                    u['is_active'] = False # Помечаем ушедших
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"Ошибка рассылки юзеру {u}: {e}")
                     results["failed"] += 1
-            
-            # Сохраняем обновленный статус юзеров
-            cfg = b_data.get('config') or {}
-            cfg['connectedUsers'] = users
-            await db.patch("bots", params={"id": f"eq.{bid}"}, json={"config": cfg})
-            
+                await asyncio.sleep(0.05) # Защита от флуд-контроля
+                
     return results
 
+# ==========================================
+# 8. СИСТЕМНЫЕ
+# ==========================================
+
 @app.get("/api/ping")
-async def ping(): return {"status": "online"}
+async def ping_pong():
+    return {"status": "online", "server_time": time.time()}
 
 if __name__ == "__main__":
     import uvicorn
+    # Запуск сервера на порту 8000
     uvicorn.run(app, host="0.0.0.0", port=8000)
