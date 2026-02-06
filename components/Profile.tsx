@@ -1,7 +1,17 @@
 import React, { useState } from 'react';
 import { User, BotConfig } from '../types';
 import { api } from '../services/apiService';
-import { Key, ShoppingCart, Bot as BotIcon, RefreshCw, FileText, ExternalLink } from 'lucide-react';
+import { 
+  Key, 
+  ShoppingCart, 
+  Bot as BotIcon, 
+  RefreshCw, 
+  FileText, 
+  ExternalLink, 
+  Megaphone, 
+  MessageCircle, 
+  LifeBuoy 
+} from 'lucide-react';
 
 interface ProfileProps {
   user: User;
@@ -15,7 +25,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
   const [isActivating, setIsActivating] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Замени Pon157 и bot-builder на свои реальные данные GitHub
+  // Ссылки на файлы в GitHub
   const GITHUB_RAW_URL = "https://raw.githubusercontent.com/Pon157/bot-builder/main";
 
   const refreshData = async () => {
@@ -67,6 +77,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 md:gap-8">
+        {/* Левая колонка */}
         <div className="lg:col-span-2 space-y-6 md:space-y-8">
           <section className="bg-[#121212] border border-zinc-800 rounded-[1.5rem] md:rounded-[2.5rem] p-5 md:p-8 shadow-2xl">
             <h3 className="text-lg md:text-xl font-bold text-white mb-6 flex items-center gap-2">
@@ -134,9 +145,10 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
           </section>
         </div>
 
+        {/* Правая колонка */}
         <div className="space-y-6">
-          {/* Блок Маркетплейса */}
-          <div className="bg-blue-600/10 border border-blue-500/20 rounded-3xl p-6 md:p-8 flex flex-col items-center text-center">
+          {/* Маркетплейс */}
+          <div className="bg-blue-600/10 border border-blue-500/20 rounded-3xl p-6 md:p-8 flex flex-col items-center text-center shadow-xl shadow-blue-900/5">
             <ShoppingCart className="w-10 h-10 md:w-12 md:h-12 text-blue-500 mb-4" />
             <h3 className="text-lg font-bold text-white mb-2">Маркетплейс</h3>
             <div className="text-xs text-zinc-400 mb-6 space-y-2">
@@ -149,35 +161,83 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
             <a href="https://t.me/dialogengine_bot" target="_blank" rel="noreferrer" className="w-full bg-white text-black font-black py-4 rounded-xl uppercase tracking-widest text-xs hover:bg-zinc-200 transition-all shadow-xl text-center">Купить ключ в TG</a>
           </div>
 
-          {/* НОВЫЙ Блок Юридической информации */}
+          {/* ТЕХНИЧЕСКАЯ ПОДДЕРЖКА */}
+          <a 
+            href="https://t.me/DialogeEngineSupportBot" 
+            target="_blank" 
+            rel="noreferrer" 
+            className="flex items-center gap-4 p-5 bg-emerald-500/10 border border-emerald-500/20 rounded-3xl hover:bg-emerald-500/20 transition-all group"
+          >
+            <div className="w-10 h-10 bg-emerald-500 rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
+              <LifeBuoy className="w-5 h-5 text-white animate-pulse" />
+            </div>
+            <div>
+              <h4 className="text-sm font-bold text-white group-hover:text-emerald-400 transition-colors">Тех. поддержка</h4>
+              <p className="text-[10px] text-zinc-500">Поможем с настройкой 24/7</p>
+            </div>
+          </a>
+
+          {/* НАШ ТГК */}
+          <div className="bg-[#121212] border border-zinc-800 rounded-3xl p-6 flex flex-col items-center text-center">
+            <div className="w-10 h-10 bg-zinc-800 rounded-full flex items-center justify-center mb-4">
+               <MessageCircle className="w-5 h-5 text-sky-400" />
+            </div>
+            <h4 className="text-sm font-bold text-white mb-1 uppercase tracking-tight">Наше сообщество</h4>
+            <p className="text-[11px] text-zinc-500 mb-4">Новости, обновления, промокоды и важные анонсы.</p>
+            <a 
+              href="https://t.me/dialogeengine" 
+              target="_blank" 
+              rel="noreferrer"
+              className="w-full py-3 bg-zinc-800 hover:bg-zinc-700 text-sky-400 text-[11px] font-bold rounded-xl transition-colors flex items-center justify-center gap-2"
+            >
+              Перейти в канал
+              <ExternalLink className="w-3 h-3" />
+            </a>
+          </div>
+
+          {/* РЕКЛАМА (ОДИН СЛОТ) */}
+          <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-3xl p-6">
+            <div className="flex items-center gap-2 mb-4 opacity-50">
+               <Megaphone className="w-3 h-3 text-zinc-400" />
+               <span className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-400">Реклама</span>
+            </div>
+            <a href="https://t.me/NOVA_creators" target="_blank" rel="noreferrer" className="block group">
+              <p className="text-xs font-bold text-zinc-200 group-hover:text-blue-400 transition-colors mb-1">Заголовок вашего объявления</p>
+              <p className="text-[10px] text-zinc-500 leading-relaxed mb-3">NOVA — твоя креативная студия в Telegram:
+Крутые аватарки, баннеры, тексты и оформление для твоего канала.
+Хочешь стильный контент — просто напиши.</p>
+              <span className="text-[10px] text-blue-500 font-bold flex items-center gap-1 group-hover:underline">
+                Подробнее <ExternalLink className="w-2.5 h-2.5" />
+              </span>
+            </a>
+          </div>
+
+          {/* ИНФОРМАЦИЯ */}
           <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6">
             <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-4 flex items-center gap-2">
               <FileText className="w-3 h-3" />
-              Основная информация
+              Документация
             </h4>
-            <div className="space-y-3">
+            <div className="space-y-2">
               <a 
                 href={`${GITHUB_RAW_URL}/user_agreement.pdf`} 
                 target="_blank" 
                 rel="noreferrer"
-                className="flex items-center justify-between p-3 bg-black/30 border border-zinc-800 rounded-xl text-[11px] text-zinc-300 hover:text-white hover:border-zinc-600 transition-all"
+                className="flex items-center justify-between p-3 bg-black/30 border border-zinc-800 rounded-xl text-[10px] text-zinc-400 hover:text-white hover:border-zinc-600 transition-all"
               >
-                Пользовательское соглашение
-                <ExternalLink className="w-3 h-3 opacity-50" />
+                Соглашение
+                <ExternalLink className="w-3 h-3 opacity-30" />
               </a>
               <a 
                 href={`${GITHUB_RAW_URL}/privacy_policy.pdf`} 
                 target="_blank" 
                 rel="noreferrer"
-                className="flex items-center justify-between p-3 bg-black/30 border border-zinc-800 rounded-xl text-[11px] text-zinc-300 hover:text-white hover:border-zinc-600 transition-all"
+                className="flex items-center justify-between p-3 bg-black/30 border border-zinc-800 rounded-xl text-[10px] text-zinc-400 hover:text-white hover:border-zinc-600 transition-all"
               >
-                Политика конфиденциальности
-                <ExternalLink className="w-3 h-3 opacity-50" />
+                Конфиденциальность
+                <ExternalLink className="w-3 h-3 opacity-30" />
               </a>
             </div>
-            <p className="text-[9px] text-zinc-600 mt-4 text-center">
-              Используя сервис, вы автоматически соглашаетесь с данными документами.
-            </p>
           </div>
         </div>
       </div>
