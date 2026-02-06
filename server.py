@@ -61,15 +61,21 @@ class BotManager:
             return True
         except Exception as e: return str(e)
 
-    async def stop_bot(self, bid: str):
-        if bid in self.procs:
-            p = self.procs[bid]
+    # Примерно 65-70 строка в твоем server.py
+async def stop_bot(self, bid):
+    p = self.processes.get(bid)
+    if p:
+        try:
             p.terminate()
-            try: await asyncio.wait_for(p.wait(), 2.0)
-            except: p.kill()
-            del self.procs[bid]
-            return True
-        return False
+            await p.wait() # Ждем завершения
+        except ProcessLookupError:
+            # Если процесса уже нет, просто игнорим ошибку
+            logger.info(f"Процесс бота {bid} уже был завершен.")
+        except Exception as e:
+            logger.error(f"Ошибка при остановке бота {bid}: {e}")
+        finally:
+            if bid in self.processes:
+                del self.processes[bid]
 
     def get_logs(self, bid: str):
         path = self.logs.get(bid)
