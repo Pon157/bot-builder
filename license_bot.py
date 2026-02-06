@@ -26,31 +26,38 @@ def load_config():
     if os.path.exists(path):
         with open(path, 'r', encoding='utf-8-sig') as f:
             for line in f:
-                if '=' in line and not line.startswith('#'):
-                    k, v = line.split('=', 1)
-                    val = v.strip().strip('"').strip("'")
-                    # Очистка токена из .env (как ты просил в инструкции)
-                    if k.strip() == "ADMIN_BOT_TOKEN" and "root/" in val:
-                        val = val.split("root/")[0].strip()
-                    conf[k.strip()] = val
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                
+                k, v = line.split('=', 1)
+                val = v.strip().strip('"').strip("'")
+                
+                # Твоя специфичная проверка для токена
+                if k.strip() == "ADMIN_BOT_TOKEN" and "root/" in val:
+                    val = val.split("root/")[0].strip()
+                
+                conf[k.strip()] = val
     return conf
 
 CONFIG = load_config()
+
+# --- ОТЛАДКА (Удали это, когда заработает) ---
+required_keys = ["ADMIN_BOT_TOKEN", "SUPABASE_URL", "SUPABASE_KEY"]
+missing = [k for k in required_keys if not CONFIG.get(k)]
+
+if missing:
+    logger.critical(f"🛑 В .env отсутствуют ключи: {', '.join(missing)}")
+    # logger.info(f"Загруженные ключи: {list(CONFIG.keys())}") # Раскомментируй, если хочешь увидеть все ключи
+    sys.exit(1)
+# ---------------------------------------------
+
 TOKEN = CONFIG.get("ADMIN_BOT_TOKEN")
 ADMIN_SECRET = CONFIG.get("ADMIN_SECRET", "MRAKOTIK")
 ADMIN_CHAT_ID = CONFIG.get("ADMIN_CHAT_ID")
-SERVER_URL = "http://localhost:8000"
-
-# Данные Supabase
 SUPABASE_URL = CONFIG.get("SUPABASE_URL")
 SUPABASE_KEY = CONFIG.get("SUPABASE_KEY")
-
-if not TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
-    logger.critical("🛑 Не все данные (TOKEN/SUPABASE) найдены в .env!")
-    sys.exit(1)
-
-# Инициализация клиента Supabase
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+SERVER_URL = CONFIG.get("SERVER_URL", "http://localhost:8000")
 
 # --- ФУНКЦИИ БД (Таблица 'users', колонки 'user_id' и 'currency') ---
 
