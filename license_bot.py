@@ -125,7 +125,7 @@ async def main():
         # Кнопка смены валюты
         kb.row(InlineKeyboardButton(text=f"🌍 Валюта: {currency}", callback_data="change_currency"))
         
-        text = "🚀 <b>BotEngine Pro: Магазин ключей</b>\n\nВыберите нужный период подписки ниже:"
+        text = "🚀 <b>Dialoge Engine Beta: Магазин ключей</b>\n\nВыберите нужный период подписки ниже:"
         
         if is_edit:
             await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
