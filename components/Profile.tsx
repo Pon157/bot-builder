@@ -153,7 +153,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
           <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6">
             <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-4 flex items-center gap-2">
               <FileText className="w-3 h-3" />
-              Юридическая информация
+              Основная информация
             </h4>
             <div className="space-y-3">
               <a 
