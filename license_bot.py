@@ -69,7 +69,8 @@ async def main():
         price = "50 ⭐" if months == 1 else "120 ⭐" if months == 3 else "400 ⭐"
         
         kb = InlineKeyboardBuilder()
-        kb.row(InlineKeyboardButton(text="💳 Оплатить", url="https://t.me/Kotickr"))
+        kb.row(InlineKeyboardButton(text="💳 Оплатить в рублях", url=""))
+        kb.row(InlineKeyboardButton(text="💳 Оплатить в звездах", url="https://t.me/Kotickr"))
         kb.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"verify_{months}"))
         kb.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_start"))
 
