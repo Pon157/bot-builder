@@ -1,4 +1,3 @@
-
 import asyncio
 import logging
 import json
@@ -71,6 +70,7 @@ class BotInstance:
     def __init__(self, config_data: dict):
         self.bot_id = config_data.get('id')
         self.token = config_data.get('token')
+        # Токен из .env уже подгружен в систему, но aiogram инициализируется здесь
         self.sb_url = os.getenv("SUPABASE_URL", "").rstrip('/')
         self.sb_key = os.getenv("SUPABASE_KEY", "")
         
@@ -120,11 +120,9 @@ class BotInstance:
             now = datetime.now()
             current_date = now.strftime("%d.%m")
             
-            # Обновляем показатель активных за 24 часа
             day_ago = int((now - timedelta(days=1)).timestamp())
             active_count = 0
             for u in self.users_list:
-                # Если у пользователя есть поле last_seen (нужно добавить его обновление)
                 if u.get('last_seen', 0) > day_ago:
                     active_count += 1
             self.stats_data["activeUsers24h"] = active_count
@@ -269,16 +267,20 @@ class BotInstance:
             logger.error(f"Forwarding Error: {e}")
 
     async def admin_control_logic(self, m: Message):
+        # Логика обработки команд /ban, /unban, /warn
         if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): return False
+        
         cmd_parts = m.text.lower().split()
         command = cmd_parts[0][1:]
         target_user = None
+        
         if m.message_thread_id:
             target_user = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
         if not target_user and m.reply_to_message:
             uid = self.msg_map.get(m.reply_to_message.message_id)
             if uid:
                 target_user = next((u for u in self.users_list if u['id'] == uid), None)
+        
         if not target_user: return False
 
         uid = target_user['id']
@@ -339,19 +341,27 @@ class BotInstance:
         async def handle_start(m: Message):
             user, is_new = await self.get_user_state(m)
             if user.get("is_banned"): return
+            # ОТВЕТ ПОЛЬЗОВАТЕЛЮ
             await m.answer(self.welcome_text, reply_markup=self.get_main_keyboard())
-            await self.forward_to_admin(m, user, is_first=is_new)
+            # ЛОГИРУЕМ, НО НЕ ПЕРЕСЫЛАЕМ АДМИНУ /start
             await self.log_and_update(user['id'], m.from_user.full_name, "/start")
 
         @self.router.message(F.chat.id == self.admin_chat_id)
         async def handle_admin_input(m: Message):
-            if await self.admin_control_logic(m): return
+            # 1. Если это команда управления (/ban и т.д.), обрабатываем и ПРЕРЫВАЕМ выполнение
+            if m.text and (m.text.startswith("/") or m.text.startswith("!")):
+                await self.admin_control_logic(m)
+                return
+
+            # 2. Поиск целевого пользователя для пересылки ответа
             target_id = None
             if m.message_thread_id:
                 u = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
                 if u: target_id = u["id"]
             if not target_id and m.reply_to_message:
                 target_id = self.msg_map.get(m.reply_to_message.message_id)
+            
+            # 3. Пересылка ответа пользователю (только если это не была команда)
             if target_id:
                 try:
                     try:
@@ -369,25 +379,38 @@ class BotInstance:
                         elif m.video: await self.bot.send_video(target_id, m.video.file_id, caption=m.caption)
                         elif m.voice: await self.bot.send_voice(target_id, m.voice.file_id)
                         else: await self.bot.forward_message(target_id, m.chat.id, m.message_id)
+                    
                     await self.log_and_update(target_id, "Admin", m.text or "[Медиа]", is_admin=True)
                 except Exception as e:
                     await m.reply(f"❌ <b>Ошибка:</b> {e}")
 
         @self.router.message()
         async def handle_user_input(m: Message):
+            # Игнорируем сообщения от админа в общем потоке (они обрабатываются выше)
             if self.admin_chat_id and m.chat.id == self.admin_chat_id: return
+            
             user, is_new = await self.get_user_state(m)
             if user.get("is_banned") or await self.check_antispam(user['id']): return
+            
             if m.text:
                 clean_text = m.text.lower().strip()
+                # Проверка кнопок
                 for btn in self.buttons:
                     if btn.get('text') and btn['text'].lower() == clean_text:
-                        if btn.get('type') == 'request': await self.forward_to_admin(m, user, btn_text=btn['text'])
-                        if btn.get('response'): await m.answer(btn['response'])
-                        await self.log_and_update(user['id'], m.from_user.full_name, f"КНОПКА: {btn['text']}"); return
+                        if btn.get('type') == 'request': 
+                            await self.forward_to_admin(m, user, btn_text=btn['text'])
+                        if btn.get('response'): 
+                            await m.answer(btn['response'])
+                        await self.log_and_update(user['id'], m.from_user.full_name, f"КНОПКА: {btn['text']}")
+                        return
+                # Проверка триггеров
                 for trig in self.triggers:
                     if trig.get('keyword') and trig['keyword'].lower() in clean_text:
-                        await m.answer(trig['response']); await self.log_and_update(user['id'], m.from_user.full_name, f"ТРИГГЕР: {trig['keyword']}"); return
+                        await m.answer(trig['response'])
+                        await self.log_and_update(user['id'], m.from_user.full_name, f"ТРИГГЕР: {trig['keyword']}")
+                        return
+            
+            # Обычное сообщение -> Админу
             await self.forward_to_admin(m, user, is_first=is_new)
             await self.log_and_update(user['id'], m.from_user.full_name, m.text or "[Медиа]")
 
@@ -405,7 +428,8 @@ class BotInstance:
         await self.core_handlers_setup()
         self.dp.include_router(self.router)
         logger.info(f"[*] Бот {self.bot_id} запущен.")
-        try: await self.dp.start_polling(self.bot)
+        try: 
+            await self.dp.start_polling(self.bot)
         finally:
             self.is_running = False
             await self.bot.session.close()
@@ -413,6 +437,8 @@ class BotInstance:
 if __name__ == "__main__":
     if len(sys.argv) < 2: sys.exit(1)
     try:
-        with open(sys.argv[1], 'r', encoding='utf-8') as f: cfg = json.load(f)
+        with open(sys.argv[1], 'r', encoding='utf-8') as f: 
+            cfg = json.load(f)
         asyncio.run(BotInstance(cfg).run_instance())
-    except Exception as e: logger.error(f"FATAL ERROR: {e}")
+    except Exception as e: 
+        logger.error(f"FATAL ERROR: {e}")
