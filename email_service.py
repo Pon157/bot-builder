@@ -36,7 +36,7 @@ class EmailService:
             
         try:
             msg = MIMEMultipart()
-            msg['From'] = f"BotEngine Pro <{gmail_user}>"
+            msg['From'] = f"Dialoge Engine <{gmail_user}>"
             msg['To'] = recipient
             msg['Subject'] = subject
             msg.attach(MIMEText(html_content, 'html'))
@@ -64,10 +64,10 @@ class EmailService:
 
     @classmethod
     def send_verification_code(cls, recipient: str, code: str):
-        subject = "Код подтверждения регистрации - BotEngine Pro"
+        subject = "Код подтверждения регистрации - Dialoge Engine"
         content = f"""
         <div style="font-family: sans-serif; background: #0a0a0a; color: #fff; padding: 40px; border-radius: 20px; border: 1px solid #333;">
-            <h2 style="color: #3b82f6; margin-bottom: 20px;">BotEngine Pro</h2>
+            <h2 style="color: #3b82f6; margin-bottom: 20px;">Dialoge Engine</h2>
             <p style="font-size: 16px;">Ваш код для регистрации:</p>
             <div style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #fff; background: #111; padding: 30px; text-align: center; border-radius: 15px; margin: 30px 0; border: 1px solid #3b82f6;">
                 {code}
@@ -78,7 +78,7 @@ class EmailService:
 
     @classmethod
     def send_password_reset(cls, recipient: str, code: str):
-        subject = "Восстановление доступа - BotEngine Pro"
+        subject = "Восстановление доступа - Dialoge Engine"
         content = f"""
         <div style="font-family: sans-serif; background: #0a0a0a; color: #fff; padding: 40px; border-radius: 20px; border: 1px solid #333;">
             <h2 style="color: #ef4444; margin-bottom: 20px;">Сброс пароля</h2>
