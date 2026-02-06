@@ -229,16 +229,19 @@ async def main():
             
             if r.status_code == 200:
                 key = r.json().get("key")
-                # Отправляем ключ юзеру
+                # Уведомляем юзера (Исправленное форматирование)
                 await bot.send_message(
                     uid, 
-                    f"🎉 <b>Ваша оплата подтверждена!</b>\n\n"
-                    f"Ваш лицензионный ключ ({months} мес.):\n"
-                    f"<code>{key}</code>", 
+                    f"🎉 <b>Оплата принята!</b>\n\n"
+                    f"Ваш ключ: <code>{key}</code>", 
                     parse_mode="HTML"
                 )
-                # Отчет админу
-                await cb.message.edit_text(f"✅ Ключ <code>{key}</code> успешно отправлен пользователю {uid}.")
+                # Обновляем сообщение админу (Исправленное форматирование)
+                await cb.message.edit_text(
+                    f"✅ Ключ <code>{key}</code>\n"
+                    f"Отправлен пользователю: <code>{uid}</code>", 
+                    parse_mode="HTML"
+                )
             else:
                 await cb.message.edit_text(f"❌ Ошибка API: {r.status_code}\nПроверьте работу сервера.")
         except Exception as e:
