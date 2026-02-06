@@ -48,7 +48,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email, password })
     });
-    if (!response.ok) throw new Error("Login failed");
+    if (!response.ok) throw new Error("Неверный логин/пароль");
     return await response.json();
   },
 
