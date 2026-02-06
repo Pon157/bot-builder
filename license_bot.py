@@ -154,7 +154,15 @@ async def cmd_buy(cb: CallbackQuery):
     price_str = calculate_price(months, currency)
     
     kb = InlineKeyboardBuilder()
+    # Основная кнопка оплаты
     kb.row(InlineKeyboardButton(text="💳 Оплатить", url="https://www.donationalerts.com/r/dialoge_engine"))
+    
+    # Кнопка правил (теперь пользователь может ознакомиться перед оплатой)
+    kb.row(InlineKeyboardButton(
+        text="Пользовательское соглашение", 
+        url="https://telegra.ph/Politika-vozvrata-i-licenzirovaniya-Refund-Policy-02-06"
+    ))
+    
     kb.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"verif_p_{months}"))
     kb.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu"))
     
@@ -162,9 +170,11 @@ async def cmd_buy(cb: CallbackQuery):
         f"🛒 <b>Оплата: {PERIODS[months]['label']}</b>\n"
         f"Сумма: <b>{price_str}</b>\n\n"
         f"1. Сделайте перевод по ссылке.\n"
-        f"2. Нажмите кнопку подтверждения.",
+        f"2. Ознакомьтесь с правилами возврата.\n"
+        f"3. Нажмите кнопку подтверждения.",
         reply_markup=kb.as_markup(), 
-        parse_mode="HTML"
+        parse_mode="HTML",
+        disable_web_page_preview=True # Чтобы не раздувать сообщение превьюшкой статьи
     )
 
 @dp.callback_query(F.data == "back_to_menu")
