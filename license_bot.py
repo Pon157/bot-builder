@@ -9,55 +9,58 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton, CallbackQuery, Message
 from supabase import create_client, Client
 
-# ==========================================
-# 1. КОНФИГУРАЦИЯ И SUPABASE
-# ==========================================
-
-BASE_DIR = "/root/bot-builder/bot-builder"
-if os.path.exists(BASE_DIR):
-    os.chdir(BASE_DIR)
+# --- АВТО-ОПРЕДЕЛЕНИЕ ПУТИ ---
+# Берем папку, в которой лежит текущий файл (main.py)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+os.chdir(BASE_DIR)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("LicenseBot")
 
 def load_config():
+    # Теперь путь всегда будет правильным: /var/www/botengine/.env
     path = os.path.join(BASE_DIR, '.env')
     conf = {}
-    if os.path.exists(path):
-        with open(path, 'r', encoding='utf-8-sig') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#') or '=' not in line:
-                    continue
-                
-                k, v = line.split('=', 1)
-                val = v.strip().strip('"').strip("'")
-                
-                # Твоя специфичная проверка для токена
-                if k.strip() == "ADMIN_BOT_TOKEN" and "root/" in val:
-                    val = val.split("root/")[0].strip()
-                
-                conf[k.strip()] = val
+    
+    if not os.path.exists(path):
+        logger.error(f"❌ Файл .env не найден по пути: {path}")
+        return conf
+
+    with open(path, 'r', encoding='utf-8-sig') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            k, v = line.split('=', 1)
+            val = v.strip().strip('"').strip("'")
+            
+            # Твой фикс для токена
+            if k.strip() == "ADMIN_BOT_TOKEN" and "root/" in val:
+                val = val.split("root/")[0].strip()
+            
+            conf[k.strip()] = val
     return conf
 
 CONFIG = load_config()
 
-# --- ОТЛАДКА (Удали это, когда заработает) ---
-required_keys = ["ADMIN_BOT_TOKEN", "SUPABASE_URL", "SUPABASE_KEY"]
-missing = [k for k in required_keys if not CONFIG.get(k)]
-
-if missing:
-    logger.critical(f"🛑 В .env отсутствуют ключи: {', '.join(missing)}")
-    # logger.info(f"Загруженные ключи: {list(CONFIG.keys())}") # Раскомментируй, если хочешь увидеть все ключи
-    sys.exit(1)
-# ---------------------------------------------
-
+# Проверка загрузки
 TOKEN = CONFIG.get("ADMIN_BOT_TOKEN")
-ADMIN_SECRET = CONFIG.get("ADMIN_SECRET", "MRAKOTIK")
-ADMIN_CHAT_ID = CONFIG.get("ADMIN_CHAT_ID")
 SUPABASE_URL = CONFIG.get("SUPABASE_URL")
 SUPABASE_KEY = CONFIG.get("SUPABASE_KEY")
+
+if not TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
+    logger.critical(f"🛑 ОШИБКА: Ключи не загружены! Путь поиска: {BASE_DIR}")
+    # Выведем, что реально удалось прочитать
+    logger.info(f"Доступные ключи: {list(CONFIG.keys())}")
+    sys.exit(1)
+
+# Данные для API и админки
+ADMIN_SECRET = CONFIG.get("ADMIN_SECRET", "MRAKOTIK")
+ADMIN_CHAT_ID = CONFIG.get("ADMIN_CHAT_ID")
 SERVER_URL = CONFIG.get("SERVER_URL", "http://localhost:8000")
+
+# Инициализация Supabase
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- ФУНКЦИИ БД (Таблица 'users', колонки 'user_id' и 'currency') ---
 
