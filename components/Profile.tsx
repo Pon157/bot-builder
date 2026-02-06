@@ -202,7 +202,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
                <span className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-400">Реклама</span>
             </div>
             <a href="https://t.me/NOVA_creators" target="_blank" rel="noreferrer" className="block group">
-              <p className="text-xs font-bold text-zinc-200 group-hover:text-blue-400 transition-colors mb-1">Заголовок вашего объявления</p>
+              <p className="text-xs font-bold text-zinc-200 group-hover:text-blue-400 transition-colors mb-1">NOVA CREATIVE STUDIO</p>
               <p className="text-[10px] text-zinc-500 leading-relaxed mb-3">NOVA — твоя креативная студия в Telegram:
 Крутые аватарки, баннеры, тексты и оформление для твоего канала.
 Хочешь стильный контент — просто напиши.</p>
