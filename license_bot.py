@@ -146,14 +146,12 @@ async def cmd_change_curr(cb: CallbackQuery):
     """Меню выбора валюты"""
     kb = InlineKeyboardBuilder()
     for code in CURRENCIES.keys():
-        # Важно: используем простой формат set_{code} для легкости парсинга
         kb.add(InlineKeyboardButton(text=code, callback_data=f"set_{code}"))
     kb.adjust(3)
     await cb.message.edit_text("🌍 <b>Выберите вашу валюту:</b>", reply_markup=kb.as_markup(), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("set_"))
 async def save_curr(cb: CallbackQuery):
-    # Теперь split("_")[1] четко достанет код валюты (RUB, USD и т.д.)
     code = cb.data.split("_")[1]
     set_user_currency(cb.from_user.id, code, cb.from_user.username)
     await cb.answer(f"Валюта: {code}")
@@ -162,24 +160,23 @@ async def save_curr(cb: CallbackQuery):
 @dp.callback_query(F.data.startswith("buy_"))
 async def cmd_buy(cb: CallbackQuery):
     """Экран оплаты конкретного тарифа"""
-    # Парсим ID периода (1, 3 или 12)
     months = int(cb.data.split("_")[1])
     currency = get_user_currency(cb.from_user.id)
     price_str = calculate_price(months, currency)
-        
-        kb = InlineKeyboardBuilder()
-        kb.row(InlineKeyboardButton(text="💳 Перейти к оплате", url="https://www.donationalerts.com/r/dialoge_engine"))
-        kb.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"verify_pay_{months}"))
-        kb.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu"))
-        
-        await cb.message.edit_text(
-            f"🛒 <b>Оформление подписки</b>\n\n"
-            f"Период: <b>{PERIODS[months]['label']}</b>\n"
-            f"К оплате: <b>{price_str}</b>\n\n"
-            f"После перевода нажмите кнопку «Я оплатил».",
-            reply_markup=kb.as_markup(), parse_mode="HTML"
-        )
-
+    
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="💳 Оплатить", url="https://www.donationalerts.com/r/dialoge_engine"))
+    kb.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"verify_pay_{months}"))
+    kb.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu"))
+    
+    await cb.message.edit_text(
+        f"🛒 <b>Оплата тарифа: {months} мес.</b>\n"
+        f"Сумма: <b>{price_str}</b>\n\n"
+        f"1. Сделайте перевод по ссылке (в сообщении укажите ваш UserName).\n2. Нажмите кнопку подтверждения.",
+        reply_markup=kb.as_markup(), 
+        parse_mode="HTML"
+    )
+    
     @dp.callback_query(F.data == "back_to_menu")
     async def cmd_back(cb: CallbackQuery):
         await send_main_menu(cb.message, cb.from_user.id, is_edit=True)
