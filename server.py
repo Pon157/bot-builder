@@ -24,7 +24,7 @@ except ImportError:
         @staticmethod
         def send_password_reset(e, c): return True
 
-# Импорты aiogram 3.x для массовой рассылки и отправки из CRM
+# Импорты aiogram 3.x для массовой рассылки
 from aiogram import Bot
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -48,21 +48,15 @@ init_env()
 S_URL = os.getenv("SUPABASE_URL", "").rstrip('/')
 S_KEY = os.getenv("SUPABASE_KEY", "")
 A_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
+# Читаем токен из .env (как ты просил запомнить)
 E_KEY = os.getenv("ENCRYPTION_KEY")
 
-# URL текущего сервера для общения с ботами (по умолчанию localhost:8000)
-SERVER_API_URL = os.getenv("SERVER_API_URL", "http://127.0.0.1:8000")
-
 if not E_KEY:
+    # Генерируем временный, если забыл добавить в .env, но лучше прописать!
     E_KEY = Fernet.generate_key().decode()
     print(f"⚠️ ВНИМАНИЕ: ENCRYPTION_KEY не найден. Использую временный: {E_KEY}")
 
 cipher = Fernet(E_KEY.encode())
-
-# Настройка папки для хранения CRM логов
-CRM_STORAGE_PATH = "./storage/crm"
-if not os.path.exists(CRM_STORAGE_PATH):
-    os.makedirs(CRM_STORAGE_PATH)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("DialogEngineServer")
@@ -74,10 +68,12 @@ def hash_pwd(password: str) -> str:
     return hashlib.sha256((password + salt).encode()).hexdigest()
 
 def encrypt_val(val: str) -> str:
+    """Шифрует строку (например, токен бота)."""
     if not val: return ""
     return cipher.encrypt(val.encode()).decode()
 
 def decrypt_val(val: str) -> str:
+    """Расшифровывает строку. Если строка не зашифрована, вернет как есть."""
     if not val: return ""
     try:
         return cipher.decrypt(val.encode()).decode()
@@ -111,12 +107,7 @@ class BotManager:
         
         try:
             env = os.environ.copy()
-            # Передаем боту URL этого сервера, чтобы он мог слать CRM логи
-            env.update({
-                "SUPABASE_URL": S_URL, 
-                "SUPABASE_KEY": S_KEY,
-                "API_BASE_URL": SERVER_API_URL 
-            })
+            env.update({"SUPABASE_URL": S_URL, "SUPABASE_KEY": S_KEY})
             l_out = open(log_path, "a", encoding="utf-8")
             
             p = await asyncio.create_subprocess_exec(
@@ -144,6 +135,7 @@ class BotManager:
         return True
 
     def get_logs(self, bid: str):
+        """Чтение последних строк лога бота."""
         path = self.log_paths.get(bid)
         if not path or not os.path.exists(path): return "Логи отсутствуют."
         try:
@@ -158,10 +150,12 @@ pm = BotManager()
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Логика при старте и выключении сервера."""
     logger.info("--- Сервер запускается ---")
     async with httpx.AsyncClient(base_url=f"{S_URL}/rest/v1/", 
                                  headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}"}) as client:
         try:
+            # Автостарт ботов, которые были включены
             r = await client.get("bots", params={"status": "eq.RUNNING"})
             if r.status_code == 200:
                 for b in r.json():
@@ -169,7 +163,9 @@ async def lifespan(app: FastAPI):
                     await pm.start_bot(b['id'], cfg)
         except Exception as e:
             logger.error(f"Ошибка автозапуска: {e}")
+    
     yield
+    
     logger.info("--- Сервер останавливается ---")
     for bid in list(pm.procs.keys()):
         await pm.stop_bot(bid)
@@ -183,107 +179,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Глобальный клиент БД
 db = httpx.AsyncClient(
     base_url=f"{S_URL}/rest/v1/", 
     headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}", "Content-Type": "application/json"}
 )
 
 # ==========================================
-# 4. CRM СИСТЕМА (ФАЙЛОВАЯ)
-# ==========================================
-
-# --- CRM API ---
-
-def _write_crm_log(bot_id: str, user_id: str, data: dict):
-    """Записывает сообщение в .jsonl файл пользователя"""
-    bot_dir = os.path.join(CRM_STORAGE_PATH, str(bot_id))
-    if not os.path.exists(bot_dir):
-        os.makedirs(bot_dir)
-        
-    file_path = os.path.join(bot_dir, f"{user_id}.jsonl")
-    
-    # Структура сообщения для фронтенда
-    entry = {
-        "timestamp": int(time.time() * 1000),
-        "is_admin": data.get("is_admin", False),
-        "text": data.get("text", ""),
-        "user_name": data.get("user_name", "User")
-    }
-    
-    try:
-        with open(file_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except Exception as e:
-        print(f"Ошибка записи в CRM файл: {e}")
-
-@app.post("/api/internal/crm_log")
-async def internal_crm_log(d: dict):
-    """Принимает сообщения от bot_core.py"""
-    _write_crm_log(
-        bot_id=d.get("bot_id"), 
-        user_id=str(d.get("user_id")), 
-        data={
-            "is_admin": d.get("is_admin", False),
-            "text": d.get("text", ""),
-            "user_name": d.get("user_name", "")
-        }
-    )
-    return {"status": "ok"}
-
-@app.get("/api/bots/{bot_id}/crm/{user_id}")
-async def get_crm_history(bot_id: str, user_id: str):
-    """Возвращает историю для отображения в BotEditor.tsx"""
-    file_path = os.path.join(CRM_STORAGE_PATH, str(bot_id), f"{user_id}.jsonl")
-    if not os.path.exists(file_path):
-        return []
-        
-    messages = []
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    messages.append(json.loads(line))
-    except:
-        return []
-        
-    return messages[-150:] # Возвращаем последние 150 сообщений
-
-@app.post("/api/bots/{bot_id}/crm/send")
-async def send_crm_message_to_user(bot_id: str, d: dict):
-    """Отправка сообщения пользователю из CRM (Фронтенд -> Сервер -> Telegram -> Файл)"""
-    user_id = d.get('userId')
-    text = d.get('text')
-    
-    if not user_id or not text:
-        raise HTTPException(400, "User ID and Text required")
-
-    # Получаем токен бота из БД
-    r = await db.get("bots", params={"id": f"eq.{bot_id}"})
-    if not r.json():
-        raise HTTPException(404, "Bot not found")
-        
-    bot_data = r.json()[0]
-    token = decrypt_val(bot_data['token'])
-    
-    # Отправляем в Telegram
-    try:
-        async with Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML)) as bot:
-            await bot.send_message(chat_id=user_id, text=text)
-    except Exception as e:
-        logger.error(f"CRM Send Error: {e}")
-        raise HTTPException(500, f"Telegram Error: {e}")
-        
-    # Сохраняем в файл (чтобы видно было в истории)
-    _write_crm_log(bot_id, str(user_id), {
-        "is_admin": True,
-        "text": text,
-        "user_name": "Support"
-    })
-    
-    return {"status": "sent"}
-
-# ==========================================
-# 5. AUTH & BOT ENDPOINTS (STANDARD)
+# 4. ЭНДПОИНТЫ АВТОРИЗАЦИИ
 # ==========================================
 
 @app.post("/api/auth/login")
@@ -298,41 +201,86 @@ async def login(d: dict):
 async def request_ver(d: dict):
     email = d['email'].lower()
     code = str(random.randint(100000, 999999))
-    await db.post("temp_codes", json={"email": email, "code": code, "type": "VERIFY"}, headers={"Prefer": "resolution=merge-duplicates"})
-    if EmailService.send_verification_code(email, code): return True
+    await db.post("temp_codes", json={
+        "email": email, "code": code, "type": "VERIFY"
+    }, headers={"Prefer": "resolution=merge-duplicates"})
+    
+    if EmailService.send_verification_code(email, code):
+        return True
     raise HTTPException(500, "Ошибка почтового сервера")
 
 @app.post("/api/auth/verify-and-register")
 async def verify_reg(d: dict):
     email = d['email'].lower()
+    # Проверка кода из базы
     r = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{d['code']}"})
-    if not r.json(): raise HTTPException(400, "Неверный код")
+    if not r.json():
+        raise HTTPException(400, "Неверный код подтверждения")
+    
     uid = f"u_{secrets.token_hex(4)}"
     user_data = {
-        "id": uid, "username": d['username'], "email": email,
-        "password": hash_pwd(d['password']), "balance": 0,
-        "license_expires_at": int(time.time()*1000) + 259200000
+        "id": uid,
+        "username": d['username'],
+        "email": email,
+        "password": hash_pwd(d['password']), # Сохраняем хеш
+        "balance": 0,
+        "license_expires_at": int(time.time()*1000) + 259200000 # +3 дня бонуса
     }
     await db.post("users", json=user_data)
+    # Очищаем код
     await db.delete("temp_codes", params={"email": f"eq.{email}"})
     return user_data
+
+@app.post("/api/auth/forgot-password")
+async def forgot_p(d: dict):
+    email = d['email'].lower()
+    u = await db.get("users", params={"email": f"eq.{email}"})
+    if not u.json(): return True
+    
+    code = str(random.randint(100000, 999999))
+    await db.post("temp_codes", json={"email": email, "code": code, "type": "RESET"}, headers={"Prefer": "resolution=merge-duplicates"})
+    EmailService.send_password_reset(email, code)
+    return True
+
+@app.post("/api/auth/reset-password")
+async def reset_p(d: dict):
+    email = d['email'].lower()
+    r = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{d['code']}", "type": "eq.RESET"})
+    if not r.json(): raise HTTPException(400, "Код недействителен")
+    
+    new_hpwd = hash_pwd(d['newPassword'])
+    await db.patch("users", params={"email": f"eq.{email}"}, json={"password": new_hpwd})
+    return True
+
+# ==========================================
+# 5. УПРАВЛЕНИЕ БОТАМИ
+# ==========================================
 
 @app.get("/api/bots/{uid}")
 async def get_user_bots(uid: str):
     r = await db.get("bots", params={"owner_id": f"eq.{uid}"})
+    # При передаче на фронт токены остаются зашифрованными (безопасность!)
     return [{**b, **(b.get("config") or {})} for b in r.json()]
 
 @app.post("/api/bots/save")
 async def save_bot(b: dict):
     bid = b['id']
+    # Шифруем токен перед отправкой в базу
     raw_token = b.get('token', '')
+    # Если токен пришел уже зашифрованным (начинается на gAAAA), не шифруем второй раз
     final_token = encrypt_val(raw_token) if not raw_token.startswith('gAAAA') else raw_token
+    
     old_r = await db.get("bots", params={"id": f"eq.{bid}"})
     curr = old_r.json()[0] if old_r.json() else {}
+    
     sys_keys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
     ui_cfg = {k: v for k, v in b.items() if k not in sys_keys}
+    
     payload = {
-        "id": bid, "owner_id": b['owner_id'], "name": b["name"], "token": final_token,
+        "id": bid,
+        "owner_id": b['owner_id'],
+        "name": b["name"],
+        "token": final_token,
         "status": b.get("status", curr.get("status", "IDLE")),
         "license_expires_at": b.get("license_expires_at") or curr.get("license_expires_at", 0),
         "config": ui_cfg
@@ -345,11 +293,13 @@ async def start_handler(req: dict):
     bid = req.get('id')
     r = await db.get("bots", params={"id": f"eq.{bid}"})
     if not r.json(): raise HTTPException(404, "Бот не найден")
+    
     data = r.json()[0]
+    # Пытаемся запустить
     if await pm.start_bot(bid, data) is True:
         await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "RUNNING"})
         return True
-    raise HTTPException(500, "Ошибка запуска")
+    raise HTTPException(500, "Ошибка запуска процесса")
 
 @app.post("/api/bots/stop/{bid}")
 async def stop_handler(bid: str):
@@ -368,32 +318,94 @@ async def get_bot_logs(bid: str):
     return {"logs": pm.get_logs(bid)}
 
 # ==========================================
-# 6. ЛИЦЕНЗИИ
+# 6. ЛИЦЕНЗИИ И АДМИН-ПАНЕЛЬ
 # ==========================================
+
 @app.post("/api/admin/generate-key")
 async def gen_key(d: dict, x_admin_token: str = Header(None)):
     if x_admin_token != A_SECRET: raise HTTPException(401, "Admin only")
+    
     key = f"DE-{secrets.token_hex(3).upper()}-{random.randint(100, 999)}"
-    await db.post("issued_keys", json={"key": key, "months": d.get('months', 1), "days": d.get('days', 0), "used": False})
+    payload = {
+        "key": key,
+        "months": d.get('months', 1),
+        "days": d.get('days', 0),
+        "used": False
+    }
+    await db.post("issued_keys", json=payload)
     return {"key": key}
 
 @app.post("/api/license/activate")
 async def activate_lic(req: dict):
     key_code = req.get('key')
     bid = req.get('botId')
+    
+    # Ищем ключ
     rk = await db.get("issued_keys", params={"key": f"eq.{key_code}", "used": "eq.false"})
-    if not rk.json(): return {"status": "error", "message": "Неверный ключ"}
+    if not rk.json(): return {"status": "error", "message": "Ключ недействителен или уже активирован"}
+    
     k_data = rk.json()[0]
+    # Считаем время
     added_ms = (k_data['months'] * 30 * 86400000) + (k_data['days'] * 86400000)
+    
+    # Обновляем срок бота
     rb = await db.get("bots", params={"id": f"eq.{bid}"})
     curr_time = int(time.time() * 1000)
     old_expiry = rb.json()[0].get("license_expires_at") or 0
     new_expiry = max(old_expiry, curr_time) + added_ms
+    
     await db.patch("bots", params={"id": f"eq.{bid}"}, json={"license_expires_at": new_expiry})
     await db.patch("issued_keys", params={"key": f"eq.{key_code}"}, json={"used": True, "used_by_bot": bid})
+    
     return {"status": "ok", "new_expiry": new_expiry}
 
+# ==========================================
+# 7. МАССОВАЯ РАССЫЛКА
+# ==========================================
+
+@app.post("/api/bots/broadcast")
+async def broadcast_msg(d: dict):
+    bot_ids = d.get('botIds', [])
+    text = d.get('message', '')
+    if not text: return {"error": "Пустое сообщение"}
+
+    results = {"success": 0, "failed": 0}
+    
+    for bid in bot_ids:
+        r = await db.get("bots", params={"id": f"eq.{bid}"})
+        if not r.json(): continue
+        
+        b_data = r.json()[0]
+        # Расшифровка для работы Bot API
+        token = decrypt_val(b_data['token'])
+        users = (b_data.get('config') or {}).get('connectedUsers', [])
+        
+        async with Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML)) as bot:
+            for u in users:
+                try:
+                    # u может быть словарем или просто ID
+                    user_id = u['id'] if isinstance(u, dict) else u
+                    await bot.send_message(user_id, text)
+                    results["success"] += 1
+                except Exception as e:
+                    logger.warning(f"Ошибка рассылки юзеру {u}: {e}")
+                    results["failed"] += 1
+                await asyncio.sleep(0.05) # Защита от флуд-контроля
+                
+    return results
+
+# ==========================================
+# 8. СИСТЕМНЫЕ
+# ==========================================
+
 @app.get("/api/ping")
+async def ping_pong():
+    return {"status": "online", "server_time": time.time()}
+
+if __name__ == "__main__":
+    import uvicorn
+    # Запуск сервера на порту 8000
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 async def ping_pong():
     return {"status": "online", "server_time": time.time()}
 
