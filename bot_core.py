@@ -210,26 +210,22 @@ class BotInstance:
         self.flood_cache[user_id] = now
         return False
 
-    async def log_and_update(self, uid: int, name: str, text: str, is_admin: bool = False):
-        """Логирование в файл (через сервер) и обновление статистики (в базу)"""
-        # 1. Отправляем задачу на сохранение в файл (CRM)
+async def log_and_update(self, uid: int, name: str, text: str, is_admin: bool = False):
+        """Отправляет событие на сервер для CRM и обновляет статистику"""
+        # Отправляем на локальный сервер (server.py)
         await self.sync_queue.put(("crm_log", {
             "bot_id": self.bot_id, 
             "user_id": uid, 
             "user_name": name,
-            "text": text[:1000] if text else "[Медиа]", 
+            "text": text if text else "[Медиа]", 
             "is_admin": is_admin
         }))
         
-        # 2. Обновляем счетчики в памяти
+        # Обновляем статистику для графиков в Supabase
         self.stats_data["totalMessages"] = self.stats_data.get("totalMessages", 0) + 1
         stat_key = "outgoingToday" if is_admin else "incomingToday"
         self.stats_data[stat_key] = self.stats_data.get(stat_key, 0) + 1
         
-        if self.stats_data.get("history"):
-             self.stats_data["history"][-1][stat_key.replace("Today", "")] = self.stats_data[stat_key]
-        
-        # 3. Синхронизируем статистику с Supabase
         await self.sync_queue.put(("sync_state", None))
 
     async def get_user_state(self, m: Message):
@@ -379,39 +375,35 @@ class BotInstance:
             await self.log_and_update(user['id'], m.from_user.full_name, "/start")
 
         @self.router.message(F.chat.id == self.admin_chat_id)
-        async def handle_admin_input(m: Message):
-            if m.text and (m.text.startswith("/") or m.text.startswith("!")):
-                await self.admin_control_logic(m)
-                return
+        async def handle_admin_input(self, m: Message):
+        """Обработка того, что админ пишет в чате/топике Telegram"""
+        if m.text and (m.text.startswith("/") or m.text.startswith("!")):
+            if await self.admin_control_logic(m): return
 
-            target_id = None
-            if m.message_thread_id:
-                u = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
-                if u: target_id = u["id"]
-            if not target_id and m.reply_to_message:
-                target_id = self.msg_map.get(m.reply_to_message.message_id)
-            
-            if target_id:
-                try:
-                    try:
-                        await self.bot.copy_message(target_id, m.chat.id, m.message_id)
-                    except TelegramForbiddenError:
-                        await m.reply("❌ <b>Ошибка:</b> Пользователь заблокировал бота.")
-                        user = next((u for u in self.users_list if u['id'] == target_id), None)
-                        if user:
-                            user["is_active"] = False
-                            await self.sync_queue.put(("sync_state", None))
-                        return
-                    except Exception:
-                        if m.text: await self.bot.send_message(target_id, m.text)
-                        elif m.photo: await self.bot.send_photo(target_id, m.photo[-1].file_id, caption=m.caption)
-                        elif m.video: await self.bot.send_video(target_id, m.video.file_id, caption=m.caption)
-                        elif m.voice: await self.bot.send_voice(target_id, m.voice.file_id)
-                        else: await self.bot.forward_message(target_id, m.chat.id, m.message_id)
-                    
-                    await self.log_and_update(target_id, "Admin", m.text or "[Медиа]", is_admin=True)
-                except Exception as e:
-                    await m.reply(f"❌ <b>Ошибка:</b> {e}")
+        target_id = None
+        # 1. Если это форум (топики)
+        if m.message_thread_id:
+            u = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
+            if u: target_id = u["id"]
+        
+        # 2. Если это ответ (reply) на сообщение
+        if not target_id and m.reply_to_message:
+            target_id = self.msg_map.get(m.reply_to_message.message_id)
+        
+        if target_id:
+            try:
+                # Копируем сообщение пользователю в ТГ
+                await self.bot.copy_message(target_id, m.chat.id, m.message_id)
+                
+                # ВАЖНО: Записываем этот ответ админа в CRM файл!
+                await self.log_and_update(
+                    uid=target_id, 
+                    name="Администратор", 
+                    text=m.text or "[Медиа]", 
+                    is_admin=True
+                )
+            except Exception as e:
+                logger.error(f"Ошибка пересылки юзеру: {e}")
 
         @self.router.message()
         async def handle_user_input(m: Message):
