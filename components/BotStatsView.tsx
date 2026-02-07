@@ -1,14 +1,13 @@
 import React, { useState, useMemo } from 'react';
 import { BotConfig, TelegramUser } from '../types';
-import { api } from '../services/apiService';
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, 
-  ResponsiveContainer, LineChart, Line 
+  ResponsiveContainer, LineChart, Line, Legend 
 } from 'recharts';
 import { 
-  Users, UserMinus, Ban, UserCheck, Activity, AlertTriangle, 
-  TrendingUp, Search, Filter, ShieldAlert, UserX, ShieldCheck,
-  RefreshCw, MessageSquare, Trash2
+  Users, UserMinus, UserCheck, Activity, AlertTriangle, 
+  TrendingUp, Search, ShieldAlert, MessageSquare, 
+  Clock, Calendar, Zap, ArrowUpRight, ArrowDownRight
 } from 'lucide-react';
 
 interface BotStatsViewProps {
@@ -16,11 +15,11 @@ interface BotStatsViewProps {
   onUpdate: (bot: BotConfig) => void;
 }
 
-const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
+const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'active' | 'banned' | 'unsubscribed'>('all');
-  const [isUpdating, setIsUpdating] = useState<number | null>(null);
 
+  // Извлекаем статистику с дефолтными значениями
   const stats = bot.stats || { 
     totalMessages: 0, incomingToday: 0, outgoingToday: 0, 
     bannedCount: 0, history: [], activeUsers24h: 0 
@@ -28,53 +27,38 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
 
   const users = (bot.config?.connectedUsers || []) as TelegramUser[];
 
-  // Расширенная статистика
-  const userStats = useMemo(() => {
+  // Подсчет расширенных метрик
+  const metrics = useMemo(() => {
     const total = users.length;
     const banned = users.filter(u => u.is_banned).length;
     const unsubscribed = users.filter(u => u.is_active === false).length;
     const active = users.filter(u => u.is_active !== false && !u.is_banned).length;
     const retention = total > 0 ? Math.round((active / total) * 100) : 0;
+    
+    // Сравнение с "вчера" (условно берем из истории)
+    const prevDay = stats.history && stats.history.length > 1 ? stats.history[stats.history.length - 2] : null;
+    const today = stats.history && stats.history.length > 0 ? stats.history[stats.history.length - 1] : null;
+    
+    const userDiff = today && prevDay ? (today.totalUsers || 0) - (prevDay.totalUsers || 0) : 0;
 
-    return { total, banned, unsubscribed, active, retention };
-  }, [users]);
+    return { total, banned, unsubscribed, active, retention, userDiff };
+  }, [users, stats.history]);
 
-  // Данные графиков
+  // Данные для графиков за ВСЕ дни
   const chartData = useMemo(() => {
     if (!Array.isArray(stats.history) || stats.history.length === 0) {
-      return [{ date: 'Нет данных', incoming: 0, outgoing: 0, totalUsers: 0 }];
+      return [{ date: 'Нет данных', incoming: 0, outgoing: 0, totalUsers: 0, activeUsers: 0 }];
     }
-    return stats.history;
+    return stats.history.map(pt => ({
+      date: pt.date || '??',
+      incoming: pt.incoming || 0,
+      outgoing: pt.outgoing || 0,
+      totalUsers: pt.totalUsers || 0,
+      activeUsers: pt.activeUsers || 0
+    }));
   }, [stats.history]);
 
-  // Функции управления пользователями
-  const handleUserAction = async (userId: number, action: 'ban' | 'unban' | 'warn' | 'reset_warns') => {
-    setIsUpdating(userId);
-    const updatedUsers = users.map(u => {
-      if (u.id === userId) {
-        if (action === 'ban') return { ...u, is_banned: true };
-        if (action === 'unban') return { ...u, is_banned: false };
-        if (action === 'warn') return { ...u, warns: (u.warns || 0) + 1 };
-        if (action === 'reset_warns') return { ...u, warns: 0 };
-      }
-      return u;
-    });
-
-    const updatedBot = {
-      ...bot,
-      config: { ...bot.config, connectedUsers: updatedUsers }
-    };
-
-    try {
-      await api.updateBotConfig(updatedBot);
-      onUpdate(updatedBot);
-    } catch (err) {
-      console.error("Failed to update user:", err);
-    } finally {
-      setIsUpdating(null);
-    }
-  };
-
+  // Фильтрация списка
   const filteredUsers = useMemo(() => {
     return users.filter(u => {
       const matchesSearch = 
@@ -90,93 +74,136 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
   }, [users, search, filter]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-10 animate-in fade-in duration-700">
       
-      {/* Карточки */}
+      {/* Главные карточки (Metrics Grid) */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard 
           icon={<Users className="w-5 h-5 text-blue-400" />}
-          label="Всего юзеров"
-          value={userStats.total}
-          subtext="База данных"
+          label="Всего пользователей"
+          value={metrics.total}
+          trend={metrics.userDiff}
+          subtext="Общий размер базы"
         />
         <StatCard 
           icon={<UserCheck className="w-5 h-5 text-emerald-400" />}
-          label="Живые (Alive)"
-          value={userStats.active}
-          subtext={`${userStats.retention}% Retention`}
+          label="Живой актив (Alive)"
+          value={metrics.active}
+          subtext={`${metrics.retention}% удержания`}
+          highlight
         />
         <StatCard 
           icon={<MessageSquare className="w-5 h-5 text-purple-400" />}
           label="Сообщения"
           value={stats.totalMessages}
-          subtext={`${stats.incomingToday} сегодня`}
+          subtext={`${stats.incomingToday} за сегодня`}
         />
         <StatCard 
-          icon={<UserX className="w-5 h-5 text-rose-400" />}
-          label="В бане / Ушли"
-          value={userStats.banned + userStats.unsubscribed}
-          subtext="Неактивные"
+          icon={<UserMinus className="w-5 h-5 text-rose-400" />}
+          label="Отток / Блоки"
+          value={metrics.unsubscribed}
+          subtext="Потерянные пользователи"
         />
       </div>
 
-      {/* Графики */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6">
-          <h3 className="text-sm font-bold text-zinc-100 flex items-center gap-2 mb-6 uppercase tracking-widest">
-            <Activity className="w-4 h-4 text-emerald-500" /> Активность
-          </h3>
-          <div className="h-[200px]">
+      {/* Секция графиков */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        {/* Большой график активности */}
+        <div className="lg:col-span-2 bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6 shadow-xl shadow-black/20">
+          <div className="flex items-center justify-between mb-8">
+            <div>
+              <h3 className="text-lg font-bold text-zinc-100 flex items-center gap-2">
+                <Activity className="w-5 h-5 text-emerald-500" />
+                Активность сообщений
+              </h3>
+              <p className="text-xs text-zinc-500 mt-1">История взаимодействия за все дни</p>
+            </div>
+            <div className="flex gap-4 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+              <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-emerald-500"></div> Входящие</div>
+              <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-purple-500"></div> Исходящие</div>
+            </div>
+          </div>
+          
+          <div className="h-[300px] w-full">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData}>
+                <defs>
+                  <linearGradient id="colorInc" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
+                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-                <XAxis dataKey="date" stroke="#71717a" fontSize={10} />
-                <Tooltip contentStyle={{ backgroundColor: '#18181b', border: '1px solid #3f3f46' }} />
-                <Area type="monotone" dataKey="incoming" name="Входящие" stroke="#10b981" fill="#10b981" fillOpacity={0.1} />
-                <Area type="monotone" dataKey="outgoing" name="Исходящие" stroke="#a855f7" fill="transparent" />
+                <XAxis dataKey="date" stroke="#71717a" fontSize={10} tickLine={false} axisLine={false} dy={10} />
+                <YAxis stroke="#71717a" fontSize={10} tickLine={false} axisLine={false} />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: '#18181b', border: '1px solid #3f3f46', borderRadius: '16px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)' }}
+                />
+                <Area type="monotone" dataKey="incoming" stroke="#10b981" strokeWidth={3} fill="url(#colorInc)" />
+                <Area type="monotone" dataKey="outgoing" stroke="#a855f7" strokeWidth={2} fill="transparent" />
               </AreaChart>
             </ResponsiveContainer>
           </div>
         </div>
 
-        <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6">
-          <h3 className="text-sm font-bold text-zinc-100 flex items-center gap-2 mb-6 uppercase tracking-widest">
-            <TrendingUp className="w-4 h-4 text-blue-500" /> Рост базы
+        {/* График роста аудитории */}
+        <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6 shadow-xl shadow-black/20">
+          <h3 className="text-sm font-bold text-zinc-100 flex items-center gap-2 mb-8 uppercase tracking-tighter">
+            <TrendingUp className="w-5 h-5 text-blue-500" />
+            Динамика роста
           </h3>
-          <div className="h-[200px]">
+          <div className="h-[300px] w-full">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-                <XAxis dataKey="date" stroke="#71717a" fontSize={10} />
-                <Tooltip contentStyle={{ backgroundColor: '#18181b', border: '1px solid #3f3f46' }} />
-                <Line type="stepAfter" dataKey="totalUsers" name="Юзеры" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                <XAxis dataKey="date" stroke="#71717a" fontSize={10} tickLine={false} axisLine={false} />
+                <YAxis stroke="#71717a" fontSize={10} hide />
+                <Tooltip contentStyle={{ backgroundColor: '#18181b', border: '1px solid #3f3f46', borderRadius: '12px' }} />
+                <Line 
+                  type="stepAfter" 
+                  dataKey="totalUsers" 
+                  name="Всего" 
+                  stroke="#3b82f6" 
+                  strokeWidth={4} 
+                  dot={{ r: 4, fill: '#3b82f6', strokeWidth: 0 }} 
+                />
+                <Line 
+                   type="monotone" 
+                   dataKey="activeUsers" 
+                   name="Актив" 
+                   stroke="#f59e0b" 
+                   strokeWidth={2} 
+                   strokeDasharray="5 5"
+                   dot={false}
+                />
               </LineChart>
             </ResponsiveContainer>
           </div>
         </div>
       </div>
 
-      {/* Управление пользователями */}
-      <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl overflow-hidden">
-        <div className="p-4 border-b border-zinc-800 flex flex-col md:flex-row gap-4 justify-between items-center bg-zinc-900/30">
-          <div className="relative w-full md:w-80">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+      {/* Список пользователей с фильтрацией */}
+      <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl overflow-hidden shadow-2xl">
+        <div className="p-6 border-b border-zinc-800 bg-zinc-900/40 flex flex-col md:flex-row gap-4 justify-between items-center">
+          <div className="relative w-full md:w-96 group">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 group-focus-within:text-blue-500 transition-colors" />
             <input 
               type="text"
-              placeholder="Поиск по ID или Name..."
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-2 pl-10 pr-4 text-xs focus:ring-1 focus:ring-blue-500 outline-none"
+              placeholder="Поиск по ID, Имени или Юзернейму..."
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-2xl py-3 pl-12 pr-4 text-sm focus:ring-2 focus:ring-blue-500/20 outline-none transition-all"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
           
-          <div className="flex gap-1 p-1 bg-zinc-950 border border-zinc-800 rounded-xl">
+          <div className="flex gap-1 p-1.5 bg-zinc-950 border border-zinc-800 rounded-2xl">
             {(['all', 'active', 'unsubscribed', 'banned'] as const).map(f => (
               <button 
                 key={f}
                 onClick={() => setFilter(f)}
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${
-                  filter === f ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-all tracking-widest ${
+                  filter === f ? 'bg-zinc-800 text-white shadow-lg' : 'text-zinc-500 hover:text-zinc-300'
                 }`}
               >
                 {f === 'all' ? 'Все' : f === 'active' ? 'Живые' : f === 'unsubscribed' ? 'Ушли' : 'Бан'}
@@ -185,79 +212,99 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
           </div>
         </div>
 
-        <div className="divide-y divide-zinc-800 max-h-[500px] overflow-y-auto">
-          {filteredUsers.map(user => (
-            <div key={user.id} className="p-4 hover:bg-white/[0.02] flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-colors">
-              <div className="flex items-center gap-3">
-                <div className={`w-10 h-10 rounded-full flex items-center justify-center font-black text-sm border-2 ${
-                  user.is_active === false ? 'border-zinc-800 text-zinc-700' : 'border-blue-500/20 bg-blue-500/10 text-blue-400'
+        <div className="divide-y divide-zinc-800/50 max-h-[600px] overflow-y-auto custom-scrollbar">
+          {filteredUsers.length > 0 ? filteredUsers.map(user => (
+            <div key={user.id} className="p-5 hover:bg-white/[0.02] transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-4">
+                {/* Аватар-заглушка */}
+                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-lg border-2 shadow-inner ${
+                  user.is_active === false 
+                  ? 'border-zinc-800 bg-zinc-900 text-zinc-700' 
+                  : 'border-blue-500/20 bg-gradient-to-br from-blue-500/10 to-purple-500/10 text-blue-400'
                 }`}>
                   {user.first_name?.[0] || '?'}
                 </div>
+                
                 <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-bold text-zinc-100">{user.first_name}</span>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-sm font-bold text-zinc-100">{user.first_name || 'Anonymous'}</span>
                     {user.is_active === false && (
-                      <span className="text-[9px] bg-rose-500/10 text-rose-500 px-1.5 py-0.5 rounded border border-rose-500/20 font-black uppercase">Удалил бота</span>
+                      <span className="text-[8px] bg-rose-500/10 text-rose-500 px-2 py-0.5 rounded-full border border-rose-500/20 font-black uppercase tracking-tighter">
+                        Бот удален
+                      </span>
                     )}
                   </div>
-                  <p className="text-xs text-zinc-500">ID: {user.id} {user.username && `@${user.username}`}</p>
+                  <div className="flex items-center gap-3 text-xs text-zinc-500">
+                    <span className="font-mono">ID: {user.id}</span>
+                    {user.username && <span className="text-blue-500/60 font-medium">@{user.username}</span>}
+                  </div>
                 </div>
               </div>
 
-              {/* Кнопки управления */}
-              <div className="flex items-center gap-2">
-                <div className="mr-4 text-right hidden lg:block">
-                  <div className="text-[9px] text-zinc-600 uppercase font-black">Варны</div>
-                  <div className={`text-xs font-bold ${user.warns ? 'text-amber-500' : 'text-zinc-700'}`}>{user.warns || 0}</div>
-                </div>
+              {/* Статусы и активность */}
+              <div className="flex items-center gap-6">
+                 {/* Информация о варнах */}
+                 {(user.warns || 0) > 0 && (
+                    <div className="flex flex-col items-center px-3 py-1 bg-amber-500/5 border border-amber-500/10 rounded-xl">
+                        <span className="text-[8px] text-amber-500/50 font-black uppercase">Warns</span>
+                        <span className="text-xs font-bold text-amber-500">{user.warns}</span>
+                    </div>
+                 )}
 
-                {user.is_banned ? (
-                  <button 
-                    disabled={isUpdating === user.id}
-                    onClick={() => handleUserAction(user.id, 'unban')}
-                    className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 rounded-lg text-[10px] font-black uppercase hover:bg-emerald-500/20 transition-all"
-                  >
-                    <ShieldCheck className="w-3.5 h-3.5" /> Разбанить
-                  </button>
-                ) : (
-                  <>
-                    <button 
-                      disabled={isUpdating === user.id}
-                      onClick={() => handleUserAction(user.id, 'warn')}
-                      className="p-2 bg-amber-500/10 text-amber-500 border border-amber-500/20 rounded-lg hover:bg-amber-500/20 transition-all"
-                      title="Выдать предупреждение"
-                    >
-                      <AlertTriangle className="w-3.5 h-3.5" />
-                    </button>
-                    <button 
-                      disabled={isUpdating === user.id}
-                      onClick={() => handleUserAction(user.id, 'ban')}
-                      className="flex items-center gap-2 px-3 py-1.5 bg-rose-500/10 text-rose-500 border border-rose-500/20 rounded-lg text-[10px] font-black uppercase hover:bg-rose-500/20 transition-all"
-                    >
-                      <Ban className="w-3.5 h-3.5" /> Забанить
-                    </button>
-                  </>
-                )}
-                
-                {isUpdating === user.id && <RefreshCw className="w-4 h-4 text-blue-500 animate-spin ml-2" />}
+                 {/* Значок бана */}
+                 {user.is_banned && (
+                    <div className="p-2 bg-rose-500/10 rounded-xl border border-rose-500/20">
+                        <ShieldAlert className="w-4 h-4 text-rose-500" />
+                    </div>
+                 )}
+
+                <div className="flex flex-col items-end min-w-[100px]">
+                  <div className="flex items-center gap-1.5 text-zinc-600 mb-1">
+                    <Clock className="w-3 h-3" />
+                    <span className="text-[9px] font-black uppercase tracking-tighter">Last Seen</span>
+                  </div>
+                  <span className="text-xs font-medium text-zinc-400">
+                    {user.last_seen ? new Date(user.last_seen * 1000).toLocaleDateString() : 'Неизвестно'}
+                  </span>
+                </div>
               </div>
             </div>
-          ))}
+          )) : (
+            <div className="py-20 flex flex-col items-center justify-center text-zinc-600">
+              <Zap className="w-12 h-12 mb-4 opacity-10" />
+              <p className="text-sm font-bold uppercase tracking-widest opacity-50">Пользователи не найдены</p>
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 };
 
-const StatCard = ({ icon, label, value, subtext }: any) => (
-  <div className="bg-zinc-900/50 border border-zinc-800 p-5 rounded-2xl hover:border-zinc-700 transition-all">
-    <div className="flex items-center gap-3 mb-3">
-      <div className="p-2 bg-zinc-950 rounded-lg">{icon}</div>
-      <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">{label}</span>
+// Вспомогательный компонент карточки
+const StatCard = ({ icon, label, value, trend, subtext, highlight }: any) => (
+  <div className={`relative overflow-hidden bg-zinc-900/50 border ${highlight ? 'border-emerald-500/30' : 'border-zinc-800'} p-6 rounded-3xl hover:border-zinc-700 transition-all group shadow-lg`}>
+    <div className="flex items-center justify-between mb-4">
+      <div className={`p-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 group-hover:scale-110 transition-transform`}>
+        {icon}
+      </div>
+      {trend !== undefined && trend !== 0 && (
+        <div className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-black ${trend > 0 ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>
+          {trend > 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+          {Math.abs(trend)}
+        </div>
+      )}
     </div>
-    <div className="text-2xl font-black text-zinc-100">{value.toLocaleString()}</div>
-    <div className="text-[9px] font-bold text-zinc-600 uppercase mt-1">{subtext}</div>
+    <div className="text-3xl font-black text-zinc-100 mb-1 tracking-tight">
+      {typeof value === 'number' ? value.toLocaleString() : value}
+    </div>
+    <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">{label}</div>
+    <div className="text-[9px] font-medium text-zinc-600 italic">{subtext}</div>
+    
+    {/* Декоративный эффект */}
+    {highlight && (
+        <div className="absolute -right-4 -bottom-4 w-24 h-24 bg-emerald-500/5 rounded-full blur-2xl"></div>
+    )}
   </div>
 );
 
