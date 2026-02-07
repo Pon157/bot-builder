@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User } from '../types';
 import { api } from '../services/apiService';
-import { Mail, Lock, User as UserIcon, ShieldCheck, ArrowLeft, RefreshCw } from 'lucide-react';
+import { Mail, Lock, User as UserIcon, ShieldCheck, ArrowLeft, RefreshCw, CheckSquare, Square } from 'lucide-react';
 
 interface AuthProps {
   onLogin: (user: User) => void;
@@ -15,6 +15,7 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
   const [code, setCode] = useState('');
+  const [consent, setConsent] = useState(true); // Состояние согласия на рассылку
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'offline'>('checking');
@@ -37,11 +38,8 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     setError('');
     try {
       const result = await api.requestVerification(email);
-      if (result === true) {
-        setMode('verify');
-      } else {
-        setError(typeof result === 'string' ? result : 'Ошибка отправки кода');
-      }
+      if (result === true) setMode('verify');
+      else setError(typeof result === 'string' ? result : 'Ошибка отправки кода');
     } catch (err: any) {
       setError(err.message || 'Нет связи с сервером');
     }
@@ -53,7 +51,14 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     setLoading(true);
     setError('');
     try {
-      const user = await api.verifyAndRegister({ email, code, password, username });
+      // Передаем consent вместе с данными регистрации
+      const user = await api.verifyAndRegister({ 
+        email, 
+        code, 
+        password, 
+        username,
+        marketing_consent: consent // Поле для БД
+      });
       if (user) onLogin(user);
     } catch (err: any) {
       setError(err.message || 'Ошибка регистрации');
@@ -170,6 +175,22 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
                 <Lock className="absolute left-4 top-4 w-4 h-4 text-zinc-600" />
                 <input type="password" required className="w-full bg-black border border-zinc-800 rounded-2xl p-4 pl-12 text-sm text-white focus:ring-1 focus:ring-blue-500 outline-none transition-all" placeholder="Придумайте пароль" value={password} onChange={e => setPassword(e.target.value)} />
               </div>
+              
+              {/* Кнопка/Чекбокс согласия на рассылку */}
+              <button 
+                type="button" 
+                onClick={() => setConsent(!consent)}
+                className="flex items-center gap-3 w-full p-2 hover:bg-white/5 rounded-xl transition-colors group"
+              >
+                {consent ? 
+                  <CheckSquare className="w-5 h-5 text-blue-500" /> : 
+                  <Square className="w-5 h-5 text-zinc-700 group-hover:text-zinc-500" />
+                }
+                <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 text-left leading-tight">
+                  Разрешаю получение Email рассылок Dialoge Engine
+                </span>
+              </button>
+
               <button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-black py-4 rounded-2xl transition-all uppercase tracking-widest text-xs">
                 {loading ? 'Отправка...' : 'Отправить код'}
               </button>
@@ -190,6 +211,7 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
             </form>
           )}
 
+          {/* ... Оставшиеся формы forgot и reset без изменений ... */}
           {mode === 'forgot' && (
             <form className="space-y-4" onSubmit={handleForgotPassword}>
               <p className="text-zinc-500 text-xs text-center mb-4">Введите Email для восстановления доступа.</p>
