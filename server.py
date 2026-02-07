@@ -212,23 +212,32 @@ async def request_ver(d: dict):
 @app.post("/api/auth/verify-and-register")
 async def verify_reg(d: dict):
     email = d['email'].lower()
+    
     # Проверка кода из базы
     r = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{d['code']}"})
     if not r.json():
         raise HTTPException(400, "Неверный код подтверждения")
     
     uid = f"u_{secrets.token_hex(4)}"
+    
+    # Формируем данные пользователя
     user_data = {
         "id": uid,
         "username": d['username'],
         "email": email,
-        "password": hash_pwd(d['password']), # Сохраняем хеш
+        "password": hash_pwd(d['password']), 
         "balance": 0,
-        "license_expires_at": int(time.time()*1000) + 259200000 # +3 дня бонуса
+        "license_expires_at": int(time.time()*1000) + 259200000, # +3 дня бонуса
+        # ДОБАВЛЯЕМ ЭТУ СТРОКУ:
+        "marketing_consent": d.get('marketing_consent', False) 
     }
+    
+    # Отправляем в Supabase
     await db.post("users", json=user_data)
+    
     # Очищаем код
     await db.delete("temp_codes", params={"email": f"eq.{email}"})
+    
     return user_data
 
 @app.post("/api/auth/forgot-password")
