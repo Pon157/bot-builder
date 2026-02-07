@@ -134,7 +134,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
           {id: 'settings', label: 'Основные', icon: Settings},
           {id: 'interface', label: 'Меню (Кнопки)', icon: Ticket},
           {id: 'logic', label: 'Триггеры', icon: Zap},
-          {id: 'chat', label: 'CRM Чат', icon: MessageSquare},
           {id: 'stats', label: 'Аналитика', icon: BarChart3},
           {id: 'logs', label: 'Терминал', icon: Terminal}
         ].map((t) => (
