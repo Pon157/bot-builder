@@ -30,9 +30,11 @@ logging.basicConfig(
 logger = logging.getLogger("BotCoreEngine")
 
 def get_anon_id(user_id: int) -> str:
+    """Генерация короткого хеша для анонимности"""
     return hashlib.md5(str(user_id).encode()).hexdigest()[:6].upper()
 
 def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_text: str = "") -> str:
+    """Формирование заголовка сообщения для админа"""
     is_anon = settings.get('anonymousTopics', False)
     uid = m.from_user.id
     anon_tag = f"#{get_anon_id(uid)}"
@@ -53,6 +55,7 @@ def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_
             
         user_info = " | ".join(info_parts) if info_parts else f"Юзер {anon_tag}"
 
+    status_line = ""
     if btn_text:
         status_line = settings.get('ticketMessageHeader', "🆘 <b>ЗАЯВКА</b>")
         if "{btn}" in status_line:
@@ -81,11 +84,15 @@ class BotInstance:
         self.msg_map = {}
         self.flood_cache = {}
         self.is_running = True
+        
+        # Очередь для моментальной синхронизации
         self.sync_queue = asyncio.Queue()
+        self.last_sync_time = time.time()
         
         self.apply_config(config_data)
 
     def apply_config(self, data: dict):
+        """Парсинг конфигурации и инициализация статистики"""
         raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
         full_cfg = {**raw_cfg, **data}
         
@@ -106,47 +113,86 @@ class BotInstance:
         self.auto_ban_limit = int(self.settings.get('autoBanThreshold', 3))
         
         self.users_list = full_cfg.get('connectedUsers', [])
+        
+        # --- ИСПРАВЛЕНИЕ ДЛЯ ГРАФИКОВ ---
+        # Гарантируем правильную структуру для BotStatsView
         self.stats_data = full_cfg.get('stats') or {
-            "totalMessages": 0, "incomingToday": 0, "outgoingToday": 0, 
-            "bannedCount": 0, "history": [], "activeUsers24h": 0
+            "totalMessages": 0,
+            "incomingToday": 0,
+            "outgoingToday": 0,
+            "bannedCount": 0,
+            "history": [],
+            "activeUsers24h": 0
         }
-        if not isinstance(self.stats_data.get("history"), list):
-            self.stats_data["history"] = []
+        
+        # Если история пуста или некорректна, создаем начальную точку
+        if not isinstance(self.stats_data.get("history"), list) or len(self.stats_data.get("history", [])) == 0:
+            self.stats_data["history"] = [{
+                "date": datetime.now().strftime("%d.%m"),
+                "incoming": 0,
+                "outgoing": 0,
+                "totalUsers": len(self.users_list),
+                "activeUsers": 0
+            }]
 
     async def daily_stats_rotator(self):
-        last_date = datetime.now().strftime("%d.%m")
+        """Ротация статистики раз в час"""
         while self.is_running:
-            await asyncio.sleep(3600)
-            now = datetime.now()
-            current_date = now.strftime("%d.%m")
-            
-            day_ago = int((now - timedelta(days=1)).timestamp())
-            active_count = 0
-            for u in self.users_list:
-                if u.get('last_seen', 0) > day_ago:
-                    active_count += 1
-            self.stats_data["activeUsers24h"] = active_count
+            try:
+                now = datetime.now()
+                current_date = now.strftime("%d.%m")
+                
+                # Подсчет активных пользователей за 24ч
+                day_ago = int((now - timedelta(days=1)).timestamp())
+                active_count = 0
+                for u in self.users_list:
+                    if u.get('last_seen', 0) > day_ago:
+                        active_count += 1
+                self.stats_data["activeUsers24h"] = active_count
 
-            if current_date != last_date:
-                history_point = {
-                    "date": last_date,
-                    "incoming": self.stats_data.get("incomingToday", 0),
-                    "outgoing": self.stats_data.get("outgoingToday", 0),
-                    "totalUsers": len(self.users_list),
-                    "activeUsers": active_count
-                }
+                # Проверка смены дня в истории
+                history = self.stats_data.get("history", [])
+                if not history:
+                     history = [{
+                        "date": current_date,
+                        "incoming": 0, "outgoing": 0, 
+                        "totalUsers": len(self.users_list), "activeUsers": 0
+                    }]
                 
-                self.stats_data["history"].append(history_point)
-                if len(self.stats_data["history"]) > 30:
-                    self.stats_data["history"].pop(0)
+                last_point = history[-1]
                 
-                self.stats_data["incomingToday"] = 0
-                self.stats_data["outgoingToday"] = 0
-                last_date = current_date
-            
-            await self.sync_queue.put(("sync_state", None))
+                if last_point["date"] != current_date:
+                    # Новый день -> фиксируем старый и создаем новый
+                    new_point = {
+                        "date": current_date,
+                        "incoming": 0, # Сбрасываем счетчики нового дня
+                        "outgoing": 0,
+                        "totalUsers": len(self.users_list),
+                        "activeUsers": active_count
+                    }
+                    history.append(new_point)
+                    # Храним историю 14 дней
+                    self.stats_data["history"] = history[-14:]
+                    
+                    # Сброс текущих дневных счетчиков в корне объекта
+                    self.stats_data["incomingToday"] = 0
+                    self.stats_data["outgoingToday"] = 0
+                else:
+                    # Тот же день -> обновляем текущую точку истории для графиков realtime
+                    last_point["incoming"] = self.stats_data.get("incomingToday", 0)
+                    last_point["outgoing"] = self.stats_data.get("outgoingToday", 0)
+                    last_point["totalUsers"] = len(self.users_list)
+                    last_point["activeUsers"] = active_count
+                
+                # Принудительная синхронизация
+                await self.sync_queue.put(("sync_state", None))
+                await asyncio.sleep(60) # Проверка каждую минуту (для точности)
+            except Exception as e:
+                logger.error(f"Rotator Error: {e}")
+                await asyncio.sleep(60)
 
     async def database_sync_worker(self):
+        """Воркер синхронизации с Supabase"""
         async with httpx.AsyncClient() as client:
             headers = {
                 "apikey": self.sb_key, 
@@ -154,11 +200,19 @@ class BotInstance:
                 "Content-Type": "application/json"
             }
             while self.is_running:
-                action, payload = await self.sync_queue.get()
+                # Берем задачу из очереди
+                try:
+                    # Ждем задачу с таймаутом 1 сек, чтобы проверять is_running
+                    action, payload = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+
                 try:
                     if action == "log_message":
+                        # Логирование сообщения (POST)
                         await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
                     elif action == "sync_state":
+                        # Синхронизация состояния (PATCH)
                         update_payload = {
                             "config": {
                                 "connectedUsers": self.users_list, 
@@ -185,6 +239,11 @@ class BotInstance:
         return False
 
     async def log_and_update(self, uid: int, name: str, text: str, is_admin: bool = False):
+        """
+        Логирование сообщения и МГНОВЕННОЕ обновление статистики 
+        для работы графиков в реальном времени.
+        """
+        # 1. Отправляем лог сообщения в отдельную таблицу (для истории переписки)
         await self.sync_queue.put(("log_message", {
             "bot_id": self.bot_id, 
             "user_id": uid, 
@@ -193,10 +252,17 @@ class BotInstance:
             "is_from_admin": is_admin
         }))
         
+        # 2. Обновляем счетчики в памяти
         self.stats_data["totalMessages"] = self.stats_data.get("totalMessages", 0) + 1
         stat_key = "outgoingToday" if is_admin else "incomingToday"
         self.stats_data[stat_key] = self.stats_data.get(stat_key, 0) + 1
         
+        # Обновляем текущую точку истории для графиков, чтобы не ждать ротатора
+        if self.stats_data.get("history"):
+             self.stats_data["history"][-1][stat_key.replace("Today", "")] = self.stats_data[stat_key]
+        
+        # 3. МГНОВЕННО отправляем обновленный JSON бота в Supabase
+        # Это заставляет BotStatsView на фронтенде увидеть изменения при следующем опросе (через 1-5 сек)
         await self.sync_queue.put(("sync_state", None))
 
     async def get_user_state(self, m: Message):
@@ -218,9 +284,11 @@ class BotInstance:
                 "last_topic_id": None
             }
             self.users_list.append(user)
+            # Сразу синхронизируем нового юзера
             await self.sync_queue.put(("sync_state", None))
         else:
             user["last_seen"] = int(time.time())
+            # Если юзер вернулся после блокировки
             if not user.get("is_active", True):
                 user["is_active"] = True
                 await self.sync_queue.put(("sync_state", None))
@@ -261,8 +329,13 @@ class BotInstance:
                 if header_text:
                     await self.bot.send_message(self.admin_chat_id, header_text, message_thread_id=thread_id)
                 sent_msg = await self.bot.copy_message(self.admin_chat_id, m.chat.id, m.message_id, message_thread_id=thread_id)
+            
             if sent_msg:
                 self.msg_map[sent_msg.message_id] = user['id']
+                
+            # ЛОГИРУЕМ ИСХОДЯЩЕЕ ОТ ЮЗЕРА (НО НЕ ОТ АДМИНА ЗДЕСЬ)
+            # Это делается в handler'е, поэтому здесь просто отправка
+            
         except Exception as e:
             logger.error(f"Forwarding Error: {e}")
 
@@ -374,12 +447,14 @@ class BotInstance:
                             await self.sync_queue.put(("sync_state", None))
                         return
                     except Exception:
+                        # Fallback если copy_message не сработал
                         if m.text: await self.bot.send_message(target_id, m.text)
                         elif m.photo: await self.bot.send_photo(target_id, m.photo[-1].file_id, caption=m.caption)
                         elif m.video: await self.bot.send_video(target_id, m.video.file_id, caption=m.caption)
                         elif m.voice: await self.bot.send_voice(target_id, m.voice.file_id)
                         else: await self.bot.forward_message(target_id, m.chat.id, m.message_id)
                     
+                    # Логируем ответ админа
                     await self.log_and_update(target_id, "Admin", m.text or "[Медиа]", is_admin=True)
                 except Exception as e:
                     await m.reply(f"❌ <b>Ошибка:</b> {e}")
