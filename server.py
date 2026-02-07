@@ -10,8 +10,11 @@ import random
 import hashlib
 from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Header
+# ДОБАВИЛИ Request СЮДА:
+from fastapi import FastAPI, HTTPException, Header, Request 
 from fastapi.middleware.cors import CORSMiddleware
+# ДОБАВИЛИ ЭТУ СТРОКУ:
+from starlette.middleware.base import BaseHTTPMiddleware 
 from cryptography.fernet import Fernet
 
 # Импорт твоего сервиса почты (файл email_service.py должен быть рядом)
@@ -171,6 +174,30 @@ async def lifespan(app: FastAPI):
         await pm.stop_bot(bid)
 
 app = FastAPI(lifespan=lifespan)
+
+# === НАЧАЛО БЛОКА ЗАЩИТЫ ===
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        # HSTS - заставляет использовать HTTPS
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        # Защита от кликджекинга
+        response.headers["X-Frame-Options"] = "DENY"
+        # Защита от подмены типов файлов
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        # Управление передачей реферера
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # Настройка CSP (разрешаем работу твоего API и Supabase)
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            f"connect-src 'self' {S_URL}; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline';"
+        )
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+# === КОНЕЦ БЛОКА ЗАЩИТЫ ===
 
 app.add_middleware(
     CORSMiddleware,
