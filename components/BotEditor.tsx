@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+
+import React, { useState, useEffect } from 'react';
 import { BotConfig, BotStatus } from '../types';
 import { api } from '../services/apiService';
 import BotConsole from './BotConsole';
@@ -6,8 +7,7 @@ import BotStatsView from './BotStatsView';
 import { 
   Settings, Cpu, BarChart3, Terminal, X, Save, Power, 
   Ticket, Plus, MessageSquare, User, CheckSquare, 
-  Square, Zap, Shield, Sliders, Layout, ShieldAlert, Lock, Trash2, 
-  AlertCircle, Search, ChevronRight, Send, Clock
+  Square, Zap, Bell, Shield, Sliders, Layout, ShieldAlert, Lock, Trash2, ShieldCheck, AlertCircle, Type as TypeIcon
 } from 'lucide-react';
 
 interface BotEditorProps {
@@ -20,19 +20,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
   const [activeTab, setActiveTab] = useState<'settings' | 'logic' | 'interface' | 'logs' | 'stats' | 'chat'>('settings');
   const [isProcessing, setIsProcessing] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-  
-  // --- CRM STATE ---
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
-  const [chatMessages, setChatMessages] = useState<any[]>([]);
-  const [replyText, setReplyText] = useState('');
-  const [searchUser, setSearchUser] = useState('');
-  const [isSending, setIsSending] = useState(false);
-  const chatEndRef = useRef<HTMLDivElement>(null);
-
-  // Скролл чата
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
+  const [messages, setMessages] = useState<any[]>([]);
 
   const defaultSettings: BotConfig['settings'] = {
     useTopics: false,
@@ -57,37 +45,12 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
 
   const safeSettings = { ...defaultSettings, ...(bot.settings || {}) };
 
-  // --- CRM FUNCTIONS ---
-  const loadChatHistory = async (userId: string) => {
-    setSelectedUserId(userId);
-    try {
-      const history = await api.getChatHistory(bot.id, userId);
-      setChatMessages(Array.isArray(history) ? history : []);
-    } catch (e) {
-      console.error("CRM Load Error:", e);
-      setChatMessages([]);
+  useEffect(() => {
+    if (activeTab === 'chat') {
+        api.getBotMessages(bot.id).then(setMessages).catch(() => setMessages([]));
     }
-  };
+  }, [activeTab, bot.id]);
 
-  const handleSendMessage = async () => {
-    if (!replyText.trim() || !selectedUserId) return;
-    setIsSending(true);
-    try {
-      await api.sendChatMessage(bot.id, selectedUserId, replyText);
-      setChatMessages(prev => [...prev, {
-        t: Math.floor(Date.now() / 1000),
-        role: 'admin',
-        msg: replyText
-      }]);
-      setReplyText('');
-    } catch (e) {
-      alert("Ошибка отправки сообщения");
-    } finally {
-      setIsSending(false);
-    }
-  };
-
-  // --- EDITOR FUNCTIONS ---
   const handleToggleServer = async () => {
     setIsProcessing(true);
     try {
@@ -95,6 +58,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         await api.stopBotOnServer(bot.id);
         onUpdate({ ...bot, status: BotStatus.IDLE });
       } else {
+        // При запуске всегда сначала сохраняем конфиг
         const updated = await api.saveBot(bot.owner_id, bot);
         if (updated) onUpdate(updated);
         setHasUnsavedChanges(false);
@@ -132,13 +96,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
     onUpdate(updatedBot);
   };
 
-  // Фильтр пользователей для CRM
-  const connectedUsers = (bot.config?.connectedUsers || []) as any[];
-  const filteredUsers = connectedUsers.filter(u => 
-    u.first_name?.toLowerCase().includes(searchUser.toLowerCase()) || 
-    u.id.toString().includes(searchUser)
-  );
-
   return (
     <div className="space-y-8 animate-in fade-in duration-500 pb-20">
       {hasUnsavedChanges && (
@@ -149,7 +106,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         </div>
       )}
 
-      {/* HEADER */}
       <header className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] flex flex-col md:flex-row justify-between items-center gap-6 shadow-2xl relative overflow-hidden">
         <div className="flex items-center gap-6 relative z-10">
           <div className={`w-16 h-16 rounded-2xl flex items-center justify-center border-2 ${bot.status === BotStatus.RUNNING ? 'bg-blue-500/10 border-blue-500/30 text-blue-500' : 'bg-zinc-900 border-zinc-800 text-zinc-600'}`}>
@@ -173,7 +129,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         </div>
       </header>
 
-      {/* TABS */}
       <div className="flex gap-2 border-b border-zinc-800 overflow-x-auto no-scrollbar">
         {[
           {id: 'settings', label: 'Основные', icon: Settings},
@@ -190,127 +145,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
       </div>
 
       <div className="min-h-[400px]">
-        {/* === CRM CHAT === */}
-        {activeTab === 'chat' && (
-           <div className="flex h-[700px] bg-[#0a0a0a] border border-zinc-800 rounded-[2.5rem] overflow-hidden shadow-2xl relative">
-              {/* Sidebar: User List */}
-              <div className="w-80 border-r border-zinc-800 flex flex-col bg-zinc-900/10">
-                  <div className="p-5 border-b border-zinc-800">
-                      <div className="relative">
-                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" />
-                          <input 
-                              type="text" 
-                              placeholder="Поиск клиента..."
-                              className="w-full bg-black border border-zinc-800 rounded-xl py-2.5 pl-9 pr-4 text-xs text-white outline-none focus:border-blue-500 transition-all"
-                              value={searchUser}
-                              onChange={e => setSearchUser(e.target.value)}
-                          />
-                      </div>
-                  </div>
-                  <div className="flex-1 overflow-y-auto custom-scrollbar">
-                      {filteredUsers.length === 0 ? (
-                          <div className="p-10 text-center opacity-30">
-                              <User className="w-8 h-8 mx-auto mb-2" />
-                              <p className="text-[10px] font-bold uppercase">Нет пользователей</p>
-                          </div>
-                      ) : (
-                          filteredUsers.map(u => (
-                              <button 
-                                  key={u.id}
-                                  onClick={() => loadChatHistory(u.id)}
-                                  className={`w-full p-4 flex items-center gap-3 border-b border-zinc-900/50 hover:bg-white/[0.02] transition-all text-left group ${selectedUserId === u.id ? 'bg-blue-600/10 border-r-2 border-r-blue-500' : ''}`}
-                              >
-                                  <div className={`w-10 h-10 rounded-2xl flex items-center justify-center font-bold text-sm transition-colors ${selectedUserId === u.id ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400 group-hover:bg-zinc-700'}`}>
-                                      {u.first_name?.[0] || '?'}
-                                  </div>
-                                  <div className="flex-1 min-w-0">
-                                      <div className="flex justify-between items-center mb-0.5">
-                                          <p className={`text-xs font-bold truncate ${selectedUserId === u.id ? 'text-white' : 'text-zinc-300'}`}>{u.first_name || 'Без имени'}</p>
-                                      </div>
-                                      <p className="text-[10px] text-zinc-600 font-mono truncate">ID: {u.id}</p>
-                                  </div>
-                                  <ChevronRight className={`w-3 h-3 ${selectedUserId === u.id ? 'text-blue-500' : 'text-zinc-700 opacity-0 group-hover:opacity-100'}`} />
-                              </button>
-                          ))
-                      )}
-                  </div>
-              </div>
-
-              {/* Chat Area */}
-              <div className="flex-1 flex flex-col bg-[#050505]">
-                  {selectedUserId ? (
-                      <>
-                          {/* Chat Header */}
-                          <div className="px-6 py-4 border-b border-zinc-800 bg-zinc-900/20 flex justify-between items-center">
-                              <div className="flex items-center gap-3">
-                                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-                                  <span className="text-xs font-black text-white uppercase tracking-widest">
-                                      Чат с {filteredUsers.find(u => u.id === selectedUserId)?.first_name}
-                                  </span>
-                              </div>
-                              <span className="text-[10px] font-mono text-zinc-600">HISTORY MODE</span>
-                          </div>
-
-                          {/* Messages List */}
-                          <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-900/20 via-black to-black">
-                              {chatMessages.length === 0 && (
-                                  <div className="h-full flex flex-col items-center justify-center opacity-20">
-                                      <MessageSquare className="w-12 h-12 mb-3" />
-                                      <p className="text-[10px] font-black uppercase tracking-widest">История сообщений пуста</p>
-                                  </div>
-                              )}
-                              {chatMessages.map((msg, i) => (
-                                  <div key={i} className={`flex ${msg.role === 'admin' ? 'justify-end' : 'justify-start'} animate-in slide-in-from-bottom-2`}>
-                                      <div className={`max-w-[70%] p-4 rounded-2xl text-xs leading-relaxed shadow-lg backdrop-blur-sm ${
-                                          msg.role === 'admin' 
-                                          ? 'bg-blue-600 text-white rounded-tr-sm' 
-                                          : 'bg-zinc-900 border border-zinc-800 text-zinc-300 rounded-tl-sm'
-                                      }`}>
-                                          {msg.msg}
-                                          <div className={`flex items-center gap-1 mt-2 text-[9px] font-bold uppercase ${msg.role === 'admin' ? 'text-blue-200' : 'text-zinc-600'}`}>
-                                              <Clock className="w-2.5 h-2.5" />
-                                              {new Date(msg.t * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                                          </div>
-                                      </div>
-                                  </div>
-                              ))}
-                              <div ref={chatEndRef} />
-                          </div>
-
-                          {/* Input Area */}
-                          <div className="p-5 border-t border-zinc-800 bg-zinc-900/10">
-                              <div className="flex gap-3 relative">
-                                  <input 
-                                      className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-5 py-4 text-xs text-white outline-none focus:border-blue-500/50 transition-all placeholder:text-zinc-700"
-                                      placeholder="Напишите сообщение..."
-                                      value={replyText}
-                                      onChange={e => setReplyText(e.target.value)}
-                                      onKeyDown={e => e.key === 'Enter' && handleSendMessage()}
-                                  />
-                                  <button 
-                                      onClick={handleSendMessage}
-                                      disabled={isSending || !replyText.trim()}
-                                      className="w-14 bg-blue-600 hover:bg-blue-500 text-white rounded-xl flex items-center justify-center disabled:opacity-50 disabled:grayscale transition-all shadow-lg shadow-blue-600/10"
-                                  >
-                                      <Send className="w-5 h-5" />
-                                  </button>
-                              </div>
-                          </div>
-                      </>
-                  ) : (
-                      <div className="flex-1 flex flex-col items-center justify-center text-zinc-700">
-                          <div className="w-20 h-20 bg-zinc-900/50 rounded-full flex items-center justify-center mb-6 border border-zinc-800">
-                              <MessageSquare className="w-8 h-8 opacity-50" />
-                          </div>
-                          <p className="text-xs font-black uppercase tracking-[0.2em] mb-2">CRM Система</p>
-                          <p className="text-[10px] font-medium uppercase opacity-50">Выберите диалог слева</p>
-                      </div>
-                  )}
-              </div>
-           </div>
-        )}
-
-        {/* === SETTINGS === */}
         {activeTab === 'settings' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-8">
@@ -333,8 +167,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                   </label>
                 </div>
               </section>
-              {/* Other settings sections... */}
-               <section className="space-y-6">
+
+              <section className="space-y-6">
                 <h2 className="text-sm font-black text-white uppercase flex items-center gap-2 mb-6">
                   <Layout className="w-4 h-4 text-emerald-500" /> Конструктор шапки сообщений
                 </h2>
@@ -463,6 +297,22 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                     <textarea placeholder="Что бот должен ответить..." className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm outline-none min-h-[120px] focus:border-emerald-500" value={trig.response} onChange={e => { const nt = [...bot.triggers]; nt[i].response = e.target.value; handleLocalUpdate({...bot, triggers: nt}); }} />
                  </div>
                ))}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'chat' && (
+          <div className="bg-[#111] border border-zinc-800 rounded-[2.5rem] h-[700px] overflow-hidden flex flex-col p-8 shadow-2xl relative">
+            <h2 className="text-sm font-black text-white uppercase mb-6 flex items-center gap-2"><MessageSquare className="w-4 h-4 text-blue-500" /> CRM История сообщений</h2>
+            <div className="flex-1 overflow-y-auto no-scrollbar space-y-6 pr-4">
+              {messages.length === 0 ? <p className="text-center text-zinc-700 py-32 uppercase text-[10px] font-black tracking-widest opacity-20">История пуста</p> : messages.map((m, i) => (
+                <div key={i} className={`flex gap-4 items-start ${m.is_admin ? 'flex-row-reverse text-right' : ''} animate-in slide-in-from-bottom-2 duration-300`}>
+                   <div className={`p-5 rounded-3xl max-w-[75%] text-sm shadow-lg ${m.is_admin ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-black/60 border border-zinc-800 text-zinc-300 rounded-tl-none'}`}>
+                      <p className="text-[9px] font-black uppercase opacity-40 mb-2">{m.user?.name} | {new Date(m.timestamp).toLocaleTimeString()}</p>
+                      <div className="leading-relaxed whitespace-pre-wrap">{m.text}</div>
+                   </div>
+                </div>
+              ))}
             </div>
           </div>
         )}
