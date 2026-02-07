@@ -192,40 +192,47 @@ db = httpx.AsyncClient(
 # 4. CRM СИСТЕМА (ФАЙЛОВАЯ)
 # ==========================================
 
+# --- CRM API ---
+
 def _write_crm_log(bot_id: str, user_id: str, data: dict):
-    """Запись сообщения в JSONL файл"""
+    """Записывает сообщение в .jsonl файл пользователя"""
     bot_dir = os.path.join(CRM_STORAGE_PATH, str(bot_id))
     if not os.path.exists(bot_dir):
         os.makedirs(bot_dir)
         
     file_path = os.path.join(bot_dir, f"{user_id}.jsonl")
     
+    # Структура сообщения для фронтенда
     entry = {
-        "t": int(time.time()),
-        "role": data.get("is_admin", False) and "admin" or "user",
-        "msg": data.get("text", ""),
-        "name": data.get("user_name", "User")
+        "timestamp": int(time.time() * 1000),
+        "is_admin": data.get("is_admin", False),
+        "text": data.get("text", ""),
+        "user_name": data.get("user_name", "User")
     }
     
     try:
         with open(file_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as e:
-        logger.error(f"Ошибка записи CRM лога: {e}")
+        print(f"Ошибка записи в CRM файл: {e}")
 
 @app.post("/api/internal/crm_log")
 async def internal_crm_log(d: dict):
-    """Этот эндпоинт вызывает bot_core.py чтобы сохранить сообщение"""
-    _write_crm_log(d.get("bot_id"), str(d.get("user_id")), {
-        "is_admin": d.get("is_admin", False),
-        "text": d.get("text", ""),
-        "user_name": d.get("user_name", "")
-    })
+    """Принимает сообщения от bot_core.py"""
+    _write_crm_log(
+        bot_id=d.get("bot_id"), 
+        user_id=str(d.get("user_id")), 
+        data={
+            "is_admin": d.get("is_admin", False),
+            "text": d.get("text", ""),
+            "user_name": d.get("user_name", "")
+        }
+    )
     return {"status": "ok"}
 
 @app.get("/api/bots/{bot_id}/crm/{user_id}")
 async def get_crm_history(bot_id: str, user_id: str):
-    """Чтение истории переписки из файла"""
+    """Возвращает историю для отображения в BotEditor.tsx"""
     file_path = os.path.join(CRM_STORAGE_PATH, str(bot_id), f"{user_id}.jsonl")
     if not os.path.exists(file_path):
         return []
@@ -233,16 +240,13 @@ async def get_crm_history(bot_id: str, user_id: str):
     messages = []
     try:
         with open(file_path, "r", encoding="utf-8") as f:
-            # Читаем последние 100 сообщений
-            lines = f.readlines()
-            for line in lines[-100:]: 
+            for line in f:
                 if line.strip():
                     messages.append(json.loads(line))
-    except Exception as e:
-        logger.error(f"Ошибка чтения истории: {e}")
+    except:
         return []
         
-    return messages
+    return messages[-150:] # Возвращаем последние 150 сообщений
 
 @app.post("/api/bots/{bot_id}/crm/send")
 async def send_crm_message_to_user(bot_id: str, d: dict):
