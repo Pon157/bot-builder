@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import json
-import re
 import httpx
 import os
 import sys
@@ -29,6 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BotCoreEngine")
 
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def get_anon_id(user_id: int) -> str:
     """Генерация короткого хеша для анонимности"""
     return hashlib.md5(str(user_id).encode()).hexdigest()[:6].upper()
@@ -69,6 +69,7 @@ def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_
 
     return f"{status_line}\n{user_info}\n\n"
 
+# --- ОСНОВНОЙ КЛАСС БОТА ---
 class BotInstance:
     def __init__(self, config_data: dict):
         self.bot_id = config_data.get('id')
@@ -87,7 +88,6 @@ class BotInstance:
         
         # Очередь для моментальной синхронизации
         self.sync_queue = asyncio.Queue()
-        self.last_sync_time = time.time()
         
         self.apply_config(config_data)
 
@@ -112,10 +112,10 @@ class BotInstance:
         self.rate_limit = float(self.settings.get('rateLimit', 1.0))
         self.auto_ban_limit = int(self.settings.get('autoBanThreshold', 3))
         
+        # 1. Сначала загружаем пользователей, чтобы len() работал корректно
         self.users_list = full_cfg.get('connectedUsers', [])
         
-        # --- ИСПРАВЛЕНИЕ ДЛЯ ГРАФИКОВ ---
-        # Гарантируем правильную структуру для BotStatsView
+        # 2. Инициализируем статистику
         self.stats_data = full_cfg.get('stats') or {
             "totalMessages": 0,
             "incomingToday": 0,
@@ -125,8 +125,9 @@ class BotInstance:
             "activeUsers24h": 0
         }
         
-        # Если история пуста или некорректна, создаем начальную точку
-        if not isinstance(self.stats_data.get("history"), list) or len(self.stats_data.get("history", [])) == 0:
+        # 3. Если истории нет или она битая — создаем старт
+        history = self.stats_data.get("history")
+        if not isinstance(history, list) or len(history) == 0:
             self.stats_data["history"] = [{
                 "date": datetime.now().strftime("%d.%m"),
                 "incoming": 0,
@@ -135,18 +136,23 @@ class BotInstance:
                 "activeUsers": 0
             }]
 
-async def daily_stats_rotator(self):
-        """Ротация статистики с защитой от сбоев"""
+    async def daily_stats_rotator(self):
+        """
+        Ротация статистики.
+        Работает каждую минуту для обновления Real-time графиков,
+        но переключает день только в полночь.
+        """
         while self.is_running:
             try:
                 now = datetime.now()
                 current_date = now.strftime("%d.%m")
                 
-                # Подсчет активных
+                # Подсчет активных пользователей (за 24ч)
                 day_ago = int((now - timedelta(days=1)).timestamp())
                 active_count = sum(1 for u in self.users_list if u.get('last_seen', 0) > day_ago)
                 self.stats_data["activeUsers24h"] = active_count
 
+                # Работа с историей
                 history = self.stats_data.get("history", [])
                 if not isinstance(history, list) or not history:
                     history = [{
@@ -157,11 +163,15 @@ async def daily_stats_rotator(self):
 
                 last_point = history[-1]
 
+                # ПРОВЕРКА СМЕНЫ ДНЯ
                 if last_point["date"] != current_date:
-                    # Смена дня: фиксируем старый, создаем новый
+                    # А) Фиксируем данные за ВЧЕРА
                     last_point["incoming"] = self.stats_data.get("incomingToday", 0)
                     last_point["outgoing"] = self.stats_data.get("outgoingToday", 0)
+                    last_point["totalUsers"] = len(self.users_list)
+                    last_point["activeUsers"] = active_count
                     
+                    # Б) Создаем НОВЫЙ день
                     new_point = {
                         "date": current_date,
                         "incoming": 0,
@@ -170,68 +180,24 @@ async def daily_stats_rotator(self):
                         "activeUsers": active_count
                     }
                     history.append(new_point)
+                    
+                    # В) Чистим старую историю (оставляем 14 дней)
                     self.stats_data["history"] = history[-14:]
+                    
+                    # Г) Обнуляем суточные счетчики
                     self.stats_data["incomingToday"] = 0
                     self.stats_data["outgoingToday"] = 0
                 else:
-                    # Обновление текущего дня
+                    # ОБНОВЛЕНИЕ ТЕКУЩЕГО ДНЯ (Real-time)
                     last_point["incoming"] = self.stats_data.get("incomingToday", 0)
                     last_point["outgoing"] = self.stats_data.get("outgoingToday", 0)
                     last_point["totalUsers"] = len(self.users_list)
                     last_point["activeUsers"] = active_count
 
+                # Отправляем на синхронизацию
                 await self.sync_queue.put(("sync_state", None))
-                await asyncio.sleep(60)
-            except Exception as e:
-                logger.error(f"Rotator Error: {e}")
-                await asyncio.sleep(60)
-
-async def daily_stats_rotator(self):
-        """Ротация статистики с защитой от сбоев"""
-        while self.is_running:
-            try:
-                now = datetime.now()
-                current_date = now.strftime("%d.%m")
                 
-                # Подсчет активных
-                day_ago = int((now - timedelta(days=1)).timestamp())
-                active_count = sum(1 for u in self.users_list if u.get('last_seen', 0) > day_ago)
-                self.stats_data["activeUsers24h"] = active_count
-
-                history = self.stats_data.get("history", [])
-                if not isinstance(history, list) or not history:
-                    history = [{
-                        "date": current_date, "incoming": 0, "outgoing": 0,
-                        "totalUsers": len(self.users_list), "activeUsers": active_count
-                    }]
-                    self.stats_data["history"] = history
-
-                last_point = history[-1]
-
-                if last_point["date"] != current_date:
-                    # Смена дня
-                    last_point["incoming"] = self.stats_data.get("incomingToday", 0)
-                    last_point["outgoing"] = self.stats_data.get("outgoingToday", 0)
-                    
-                    new_point = {
-                        "date": current_date,
-                        "incoming": 0,
-                        "outgoing": 0,
-                        "totalUsers": len(self.users_list),
-                        "activeUsers": active_count
-                    }
-                    history.append(new_point)
-                    self.stats_data["history"] = history[-14:]
-                    self.stats_data["incomingToday"] = 0
-                    self.stats_data["outgoingToday"] = 0
-                else:
-                    # Обновление текущего дня
-                    last_point["incoming"] = self.stats_data.get("incomingToday", 0)
-                    last_point["outgoing"] = self.stats_data.get("outgoingToday", 0)
-                    last_point["totalUsers"] = len(self.users_list)
-                    last_point["activeUsers"] = active_count
-
-                await self.sync_queue.put(("sync_state", None))
+                # Ждем минуту
                 await asyncio.sleep(60)
             except Exception as e:
                 logger.error(f"Rotator Error: {e}")
@@ -248,14 +214,19 @@ async def daily_stats_rotator(self):
             }
             while self.is_running:
                 try:
+                    # Безопасное получение из очереди
                     item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
+                    
+                    # Проверка на "битые" данные в очереди
                     if not isinstance(item, tuple): 
                         self.sync_queue.task_done()
                         continue
                     
                     action, payload = item
+                    
                     if action == "log_message":
                         await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
+                    
                     elif action == "sync_state":
                         update_payload = {
                             "config": {
@@ -268,12 +239,18 @@ async def daily_stats_rotator(self):
                                 "adminChatId": self.admin_chat_id
                             }
                         }
-                        await client.patch(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", json=update_payload, headers=headers)
+                        await client.patch(
+                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", 
+                            json=update_payload, 
+                            headers=headers
+                        )
+                    
                     self.sync_queue.task_done()
                 except asyncio.TimeoutError:
                     continue
                 except Exception as e:
                     logger.error(f"Sync Worker Error: {e}")
+                    # Обязательно сообщаем очереди, что задача "выполнена" (даже с ошибкой), иначе очередь зависнет
                     try: self.sync_queue.task_done()
                     except: pass
 
@@ -286,11 +263,8 @@ async def daily_stats_rotator(self):
         return False
 
     async def log_and_update(self, uid: int, name: str, text: str, is_admin: bool = False):
-        """
-        Логирование сообщения и МГНОВЕННОЕ обновление статистики 
-        для работы графиков в реальном времени.
-        """
-        # 1. Отправляем лог сообщения в отдельную таблицу (для истории переписки)
+        """Логирование и обновление статистики для графиков"""
+        # Лог сообщения
         await self.sync_queue.put(("log_message", {
             "bot_id": self.bot_id, 
             "user_id": uid, 
@@ -299,17 +273,20 @@ async def daily_stats_rotator(self):
             "is_from_admin": is_admin
         }))
         
-        # 2. Обновляем счетчики в памяти
+        # Обновление счетчиков
         self.stats_data["totalMessages"] = self.stats_data.get("totalMessages", 0) + 1
         stat_key = "outgoingToday" if is_admin else "incomingToday"
         self.stats_data[stat_key] = self.stats_data.get(stat_key, 0) + 1
         
-        # Обновляем текущую точку истории для графиков, чтобы не ждать ротатора
-        if self.stats_data.get("history"):
-             self.stats_data["history"][-1][stat_key.replace("Today", "")] = self.stats_data[stat_key]
+        # Обновление пользователя
+        if not is_admin:
+            for u in self.users_list:
+                if u['id'] == uid:
+                    u['last_seen'] = int(time.time())
+                    u['name'] = name # Обновляем имя, если изменилось
+                    break
         
-        # 3. МГНОВЕННО отправляем обновленный JSON бота в Supabase
-        # Это заставляет BotStatsView на фронтенде увидеть изменения при следующем опросе (через 1-5 сек)
+        # Сразу пушим обновление для графиков
         await self.sync_queue.put(("sync_state", None))
 
     async def get_user_state(self, m: Message):
@@ -331,11 +308,9 @@ async def daily_stats_rotator(self):
                 "last_topic_id": None
             }
             self.users_list.append(user)
-            # Сразу синхронизируем нового юзера
             await self.sync_queue.put(("sync_state", None))
         else:
             user["last_seen"] = int(time.time())
-            # Если юзер вернулся после блокировки
             if not user.get("is_active", True):
                 user["is_active"] = True
                 await self.sync_queue.put(("sync_state", None))
@@ -380,14 +355,10 @@ async def daily_stats_rotator(self):
             if sent_msg:
                 self.msg_map[sent_msg.message_id] = user['id']
                 
-            # ЛОГИРУЕМ ИСХОДЯЩЕЕ ОТ ЮЗЕРА (НО НЕ ОТ АДМИНА ЗДЕСЬ)
-            # Это делается в handler'е, поэтому здесь просто отправка
-            
         except Exception as e:
             logger.error(f"Forwarding Error: {e}")
 
     async def admin_control_logic(self, m: Message):
-        # Логика обработки команд /ban, /unban, /warn
         if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): return False
         
         cmd_parts = m.text.lower().split()
@@ -461,19 +432,15 @@ async def daily_stats_rotator(self):
         async def handle_start(m: Message):
             user, is_new = await self.get_user_state(m)
             if user.get("is_banned"): return
-            # ОТВЕТ ПОЛЬЗОВАТЕЛЮ
             await m.answer(self.welcome_text, reply_markup=self.get_main_keyboard())
-            # ЛОГИРУЕМ, НО НЕ ПЕРЕСЫЛАЕМ АДМИНУ /start
             await self.log_and_update(user['id'], m.from_user.full_name, "/start")
 
         @self.router.message(F.chat.id == self.admin_chat_id)
         async def handle_admin_input(m: Message):
-            # 1. Если это команда управления (/ban и т.д.), обрабатываем и ПРЕРЫВАЕМ выполнение
             if m.text and (m.text.startswith("/") or m.text.startswith("!")):
                 await self.admin_control_logic(m)
                 return
 
-            # 2. Поиск целевого пользователя для пересылки ответа
             target_id = None
             if m.message_thread_id:
                 u = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
@@ -481,7 +448,6 @@ async def daily_stats_rotator(self):
             if not target_id and m.reply_to_message:
                 target_id = self.msg_map.get(m.reply_to_message.message_id)
             
-            # 3. Пересылка ответа пользователю (только если это не была команда)
             if target_id:
                 try:
                     try:
@@ -494,21 +460,18 @@ async def daily_stats_rotator(self):
                             await self.sync_queue.put(("sync_state", None))
                         return
                     except Exception:
-                        # Fallback если copy_message не сработал
                         if m.text: await self.bot.send_message(target_id, m.text)
                         elif m.photo: await self.bot.send_photo(target_id, m.photo[-1].file_id, caption=m.caption)
                         elif m.video: await self.bot.send_video(target_id, m.video.file_id, caption=m.caption)
                         elif m.voice: await self.bot.send_voice(target_id, m.voice.file_id)
                         else: await self.bot.forward_message(target_id, m.chat.id, m.message_id)
                     
-                    # Логируем ответ админа
                     await self.log_and_update(target_id, "Admin", m.text or "[Медиа]", is_admin=True)
                 except Exception as e:
                     await m.reply(f"❌ <b>Ошибка:</b> {e}")
 
         @self.router.message()
         async def handle_user_input(m: Message):
-            # Игнорируем сообщения от админа в общем потоке (они обрабатываются выше)
             if self.admin_chat_id and m.chat.id == self.admin_chat_id: return
             
             user, is_new = await self.get_user_state(m)
@@ -516,7 +479,6 @@ async def daily_stats_rotator(self):
             
             if m.text:
                 clean_text = m.text.lower().strip()
-                # Проверка кнопок
                 for btn in self.buttons:
                     if btn.get('text') and btn['text'].lower() == clean_text:
                         if btn.get('type') == 'request': 
@@ -525,14 +487,12 @@ async def daily_stats_rotator(self):
                             await m.answer(btn['response'])
                         await self.log_and_update(user['id'], m.from_user.full_name, f"КНОПКА: {btn['text']}")
                         return
-                # Проверка триггеров
                 for trig in self.triggers:
                     if trig.get('keyword') and trig['keyword'].lower() in clean_text:
                         await m.answer(trig['response'])
                         await self.log_and_update(user['id'], m.from_user.full_name, f"ТРИГГЕР: {trig['keyword']}")
                         return
             
-            # Обычное сообщение -> Админу
             await self.forward_to_admin(m, user, is_first=is_new)
             await self.log_and_update(user['id'], m.from_user.full_name, m.text or "[Медиа]")
 
@@ -557,10 +517,22 @@ async def daily_stats_rotator(self):
             await self.bot.session.close()
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2: sys.exit(1)
-    try:
-        with open(sys.argv[1], 'r', encoding='utf-8') as f: 
-            cfg = json.load(f)
-        asyncio.run(BotInstance(cfg).run_instance())
-    except Exception as e: 
-        logger.error(f"FATAL ERROR: {e}")
+    if len(sys.argv) < 2:
+        print("Usage: python3 bot_core.py <config_path>")
+        sys.exit(1)
+        
+    async def main():
+        # Читаем конфиг из JSON-файла, который создал server.py
+        cfg_path = sys.argv[1]
+        try:
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            
+            # Инициализируем и запускаем
+            instance = BotInstance(config)
+            await instance.run_instance()
+            
+        except Exception as e:
+            logger.error(f"FATAL ERROR: {e}")
+
+    asyncio.run(main())
