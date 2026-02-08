@@ -116,9 +116,10 @@ class BotAIInstance:
         print(f"Бот {self.bot_id} запущен...")
         await self.dp.start_polling(self.bot)
 
-# --- ЗАПУСК ---
 if __name__ == "__main__":
-    # ID бота и твой ID из Supabase/Env
-    admin_id = os.getenv("ADMIN_CHAT_ID", "5883703466")
+    # Явно указываем твой ID как строку
+    admin_id = "5883703466" 
+    
+    # Передаем его в инициализацию
     bot_instance = BotAIInstance(bot_id="main_bot", admin_chat_id=admin_id)
     asyncio.run(bot_instance.start())
