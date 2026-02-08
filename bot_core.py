@@ -138,40 +138,40 @@ class BotInstance:
 
     async def daily_stats_rotator(self):
         """
-        Ротация статистики.
-        Работает каждую минуту для обновления Real-time графиков,
-        но переключает день только в полночь.
+        Ротация статистики с корректным сохранением данных при смене дня.
         """
         while self.is_running:
             try:
                 now = datetime.now()
                 current_date = now.strftime("%d.%m")
                 
-                # Подсчет активных пользователей (за 24ч)
+                # Подсчет активных пользователей
                 day_ago = int((now - timedelta(days=1)).timestamp())
                 active_count = sum(1 for u in self.users_list if u.get('last_seen', 0) > day_ago)
                 self.stats_data["activeUsers24h"] = active_count
 
-                # Работа с историей
                 history = self.stats_data.get("history", [])
-                if not isinstance(history, list) or not history:
+                if not history:
                     history = [{
                         "date": current_date, "incoming": 0, "outgoing": 0,
                         "totalUsers": len(self.users_list), "activeUsers": active_count
                     }]
                     self.stats_data["history"] = history
 
-                last_point = history[-1]
-
                 # ПРОВЕРКА СМЕНЫ ДНЯ
-                if last_point["date"] != current_date:
-                    # А) Фиксируем данные за ВЧЕРА
-                    last_point["incoming"] = self.stats_data.get("incomingToday", 0)
-                    last_point["outgoing"] = self.stats_data.get("outgoingToday", 0)
-                    last_point["totalUsers"] = len(self.users_list)
-                    last_point["activeUsers"] = active_count
+                if history[-1]["date"] != current_date:
+                    # 1. ФИКСИРУЕМ финальные данные в последнюю точку ВЧЕРАШНЕГО дня
+                    # Это гарантирует, что в Supabase улетят полные цифры за вчера
+                    history[-1]["incoming"] = self.stats_data.get("incomingToday", 0)
+                    history[-1]["outgoing"] = self.stats_data.get("outgoingToday", 0)
+                    history[-1]["totalUsers"] = len(self.users_list)
+                    history[-1]["activeUsers"] = active_count
                     
-                    # Б) Создаем НОВЫЙ день
+                    # 2. Только после сохранения обнуляем суточные счетчики
+                    self.stats_data["incomingToday"] = 0
+                    self.stats_data["outgoingToday"] = 0
+                    
+                    # 3. Создаем НОВУЮ точку для сегодняшнего дня (с нулями)
                     new_point = {
                         "date": current_date,
                         "incoming": 0,
@@ -181,28 +181,27 @@ class BotInstance:
                     }
                     history.append(new_point)
                     
-                    # В) Чистим старую историю (оставляем 14 дней)
+                    # Оставляем 14 дней
                     self.stats_data["history"] = history[-14:]
-                    
-                    # Г) Обнуляем суточные счетчики
-                    self.stats_data["incomingToday"] = 0
-                    self.stats_data["outgoingToday"] = 0
-                else:
-                    # ОБНОВЛЕНИЕ ТЕКУЩЕГО ДНЯ (Real-time)
-                    last_point["incoming"] = self.stats_data.get("incomingToday", 0)
-                    last_point["outgoing"] = self.stats_data.get("outgoingToday", 0)
-                    last_point["totalUsers"] = len(self.users_list)
-                    last_point["activeUsers"] = active_count
+                    # Важно обновить локальную ссылку после среза
+                    history = self.stats_data["history"]
+                
+                # 4. ОБНОВЛЕНИЕ ТЕКУЩЕГО ДНЯ (Real-time)
+                # Это работает всегда, обновляя самую последнюю запись в истории
+                last_point = history[-1]
+                last_point["incoming"] = self.stats_data.get("incomingToday", 0)
+                last_point["outgoing"] = self.stats_data.get("outgoingToday", 0)
+                last_point["totalUsers"] = len(self.users_list)
+                last_point["activeUsers"] = active_count
 
-                # Отправляем на синхронизацию
+                # Отправляем на синхронизацию в Supabase
                 await self.sync_queue.put(("sync_state", None))
                 
-                # Ждем минуту
                 await asyncio.sleep(60)
             except Exception as e:
                 logger.error(f"Rotator Error: {e}")
                 await asyncio.sleep(60)
-
+                
     async def database_sync_worker(self):
         """Воркер синхронизации с защитой от падения"""
         async with httpx.AsyncClient(timeout=10.0) as client:
