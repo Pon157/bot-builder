@@ -1,34 +1,64 @@
-<div id="ai-ui" style="position: fixed; bottom: 20px; right: 20px; font-family: sans-serif;">
-    <div id="ai-box" style="display: none; width: 280px; background: #fff; border: 1px solid #ccc; padding: 10px; border-radius: 10px; box-shadow: 0 5px 15px rgba(0,0,0,0.3);">
-        <h4 style="margin: 0 0 10px 0;">AI-Настройщик</h4>
-        <textarea id="ai-txt" style="width: 100%; height: 60px;" placeholder="Что изменить?"></textarea>
-        <button onclick="sendAI()" style="width: 100%; margin-top: 5px; background: #000; color: #fff; border: none; padding: 5px; cursor: pointer;">Применить</button>
-        <p id="ai-status" style="font-size: 10px; color: gray;"></p>
-    </div>
-    <button onclick="toggleAI()" style="width: 50px; height: 50px; border-radius: 25px; cursor: pointer; background: #000; color: #fff; font-size: 20px; border: none;">🤖</button>
-</div>
+// AIOverlay.js
+const AI_SERVICE_URL = "http://ТВОЙ_IP_СЕРВЕРА:8080/process"; 
 
-<script>
-    function toggleAI() { 
-        const box = document.getElementById('ai-box');
+export function initAIOverlay(currentConfig, botId) {
+    const html = `
+    <div id="ai-ui" style="position: fixed; bottom: 20px; right: 20px; font-family: sans-serif; z-index: 9999;">
+        <div id="ai-box" style="display: none; width: 280px; background: #fff; border: 1px solid #ccc; padding: 15px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.2);">
+            <h4 style="margin: 0 0 10px 0; color: #333;">DeepSeek AI Admin</h4>
+            <textarea id="ai-txt" style="width: 100%; height: 80px; border-radius: 6px; border: 1px solid #ddd; padding: 8px; font-size: 14px; resize: none;" placeholder="Например: добавь кнопку 'Техподдержка'"></textarea>
+            <button id="ai-send-btn" style="width: 100%; margin-top: 10px; background: #007bff; color: #fff; border: none; padding: 10px; border-radius: 6px; cursor: pointer; font-weight: bold;">Применить</button>
+            <p id="ai-status" style="font-size: 11px; color: #666; margin-top: 8px; text-align: center;"></p>
+        </div>
+        <button id="ai-toggle-btn" style="width: 60px; height: 60px; border-radius: 30px; cursor: pointer; background: #000; color: #fff; font-size: 24px; border: none; box-shadow: 0 4px 12px rgba(0,0,0,0.3); transition: transform 0.2s;">🤖</button>
+    </div>`;
+
+    document.body.insertAdjacentHTML('beforeend', html);
+
+    const box = document.getElementById('ai-box');
+    const btn = document.getElementById('ai-toggle-btn');
+    const sendBtn = document.getElementById('ai-send-btn');
+    const input = document.getElementById('ai-txt');
+    const status = document.getElementById('ai-status');
+
+    btn.onclick = () => {
         box.style.display = box.style.display === 'none' ? 'block' : 'none';
-    }
+        btn.style.transform = box.style.display === 'none' ? 'scale(1)' : 'scale(0.9)';
+    };
 
-    async def sendAI() {
-        const txt = document.getElementById('ai-txt').value;
-        const status = document.getElementById('ai-status');
-        status.innerText = "⏳ Миллион токенов на связи...";
-        
-        const res = await fetch('http://localhost:8000/process_ai', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ 
-                command: txt, 
-                current_config: { welcome: "Привет!" }, // Сюда подставляй данные из своей админки
-                bot_id: "test_bot" 
-            })
-        });
-        const data = await res.json();
-        status.innerText = data.status === "success" ? "✅ Конфиг обновлен" : "❌ Ошибка";
-    }
-</script>
+    sendBtn.onclick = async () => {
+        const prompt = input.value.strip();
+        if (!prompt) return;
+
+        status.innerText = "⏳ Нейронка меняет реальность...";
+        sendBtn.disabled = true;
+        sendBtn.style.opacity = "0.5";
+
+        try {
+            const res = await fetch(AI_SERVICE_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    prompt: prompt, 
+                    current_config: currentConfig,
+                    bot_id: botId 
+                })
+            });
+
+            if (!res.ok) throw new Error("Ошибка сервиса");
+
+            const data = await res.json();
+            status.innerText = "✅ Конфиг обновлен!";
+            console.log("Новый JSON:", data);
+            
+            // Важно: тут должна быть твоя функция обновления интерфейса админки
+            if (window.onConfigUpdate) window.onConfigUpdate(data);
+
+        } catch (e) {
+            status.innerText = "❌ Ошибка: " + e.message;
+        } finally {
+            sendBtn.disabled = false;
+            sendBtn.style.opacity = "1";
+        }
+    };
+}
