@@ -119,6 +119,6 @@ class BotAIInstance:
 # --- ЗАПУСК ---
 if __name__ == "__main__":
     # ID бота и твой ID из Supabase/Env
-    admin_id = os.getenv("ADMIN_CHAT_ID")
+    admin_id = os.getenv("ADMIN_CHAT_ID, 5883703466")
     bot_instance = BotAIInstance(bot_id="main_bot", admin_chat_id=admin_id)
     asyncio.run(bot_instance.start())
