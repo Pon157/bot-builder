@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { BotConfig, BotStatus } from '../types';
 import { api } from '../services/apiService';
