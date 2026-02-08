@@ -91,7 +91,7 @@ class BotInstance:
         
         self.apply_config(config_data)
 
-def apply_config(self, data: dict):
+    def apply_config(self, data: dict):
         """Парсинг конфигурации и инициализация статистики (UTC версия)"""
         raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
         full_cfg = {**data, **raw_cfg} 
@@ -137,6 +137,19 @@ def apply_config(self, data: dict):
                 "history": [],
                 "activeUsers24h": 0
             }
+
+        # --- ИНИЦИАЛИЗАЦИЯ ИСТОРИИ (UTC) ---
+        now = datetime.now() # Оставляем системный UTC
+        current_date = now.strftime("%d.%m")
+        
+        if not self.stats_data["history"]:
+            self.stats_data["history"] = [{
+                "date": current_date,
+                "incoming": 0,
+                "outgoing": 0,
+                "totalUsers": len(self.users_list),
+                "activeUsers": 0
+            }]
 
         # --- ИНИЦИАЛИЗАЦИЯ ИСТОРИИ (UTC) ---
         now = datetime.now() # Оставляем системный UTC
