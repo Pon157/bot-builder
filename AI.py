@@ -6,6 +6,10 @@ from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from supabase import create_client, Client
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # --- КОНФИГУРАЦИЯ ---
 # Токен берем из .env, как ты просил
 API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
