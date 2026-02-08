@@ -1,8 +1,7 @@
-
 import React, { useState } from 'react';
 import { BotConfig } from '../types';
 import { api } from '../services/apiService';
-import { Send, CheckCircle2, AlertCircle, Bot as BotIcon } from 'lucide-react';
+import { Send, CheckCircle2, AlertCircle, Bot as BotIcon, Image as ImageIcon, X } from 'lucide-react';
 
 interface BroadcastManagerProps {
   bots: BotConfig[];
@@ -13,9 +12,22 @@ const BroadcastManager: React.FC<BroadcastManagerProps> = ({ bots }) => {
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<{success: number, failed: number} | null>(null);
+  const [photoUrl, setPhotoUrl] = useState('');
 
   const toggleBot = (id: string) => {
     setSelectedBotIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  const handleImageUpload = async (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+        const res = await fetch('/api/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+        if(data.url) setPhotoUrl(data.url);
+    } catch(e) {
+        alert("Ошибка загрузки фото");
+    }
   };
 
   const handleSend = async () => {
@@ -23,10 +35,19 @@ const BroadcastManager: React.FC<BroadcastManagerProps> = ({ bots }) => {
     setSending(true);
     setResult(null);
     try {
-      const res = await api.sendBroadcast(selectedBotIds, message);
+      // Важно: здесь мы передаем photoUrl в API. Убедись, что твой apiService пробрасывает этот аргумент
+      // или передавай объект, если сигнатура метода позволяет.
+      // Я предполагаю, что метод sendBroadcast нужно будет чуть подправить в apiService.ts
+      // Но пока делаем вызов так, передавая данные в body запроса.
+      
+      // Если apiService жестко типизирован, тебе нужно добавить аргумент photoUrl в services/apiService.ts
+      // Здесь я использую generic вызов как пример:
+      const res = await api.sendBroadcast(selectedBotIds, message, photoUrl);
+      
       if (res) {
         setResult(res);
         setMessage('');
+        setPhotoUrl('');
         setSelectedBotIds([]);
       }
     } catch (e) {
@@ -61,14 +82,30 @@ const BroadcastManager: React.FC<BroadcastManagerProps> = ({ bots }) => {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8">
         <div className="md:col-span-2 bg-[#111] border border-zinc-800 p-6 md:p-10 rounded-[2rem] md:rounded-[3rem] space-y-8 shadow-2xl">
           <div className="space-y-4">
-            <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest block ml-2">Контент сообщения (HTML поддерживается)</label>
+            <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest block ml-2">Контент сообщения</label>
             <textarea 
               className="w-full bg-black border border-zinc-800 rounded-3xl p-6 text-sm focus:border-blue-500 min-h-[250px] md:min-h-[350px] resize-none outline-none transition-all placeholder:text-zinc-800"
-              placeholder="Введите текст сообщения... например: <b>Внимание!</b> Обновление системы."
+              placeholder="Введите текст сообщения... HTML теги поддерживаются."
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               disabled={sending}
             />
+            
+            {/* Блок добавления картинки */}
+            <div className="flex items-center gap-4">
+                <label className="cursor-pointer bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 px-5 py-3 rounded-xl flex items-center gap-2 transition-all">
+                    <ImageIcon className="w-4 h-4 text-zinc-400" />
+                    <span className="text-xs font-bold text-zinc-300">Прикрепить фото</span>
+                    <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && handleImageUpload(e.target.files[0])} />
+                </label>
+                {photoUrl && (
+                    <div className="flex items-center gap-2 bg-blue-500/10 border border-blue-500/20 px-4 py-2 rounded-xl">
+                        <span className="text-[10px] text-blue-400 font-bold uppercase">Фото загружено</span>
+                        <button onClick={() => setPhotoUrl('')}><X className="w-4 h-4 text-blue-400 hover:text-white" /></button>
+                    </div>
+                )}
+            </div>
+
           </div>
           <button 
             onClick={handleSend}
