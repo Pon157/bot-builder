@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+
+import React, { useState, useEffect } from 'react';
 import { BotConfig, BotStatus } from '../types';
 import { api } from '../services/apiService';
 import BotConsole from './BotConsole';
@@ -6,8 +7,7 @@ import BotStatsView from './BotStatsView';
 import { 
   Settings, Cpu, BarChart3, Terminal, X, Save, Power, 
   Ticket, Plus, MessageSquare, User, CheckSquare, 
-  Square, Zap, Bell, Shield, Sliders, Layout, ShieldAlert, Lock, Trash2, ShieldCheck, AlertCircle, Type as TypeIcon,
-  Image as ImageIcon, Upload, Loader2
+  Square, Zap, Bell, Shield, Sliders, Layout, ShieldAlert, Lock, Trash2, ShieldCheck, AlertCircle, Type as TypeIcon
 } from 'lucide-react';
 
 interface BotEditorProps {
@@ -21,7 +21,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
-  const [uploading, setUploading] = useState<string | null>(null); // ID элемента, который загружается
 
   const defaultSettings: BotConfig['settings'] = {
     useTopics: false,
@@ -52,58 +51,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
     }
   }, [activeTab, bot.id]);
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, target: 'button' | 'trigger', index: number) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const uploadId = `${target}-${index}`;
-    setUploading(uploadId);
-
-    try {
-      // Предполагаем, что в apiService есть метод uploadFile или используем прямой fetch
-      // Согласно серверу: POST /api/upload с файлом
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const response = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        const photoUrl = data.url;
-
-        if (target === 'button') {
-          const newButtons = [...(bot.buttons || [])];
-          newButtons[index] = { ...newButtons[index], photo: photoUrl };
-          handleLocalUpdate({ ...bot, buttons: newButtons });
-        } else {
-          const newTriggers = [...(bot.triggers || [])];
-          newTriggers[index] = { ...newTriggers[index], photo: photoUrl };
-          handleLocalUpdate({ ...bot, triggers: newTriggers });
-        }
-      }
-    } catch (error) {
-      console.error("Ошибка загрузки:", error);
-      alert("Не удалось загрузить изображение");
-    } finally {
-      setUploading(null);
-    }
-  };
-
-  const removePhoto = (target: 'button' | 'trigger', index: number) => {
-    if (target === 'button') {
-      const newButtons = [...(bot.buttons || [])];
-      delete newButtons[index].photo;
-      handleLocalUpdate({ ...bot, buttons: newButtons });
-    } else {
-      const newTriggers = [...(bot.triggers || [])];
-      delete newTriggers[index].photo;
-      handleLocalUpdate({ ...bot, triggers: newTriggers });
-    }
-  };
-
   const handleToggleServer = async () => {
     setIsProcessing(true);
     try {
@@ -111,6 +58,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         await api.stopBotOnServer(bot.id);
         onUpdate({ ...bot, status: BotStatus.IDLE });
       } else {
+        // При запуске всегда сначала сохраняем конфиг
         const updated = await api.saveBot(bot.owner_id, bot);
         if (updated) onUpdate(updated);
         setHasUnsavedChanges(false);
@@ -130,9 +78,9 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         const updated = await api.saveBot(bot.owner_id, bot);
         if (updated) onUpdate(updated);
         setHasUnsavedChanges(false);
-        alert("Конфигурация сохранена!");
+        alert("Конфигурация успешно сохранена и синхронизирована!");
     } catch {
-        alert("Ошибка сети");
+        alert("Ошибка сети при сохранении");
     } finally {
         setIsProcessing(false);
     }
@@ -158,7 +106,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         </div>
       )}
 
-      {/* Header section остался без изменений */}
       <header className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] flex flex-col md:flex-row justify-between items-center gap-6 shadow-2xl relative overflow-hidden">
         <div className="flex items-center gap-6 relative z-10">
           <div className={`w-16 h-16 rounded-2xl flex items-center justify-center border-2 ${bot.status === BotStatus.RUNNING ? 'bg-blue-500/10 border-blue-500/30 text-blue-500' : 'bg-zinc-900 border-zinc-800 text-zinc-600'}`}>
@@ -182,7 +129,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
         </div>
       </header>
 
-      {/* Tabs navigation */}
       <div className="flex gap-2 border-b border-zinc-800 overflow-x-auto no-scrollbar">
         {[
           {id: 'settings', label: 'Основные', icon: Settings},
@@ -200,7 +146,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
       <div className="min-h-[400px]">
         {activeTab === 'settings' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {/* Секция системных настроек без изменений */}
             <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-8">
               <section>
                 <h2 className="text-sm font-black text-white uppercase flex items-center gap-2 mb-6">
@@ -234,6 +179,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                       className="w-full mt-1.5 bg-black border border-zinc-800 p-4 rounded-xl text-xs text-white outline-none focus:border-emerald-500 transition-all" 
                       value={safeSettings.firstMessageHeader || ""} 
                       onChange={e => updateSetting('firstMessageHeader', e.target.value)}
+                      placeholder="🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ:</b>"
                     />
                   </div>
                   <div>
@@ -242,7 +188,9 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                       className="w-full mt-1.5 bg-black border border-zinc-800 p-4 rounded-xl text-xs text-white outline-none focus:border-emerald-500 transition-all" 
                       value={safeSettings.ticketMessageHeader || ""} 
                       onChange={e => updateSetting('ticketMessageHeader', e.target.value)}
+                      placeholder="🆘 <b>ЗАЯВКА [{btn}]:</b>"
                     />
+                    <p className="text-[8px] text-zinc-600 mt-1 px-2 uppercase font-bold tracking-tighter">* Используйте {'{btn}'} для подстановки названия кнопки</p>
                   </div>
                   <div>
                     <span className="text-[9px] font-bold text-zinc-500 uppercase ml-2">Обычное сообщение</span>
@@ -250,6 +198,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                       className="w-full mt-1.5 bg-black border border-zinc-800 p-4 rounded-xl text-xs text-white outline-none focus:border-emerald-500 transition-all" 
                       value={safeSettings.commonMessageHeader || ""} 
                       onChange={e => updateSetting('commonMessageHeader', e.target.value)}
+                      placeholder="📩 <b>СООБЩЕНИЕ:</b>"
                     />
                   </div>
                 </div>
@@ -267,7 +216,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
             </div>
             
             <div className="space-y-8">
-                {/* Security and Forum settings */}
                 <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
                   <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
                     <Lock className="w-4 h-4 text-rose-500" /> Безопасность и Анти-Флуд
@@ -276,6 +224,10 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                     <div className="flex items-center justify-between p-5 rounded-2xl bg-black border border-zinc-800">
                       <div><p className="text-xs font-bold text-white">Интервал анти-спама</p><p className="text-[9px] text-zinc-500 uppercase">Сек. между сообщениями</p></div>
                       <input type="number" step="0.5" className="w-16 bg-zinc-900 border border-zinc-800 p-2 rounded-lg text-center text-xs text-white" value={safeSettings.rateLimit} onChange={e => updateSetting('rateLimit', parseFloat(e.target.value))} />
+                    </div>
+                    <div className="flex items-center justify-between p-5 rounded-2xl bg-black border border-zinc-800">
+                      <div><p className="text-xs font-bold text-white">Лимит Предупреждений</p><p className="text-[9px] text-zinc-500 uppercase">Варнов до авто-бана</p></div>
+                      <input type="number" className="w-16 bg-zinc-900 border border-zinc-800 p-2 rounded-lg text-center text-xs text-white" value={safeSettings.autoBanThreshold} onChange={e => updateSetting('autoBanThreshold', parseInt(e.target.value))} />
                     </div>
                   </div>
                 </div>
@@ -286,11 +238,22 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                     </h3>
                     <div className="space-y-3">
                       <button onClick={() => updateSetting('useTopics', !safeSettings.useTopics)} className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${safeSettings.useTopics ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
-                        <div className="text-left"><p className="text-xs font-bold">Использовать Темы (Forum)</p></div>
+                        <div className="text-left"><p className="text-xs font-bold">Использовать Темы (Forum)</p><p className="text-[9px] uppercase opacity-50">Для супергрупп</p></div>
                         {safeSettings.useTopics ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+                      </button>
+                      <button onClick={() => updateSetting('topicPerRequest', !safeSettings.topicPerRequest)} className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${safeSettings.topicPerRequest ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
+                        <div className="text-left"><p className="text-xs font-bold">Новая ветка на каждый тикет</p><p className="text-[9px] uppercase opacity-50">Ticket System Mode</p></div>
+                        {safeSettings.topicPerRequest ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+                      </button>
+                      <button onClick={() => updateSetting('anonymousTopics', !safeSettings.anonymousTopics)} className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${safeSettings.anonymousTopics ? 'bg-zinc-800 text-white' : 'bg-black border-zinc-800 text-zinc-600'}`}>
+                        <div className="text-left"><p className="text-xs font-bold">Анонимные ID (Anon ID)</p><p className="text-[9px] uppercase opacity-50">Хешировать данные в группе</p></div>
+                        {safeSettings.anonymousTopics ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
                       </button>
                     </div>
                 </div>
+                <button onClick={() => window.confirm("Вы точно хотите удалить этот инстанс?") && onDelete()} className="w-full p-5 text-[10px] font-black uppercase text-rose-500 bg-rose-500/5 rounded-3xl border border-rose-500/10 hover:bg-rose-500/10 transition-all flex items-center justify-center gap-2">
+                    <Trash2 className="w-4 h-4" /> Удалить навсегда
+                </button>
             </div>
           </div>
         )}
@@ -307,35 +270,12 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                {(bot.buttons || []).map((btn, i) => (
                  <div key={i} className="bg-[#0d0d0d] border border-zinc-800 rounded-[2.5rem] p-8 space-y-6 relative group border-t-4 border-t-blue-500/20 shadow-xl">
                     <button onClick={() => handleLocalUpdate({...bot, buttons: bot.buttons.filter((_, idx) => idx !== i)})} className="absolute top-6 right-6 text-zinc-600 hover:text-rose-500 transition-colors"><X className="w-5 h-5" /></button>
-                    
-                    {/* Секция фото для кнопки */}
-                    <div className="relative group/img">
-                      {btn.photo ? (
-                        <div className="relative w-full h-32 rounded-2xl overflow-hidden border border-zinc-800 mb-4">
-                           <img src={btn.photo} className="w-full h-full object-cover" alt="Preview" />
-                           <button onClick={() => removePhoto('button', i)} className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity">
-                              <Trash2 className="w-6 h-6 text-rose-500" />
-                           </button>
-                        </div>
-                      ) : (
-                        <label className="flex flex-col items-center justify-center w-full h-32 rounded-2xl border-2 border-dashed border-zinc-800 bg-black hover:border-blue-500/50 transition-all cursor-pointer mb-4">
-                           {uploading === `button-${i}` ? <Loader2 className="w-6 h-6 text-blue-500 animate-spin" /> : (
-                             <>
-                               <ImageIcon className="w-6 h-6 text-zinc-600 mb-2" />
-                               <span className="text-[10px] font-bold text-zinc-500 uppercase">Загрузить фото</span>
-                             </>
-                           )}
-                           <input type="file" className="hidden" accept="image/*" onChange={(e) => handleFileUpload(e, 'button', i)} disabled={!!uploading} />
-                        </label>
-                      )}
-                    </div>
-
                     <div className="space-y-5">
                         <label className="block"><span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Текст на кнопке</span><input className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-blue-500" value={btn.text} onChange={e => { const nb = [...bot.buttons]; nb[i].text = e.target.value; handleLocalUpdate({...bot, buttons: nb}); }} /></label>
                         <label className="block"><span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Ответ системы</span><textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm min-h-[120px] outline-none focus:border-blue-500 resize-none" value={btn.response} onChange={e => { const nb = [...bot.buttons]; nb[i].response = e.target.value; handleLocalUpdate({...bot, buttons: nb}); }} /></label>
                         <div className="flex bg-black p-1 rounded-xl border border-zinc-800">
                           {['message', 'request'].map(type => (
-                            <button key={type} onClick={() => { const nb = [...bot.buttons]; nb[i].type = type as any; handleLocalUpdate({...bot, buttons: nb}); }} className={`flex-1 py-2.5 rounded-lg text-[9px] font-black uppercase transition-all ${btn.type === type ? 'bg-blue-600 text-white' : 'text-zinc-600'}`}>{type === 'message' ? 'Обычный ответ' : '🆘 Заявка'}</button>
+                            <button key={type} onClick={() => { const nb = [...bot.buttons]; nb[i].type = type as any; handleLocalUpdate({...bot, buttons: nb}); }} className={`flex-1 py-2.5 rounded-lg text-[9px] font-black uppercase transition-all ${btn.type === type ? 'bg-blue-600 text-white' : 'text-zinc-600'}`}>{type === 'message' ? 'Обычный ответ' : '🆘 Заявка (Тикет)'}</button>
                           ))}
                         </div>
                     </div>
@@ -352,38 +292,30 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                {(bot.triggers || []).map((trig, i) => (
                  <div key={i} className="bg-[#0d0d0d] border border-zinc-800 rounded-[2.5rem] p-8 space-y-5 relative border-t-4 border-t-emerald-500/20 shadow-xl">
                     <button onClick={() => handleLocalUpdate({...bot, triggers: bot.triggers.filter((_, idx) => idx !== i)})} className="absolute top-6 right-6 text-zinc-600 hover:text-rose-500"><X className="w-5 h-5" /></button>
-                    
-                    {/* Секция фото для триггера */}
-                    <div className="relative group/img">
-                      {trig.photo ? (
-                        <div className="relative w-full h-32 rounded-2xl overflow-hidden border border-zinc-800">
-                           <img src={trig.photo} className="w-full h-full object-cover" alt="Trigger Preview" />
-                           <button onClick={() => removePhoto('trigger', i)} className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity">
-                              <Trash2 className="w-6 h-6 text-rose-500" />
-                           </button>
-                        </div>
-                      ) : (
-                        <label className="flex flex-col items-center justify-center w-full h-32 rounded-2xl border-2 border-dashed border-zinc-800 bg-black hover:border-emerald-500/50 transition-all cursor-pointer">
-                           {uploading === `trigger-${i}` ? <Loader2 className="w-6 h-6 text-emerald-500 animate-spin" /> : (
-                             <>
-                               <ImageIcon className="w-6 h-6 text-zinc-600 mb-2" />
-                               <span className="text-[10px] font-bold text-zinc-500 uppercase">Загрузить фото</span>
-                             </>
-                           )}
-                           <input type="file" className="hidden" accept="image/*" onChange={(e) => handleFileUpload(e, 'trigger', i)} disabled={!!uploading} />
-                        </label>
-                      )}
-                    </div>
-
-                    <input placeholder="Ключевое слово" className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-emerald-500" value={trig.keyword} onChange={e => { const nt = [...bot.triggers]; nt[i].keyword = e.target.value; handleLocalUpdate({...bot, triggers: nt}); }} />
-                    <textarea placeholder="Ответ бота..." className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm outline-none min-h-[120px] focus:border-emerald-500" value={trig.response} onChange={e => { const nt = [...bot.triggers]; nt[i].response = e.target.value; handleLocalUpdate({...bot, triggers: nt}); }} />
+                    <input placeholder="Ключевое слово (например: цена)" className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-emerald-500" value={trig.keyword} onChange={e => { const nt = [...bot.triggers]; nt[i].keyword = e.target.value; handleLocalUpdate({...bot, triggers: nt}); }} />
+                    <textarea placeholder="Что бот должен ответить..." className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm outline-none min-h-[120px] focus:border-emerald-500" value={trig.response} onChange={e => { const nt = [...bot.triggers]; nt[i].response = e.target.value; handleLocalUpdate({...bot, triggers: nt}); }} />
                  </div>
                ))}
             </div>
           </div>
         )}
 
-        {/* Остальные вкладки (stats, logs, chat) без изменений */}
+        {activeTab === 'chat' && (
+          <div className="bg-[#111] border border-zinc-800 rounded-[2.5rem] h-[700px] overflow-hidden flex flex-col p-8 shadow-2xl relative">
+            <h2 className="text-sm font-black text-white uppercase mb-6 flex items-center gap-2"><MessageSquare className="w-4 h-4 text-blue-500" /> CRM История сообщений</h2>
+            <div className="flex-1 overflow-y-auto no-scrollbar space-y-6 pr-4">
+              {messages.length === 0 ? <p className="text-center text-zinc-700 py-32 uppercase text-[10px] font-black tracking-widest opacity-20">История пуста</p> : messages.map((m, i) => (
+                <div key={i} className={`flex gap-4 items-start ${m.is_admin ? 'flex-row-reverse text-right' : ''} animate-in slide-in-from-bottom-2 duration-300`}>
+                   <div className={`p-5 rounded-3xl max-w-[75%] text-sm shadow-lg ${m.is_admin ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-black/60 border border-zinc-800 text-zinc-300 rounded-tl-none'}`}>
+                      <p className="text-[9px] font-black uppercase opacity-40 mb-2">{m.user?.name} | {new Date(m.timestamp).toLocaleTimeString()}</p>
+                      <div className="leading-relaxed whitespace-pre-wrap">{m.text}</div>
+                   </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {activeTab === 'stats' && <BotStatsView bot={bot} onUpdate={onUpdate} />}
         {activeTab === 'logs' && <BotConsole botId={bot.id} />}
       </div>
