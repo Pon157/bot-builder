@@ -1,5 +1,4 @@
-
-import React from 'react';
+import React, { useState } from 'react';
 import { BotConfig } from '../types';
 
 interface DashboardProps {
@@ -9,18 +8,22 @@ interface DashboardProps {
 }
 
 const Dashboard: React.FC<DashboardProps> = ({ bots, onSelectBot, onAddBot }) => {
+  // Состояние для управления модальным окном FAQ
+  const [isFaqOpen, setIsFaqOpen] = useState(false);
+
   const totalUsers = bots.reduce((acc, b) => acc + (b.connectedUsers?.length || 0), 0);
   const totalMessages = bots.reduce((acc, b) => acc + (b.stats?.totalMessages || 0), 0);
   const activeBots = bots.filter(b => b.status === 'RUNNING').length;
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500">
+    <div className="space-y-8 animate-in fade-in duration-500 relative">
       <header>
         <h1 className="text-4xl font-black mb-2 text-white">Управление узлами</h1>
         <p className="text-zinc-500 text-sm font-medium">Централизованный контроль вашей сети Telegram-ботов.</p>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      {/* Сетка статистики + FAQ */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <div className="bg-[#111] p-8 rounded-[2.5rem] border border-zinc-800">
             <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest mb-4">Активные инстансы</p>
             <div className="flex items-end gap-2">
@@ -28,16 +31,35 @@ const Dashboard: React.FC<DashboardProps> = ({ bots, onSelectBot, onAddBot }) =>
                 <p className="text-zinc-700 font-bold mb-1">/ {bots.length}</p>
             </div>
         </div>
+        
         <div className="bg-[#111] p-8 rounded-[2.5rem] border border-zinc-800">
             <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest mb-4">Общий охват (Users)</p>
             <p className="text-5xl font-black text-blue-500">{totalUsers.toLocaleString()}</p>
         </div>
+
         <div className="bg-[#111] p-8 rounded-[2.5rem] border border-zinc-800">
             <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest mb-4">Всего транзакций</p>
             <p className="text-5xl font-black text-white">{totalMessages.toLocaleString()}</p>
         </div>
+
+        {/* КАРТОЧКА FAQ */}
+        <div 
+          onClick={() => setIsFaqOpen(true)}
+          className="bg-blue-600/10 p-8 rounded-[2.5rem] border border-blue-500/20 hover:border-blue-500/50 transition-all cursor-pointer group flex flex-col justify-between"
+        >
+            <p className="text-blue-500 text-[10px] font-bold uppercase tracking-widest mb-4">Помощь и FAQ</p>
+            <div className="flex items-center justify-between">
+                <p className="text-xl font-black text-white leading-tight">Документация системы</p>
+                <div className="bg-blue-500 p-2 rounded-xl group-hover:scale-110 transition-transform text-white shrink-0 ml-4">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </div>
+            </div>
+        </div>
       </div>
 
+      {/* Секция Ваших ботов */}
       <section className="space-y-6">
         <div className="flex items-center justify-between">
             <h2 className="text-xl font-black text-white">Ваши боты</h2>
@@ -74,6 +96,52 @@ const Dashboard: React.FC<DashboardProps> = ({ bots, onSelectBot, onAddBot }) =>
             ))}
         </div>
       </section>
+
+      {/* OVERLAY: Просмотр PDF документа */}
+      {isFaqOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 md:p-12 animate-in fade-in duration-300">
+          {/* Фон с размытием */}
+          <div 
+            className="absolute inset-0 bg-black/90 backdrop-blur-xl" 
+            onClick={() => setIsFaqOpen(false)} 
+          />
+          
+          <div className="relative w-full max-w-6xl h-full bg-[#0a0a0a] border border-zinc-800 rounded-[3rem] overflow-hidden flex flex-col shadow-2xl animate-in zoom-in-95 duration-300">
+            {/* Шапка модалки */}
+            <div className="flex items-center justify-between p-8 border-b border-zinc-800 bg-[#111]">
+              <div>
+                <h3 className="text-2xl font-black text-white">Документация FAQ</h3>
+                <p className="text-zinc-500 text-xs font-medium uppercase tracking-widest mt-1">Справочное руководство системы</p>
+              </div>
+              <div className="flex items-center gap-4">
+                <a 
+                  href="/FAQ_Document.pdf" 
+                  download 
+                  className="hidden md:flex items-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-white px-5 py-2.5 rounded-2xl text-xs font-bold transition-all"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  Скачать PDF
+                </a>
+                <button 
+                  onClick={() => setIsFaqOpen(false)}
+                  className="p-3 hover:bg-zinc-800 rounded-2xl text-zinc-500 hover:text-white transition-colors"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12" strokeWidth="2" strokeLinecap="round"/></svg>
+                </button>
+              </div>
+            </div>
+            
+            {/* Контент с PDF */}
+            <div className="flex-1 bg-[#050505] relative">
+              <iframe 
+                src="/FAQ_Document.pdf#toolbar=0&navpanes=0" 
+                className="w-full h-full border-none"
+                title="FAQ Documentation"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
