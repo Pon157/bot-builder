@@ -1,4 +1,3 @@
-
 import { BotConfig, User } from '../types';
 
 const getApiBase = () => {
@@ -10,13 +9,23 @@ const getApiBase = () => {
 const fetchWithTimeout = async (url: string, options: any = {}, timeout = 30000) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
+  
+  // Определяем заголовки по умолчанию
+  const defaultHeaders: any = {
+    'Accept': 'application/json',
+  };
+
+  // Если мы НЕ отправляем FormData, добавляем Content-Type: application/json
+  if (!(options.body instanceof FormData)) {
+    defaultHeaders['Content-Type'] = 'application/json';
+  }
+
   try {
     const response = await fetch(url, { 
       ...options, 
       signal: controller.signal,
       headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
+        ...defaultHeaders,
         ...(options.headers || {})
       }
     });
@@ -34,6 +43,27 @@ export const api = {
       const res = await fetchWithTimeout(`${getApiBase()}/ping`, { method: 'GET' }, 5000);
       return res.ok;
     } catch (e) { return false; }
+  },
+
+  // --- НОВЫЙ МЕТОД ДЛЯ ЗАГРУЗКИ ФОТО ---
+  uploadFile: async (file: File): Promise<{ url: string } | null> => {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetchWithTimeout(`${getApiBase()}/upload`, {
+        method: 'POST',
+        body: formData,
+        // Мы НЕ передаем заголовки здесь, fetchWithTimeout сам поймет, 
+        // что для FormData не нужно ставить application/json
+      });
+
+      if (!response.ok) return null;
+      return await response.json();
+    } catch (e) {
+      console.error("Upload error:", e);
+      return null;
+    }
   },
 
   getUser: async (userId: string): Promise<User | null> => {
@@ -94,13 +124,13 @@ export const api = {
   },
 
   saveBot: async (userId: string, bot: BotConfig) => {
-    await fetchWithTimeout(`${getApiBase()}/bots/save`, {
+    const response = await fetchWithTimeout(`${getApiBase()}/bots/save`, {
       method: 'POST',
       body: JSON.stringify(bot)
     });
+    return response.ok ? await response.json() : null;
   },
 
-  // Added deleteBot to fix error in App.tsx on line 143
   deleteBot: async (userId: string, botId: string): Promise<void> => {
     await fetchWithTimeout(`${getApiBase()}/bots/delete/${userId}/${botId}`, { method: 'DELETE' });
   },
@@ -127,7 +157,6 @@ export const api = {
     } catch (e) { return "Ошибка связи."; }
   },
 
-  // Added getBotMessages to fix error in BotEditor.tsx on line 21
   getBotMessages: async (botId: string): Promise<any[]> => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/bots/messages/${botId}`, { method: 'GET' });
@@ -143,10 +172,11 @@ export const api = {
     return response.ok ? await response.json() : { status: 'error' };
   },
 
-  sendBroadcast: async (botIds: string[], message: string) => {
+  // Обновленный sendBroadcast с поддержкой фото
+  sendBroadcast: async (botIds: string[], message: string, photoUrl?: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/bots/broadcast`, {
       method: 'POST',
-      body: JSON.stringify({ botIds, message })
+      body: JSON.stringify({ botIds, message, photo_url: photoUrl })
     });
     return response.ok ? await response.json() : null;
   }
