@@ -91,10 +91,14 @@ class BotInstance:
         
         self.apply_config(config_data)
 
-    def apply_config(self, data: dict):
+def apply_config(self, data: dict):
         """Парсинг конфигурации и инициализация статистики"""
+        # Безопасно извлекаем конфиг
         raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
-        full_cfg = {**raw_cfg, **data}
+        
+        # Важно: приоритет отдаем тому, что лежит в 'config', 
+        # так как Supabase обычно отдает актуальное состояние именно там
+        full_cfg = {**data, **raw_cfg} 
         
         try:
             admin_id_raw = full_cfg.get('adminChatId')
@@ -112,24 +116,36 @@ class BotInstance:
         self.rate_limit = float(self.settings.get('rateLimit', 1.0))
         self.auto_ban_limit = int(self.settings.get('autoBanThreshold', 3))
         
-        # 1. Сначала загружаем пользователей, чтобы len() работал корректно
+        # 1. Загружаем пользователей
         self.users_list = full_cfg.get('connectedUsers', [])
         
-        # 2. Инициализируем статистику
-        self.stats_data = full_cfg.get('stats') or {
-            "totalMessages": 0,
-            "incomingToday": 0,
-            "outgoingToday": 0,
-            "bannedCount": 0,
-            "history": [],
-            "activeUsers24h": 0
-        }
+        # 2. Инициализируем статистику (БЕРЕМ ИЗ БД, НЕ ОБНУЛЯЕМ)
+        # Если stats в БД есть, берем их целиком
+        incoming_stats = full_cfg.get('stats')
+        if isinstance(incoming_stats, dict) and incoming_stats.get('history'):
+            self.stats_data = incoming_stats
+        else:
+            # Только если в БД совсем пусто, создаем скелет
+            self.stats_data = {
+                "totalMessages": incoming_stats.get("totalMessages", 0) if isinstance(incoming_stats, dict) else 0,
+                "incomingToday": incoming_stats.get("incomingToday", 0) if isinstance(incoming_stats, dict) else 0,
+                "outgoingToday": incoming_stats.get("outgoingToday", 0) if isinstance(incoming_stats, dict) else 0,
+                "bannedCount": incoming_stats.get("bannedCount", 0) if isinstance(incoming_stats, dict) else 0,
+                "history": [],
+                "activeUsers24h": 0
+            }
+
+        # 3. Работа с часовым поясом (МСК)
+        # Это нужно, чтобы при запуске в 1 час ночи бот понял, что уже новый день
+        from datetime import timezone, timedelta
+        moscow_tz = timezone(timedelta(hours=3))
+        now_moscow = datetime.now(moscow_tz)
+        current_date = now_moscow.strftime("%d.%m")
         
-        # 3. Если истории нет или она битая — создаем старт
-        history = self.stats_data.get("history")
+        history = self.stats_data.get("history", [])
         if not isinstance(history, list) or len(history) == 0:
             self.stats_data["history"] = [{
-                "date": datetime.now().strftime("%d.%m"),
+                "date": current_date,
                 "incoming": 0,
                 "outgoing": 0,
                 "totalUsers": len(self.users_list),
