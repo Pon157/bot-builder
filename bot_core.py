@@ -6,9 +6,12 @@ import os
 import sys
 import hashlib
 import time
+import shutil
+import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Any, Union
 
+# Импорты aiogram 3.x
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.enums import ParseMode, ContentType, ChatMemberStatus
 from aiogram.filters import CommandStart, Command, ChatMemberUpdatedFilter
@@ -16,420 +19,498 @@ from aiogram.types import (
     Message, ReplyKeyboardMarkup, KeyboardButton, 
     InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,
     ReplyKeyboardRemove, ForumTopicCreated, ChatMemberUpdated,
-    FSInputFile
+    FSInputFile, PhotoSize
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 
-# --- ГЛОБАЛЬНАЯ КОНФИГУРАЦИЯ ЛОГИРОВАНИЯ ---
+# ==========================================
+# 0. НАСТРОЙКА ОКРУЖЕНИЯ И ЛОГИРОВАНИЯ
+# ==========================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(os.path.join(BASE_DIR, "bot_core_critical.log"), encoding='utf-8')
+    ]
 )
-logger = logging.getLogger("BotCoreEngine")
+logger = logging.getLogger("UltimateBotCore")
 
-def get_anon_id(user_id: int) -> str:
-    return hashlib.md5(str(user_id).encode()).hexdigest()[:6].upper()
+# ==========================================
+# 1. ВСПОМОГАТЕЛЬНЫЕ УТИЛИТЫ
+# ==========================================
+def generate_short_id(user_id: int) -> str:
+    """Генерация уникального короткого ID для анонимных топиков"""
+    return hashlib.md5(str(user_id).encode()).hexdigest()[:8].upper()
 
-def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_text: str = "") -> str:
-    is_anon = settings.get('anonymousTopics', False)
-    uid = m.from_user.id
-    anon_tag = f"#{get_anon_id(uid)}"
-    
-    if is_anon:
-        user_info = f"👤 <b>Аноним {anon_tag}</b>"
-    else:
-        info_parts = []
-        if settings.get('showHeaderName', True):
-            name = m.from_user.full_name or "Пользователь"
-            info_parts.append(f"<b>{name}</b>")
-        if settings.get('showHeaderUsername', True) and m.from_user.username:
-            info_parts.append(f"(@{m.from_user.username})")
-        if settings.get('showHeaderId', True):
-            info_parts.append(f"ID: <code>{uid}</code>")
-        user_info = " | ".join(info_parts) if info_parts else f"Юзер {anon_tag}"
+def get_timestamp():
+    """ISO формат времени"""
+    return datetime.now().isoformat()
 
-    status_line = ""
-    if btn_text:
-        status_line = settings.get('ticketMessageHeader', "🆘 <b>ЗАЯВКА</b>")
-        if "{btn}" in status_line:
-            status_line = status_line.replace("{btn}", btn_text)
-        elif "[Кнопка" not in status_line:
-            status_line += f" [Кнопка: {btn_text}]:"
-    elif is_first:
-        status_line = settings.get('firstMessageHeader', "🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ:</b>")
-    else:
-        status_line = settings.get('commonMessageHeader', "📩 <b>СООБЩЕНИЕ:</b>")
-
-    return f"{status_line}\n{user_info}\n\n"
-
-# --- ОСНОВНОЙ КЛАСС БОТА ---
-class BotInstance:
-    def __init__(self, config_data: dict):
-        self.bot_id = config_data.get('id')
-        self.token = config_data.get('token')
-        self.sb_url = os.getenv("SUPABASE_URL", "").rstrip('/')
-        self.sb_key = os.getenv("SUPABASE_KEY", "")
+# ==========================================
+# 2. ЯДРО СИСТЕМЫ ПЕРЕСЫЛКИ И ОФОРМЛЕНИЯ
+# ==========================================
+class MessageFormatter:
+    @staticmethod
+    def get_admin_header(m: Message, settings: dict, is_first: bool = False, btn_label: str = "") -> str:
+        """Создает детальную шапку сообщения для администратора"""
+        is_anon = settings.get('anonymousTopics', False)
+        uid = m.from_user.id
         
-        self.bot = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        if is_anon:
+            user_info = f"👤 <b>Анонимный клиент</b> [<code>{generate_short_id(uid)}</code>]"
+        else:
+            name = m.from_user.full_name
+            username = f"(@{m.from_user.username})" if m.from_user.username else ""
+            user_info = f"👤 <b>{name}</b> {username}\n🆔 ID: <code>{uid}</code>"
+
+        # Определяем тип события
+        if btn_label:
+            event_type = f"⚡️ <b>КНОПКА: {btn_label}</b>"
+        elif is_first:
+            event_type = settings.get('firstMessageHeader', "🆕 <b>НОВОЕ ОБРАЩЕНИЕ</b>")
+        else:
+            event_type = settings.get('commonMessageHeader', "📩 <b>СООБЩЕНИЕ</b>")
+            
+        separator = "—" * 20
+        return f"{event_type}\n{user_info}\n{separator}\n\n"
+
+# ==========================================
+# 3. ОСНОВНОЙ КЛАСС БОТА
+# ==========================================
+class AdvancedBotInstance:
+    def __init__(self, raw_config: dict):
+        # Базовые поля
+        self.bot_id = raw_config.get('id')
+        self.token = raw_config.get('token')
+        
+        # Инстансы aiogram
+        self.bot = Bot(
+            token=self.token, 
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+        )
         self.dp = Dispatcher()
         self.router = Router()
         
-        self.msg_map = {}
-        self.flood_cache = {}
+        # Внутреннее состояние
         self.is_running = True
-        self.sync_queue = asyncio.Queue()
+        self.msg_history_map: Dict[int, int] = {}  # admin_msg_id -> user_id
+        self.antiflood_data: Dict[int, float] = {}
+        self.db_buffer = []
+        self.buffer_lock = asyncio.Lock()
         
-        self.apply_config(config_data)
+        # Загрузка и разбор конфига
+        self.parse_config(raw_config)
+        
+        # Настройка Supabase (из окружения)
+        self.sb_url = os.getenv("SUPABASE_URL", "").rstrip('/')
+        self.sb_key = os.getenv("SUPABASE_KEY", "")
 
-    def apply_config(self, data: dict):
-        raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
-        full_cfg = {**raw_cfg, **data}
-        
-        try:
-            admin_id_raw = full_cfg.get('adminChatId')
-            self.admin_chat_id = int(str(admin_id_raw).strip()) if admin_id_raw else None
-        except ValueError:
-            self.admin_chat_id = None
-
-        self.buttons = full_cfg.get('buttons', [])
-        self.triggers = full_cfg.get('triggers', [])
-        self.welcome_text = full_cfg.get('welcomeMessage', 'Здравствуйте!')
-        self.welcome_image = full_cfg.get('welcomeImage') # Новое поле: URL фото приветствия
-        self.settings = full_cfg.get('settings', {})
-        
-        self.use_topics = self.settings.get('useTopics', False)
-        self.topic_per_req = self.settings.get('topicPerRequest', False)
-        self.rate_limit = float(self.settings.get('rateLimit', 1.0))
-        self.auto_ban_limit = int(self.settings.get('autoBanThreshold', 3))
-        
-        self.users_list = full_cfg.get('connectedUsers', [])
-        self.stats_data = full_cfg.get('stats') or {
-            "totalMessages": 0, "incomingToday": 0, "outgoingToday": 0, "bannedCount": 0,
-            "history": [], "activeUsers24h": 0
-        }
-        
-        history = self.stats_data.get("history")
-        if not isinstance(history, list) or len(history) == 0:
-            self.stats_data["history"] = [{
-                "date": datetime.now().strftime("%d.%m"),
-                "incoming": 0, "outgoing": 0,
-                "totalUsers": len(self.users_list), "activeUsers": 0
-            }]
-
-    # --- ВСПОМОГАТЕЛЬНЫЙ МЕТОД ДЛЯ ОТПРАВКИ ФОТО ИЛИ ТЕКСТА ---
-    async def send_smart_response(self, chat_id: int, text: str, image_url: str = None, reply_markup=None):
-        try:
-            if image_url:
-                local_path = image_url.lstrip('/') # Убираем ведущий слеш
-                if os.path.exists(local_path):
-                    await self.bot.send_photo(
-                        chat_id=chat_id,
-                        photo=FSInputFile(local_path),
-                        caption=text,
-                        reply_markup=reply_markup
-                    )
-                    return
+    def parse_config(self, data: dict):
+        """Парсинг настроек и конфигурации из БД"""
+        c = data.get('config', {})
+        if isinstance(c, str):
+            c = json.loads(c)
             
-            # Если фото нет или файл не найден, отправляем просто текст
-            await self.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_markup=reply_markup
-            )
-        except Exception as e:
-            logger.error(f"Error sending response: {e}")
-            # Фолбэк на текст
-            try:
-                await self.bot.send_message(chat_id, text, reply_markup=reply_markup)
-            except: pass
+        self.admin_chat_id = int(str(c.get('adminChatId', 0))) if c.get('adminChatId') else None
+        self.welcome_text = c.get('welcomeMessage', 'Добро пожаловать!')
+        self.welcome_img = c.get('welcomeImage')
+        
+        self.buttons = c.get('buttons', [])
+        self.triggers = c.get('triggers', [])
+        self.channels = c.get('channels', [])
+        
+        self.settings = c.get('settings', {
+            'useTopics': False,
+            'anonymousTopics': False,
+            'forwardToAdmin': True,
+            'antiSpam': True,
+            'rateLimit': 1.0,
+            'autoApprove': False
+        })
+        
+        self.users = c.get('connectedUsers', [])
+        self.stats = c.get('stats', {
+            'total_msgs': 0, 
+            'unique_users': len(self.users),
+            'last_reset': datetime.now().strftime('%Y-%m-%d')
+        })
 
-    async def daily_stats_rotator(self):
-        while self.is_running:
-            try:
-                now = datetime.now()
-                current_date = now.strftime("%d.%m")
-                day_ago = int((now - timedelta(days=1)).timestamp())
-                active_count = sum(1 for u in self.users_list if u.get('last_seen', 0) > day_ago)
-                self.stats_data["activeUsers24h"] = active_count
-
-                history = self.stats_data.get("history", [])
-                if not isinstance(history, list) or not history:
-                    history = [{"date": current_date, "incoming": 0, "outgoing": 0, "totalUsers": len(self.users_list), "activeUsers": active_count}]
-                    self.stats_data["history"] = history
-
-                last_point = history[-1]
-                if last_point["date"] != current_date:
-                    last_point.update({
-                        "incoming": self.stats_data.get("incomingToday", 0),
-                        "outgoing": self.stats_data.get("outgoingToday", 0),
-                        "totalUsers": len(self.users_list),
-                        "activeUsers": active_count
-                    })
-                    new_point = {"date": current_date, "incoming": 0, "outgoing": 0, "totalUsers": len(self.users_list), "activeUsers": active_count}
-                    history.append(new_point)
-                    self.stats_data["history"] = history[-14:]
-                    self.stats_data["incomingToday"] = 0
-                    self.stats_data["outgoingToday"] = 0
-                else:
-                    last_point.update({
-                        "incoming": self.stats_data.get("incomingToday", 0),
-                        "outgoing": self.stats_data.get("outgoingToday", 0),
-                        "totalUsers": len(self.users_list),
-                        "activeUsers": active_count
-                    })
+    # --- МЕХАНИЗМЫ СОХРАНЕНИЯ МЕДИА ---
+    async def download_media(self, message: Message, folder: str = "triggers") -> Optional[str]:
+        """Скачивает медиафайл и возвращает локальный путь"""
+        try:
+            target_dir = os.path.join(UPLOADS_DIR, folder)
+            os.makedirs(target_dir, exist_ok=True)
+            
+            file_id = None
+            ext = ".jpg"
+            
+            if message.photo:
+                file_id = message.photo[-1].file_id
+            elif message.document:
+                file_id = message.document.file_id
+                ext = os.path.splitext(message.document.file_name)[1]
+            
+            if not file_id:
+                return None
                 
-                await self.sync_queue.put(("sync_state", None))
-                await asyncio.sleep(60)
-            except Exception as e:
-                logger.error(f"Rotator Error: {e}")
-                await asyncio.sleep(60)
+            file = await self.bot.get_file(file_id)
+            file_name = f"{uuid.uuid4()}{ext}"
+            file_path = os.path.join(target_dir, file_name)
+            
+            await self.bot.download_file(file.file_path, file_path)
+            # Возвращаем путь относительно корня проекта для сохранения в БД
+            return f"uploads/{folder}/{file_name}"
+        except Exception as e:
+            logger.error(f"Error downloading media: {e}")
+            return None
 
-    async def database_sync_worker(self):
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}", "Content-Type": "application/json", "Prefer": "return=minimal"}
+    # --- РАБОТА С БАЗОЙ ДАННЫХ (SUPABASE) ---
+    async def sync_loop(self):
+        """Фоновый цикл синхронизации данных (сообщения + конфиг)"""
+        logger.info(f"[*] Sync Loop started for Bot ID {self.bot_id}")
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            headers = {
+                "apikey": self.sb_key,
+                "Authorization": f"Bearer {self.sb_key}",
+                "Content-Type": "application/json"
+            }
             while self.is_running:
                 try:
-                    item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
-                    if not isinstance(item, tuple): 
-                        self.sync_queue.task_done()
-                        continue
-                    action, payload = item
+                    await asyncio.sleep(15) # Интервал синхронизации
                     
-                    if action == "log_message":
-                        await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
-                    elif action == "sync_state":
-                        update_payload = {
-                            "config": {
-                                "connectedUsers": self.users_list,
-                                "stats": self.stats_data,
-                                "settings": self.settings,
-                                "buttons": self.buttons,
-                                "triggers": self.triggers,
-                                "welcomeMessage": self.welcome_text,
-                                "welcomeImage": self.welcome_image, # Сохраняем и картинку
-                                "adminChatId": self.admin_chat_id
-                            }
+                    # 1. Сброс накопленных сообщений
+                    async with self.buffer_lock:
+                        if self.db_buffer:
+                            await client.post(
+                                f"{self.sb_url}/rest/v1/bot_messages",
+                                json=self.db_buffer, headers=headers
+                            )
+                            self.db_buffer = []
+
+                    # 2. Сохранение текущего состояния бота
+                    update_data = {
+                        "config": {
+                            "adminChatId": self.admin_chat_id,
+                            "welcomeMessage": self.welcome_text,
+                            "welcomeImage": self.welcome_img,
+                            "buttons": self.buttons,
+                            "triggers": self.triggers,
+                            "channels": self.channels,
+                            "settings": self.settings,
+                            "connectedUsers": self.users,
+                            "stats": self.stats
                         }
-                        await client.patch(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", json=update_payload, headers=headers)
-                    self.sync_queue.task_done()
-                except asyncio.TimeoutError:
-                    continue
+                    }
+                    await client.patch(
+                        f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                        json=update_data, headers=headers
+                    )
                 except Exception as e:
-                    logger.error(f"Sync Worker Error: {e}")
-                    try: self.sync_queue.task_done()
-                    except: pass
+                    logger.error(f"Global Sync Error: {e}")
 
-    async def check_antispam(self, user_id: int) -> bool:
-        if self.rate_limit <= 0: return False
-        now = time.time()
-        last_time = self.flood_cache.get(user_id, 0)
-        if now - last_time < self.rate_limit: return True
-        self.flood_cache[user_id] = now
-        return False
+    async def log_message(self, user_id: int, user_name: str, text: str, is_admin: bool = False):
+        """Добавляет сообщение в буфер для последующей отправки в БД"""
+        self.stats['total_msgs'] += 1
+        entry = {
+            "bot_id": self.bot_id,
+            "user_id": str(user_id),
+            "user_name": user_name,
+            "content": text[:1500],
+            "is_admin": is_admin,
+            "timestamp": get_timestamp()
+        }
+        async with self.buffer_lock:
+            self.db_buffer.append(entry)
 
-    async def log_and_update(self, uid: int, name: str, text: str, is_admin: bool = False):
-        await self.sync_queue.put(("log_message", {
-            "bot_id": self.bot_id, "user_id": uid, "first_name": name,
-            "message_text": text[:950] if text else "[Медиа]", "is_from_admin": is_admin
-        }))
-        self.stats_data["totalMessages"] = self.stats_data.get("totalMessages", 0) + 1
-        stat_key = "outgoingToday" if is_admin else "incomingToday"
-        self.stats_data[stat_key] = self.stats_data.get(stat_key, 0) + 1
-        
-        if not is_admin:
-            for u in self.users_list:
-                if u['id'] == uid:
-                    u['last_seen'] = int(time.time())
-                    u['name'] = name
-                    break
-        await self.sync_queue.put(("sync_state", None))
-
-    async def get_user_state(self, m: Message):
+    # --- УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ---
+    async def get_user_profile(self, m: Message):
         uid = m.from_user.id
-        user = next((u for u in self.users_list if u['id'] == uid), None)
-        is_first_time = False
-        if not user:
-            is_first_time = True
-            user = {
-                "id": uid, "first_name": m.from_user.first_name, "username": m.from_user.username,
-                "is_banned": False, "is_active": True, "warns": 0,
-                "joined_at": int(time.time()), "last_seen": int(time.time()), "last_topic_id": None
-            }
-            self.users_list.append(user)
-            await self.sync_queue.put(("sync_state", None))
-        else:
-            user["last_seen"] = int(time.time())
-            if not user.get("is_active", True):
-                user["is_active"] = True
-                await self.sync_queue.put(("sync_state", None))
-        return user, is_first_time
-
-    async def resolve_thread(self, user: dict, force_new: bool = False):
-        if not self.use_topics or not self.admin_chat_id: return None
-        if not force_new and user.get("last_topic_id"): return user["last_topic_id"]
-        try:
-            is_anon = self.settings.get('anonymousTopics', False)
-            topic_name = f"#{get_anon_id(user['id'])}" if is_anon else f"{user['first_name']} [{user['id']}]"
-            new_topic = await self.bot.create_forum_topic(self.admin_chat_id, topic_name)
-            user["last_topic_id"] = new_topic.message_thread_id
-            await self.sync_queue.put(("sync_state", None))
-            return new_topic.message_thread_id
-        except Exception: return None
-
-    async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = ""):
-        if not self.admin_chat_id: return
-        force_new_topic = self.topic_per_req and (btn_text != "" or is_first)
-        thread_id = await self.resolve_thread(user, force_new=force_new_topic)
-        header_text = format_admin_header(m, self.settings, is_first, btn_text)
+        user = next((u for u in self.users if u['id'] == uid), None)
+        is_new = False
         
+        if not user:
+            is_new = True
+            user = {
+                "id": uid,
+                "name": m.from_user.full_name,
+                "username": m.from_user.username,
+                "joined_at": get_timestamp(),
+                "topic_id": None,
+                "is_blocked": False,
+                "tags": []
+            }
+            self.users.append(user)
+            self.stats['unique_users'] = len(self.users)
+            logger.info(f"New user: {uid}")
+            
+        return user, is_new
+
+    async def check_memberships(self, user_id: int) -> bool:
+        """Проверка обязательных подписок"""
+        if not self.channels: return True
+        for channel in self.channels:
+            try:
+                chat_id = channel.get('id')
+                member = await self.bot.get_chat_member(chat_id, user_id)
+                if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+                    return False
+            except Exception as e:
+                logger.warning(f"Check membership error ({chat_id}): {e}")
+                continue
+        return True
+
+    # --- ЛОГИКА ПЕРЕСЫЛКИ СООБЩЕНИЙ ---
+    async def relay_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = ""):
+        """Метод пересылки контента админу (с топиками и антифлудом)"""
+        if not self.admin_chat_id: return
+
+        # Проверка Анти-спама
+        if self.settings.get('antiSpam'):
+            now = time.time()
+            last_msg_time = self.antiflood_data.get(user['id'], 0)
+            if now - last_msg_time < self.settings.get('rateLimit', 1.0):
+                return
+            self.antiflood_data[user['id']] = now
+
+        header = MessageFormatter.get_admin_header(m, self.settings, is_first, btn_text)
+        
+        # Обработка топиков
+        thread_id = None
+        if self.settings.get('useTopics'):
+            if not user.get('topic_id'):
+                try:
+                    topic_title = f"{user['name']} | {generate_short_id(user['id'])}"
+                    new_topic = await self.bot.create_forum_topic(self.admin_chat_id, topic_title)
+                    user['topic_id'] = new_topic.message_thread_id
+                except Exception as e:
+                    logger.error(f"Topic creation failed: {e}")
+            thread_id = user.get('topic_id')
+
         try:
             sent_msg = None
             if m.text:
-                sent_msg = await self.bot.send_message(self.admin_chat_id, f"{header_text}{m.text}", message_thread_id=thread_id)
+                sent_msg = await self.bot.send_message(self.admin_chat_id, f"{header}{m.text}", message_thread_id=thread_id)
             elif m.photo:
-                sent_msg = await self.bot.send_photo(self.admin_chat_id, m.photo[-1].file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
-            else:
-                if header_text: await self.bot.send_message(self.admin_chat_id, header_text, message_thread_id=thread_id)
+                sent_msg = await self.bot.send_photo(self.admin_chat_id, m.photo[-1].file_id, caption=f"{header}{m.caption or ''}", message_thread_id=thread_id)
+            elif m.voice:
+                await self.bot.send_message(self.admin_chat_id, f"{header}🎤 Голосовое сообщение:", message_thread_id=thread_id)
                 sent_msg = await self.bot.copy_message(self.admin_chat_id, m.chat.id, m.message_id, message_thread_id=thread_id)
-            
-            if sent_msg: self.msg_map[sent_msg.message_id] = user['id']
-        except Exception as e: logger.error(f"Forwarding Error: {e}")
+            elif m.video:
+                await self.bot.send_message(self.admin_chat_id, f"{header}📹 Видео:", message_thread_id=thread_id)
+                sent_msg = await self.bot.copy_message(self.admin_chat_id, m.chat.id, m.message_id, message_thread_id=thread_id)
+            else:
+                await self.bot.send_message(self.admin_chat_id, f"{header}📎 Вложение:", message_thread_id=thread_id)
+                sent_msg = await self.bot.copy_message(self.admin_chat_id, m.chat.id, m.message_id, message_thread_id=thread_id)
 
-    async def admin_control_logic(self, m: Message):
-        if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): return False
-        cmd_parts = m.text.lower().split()
-        command = cmd_parts[0][1:]
-        target_user = None
-        if m.message_thread_id:
-            target_user = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
-        if not target_user and m.reply_to_message:
-            uid = self.msg_map.get(m.reply_to_message.message_id)
-            if uid: target_user = next((u for u in self.users_list if u['id'] == uid), None)
+            if sent_msg:
+                self.msg_history_map[sent_msg.message_id] = user['id']
+                # Очистка старой карты (память)
+                if len(self.msg_history_map) > 5000:
+                    first_key = next(iter(self.msg_history_map))
+                    del self.msg_history_map[first_key]
+                    
+        except TelegramForbiddenError:
+            logger.error("Admin chat unreachable!")
+        except Exception as e:
+            logger.error(f"Relay Error: {e}")
+
+    # --- РЕГИСТРАЦИЯ ХЕНДЛЕРОВ ---
+    async def setup_handlers(self):
         
-        if not target_user: return False
-        uid = target_user['id']
-        
-        if command == "ban":
-            target_user["is_banned"] = True
-            await self.sync_queue.put(("sync_state", None))
-            try: await self.bot.send_message(uid, "🚫 <b>Доступ ограничен администратором.</b>")
-            except: pass
-            await m.reply(f"✅ Пользователь {uid} заблокирован.")
-            return True
-        elif command == "unban":
-            target_user["is_banned"] = False
-            await self.sync_queue.put(("sync_state", None))
-            try: await self.bot.send_message(uid, "✅ <b>Ваш доступ восстановлен администратором.</b>")
-            except: pass
-            await m.reply(f"✅ Пользователь {uid} разблокирован.")
-            return True
-        return False
-
-    async def core_handlers_setup(self):
-        @self.router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=ChatMemberStatus.KICKED))
-        async def on_user_blocked_bot(event: ChatMemberUpdated):
-            user_id = event.from_user.id
-            user = next((u for u in self.users_list if u['id'] == user_id), None)
-            if user:
-                user["is_active"] = False
-                await self.sync_queue.put(("sync_state", None))
-
         @self.router.message(CommandStart())
         async def handle_start(m: Message):
-            user, is_new = await self.get_user_state(m)
-            if user.get("is_banned"): return
+            user, is_new = await self.get_user_profile(m)
             
-            # ИСПОЛЬЗУЕМ НОВЫЙ МЕТОД ДЛЯ ФОТО
-            await self.send_smart_response(
-                chat_id=m.chat.id,
-                text=self.welcome_text,
-                image_url=self.welcome_image, # URL фото из конфига
-                reply_markup=self.get_main_keyboard()
-            )
-            await self.log_and_update(user['id'], m.from_user.full_name, "/start")
+            # Проверка подписки
+            if not await self.check_memberships(user['id']):
+                kb_list = []
+                for ch in self.channels:
+                    btn = InlineKeyboardButton(text=f"Подписаться на {ch.get('name', 'канал')}", url=f"https://t.me/{ch.get('id').replace('@','')}")
+                    kb_list.append([btn])
+                kb_list.append([InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_sub")])
+                
+                return await m.answer(
+                    "⚠️ <b>Для работы с ботом необходимо подписаться:</b>",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list)
+                )
+
+            keyboard = self.generate_markup()
+            
+            # Отправка приветствия
+            if self.welcome_img:
+                img_path = os.path.join(BASE_DIR, self.welcome_img.lstrip('/'))
+                if os.path.exists(img_path):
+                    await m.answer_photo(FSInputFile(img_path), caption=self.welcome_text, reply_markup=keyboard)
+                else:
+                    await m.answer(self.welcome_text, reply_markup=keyboard)
+            else:
+                await m.answer(self.welcome_text, reply_markup=keyboard)
+
+            if is_new:
+                await self.relay_to_admin(m, user, is_first=True)
+            await self.log_message(user['id'], user['name'], "/start")
+
+        @self.router.callback_query(F.data == "check_sub")
+        async def on_check_sub(c: CallbackQuery):
+            if await self.check_memberships(c.from_user.id):
+                await c.message.delete()
+                await handle_start(c.message)
+            else:
+                await c.answer("❌ Вы не подписаны на все каналы!", show_alert=True)
 
         @self.router.message(F.chat.id == self.admin_chat_id)
-        async def handle_admin_input(m: Message):
-            if m.text and (m.text.startswith("/") or m.text.startswith("!")):
-                await self.admin_control_logic(m)
-                return
+        async def on_admin_reply(m: Message):
+            """Логика ответов админа"""
             target_id = None
-            if m.message_thread_id:
-                u = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
-                if u: target_id = u["id"]
-            if not target_id and m.reply_to_message:
-                target_id = self.msg_map.get(m.reply_to_message.message_id)
             
-            if target_id:
-                try:
-                    try: await self.bot.copy_message(target_id, m.chat.id, m.message_id)
-                    except TelegramForbiddenError: pass
-                    except Exception: await self.bot.forward_message(target_id, m.chat.id, m.message_id)
-                    await self.log_and_update(target_id, "Admin", m.text or "[Медиа]", is_admin=True)
-                except Exception as e: await m.reply(f"❌ <b>Ошибка:</b> {e}")
+            # 1. По reply
+            if m.reply_to_message:
+                target_id = self.msg_history_map.get(m.reply_to_message.message_id)
+            
+            # 2. По топику (если нет в мапе)
+            if not target_id and m.message_thread_id:
+                u_ref = next((u for u in self.users if u.get('topic_id') == m.message_thread_id), None)
+                if u_ref: target_id = u_ref['id']
+
+            if not target_id: return
+
+            try:
+                # Специальные команды в админке
+                if m.text == "/ban":
+                    for u in self.users:
+                        if u['id'] == target_id: u['is_blocked'] = True
+                    return await m.reply("🚫 Пользователь заблокирован.")
+                
+                if m.text == "/unban":
+                    for u in self.users:
+                        if u['id'] == target_id: u['is_blocked'] = False
+                    return await m.reply("✅ Пользователь разблокирован.")
+
+                # Проброс ответа пользователю
+                await self.bot.copy_message(target_id, m.chat.id, m.message_id)
+                await self.log_message(target_id, "ADMIN_REPLY", m.text or "[Медиа]", is_admin=True)
+                
+            except Exception as e:
+                await m.reply(f"❌ Доставка не удалась: {e}")
 
         @self.router.message()
-        async def handle_user_input(m: Message):
-            if self.admin_chat_id and m.chat.id == self.admin_chat_id: return
-            user, is_new = await self.get_user_state(m)
-            if user.get("is_banned") or await self.check_antispam(user['id']): return
+        async def on_user_message(m: Message):
+            """Главный процессор входящих сообщений"""
+            if m.chat.id == self.admin_chat_id: return
             
-            if m.text:
-                clean_text = m.text.lower().strip()
-                # ПРОВЕРКА КНОПОК
-                for btn in self.buttons:
-                    if btn.get('text') and btn['text'].lower() == clean_text:
-                        if btn.get('type') == 'request': 
-                            await self.forward_to_admin(m, user, btn_text=btn['text'])
-                        
-                        # ОТВЕТ С ФОТО ЕСЛИ ЕСТЬ
-                        if btn.get('response'): 
-                            await self.send_smart_response(
-                                chat_id=m.chat.id,
-                                text=btn['response'],
-                                image_url=btn.get('image_url')
-                            )
-                        await self.log_and_update(user['id'], m.from_user.full_name, f"КНОПКА: {btn['text']}")
-                        return
-                
-                # ТРИГГЕРЫ (ПОКА БЕЗ ФОТО, НО МОЖНО ДОБАВИТЬ)
-                for trig in self.triggers:
-                    if trig.get('keyword') and trig['keyword'].lower() in clean_text:
-                        await m.answer(trig['response'])
-                        await self.log_and_update(user['id'], m.from_user.full_name, f"ТРИГГЕР: {trig['keyword']}")
-                        return
+            user, is_new = await self.get_user_profile(m)
+            if user.get('is_blocked'): return
             
-            await self.forward_to_admin(m, user, is_first=is_new)
-            await self.log_and_update(user['id'], m.from_user.full_name, m.text or "[Медиа]")
+            input_text = (m.text or m.caption or "").strip()
 
-    def get_main_keyboard(self):
-        active_btns = [b for b in self.buttons if b.get('text')]
-        if not active_btns: return ReplyKeyboardRemove()
-        keyboard_rows = []
-        for i in range(0, len(active_btns), 2):
-            keyboard_rows.append([KeyboardButton(text=b['text']) for b in active_btns[i:i+2]])
-        return ReplyKeyboardMarkup(keyboard=keyboard_rows, resize_keyboard=True)
+            # --- 1. ПРОВЕРКА КНОПОК ---
+            for btn in self.buttons:
+                if btn.get('text') == input_text:
+                    resp = btn.get('response', '...')
+                    btn_photo = btn.get('photo')
+                    
+                    if btn_photo:
+                        p = os.path.join(BASE_DIR, btn_photo.lstrip('/'))
+                        if os.path.exists(p):
+                            await m.answer_photo(FSInputFile(p), caption=resp)
+                        else: await m.answer(resp)
+                    else:
+                        await m.answer(resp)
+                    
+                    if btn.get('type') == 'request':
+                        await self.relay_to_admin(m, user, btn_text=input_text)
+                    
+                    await self.log_message(user['id'], user['name'], f"КНОПКА: {input_text}")
+                    return
 
-    async def run_instance(self):
-        asyncio.create_task(self.database_sync_worker())
-        asyncio.create_task(self.daily_stats_rotator())
-        await self.core_handlers_setup()
+            # --- 2. ПРОВЕРКА ТРИГГЕРОВ (АВТООТВЕТЫ) ---
+            for trg in self.triggers:
+                keyword = trg.get('keyword', '').lower()
+                if keyword and keyword in input_text.lower():
+                    trg_resp = trg.get('response', '')
+                    trg_photo = trg.get('photo')
+                    
+                    if trg_photo:
+                        tp = os.path.join(BASE_DIR, trg_photo.lstrip('/'))
+                        if os.path.exists(tp):
+                            await m.answer_photo(FSInputFile(tp), caption=trg_resp)
+                        else: await m.answer(trg_resp)
+                    else:
+                        await m.answer(trg_resp)
+                    
+                    await self.log_message(user['id'], user['name'], f"ТРИГГЕР: {keyword}")
+                    return
+
+            # --- 3. ПЕРЕСЫЛКА АДМИНУ ---
+            if self.settings.get('forwardToAdmin', True):
+                await self.relay_to_admin(m, user, is_first=is_new)
+            
+            await self.log_message(user['id'], user['name'], input_text or "[Медиа/Файл]")
+
+    # --- ИНТЕРФЕЙСНЫЕ МЕТОДЫ ---
+    def generate_markup(self):
+        """Создает динамическую клавиатуру"""
+        active = [b for b in self.buttons if b.get('text')]
+        if not active: return ReplyKeyboardRemove()
+        
+        rows = []
+        # Группируем по 2 кнопки в ряд
+        for i in range(0, len(active), 2):
+            row = [KeyboardButton(text=btn['text']) for btn in active[i:i+2]]
+            rows.append(row)
+            
+        return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+    async def start(self):
+        """Запуск инстанса бота"""
+        # Инициализация задач
+        asyncio.create_task(self.sync_loop())
+        
+        # Регистрация роутеров
+        await self.setup_handlers()
         self.dp.include_router(self.router)
-        logger.info(f"[*] Бот {self.bot_id} запущен.")
-        try: await self.dp.start_polling(self.bot)
+        
+        logger.info(f"[*] Engine online: Bot ID {self.bot_id}")
+        try:
+            # Сброс вебхука перед поллингом
+            await self.bot.delete_webhook(drop_pending_updates=True)
+            await self.dp.start_polling(self.bot)
+        except Exception as e:
+            logger.critical(f"Bot Polling Fatal Error: {e}")
         finally:
             self.is_running = False
             await self.bot.session.close()
 
+# ==========================================
+# 4. ВХОД В ПРОГРАММУ
+# ==========================================
 if __name__ == "__main__":
-    if len(sys.argv) < 2: sys.exit(1)
-    async def main():
-        cfg_path = sys.argv[1]
-        try:
-            with open(cfg_path, 'r', encoding='utf-8') as f: config = json.load(f)
-            instance = BotInstance(config)
-            await instance.run_instance()
-        except Exception as e: logger.error(f"FATAL: {e}")
-    asyncio.run(main())
+    if len(sys.argv) < 2:
+        print("Error: Missing config file argument.")
+        sys.exit(1)
+        
+    cfg_file = sys.argv[1]
+    if not os.path.exists(cfg_file):
+        print(f"Error: Config {cfg_file} not found.")
+        sys.exit(1)
+        
+    try:
+        with open(cfg_file, 'r', encoding='utf-8') as f:
+            full_config = json.load(f)
+            
+        # Запуск асинхронного ядра
+        engine = AdvancedBotInstance(full_config)
+        asyncio.run(engine.start())
+        
+    except KeyboardInterrupt:
+        print("\nShutdown by user.")
+    except Exception as e:
+        print(f"Startup Crash: {e}")
+        logging.exception(e)
