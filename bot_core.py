@@ -135,61 +135,105 @@ class BotInstance:
                 "activeUsers": 0
             }]
 
-    async def daily_stats_rotator(self):
-        """Ротация статистики раз в час"""
+async def daily_stats_rotator(self):
+        """Ротация статистики с защитой от сбоев"""
         while self.is_running:
             try:
                 now = datetime.now()
                 current_date = now.strftime("%d.%m")
                 
-                # Подсчет активных пользователей за 24ч
+                # Подсчет активных
                 day_ago = int((now - timedelta(days=1)).timestamp())
-                active_count = 0
-                for u in self.users_list:
-                    if u.get('last_seen', 0) > day_ago:
-                        active_count += 1
+                active_count = sum(1 for u in self.users_list if u.get('last_seen', 0) > day_ago)
                 self.stats_data["activeUsers24h"] = active_count
 
-                # Проверка смены дня в истории
                 history = self.stats_data.get("history", [])
-                if not history:
-                     history = [{
-                        "date": current_date,
-                        "incoming": 0, "outgoing": 0, 
-                        "totalUsers": len(self.users_list), "activeUsers": 0
+                if not isinstance(history, list) or not history:
+                    history = [{
+                        "date": current_date, "incoming": 0, "outgoing": 0,
+                        "totalUsers": len(self.users_list), "activeUsers": active_count
                     }]
-                
+                    self.stats_data["history"] = history
+
                 last_point = history[-1]
-                
+
                 if last_point["date"] != current_date:
-                    # Новый день -> фиксируем старый и создаем новый
+                    # Смена дня: фиксируем старый, создаем новый
+                    last_point["incoming"] = self.stats_data.get("incomingToday", 0)
+                    last_point["outgoing"] = self.stats_data.get("outgoingToday", 0)
+                    
                     new_point = {
                         "date": current_date,
-                        "incoming": 0, # Сбрасываем счетчики нового дня
+                        "incoming": 0,
                         "outgoing": 0,
                         "totalUsers": len(self.users_list),
                         "activeUsers": active_count
                     }
                     history.append(new_point)
-                    # Храним историю 14 дней
                     self.stats_data["history"] = history[-14:]
-                    
-                    # Сброс текущих дневных счетчиков в корне объекта
                     self.stats_data["incomingToday"] = 0
                     self.stats_data["outgoingToday"] = 0
                 else:
-                    # Тот же день -> обновляем текущую точку истории для графиков realtime
+                    # Обновление текущего дня
                     last_point["incoming"] = self.stats_data.get("incomingToday", 0)
                     last_point["outgoing"] = self.stats_data.get("outgoingToday", 0)
                     last_point["totalUsers"] = len(self.users_list)
                     last_point["activeUsers"] = active_count
-                
-                # Принудительная синхронизация
+
                 await self.sync_queue.put(("sync_state", None))
-                await asyncio.sleep(60) # Проверка каждую минуту (для точности)
+                await asyncio.sleep(60)
             except Exception as e:
                 logger.error(f"Rotator Error: {e}")
                 await asyncio.sleep(60)
+
+    async def database_sync_worker(self):
+        """Воркер синхронизации с защитой от падения"""
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            headers = {
+                "apikey": self.sb_key,
+                "Authorization": f"Bearer {self.sb_key}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal"
+            }
+            while self.is_running:
+                try:
+                    # Безопасное получение из очереди
+                    item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
+                    if not isinstance(item, tuple): 
+                        self.sync_queue.task_done()
+                        continue
+                    
+                    action, payload = item
+                    
+                    if action == "log_message":
+                        await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
+                    
+                    elif action == "sync_state":
+                        update_payload = {
+                            "config": {
+                                "connectedUsers": self.users_list,
+                                "stats": self.stats_data,
+                                "settings": self.settings,
+                                "buttons": self.buttons,
+                                "triggers": self.triggers,
+                                "welcomeMessage": self.welcome_text,
+                                "adminChatId": self.admin_chat_id
+                            }
+                        }
+                        await client.patch(
+                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", 
+                            json=update_payload, 
+                            headers=headers
+                        )
+                    
+                    self.sync_queue.task_done()
+                except asyncio.TimeoutError:
+                    continue
+                except Exception as e:
+                    logger.error(f"Sync Worker Error: {e}")
+                    # Не забываем task_done даже при ошибке, чтобы очередь не блокировалась
+                    try: self.sync_queue.task_done()
+                    except: pass
 
     async def database_sync_worker(self):
         """Воркер синхронизации с Supabase"""
