@@ -17,9 +17,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware 
 from cryptography.fernet import Fernet
+from aiogram import Bot
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 from aiogram.types import FSInputFile
 
-# Импорт твоего сервиса почты
+# ОПРЕДЕЛЯЕМ БАЗОВУЮ ДИРЕКТОРИЮ (Где лежит этот скрипт)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+
+# Создаем папку для загрузок, если нет
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR)
+
+# Импорт сервиса почты (заглушка, если нет файла)
 try:
     from email_service import EmailService
 except ImportError:
@@ -29,17 +40,13 @@ except ImportError:
         @staticmethod
         def send_password_reset(e, c): return True
 
-from aiogram import Bot
-from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramForbiddenError
-
 # ==========================================
-# 1. ИНИЦИАЛИЗАЦИЯ И БЕЗОПАСНОСТЬ
+# 1. ИНИЦИАЛИЗАЦИЯ И КОНФИГУРАЦИЯ
 # ==========================================
 def init_env():
-    if os.path.exists('.env'):
-        with open('.env', 'r', encoding='utf-8-sig') as f:
+    env_path = os.path.join(BASE_DIR, '.env')
+    if os.path.exists(env_path):
+        with open(env_path, 'r', encoding='utf-8-sig') as f:
             for l in f:
                 l = l.strip()
                 if l and not l.startswith('#') and '=' in l:
@@ -59,9 +66,17 @@ if not E_KEY:
 
 cipher = Fernet(E_KEY.encode())
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(os.path.join(BASE_DIR, "server.log"), encoding='utf-8')
+    ]
+)
 logger = logging.getLogger("DialogEngineServer")
 
+# --- Утилиты безопасности ---
 def hash_pwd(password: str) -> str:
     salt = "dialog_engine_secure_2026_salt" 
     return hashlib.sha256((password + salt).encode()).hexdigest()
@@ -78,19 +93,22 @@ def decrypt_val(val: str) -> str:
         return val 
 
 # ==========================================
-# 2. МЕНЕДЖЕР ПРОЦЕССОВ БОТОВ
+# 2. МЕНЕДЖЕР ПРОЦЕССОВ (PM2-style internal)
 # ==========================================
 class BotManager:
     def __init__(self):
         self.procs: Dict[str, asyncio.subprocess.Process] = {}
         self.log_paths: Dict[str, str] = {}
+        self.bots_dir = os.path.join(BASE_DIR, "active_bots")
+        os.makedirs(self.bots_dir, exist_ok=True)
 
     async def start_bot(self, bid: str, config: dict):
         await self.stop_bot(bid)
-        os.makedirs("active_bots", exist_ok=True)
-        cfg_path = f"active_bots/cfg_{bid}.json"
-        log_path = f"active_bots/bot_{bid}.log"
         
+        cfg_path = os.path.join(self.bots_dir, f"cfg_{bid}.json")
+        log_path = os.path.join(self.bots_dir, f"bot_{bid}.log")
+        
+        # Расшифровываем токен для воркера
         raw_token = decrypt_val(config.get('token', ''))
         config['token'] = raw_token
         
@@ -100,13 +118,19 @@ class BotManager:
         self.log_paths[bid] = log_path
         
         try:
+            # Передаем переменные окружения и запускаем bot_core.py из той же папки
             env = os.environ.copy()
             env.update({"SUPABASE_URL": S_URL, "SUPABASE_KEY": S_KEY})
+            
             l_out = open(log_path, "a", encoding="utf-8")
             
+            # Используем sys.executable для гарантии того же Python интерпретатора
+            bot_script = os.path.join(BASE_DIR, "bot_core.py")
+            
             p = await asyncio.create_subprocess_exec(
-                sys.executable, "bot_core.py", cfg_path,
-                stdout=l_out, stderr=l_out, env=env
+                sys.executable, bot_script, cfg_path,
+                stdout=l_out, stderr=l_out, env=env,
+                cwd=BASE_DIR # Важно: рабочая папка процесса
             )
             self.procs[bid] = p
             logger.info(f"🚀 Бот {bid} запущен (PID: {p.pid})")
@@ -122,7 +146,8 @@ class BotManager:
                 p.terminate()
                 await asyncio.wait_for(p.wait(), timeout=3.0)
             except:
-                if p: p.kill()
+                try: p.kill()
+                except: pass
             finally:
                 if bid in self.procs: del self.procs[bid]
         return True
@@ -132,17 +157,19 @@ class BotManager:
         if not path or not os.path.exists(path): return "Логи отсутствуют."
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return "".join(f.readlines()[-150:])
+                lines = f.readlines()
+                return "".join(lines[-100:])
         except: return "Ошибка чтения логов."
 
 pm = BotManager()
 
 # ==========================================
-# 3. НАСТРОЙКА API И LIFESPAN
+# 3. FASTAPI И LIFESPAN
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("--- Сервер запускается ---")
+    logger.info("--- SERVER STARTING ---")
+    # Автозапуск ботов при рестарте сервера
     async with httpx.AsyncClient(base_url=f"{S_URL}/rest/v1/", 
                                  headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}"}) as client:
         try:
@@ -152,20 +179,17 @@ async def lifespan(app: FastAPI):
                     cfg = {**(b.get("config") or {}), **b}
                     await pm.start_bot(b['id'], cfg)
         except Exception as e:
-            logger.error(f"Ошибка автозапуска: {e}")
+            logger.error(f"Auto-start error: {e}")
+    
     yield
-    logger.info("--- Сервер останавливается ---")
+    
+    logger.info("--- SERVER STOPPING ---")
     for bid in list(pm.procs.keys()):
         await pm.stop_bot(bid)
 
 app = FastAPI(lifespan=lifespan)
 
-# === НАСТРОЙКА ХРАНИЛИЩА ФАЙЛОВ ===
-UPLOAD_DIR = "uploads"
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
-
-# Раздаем файлы по ссылке /uploads/...
+# Раздача статики (фотографий)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 # === MIDDLEWARE ===
@@ -176,17 +200,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            f"connect-src 'self' {S_URL}; "
-            "script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: blob:;"
-        )
+        # Разрешаем загрузку картинок
+        response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data: blob:;"
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -194,32 +212,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Клиент БД
 db = httpx.AsyncClient(
     base_url=f"{S_URL}/rest/v1/", 
     headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}", "Content-Type": "application/json"}
 )
 
 # ==========================================
-# 4. ЗАГРУЗКА ФАЙЛОВ (НОВЫЙ ЭНДПОИНТ)
+# 4. ЗАГРУЗКА ФАЙЛОВ (ЖЕЛЕЗОБЕТОННАЯ)
 # ==========================================
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
     try:
-        ext = file.filename.split('.')[-1]
+        ext = file.filename.split('.')[-1] if '.' in file.filename else "jpg"
         filename = f"{uuid.uuid4()}.{ext}"
+        # Абсолютный путь для сохранения
         file_path = os.path.join(UPLOAD_DIR, filename)
         
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
             
-        # Возвращаем путь относительно корня (например /uploads/uuid.jpg)
+        # Возвращаем путь, понятный и вебу (/uploads/...), и боту
         return {"url": f"/uploads/{filename}"}
     except Exception as e:
-        logger.error(f"Upload error: {e}")
+        logger.error(f"Upload failed: {e}")
         raise HTTPException(500, "Ошибка сохранения файла")
 
 # ==========================================
-# 5. ЭНДПОИНТЫ АВТОРИЗАЦИИ
+# 5. АВТОРИЗАЦИЯ
 # ==========================================
 @app.post("/api/auth/login")
 async def login(d: dict):
@@ -233,17 +253,16 @@ async def login(d: dict):
 async def request_ver(d: dict):
     email = d['email'].lower()
     code = str(random.randint(100000, 999999))
-    await db.post("temp_codes", json={
-        "email": email, "code": code, "type": "VERIFY"
-    }, headers={"Prefer": "resolution=merge-duplicates"})
-    if EmailService.send_verification_code(email, code): return True
-    raise HTTPException(500, "Ошибка почтового сервера")
+    await db.post("temp_codes", json={"email": email, "code": code, "type": "VERIFY"})
+    EmailService.send_verification_code(email, code)
+    return True
 
 @app.post("/api/auth/verify-and-register")
 async def verify_reg(d: dict):
     email = d['email'].lower()
     r = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{d['code']}"})
-    if not r.json(): raise HTTPException(400, "Неверный код подтверждения")
+    if not r.json(): raise HTTPException(400, "Неверный код")
+    
     uid = f"u_{secrets.token_hex(4)}"
     user_data = {
         "id": uid, "username": d['username'], "email": email,
@@ -254,25 +273,6 @@ async def verify_reg(d: dict):
     await db.post("users", json=user_data)
     await db.delete("temp_codes", params={"email": f"eq.{email}"})
     return user_data
-
-@app.post("/api/auth/forgot-password")
-async def forgot_p(d: dict):
-    email = d['email'].lower()
-    u = await db.get("users", params={"email": f"eq.{email}"})
-    if not u.json(): return True
-    code = str(random.randint(100000, 999999))
-    await db.post("temp_codes", json={"email": email, "code": code, "type": "RESET"}, headers={"Prefer": "resolution=merge-duplicates"})
-    EmailService.send_password_reset(email, code)
-    return True
-
-@app.post("/api/auth/reset-password")
-async def reset_p(d: dict):
-    email = d['email'].lower()
-    r = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{d['code']}", "type": "eq.RESET"})
-    if not r.json(): raise HTTPException(400, "Код недействителен")
-    new_hpwd = hash_pwd(d['newPassword'])
-    await db.patch("users", params={"email": f"eq.{email}"}, json={"password": new_hpwd})
-    return True
 
 # ==========================================
 # 6. УПРАВЛЕНИЕ БОТАМИ
@@ -309,10 +309,11 @@ async def start_handler(req: dict):
     r = await db.get("bots", params={"id": f"eq.{bid}"})
     if not r.json(): raise HTTPException(404, "Бот не найден")
     data = r.json()[0]
-    if await pm.start_bot(bid, data) is True:
+    res = await pm.start_bot(bid, data)
+    if res is True:
         await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "RUNNING"})
         return True
-    raise HTTPException(500, "Ошибка запуска процесса")
+    raise HTTPException(500, f"Ошибка запуска: {res}")
 
 @app.post("/api/bots/stop/{bid}")
 async def stop_handler(bid: str):
@@ -330,41 +331,19 @@ async def delete_handler(uid: str, bid: str):
 async def get_bot_logs(bid: str):
     return {"logs": pm.get_logs(bid)}
 
-# ==========================================
-# 7. ЛИЦЕНЗИИ
-# ==========================================
-@app.post("/api/admin/generate-key")
-async def gen_key(d: dict, x_admin_token: str = Header(None)):
-    if x_admin_token != A_SECRET: raise HTTPException(401, "Admin only")
-    key = f"DE-{secrets.token_hex(3).upper()}-{random.randint(100, 999)}"
-    payload = {"key": key, "months": d.get('months', 1), "days": d.get('days', 0), "used": False}
-    await db.post("issued_keys", json=payload)
-    return {"key": key}
-
-@app.post("/api/license/activate")
-async def activate_lic(req: dict):
-    key_code = req.get('key')
-    bid = req.get('botId')
-    rk = await db.get("issued_keys", params={"key": f"eq.{key_code}", "used": "eq.false"})
-    if not rk.json(): return {"status": "error", "message": "Ключ недействителен"}
-    k_data = rk.json()[0]
-    added_ms = (k_data['months'] * 30 * 86400000) + (k_data['days'] * 86400000)
-    rb = await db.get("bots", params={"id": f"eq.{bid}"})
-    curr_time = int(time.time() * 1000)
-    old_expiry = rb.json()[0].get("license_expires_at") or 0
-    new_expiry = max(old_expiry, curr_time) + added_ms
-    await db.patch("bots", params={"id": f"eq.{bid}"}, json={"license_expires_at": new_expiry})
-    await db.patch("issued_keys", params={"key": f"eq.{key_code}"}, json={"used": True, "used_by_bot": bid})
-    return {"status": "ok", "new_expiry": new_expiry}
+@app.get("/api/bots/messages/{bid}")
+async def get_bot_messages(bid: str):
+    r = await db.get("bot_messages", params={"bot_id": f"eq.{bid}", "order": "timestamp.desc", "limit": 50})
+    return r.json()
 
 # ==========================================
-# 8. МАССОВАЯ РАССЫЛКА (ОБНОВЛЕННАЯ)
+# 7. РАССЫЛКА С ФОТО (BROADCAST)
 # ==========================================
 @app.post("/api/bots/broadcast")
 async def broadcast_msg(d: dict):
     bot_ids = d.get('botIds', [])
     text = d.get('message', '')
-    photo_url = d.get('photo_url') # Принимаем URL фото
+    photo_url = d.get('photo_url') 
 
     if not text: return {"error": "Пустое сообщение"}
 
@@ -383,20 +362,20 @@ async def broadcast_msg(d: dict):
                 try:
                     user_id = u['id'] if isinstance(u, dict) else u
                     
+                    sent = False
                     if photo_url:
-                        # Убираем ведущий слэш для локального пути (e.g. /uploads/x.jpg -> uploads/x.jpg)
-                        local_path = photo_url.lstrip('/')
+                        # Конвертируем /uploads/x.jpg -> /var/www/.../uploads/x.jpg
+                        local_path = os.path.join(BASE_DIR, photo_url.lstrip('/'))
                         if os.path.exists(local_path):
                             await bot.send_photo(user_id, photo=FSInputFile(local_path), caption=text)
-                        else:
-                            # Если файл не найден, шлем просто текст
-                            await bot.send_message(user_id, text)
-                    else:
+                            sent = True
+                    
+                    if not sent:
                         await bot.send_message(user_id, text)
                         
                     results["success"] += 1
                 except Exception as e:
-                    logger.warning(f"Ошибка рассылки юзеру {u}: {e}")
+                    logger.warning(f"Broadcast error for {u}: {e}")
                     results["failed"] += 1
                 await asyncio.sleep(0.05)
                 
@@ -404,7 +383,7 @@ async def broadcast_msg(d: dict):
 
 @app.get("/api/ping")
 async def ping_pong():
-    return {"status": "online", "server_time": time.time()}
+    return {"status": "online", "time": time.time()}
 
 if __name__ == "__main__":
     import uvicorn
