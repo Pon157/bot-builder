@@ -135,58 +135,87 @@ class BotInstance:
                 "activeUsers": 0
             }]
 
-    async def daily_stats_rotator(self):
-        """Ротация статистики раз в час"""
+async def daily_stats_rotator(self):
+        """
+        Ротация статистики. 
+        Обновляет данные раз в минуту для Real-time графиков и 
+        безопасно переключает дни в полночь.
+        """
         while self.is_running:
             try:
                 now = datetime.now()
                 current_date = now.strftime("%d.%m")
                 
-                # Подсчет активных пользователей за 24ч
+                # 1. Подсчет активных пользователей за последние 24 часа
                 day_ago = int((now - timedelta(days=1)).timestamp())
                 active_count = 0
                 for u in self.users_list:
+                    # Проверяем поле last_seen у каждого юзера
                     if u.get('last_seen', 0) > day_ago:
                         active_count += 1
+                
+                # Обновляем общее поле для дашборда
                 self.stats_data["activeUsers24h"] = active_count
 
-                # Проверка смены дня в истории
+                # 2. Получаем текущую историю из памяти бота
                 history = self.stats_data.get("history", [])
+                
+                # Инициализация, если истории еще нет (для новых ботов)
                 if not history:
-                     history = [{
+                    history = [{
                         "date": current_date,
-                        "incoming": 0, "outgoing": 0, 
-                        "totalUsers": len(self.users_list), "activeUsers": 0
+                        "incoming": self.stats_data.get("incomingToday", 0),
+                        "outgoing": self.stats_data.get("outgoingToday", 0),
+                        "totalUsers": len(self.users_list),
+                        "activeUsers": active_count
                     }]
-                
+                    self.stats_data["history"] = history
+
                 last_point = history[-1]
-                
+
+                # 3. ЛОГИКА СМЕНЫ ДНЯ
                 if last_point["date"] != current_date:
-                    # Новый день -> фиксируем старый и создаем новый
+                    # А) ФИКСИРУЕМ финальные результаты вчерашнего дня в историю
+                    # Перед тем как стереть Today, записываем его в последнюю точку истории
+                    last_point["incoming"] = self.stats_data.get("incomingToday", 0)
+                    last_point["outgoing"] = self.stats_data.get("outgoingToday", 0)
+                    last_point["totalUsers"] = len(self.users_list)
+                    last_point["activeUsers"] = active_count
+
+                    # Б) СОЗДАЕМ точку для нового дня
                     new_point = {
                         "date": current_date,
-                        "incoming": 0, # Сбрасываем счетчики нового дня
+                        "incoming": 0, 
                         "outgoing": 0,
                         "totalUsers": len(self.users_list),
                         "activeUsers": active_count
                     }
                     history.append(new_point)
-                    # Храним историю 14 дней
+                    
+                    # В) Храним историю только за последние 14 дней
                     self.stats_data["history"] = history[-14:]
                     
-                    # Сброс текущих дневных счетчиков в корне объекта
+                    # Г) ОБНУЛЯЕМ суточные счетчики только после фиксации в истории
                     self.stats_data["incomingToday"] = 0
                     self.stats_data["outgoingToday"] = 0
+                    
+                    logger.info(f"[Stats] Ротация выполнена. День {last_point['date']} сохранен, начат {current_date}")
+                
                 else:
-                    # Тот же день -> обновляем текущую точку истории для графиков realtime
+                    # Тот же день: просто обновляем текущую точку (для графиков в реальном времени)
                     last_point["incoming"] = self.stats_data.get("incomingToday", 0)
                     last_point["outgoing"] = self.stats_data.get("outgoingToday", 0)
                     last_point["totalUsers"] = len(self.users_list)
                     last_point["activeUsers"] = active_count
+
+                # 4. СИНХРОНИЗАЦИЯ
+                # Отправляем сигнал воркеру на сохранение в Supabase
+                if hasattr(self, 'sync_queue'):
+                    await self.sync_queue.put(("sync_state", None))
                 
-                # Принудительная синхронизация
-                await self.sync_queue.put(("sync_state", None))
-                await asyncio.sleep(60) # Проверка каждую минуту (для точности)
+                # Спим ровно 60 секунд
+                await asyncio.sleep(60)
+                
             except Exception as e:
                 logger.error(f"Rotator Error: {e}")
                 await asyncio.sleep(60)
