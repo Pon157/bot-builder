@@ -155,26 +155,44 @@ pm = BotManager()
 async def lifespan(app: FastAPI):
     """Логика при старте и выключении сервера."""
     logger.info("--- Сервер запускается ---")
-    async with httpx.AsyncClient(base_url=f"{S_URL}/rest/v1/", 
-                                 headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}"}) as client:
+    
+    # Текущее время в миллисекундах (как в твоей базе)
+    current_time_ms = int(time.time() * 1000)
+    
+    async with httpx.AsyncClient(
+        base_url=f"{S_URL}/rest/v1/", 
+        headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}"}
+    ) as client:
         try:
-            # Автостарт ботов, которые были включены
-            r = await client.get("bots", params={"status": "eq.RUNNING"})
+            # Запрашиваем ботов, у которых статус RUNNING И срок лицензии еще не истек
+            # gt.{time} означает "greater than" (больше чем)
+            params = {
+                "status": "eq.RUNNING",
+                "license_expires_at": f"gt.{current_time_ms}"
+            }
+            
+            r = await client.get("bots", params=params)
+            
             if r.status_code == 200:
-                for b in r.json():
+                active_bots = r.json()
+                logger.info(f"ЕБАТЬ ТУТ БОТОВ ДЛЯ АВТОЗАПУСКА {len(active_bots)}")
+                
+                for b in active_bots:
                     cfg = {**(b.get("config") or {}), **b}
                     await pm.start_bot(b['id'], cfg)
+            else:
+                logger.error(f"Ошибка получения списка ботов: {r.status_code} {r.text}")
+                
         except Exception as e:
-            logger.error(f"Ошибка автозапуска: {e}")
+            logger.error(f"Критическая ошибка автозапуска: {e}")
     
     yield
     
-    logger.info("--- Сервер останавливается ---")
+    logger.info("--- БЛЯЯЯЯЯТЬ СЕРВЕР ОСТАНАВЛИВАЕТСЯ СУКАА ---")
+    # Останавливаем все запущенные процессы ботов
     for bid in list(pm.procs.keys()):
         await pm.stop_bot(bid)
-
-app = FastAPI(lifespan=lifespan)
-
+        
 # === НАЧАЛО БЛОКА ЗАЩИТЫ ===
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
