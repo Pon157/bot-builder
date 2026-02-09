@@ -155,39 +155,52 @@ pm = BotManager()
 async def lifespan(app: FastAPI):
     """Логика при старте и выключении сервера."""
     logger.info("--- Сервер запускается ---")
-    async with httpx.AsyncClient(base_url=f"{S_URL}/rest/v1/", 
-                                 headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}"}) as client:
+    
+    # Текущее время в мс для проверки лицензий при автостарте
+    curr_ms = int(time.time() * 1000)
+    
+    async with httpx.AsyncClient(
+        base_url=f"{S_URL}/rest/v1/", 
+        headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}"}
+    ) as client:
         try:
-            # Автостарт ботов, которые были включены
-            r = await client.get("bots", params={"status": "eq.RUNNING"})
+            # Автостарт только тех ботов, у которых статус RUNNING И лицензия НЕ истекла
+            params = {
+                "status": "eq.RUNNING",
+                "license_expires_at": f"gt.{curr_ms}" # Больше текущего времени
+            }
+            r = await client.get("bots", params=params)
+            
             if r.status_code == 200:
-                for b in r.json():
+                active_bots = r.json()
+                logger.info(f"Найдено {len(active_bots)} активных ботов для автозапуска")
+                for b in active_bots:
                     cfg = {**(b.get("config") or {}), **b}
                     await pm.start_bot(b['id'], cfg)
+            else:
+                logger.error(f"Ошибка получения списка ботов: {r.status_code}")
+                
         except Exception as e:
-            logger.error(f"Ошибка автозапуска: {e}")
+            logger.error(f"Критическая ошибка автозапуска: {e}")
     
-    yield
+    yield  # В этой точке сервер начинает принимать запросы
     
     logger.info("--- Сервер останавливается ---")
+    # Корректно завершаем процессы всех ботов
     for bid in list(pm.procs.keys()):
         await pm.stop_bot(bid)
 
+# 1. Сначала инициализируем приложение
 app = FastAPI(lifespan=lifespan)
 
-# === НАЧАЛО БЛОКА ЗАЩИТЫ ===
+# 2. Определяем класс защиты
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        # HSTS - заставляет использовать HTTPS
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        # Защита от кликджекинга
         response.headers["X-Frame-Options"] = "DENY"
-        # Защита от подмены типов файлов
         response.headers["X-Content-Type-Options"] = "nosniff"
-        # Управление передачей реферера
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        # Настройка CSP (разрешаем работу твоего API и Supabase)
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             f"connect-src 'self' {S_URL}; "
@@ -196,8 +209,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         )
         return response
 
+# 3. Добавляем Middleware (теперь переменная 'app' уже существует)
 app.add_middleware(SecurityHeadersMiddleware)
-# === КОНЕЦ БЛОКА ЗАЩИТЫ ===
 
 app.add_middleware(
     CORSMiddleware,
@@ -206,12 +219,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Глобальный клиент БД
+# 4. Инициализируем глобальный клиент БД
 db = httpx.AsyncClient(
     base_url=f"{S_URL}/rest/v1/", 
-    headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}", "Content-Type": "application/json"}
+    headers={
+        "apikey": S_KEY, 
+        "Authorization": f"Bearer {S_KEY}", 
+        "Content-Type": "application/json"
+    }
 )
-
 # ==========================================
 # 4. ЭНДПОИНТЫ АВТОРИЗАЦИИ
 # ==========================================
