@@ -17,15 +17,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware 
 from cryptography.fernet import Fernet
 
-# Импорт твоего сервиса почты (файл email_service.py должен быть рядом)
-try:
-    from email_service import EmailService
-except ImportError:
-    class EmailService:
-        @staticmethod
-        def send_verification_code(e, c): return True
-        @staticmethod
-        def send_password_reset(e, c): return True
 
 # Импорты aiogram 3.x для массовой рассылки
 from aiogram import Bot
