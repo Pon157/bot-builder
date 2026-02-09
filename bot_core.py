@@ -584,13 +584,29 @@ class BotInstance:
             keyboard_rows.append([KeyboardButton(text=b['text']) for b in active_btns[i:i+2]])
         return ReplyKeyboardMarkup(keyboard=keyboard_rows, resize_keyboard=True)
 
-    async def run_instance(self):
+async def run_instance(self):
+        # 1. Принудительно ждем первой синхронизации базы и проверки лицензии
+        # Вместо create_task вызываем их напрямую через await ОДИН раз
+        logger.info(f"[*] Бот {self.bot_id} проверяет данные перед запуском...")
+        
+        try:
+            # Выполняем ОДИН цикл проверки лицензии и базы ДО запуска поллинга
+            await self.license_checker_logic() # Проверка лицензии
+            await self.sync_database_logic()   # Загрузка настроек и кнопок
+        except Exception as e:
+            logger.error(f"Ошибка при первичной загрузке данных: {e}")
+
+        # 2. Теперь запускаем их как фоновые задачи для обновления в будущем
         asyncio.create_task(self.database_sync_worker())
         asyncio.create_task(self.daily_stats_rotator())
         asyncio.create_task(self.license_checker())
+        
+        # 3. Настраиваем хендлеры и роутеры
         await self.core_handlers_setup()
         self.dp.include_router(self.router)
-        logger.info(f"[*] Бот {self.bot_id} запущен.")
+        
+        logger.info(f"[*] Бот {self.bot_id} готов к работе. Лицензия: {'Истекла' if self.license_expired else 'ОК'}")
+        
         try: 
             await self.dp.start_polling(self.bot)
         finally:
