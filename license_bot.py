@@ -228,6 +228,7 @@ async def cb_buy_confirm(cb: CallbackQuery):
     price = format_price(months, await db_get_currency(cb.from_user.id))
     kb = InlineKeyboardBuilder()
     kb.row(InlineKeyboardButton(text="💳 Оплатить", url="https://www.donationalerts.com/r/dialoge_engine"))
+    kb.row(InlineKeyboardButton(text="Правила лицензирования и возврата", url="https://telegra.ph/Politika-vozvrata-i-licenzirovaniya-Refund-Policy-02-06"))
     kb.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"verify_pay_{months}"))
     kb.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu"))
     text = (
