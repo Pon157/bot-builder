@@ -261,7 +261,7 @@ async def cb_admin_notify(cb: CallbackQuery):
         reply_markup=akb.as_markup(), 
         parse_mode="HTML"
     )
-    await cb.message.edit_text("⏳ <b>Заявка отправлена.</b> Ожидайте ключ.")
+    await cb.message.edit_text("⏳ Заявка отправлена. Ожидайте ключ.")
 
 @dp.callback_query(F.data.startswith("adm_ok_"))
 async def cb_admin_approve(cb: CallbackQuery):
