@@ -155,44 +155,26 @@ pm = BotManager()
 async def lifespan(app: FastAPI):
     """Логика при старте и выключении сервера."""
     logger.info("--- Сервер запускается ---")
-    
-    # Текущее время в миллисекундах (как в твоей базе)
-    current_time_ms = int(time.time() * 1000)
-    
-    async with httpx.AsyncClient(
-        base_url=f"{S_URL}/rest/v1/", 
-        headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}"}
-    ) as client:
+    async with httpx.AsyncClient(base_url=f"{S_URL}/rest/v1/", 
+                                 headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}"}) as client:
         try:
-            # Запрашиваем ботов, у которых статус RUNNING И срок лицензии еще не истек
-            # gt.{time} означает "greater than" (больше чем)
-            params = {
-                "status": "eq.RUNNING",
-                "license_expires_at": f"gt.{current_time_ms}"
-            }
-            
-            r = await client.get("bots", params=params)
-            
+            # Автостарт ботов, которые были включены
+            r = await client.get("bots", params={"status": "eq.RUNNING"})
             if r.status_code == 200:
-                active_bots = r.json()
-                logger.info(f"ЕБАТЬ ТУТ БОТОВ ДЛЯ АВТОЗАПУСКА {len(active_bots)}")
-                
-                for b in active_bots:
+                for b in r.json():
                     cfg = {**(b.get("config") or {}), **b}
                     await pm.start_bot(b['id'], cfg)
-            else:
-                logger.error(f"Ошибка получения списка ботов: {r.status_code} {r.text}")
-                
         except Exception as e:
-            logger.error(f"Критическая ошибка автозапуска: {e}")
+            logger.error(f"Ошибка автозапуска: {e}")
     
     yield
     
-    logger.info("--- БЛЯЯЯЯЯТЬ СЕРВЕР ОСТАНАВЛИВАЕТСЯ СУКАА ---")
-    # Останавливаем все запущенные процессы ботов
+    logger.info("--- Сервер останавливается ---")
     for bid in list(pm.procs.keys()):
         await pm.stop_bot(bid)
-        
+
+app = FastAPI(lifespan=lifespan)
+
 # === НАЧАЛО БЛОКА ЗАЩИТЫ ===
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -349,15 +331,7 @@ async def start_handler(req: dict):
     if not r.json(): raise HTTPException(404, "Бот не найден")
     
     data = r.json()[0]
-    
-    # --- ДОБАВЛЕНА ПРОВЕРКА ЛИЦЕНЗИИ ---
-    curr_time_ms = int(time.time() * 1000)
-    expiry = data.get("license_expires_at", 0)
-    
-    if expiry < curr_time_ms:
-        raise HTTPException(403, "Срок действия лицензии истек. Продлите лицензию для запуска.")
-    # ----------------------------------
-
+    # Пытаемся запустить
     if await pm.start_bot(bid, data) is True:
         await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "RUNNING"})
         return True
@@ -474,3 +448,4 @@ async def ping_pong():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
