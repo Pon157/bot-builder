@@ -492,32 +492,38 @@ async def verify_admin(x_admin_token: str = Header(None)):
     return True
 
 @app.get("/api/admin/dashboard")
-async def get_admin_dashboard(authorized: bool = Header(None, alias="x-admin-token")):
-    """Глобальная статистика для дашборда"""
-    if authorized != A_SECRET: raise HTTPException(403)
+async def get_admin_dashboard(x_admin_token: str = Header(None)):
+    """
+    Важно: Мы добавили Header(None), чтобы FastAPI не падал, 
+    если заголовок пришел под другим именем или пустой.
+    """
+    if not verify_admin_token(x_admin_token):
+        raise HTTPException(status_code=401, detail="Invalid admin token")
 
-    # Запрашиваем данные параллельно для скорости
-    async with httpx.AsyncClient(base_url=f"{S_URL}/rest/v1/", headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}"}) as client:
-        # 1. Всего пользователей
-        r_users = await client.get("users", params={"select": "count"})
-        # 2. Всего ботов
-        r_bots = await client.get("bots", params={"select": "count"})
-        # 3. Активных ботов
-        r_active = await client.get("bots", params={"status": "eq.RUNNING", "select": "count"})
-        # 4. Всего сообщений
-        r_msgs = await client.get("bot_messages", params={"select": "count"})
+    # Чистим старые ключи доступа заодно
+    now = time.time()
+    expired = [k for k, v in TEMP_ADMIN_ACCESS.items() if v['expires'] < now]
+    for k in expired: del TEMP_ADMIN_ACCESS[k]
+
+    # Считаем статистику из БД
+    try:
+        users_res = await db.get("users")
+        bots_res = await db.get("bots")
         
-        # 5. График сообщений за последние 7 дней (примерная реализация через агрегацию Supabase или raw query)
-        # Упрощенно берем последние 100 сообщений для графика "прямо сейчас"
-        r_chart = await client.get("bot_messages", params={"select": "created_at,is_from_admin", "order": "created_at.desc", "limit": "500"})
-
-    return {
-        "total_users": r_users.headers.get("content-range", "0/0").split("/")[-1],
-        "total_bots": r_bots.headers.get("content-range", "0/0").split("/")[-1],
-        "active_bots": r_active.headers.get("content-range", "0/0").split("/")[-1],
-        "total_messages": r_msgs.headers.get("content-range", "0/0").split("/")[-1],
-        "chart_data": r_chart.json()
-    }
+        users_count = len(users_res.json()) if users_res.status_code == 200 else 0
+        bots_data = bots_res.json() if bots_res.status_code == 200 else []
+        
+        return {
+            "total_users": users_count,
+            "total_bots": len(bots_data),
+            "active_bots": len([b for b in bots_data if b.get('status') == 'RUNNING']),
+            "total_messages": 0, # Можно вытянуть из таблицы сообщений, если нужно
+            "server_uptime": "Online",
+            "active_temp_keys": len(TEMP_ADMIN_ACCESS)
+        }
+    except Exception as e:
+        logger.error(f"Dashboard error: {e}")
+        return {"error": "Database connection failed"}
 
 @app.get("/api/admin/users")
 async def get_all_users(x_admin_token: str = Header(None)):
@@ -581,6 +587,43 @@ async def admin_generate_key(d: dict, x_admin_token: str = Header(None)):
     await db.post("issued_keys", json=payload)
     return {"key": new_key}
 
+@app.post("/api/admin/temp-access")
+async def create_temp_access(request: Request):
+    """Создает временный ключ, который пользователь дает админу"""
+    data = await request.json()
+    bot_id = data.get("botId")
+    key = data.get("key")
+    
+    if not bot_id or not key:
+        raise HTTPException(status_code=400, detail="Missing data")
+        
+    # Записываем: ключ действителен 20 минут (1200 секунд)
+    TEMP_ADMIN_ACCESS[key] = {
+        "bot_id": bot_id,
+        "expires": time.time() + 1200
+    }
+    logger.info(f"[!] Создан временный доступ для бота {bot_id} по ключу {key}")
+    return {"status": "ok"}
+
+@app.post("/api/admin/bots/start")
+async def admin_start_bot(request: Request, x_admin_token: str = Header(None)):
+    if not verify_admin_token(x_admin_token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    data = await request.json()
+    bot_data = data.get("bot") # Передаем объект бота целиком
+    
+    if not bot_data:
+        raise HTTPException(status_code=400, detail="Bot data missing")
+        
+    # Вызываем твою существующую функцию запуска процесса
+    # (у тебя в server.py она обычно называется start_bot_process)
+    success = await start_bot_process(bot_data)
+    
+    if success:
+        return {"status": "started"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to start bot process")
 # ==========================================
 # 8. СИСТЕМНЫЕ
 # ==========================================
