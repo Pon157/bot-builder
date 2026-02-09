@@ -331,7 +331,15 @@ async def start_handler(req: dict):
     if not r.json(): raise HTTPException(404, "Бот не найден")
     
     data = r.json()[0]
-    # Пытаемся запустить
+    
+    # --- ДОБАВЛЕНА ПРОВЕРКА ЛИЦЕНЗИИ ---
+    curr_time_ms = int(time.time() * 1000)
+    expiry = data.get("license_expires_at", 0)
+    
+    if expiry < curr_time_ms:
+        raise HTTPException(403, "Срок действия лицензии истек. Продлите лицензию для запуска.")
+    # ----------------------------------
+
     if await pm.start_bot(bid, data) is True:
         await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "RUNNING"})
         return True
