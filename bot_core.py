@@ -20,6 +20,23 @@ from aiogram.types import (
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 
+class LicenseMiddleware(BaseMiddleware):
+    def __init__(self, bot_instance):
+        self.bot_instance = bot_instance
+        super().__init__()
+
+    async def __call__(
+        self,
+        handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]],
+        event: Message,
+        data: Dict[str, Any]
+    ) -> Any:
+        # Если лицензия помечена как истекшая
+        if getattr(self.bot_instance, 'license_expired', False):
+            await event.answer("❌ <b>Лицензия этого бота истекла.</b>\nПожалуйста, продлите её в панели управления.")
+            return # Дальше код обработчиков не идет
+        return await handler(event, data)
+
 # --- ГЛОБАЛЬНАЯ КОНФИГУРАЦИЯ ЛОГИРОВАНИЯ ---
 logging.basicConfig(
     level=logging.INFO,
@@ -94,34 +111,33 @@ class BotInstance:
     # Внутри класса BotInstance (bot_core.py)
 
     async def license_checker(self):
-        """Фоновая задача: проверяет лицензию раз в час"""
-        logger.info(f"[*] Фоновая проверка лицензии запущена для бота {self.bot_id}")
-        
+        """Проверка лицензии: меняет статус в БД и блокирует ответы пользователям"""
+        logger.info(f"[*] Мониторинг лицензии для {self.bot_id} запущен")
         while self.is_running:
             try:
-                curr_time_ms = int(time.time() * 1000)
-                
-                # Если лицензия установлена и время истекло
-                if self.license_expires_at and self.license_expires_at < curr_time_ms:
-                    logger.warning(f" [!] Срок лицензии бота {self.bot_id} истек. Самоотключение...")
-                    
-                    if self.admin_chat_id:
-                        try:
-                            await self.bot.send_message(
-                                self.admin_chat_id, 
-                                "🚨 <b>Срок действия вашей лицензии истек.</b>\nБот остановлен. Пожалуйста, продлите лицензию в панели управления."
+                curr_time = int(time.time() * 1000)
+                # Если время вышло
+                if self.license_expires_at and self.license_expires_at < curr_time:
+                    if not getattr(self, 'license_expired', False):
+                        logger.warning(f" [!] Лицензия {self.bot_id} истекла!")
+                        self.license_expired = True # Активируем блокировку в Middleware
+                        
+                        # Сообщаем Supabase, что бот теперь IDLE
+                        async with httpx.AsyncClient() as client:
+                            headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
+                            await client.patch(
+                                f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                                json={"status": "IDLE"},
+                                headers=headers
                             )
-                        except Exception as e:
-                            logger.error(f"Не удалось отправить уведомление: {e}")
+                else:
+                    # Если лицензию продлили, пока бот был запущен
+                    self.license_expired = False
                     
-                    # Жесткое завершение процесса
-                    os._exit(0) 
-
             except Exception as e:
                 logger.error(f"Ошибка в license_checker: {e}")
-
-            # Ждем 1 час
-            await asyncio.sleep(3600)
+            
+            await asyncio.sleep(120) # Проверка каждые 2 минуты
 
     def apply_config(self, data: dict):
         """Парсинг конфигурации и инициализация статистики (UTC версия)"""
@@ -475,6 +491,7 @@ class BotInstance:
         return False
 
     async def core_handlers_setup(self):
+        self.router.message.middleware(LicenseMiddleware(self))
         @self.router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=ChatMemberStatus.KICKED))
         async def on_user_blocked_bot(event: ChatMemberUpdated):
             user_id = event.from_user.id
