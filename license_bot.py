@@ -31,7 +31,10 @@ logging.basicConfig(
 logger = logging.getLogger("LicenseBotEngine")
 
 def load_env_secure():
-    """Железобетонное чтение .env с очисткой токенов"""
+    """
+    Железобетонное чтение .env с очисткой токенов.
+    Использует инструкцию по извлечению токена из переменной окружения.
+    """
     path = os.path.join(BASE_DIR, '.env')
     conf = {}
     if not os.path.exists(path):
@@ -46,6 +49,7 @@ def load_env_secure():
                     continue
                 k, v = line.split('=', 1)
                 val = v.strip().strip('"').strip("'")
+                
                 # Специальная логика извлечения токена
                 if k.strip() == "ADMIN_BOT_TOKEN" and "root/" in val:
                     val = val.split("root/")[0].strip()
@@ -63,7 +67,8 @@ ADM_CHAT = ENV.get("ADMIN_CHAT_ID")
 ADM_SECRET = ENV.get("ADMIN_SECRET", "MRAKOTIK")
 SRV_URL = ENV.get("SERVER_URL", "http://localhost:8000")
 
-# Твой ID вшит в ядро кода
+# Твой личный ID (Super Admin) — жестко вшит для безопасности
+# Он используется для рассылки, в то время как ADM_CHAT — для уведомлений.
 SUPER_ADMIN_ID = 5883703466
 
 if not all([BOT_TOKEN, SB_URL, SB_KEY]):
@@ -75,7 +80,7 @@ dp = Dispatcher()
 supabase: Client = create_client(SB_URL, SB_KEY)
 
 # ==========================================
-# 2. ЭКОНОМИЧЕСКАЯ МОДЕЛЬ
+# 2. ЭКОНОМИЧЕСКАЯ МОДЕЛЬ И КОНСТАНТЫ
 # ==========================================
 BASE_PRICE_RUB = 89.9
 
@@ -89,9 +94,9 @@ CURRENCIES = {
 }
 
 PERIODS = {
-    1: {"label": "1 Месяц", "mult": 0.9},
-    3: {"label": "3 Месяца", "mult": 2.4},
-    12: {"label": "1 Год", "mult": 7.9}
+    1: {"label": "1 Месяц", "mult": 1.0},
+    3: {"label": "3 Месяца", "mult": 2.5},
+    12: {"label": "1 Год", "mult": 8.0}
 }
 
 # ==========================================
@@ -99,214 +104,300 @@ PERIODS = {
 # ==========================================
 
 async def db_get_user_currency(user_id: int):
-    """Получение валюты пользователя"""
+    """Получение валюты пользователя из таблицы bot_users"""
     try:
         res = supabase.table("bot_users").select("currency").eq("id", str(user_id)).execute()
         if res.data and 'currency' in res.data[0]:
             return res.data[0]['currency']
     except Exception as e:
-        logger.error(f"Ошибка DB: {e}")
+        logger.error(f"Ошибка DB при получении валюты: {e}")
     return "RUB"
 
 def db_sync_user(user_id: int, currency: str, username: str = None):
-    """Сохранение/обновление пользователя"""
+    """Синхронизация данных пользователя в Supabase"""
     try:
-        data = {"id": str(user_id), "currency": currency}
+        data = {
+            "id": str(user_id), 
+            "currency": currency,
+            "updated_at": datetime.utcnow().isoformat()
+        }
         if username:
             data["username"] = username
         supabase.table("bot_users").upsert(data).execute()
     except Exception as e:
-        logger.error(f"Ошибка синхронизации: {e}")
+        logger.error(f"Ошибка синхронизации юзера {user_id}: {e}")
 
-def db_fetch_all_users():
-    """Получение всех ID для рассылки"""
+def db_fetch_all_users_for_broadcast():
+    """Извлекает все ID пользователей для массовой рассылки"""
     try:
         res = supabase.table("bot_users").select("id").execute()
-        return [int(u['id']) for u in res.data] if res.data else []
-    except Exception:
+        if res.data:
+            return [int(u['id']) for u in res.data]
+        return []
+    except Exception as e:
+        logger.error(f"Ошибка получения списка всех юзеров: {e}")
         return []
 
 # ==========================================
-# 4. ЛОГИКА ОТОБРАЖЕНИЯ (UI)
+# 4. ЛОГИКА ИНТЕРФЕЙСА (UI РЕНДЕРИНГ)
 # ==========================================
 
 def calculate_current_price(months: int, code: str):
-    """Расчет цены с учетом валюты"""
+    """Расчет цены с учетом выбранной валюты и тарифа"""
     c = CURRENCIES.get(code, CURRENCIES["RUB"])
     val = int(round(BASE_PRICE_RUB * PERIODS[months]["mult"] * c["rate"]))
     return f"{val} {c['symbol']}"
 
 async def render_main_menu(m: Union[Message, CallbackQuery], user_id: int, edit: bool = False):
-    """Отрисовка главного меню магазина"""
+    """Отрисовка главного экрана магазина лицензий"""
     curr = await db_get_user_currency(user_id)
     kb = InlineKeyboardBuilder()
     
+    # Генерация кнопок тарифов
     for m_count, info in PERIODS.items():
         price_tag = calculate_current_price(m_count, curr)
-        kb.row(InlineKeyboardButton(text=f"🔑 {info['label']} — {price_tag}", callback_data=f"buy_{m_count}"))
+        kb.row(InlineKeyboardButton(
+            text=f"🔑 {info['label']} — {price_tag}", 
+            callback_data=f"buy_{m_count}"
+        ))
     
-    kb.row(InlineKeyboardButton(text=f"🌍 Валюта: {curr}", callback_data="ui_currency"))
+    # Кнопка смены валюты
+    kb.row(InlineKeyboardButton(text=f"🌍 Валюта: {curr}", callback_data="ui_currency_select"))
     
-    txt = "🚀 <b>BotEngine Pro: Лицензионный центр</b>\n\nВыберите нужный период подписки ниже:"
-    if edit:
+    txt = (
+        "🚀 <b>BotEngine Pro: Лицензионный центр</b>\n\n"
+        "Выберите желаемый период подписки ниже. "
+        "Ключ будет сгенерирован автоматически после подтверждения оплаты."
+    )
+    
+    if edit and isinstance(m, CallbackQuery):
         await m.message.edit_text(txt, reply_markup=kb.as_markup(), parse_mode="HTML")
     else:
         await m.answer(txt, reply_markup=kb.as_markup(), parse_mode="HTML")
 
 # ==========================================
-# 5. ОБРАБОТЧИКИ СОБЫТИЙ (HANDLERS)
+# 5. ОБРАБОТЧИКИ (HANDLERS)
 # ==========================================
 
 @dp.message(Command("start"))
 async def handler_start(m: Message):
-    """Старт бота и скрытая настройка меню для админа"""
-    # Если это ты - добавляем секретную кнопку рассылки в меню команд
+    """
+    Обработка команды /start. 
+    Скрывает команду /broadcast от обычных пользователей.
+    """
+    # Персональное меню команд для Super Admin
     if m.from_user.id == SUPER_ADMIN_ID:
         admin_cmds = [
             BotCommand(command="start", description="🏠 Главная"),
-            BotCommand(command="broadcast", description="📢 Скрытая рассылка")
+            BotCommand(command="broadcast", description="📢 Массовая рассылка")
         ]
         await bot.set_my_commands(admin_cmds, scope=BotCommandScopeChat(chat_id=m.from_user.id))
     
-    db_sync_user(m.from_user.id, await db_get_user_currency(m.from_user.id), m.from_user.username)
+    # Регистрация пользователя
+    user_curr = await db_get_user_currency(m.from_user.id)
+    db_sync_user(m.from_user.id, user_curr, m.from_user.username)
+    
     await render_main_menu(m, m.from_user.id)
 
 @dp.message(Command("broadcast"))
 async def handler_broadcast(m: Message):
-    """Железобетонная рассылка с защитой от флуда"""
+    """
+    Функция рассылки. 
+    Доступна только для SUPER_ADMIN_ID.
+    Реализована защита от флуда и блокировок.
+    """
     if m.from_user.id != SUPER_ADMIN_ID:
-        return # Полный игнор, если пишет не хозяин
+        logger.warning(f"Попытка доступа к /broadcast от {m.from_user.id}")
+        return # Игнорируем всех, кто не админ
 
-    text = m.text.replace("/broadcast", "").strip()
-    if not text:
-        return await m.answer("⚠️ <b>Введите текст сообщения после команды!</b>", parse_mode="HTML")
+    # Извлекаем текст после команды
+    broadcast_content = m.text.replace("/broadcast", "").strip()
+    if not broadcast_content:
+        return await m.answer(
+            "⚠️ <b>Ошибка рассылки!</b>\n\n"
+            "Введите текст сообщения сразу после команды.\n"
+            "Пример: <code>/broadcast Внимание, обновление!</code>", 
+            parse_mode="HTML"
+        )
 
-    users = db_fetch_all_users()
-    msg = await m.answer(f"⏳ <b>Запуск рассылки...</b>\nЦелей обнаружено: {len(users)}", parse_mode="HTML")
+    all_users = db_fetch_all_users_for_broadcast()
+    if not all_users:
+        return await m.answer("❌ База данных пользователей пуста.")
+
+    status_report = await m.answer(f"⏳ <b>Рассылка запущена...</b>\nВсего целей: {len(all_users)}")
     
-    done, fail = 0, 0
-    for uid in users:
+    success_count = 0
+    fail_count = 0
+    
+    for user_id in all_users:
         try:
-            await bot.send_message(uid, text, parse_mode="HTML")
-            done += 1
-            await asyncio.sleep(0.05) # Плавность отправки
+            await bot.send_message(user_id, broadcast_content, parse_mode="HTML")
+            success_count += 1
+            # Задержка для обхода спам-фильтров Telegram
+            await asyncio.sleep(0.05) 
         except TelegramRetryAfter as e:
             await asyncio.sleep(e.retry_after)
-            await bot.send_message(uid, text, parse_mode="HTML")
-            done += 1
+            await bot.send_message(user_id, broadcast_content, parse_mode="HTML")
+            success_count += 1
         except (TelegramForbiddenError, Exception):
-            fail += 1
+            fail_count += 1
+            continue
     
-    await msg.edit_text(f"✅ <b>Рассылка завершена!</b>\n\nДоставлено: {done}\nОшибок: {fail}", parse_mode="HTML")
+    final_txt = (
+        f"✅ <b>Рассылка завершена!</b>\n\n"
+        f"📧 Доставлено: <code>{success_count}</code>\n"
+        f"🚫 Ошибок: <code>{fail_count}</code>"
+    )
+    await status_report.edit_text(final_txt, parse_mode="HTML")
 
-@dp.callback_query(F.data == "ui_currency")
-async def handler_change_curr(cb: CallbackQuery):
+@dp.callback_query(F.data == "ui_currency_select")
+async def handler_currency_menu(cb: CallbackQuery):
+    """Меню выбора валюты"""
     kb = InlineKeyboardBuilder()
     for code in CURRENCIES.keys():
-        kb.add(InlineKeyboardButton(text=code, callback_data=f"set_val_{code}"))
+        kb.add(InlineKeyboardButton(text=code, callback_data=f"save_curr_{code}"))
     kb.adjust(3)
-    await cb.message.edit_text("🌍 <b>Выберите валюту для отображения цен:</b>", reply_markup=kb.as_markup(), parse_mode="HTML")
+    await cb.message.edit_text("🌍 <b>Выберите валюту оплаты:</b>", reply_markup=kb.as_markup(), parse_mode="HTML")
 
-@dp.callback_query(F.data.startswith("set_val_"))
-async def handler_save_curr(cb: CallbackQuery):
-    code = cb.data.split("_")[2]
-    db_sync_user(cb.from_user.id, code, cb.from_user.username)
-    await cb.answer(f"Валюта {code} сохранена")
+@dp.callback_query(F.data.startswith("save_curr_"))
+async def handler_currency_save(cb: CallbackQuery):
+    """Сохранение выбранной валюты в БД"""
+    new_code = cb.data.split("_")[2]
+    db_sync_user(cb.from_user.id, new_code, cb.from_user.username)
+    await cb.answer(f"Валюта изменена на {new_code}")
     await render_main_menu(cb, cb.from_user.id, edit=True)
 
 @dp.callback_query(F.data.startswith("buy_"))
-async def handler_buy_process(cb: CallbackQuery):
-    """Оформление заказа"""
+async def handler_buy_init(cb: CallbackQuery):
+    """Экран подтверждения покупки и ссылка на оплату"""
     months = int(cb.data.split("_")[1])
-    curr = await db_get_user_currency(cb.from_user.id)
-    price_str = calculate_current_price(months, curr)
+    u_curr = await db_get_user_currency(cb.from_user.id)
+    price_formatted = calculate_current_price(months, u_curr)
     
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="💳 Перейти к оплате", url="https://www.donationalerts.com/r/dialoge_engine"))
-    kb.row(InlineKeyboardButton(text="Пользовательское соглашение", url="https://telegra.ph/Politika-vozvrata-i-licenzirovaniya-Refund-Policy-02-06"))
-    kb.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"verif_wait_{months}"))
-    kb.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="ui_back"))
+    kb.row(InlineKeyboardButton(text="💳 Оплатить заказ", url="https://www.donationalerts.com/r/dialoge_engine"))
+    kb.row(InlineKeyboardButton(text="📜 Правила возврата", url="https://telegra.ph/Politika-vozvrata-i-licenzirovaniya-Refund-Policy-02-06"))
+    kb.row(InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"verify_pay_{months}"))
+    kb.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="ui_back_to_menu"))
     
-    await cb.message.edit_text(
-        f"🛒 <b>Оплата: {PERIODS[months]['label']}</b>\nСумма: <b>{price_str}</b>\n\n"
-        f"1. Сделайте перевод по ссылке.\n2. Нажмите кнопку подтверждения.",
-        reply_markup=kb.as_markup(), parse_mode="HTML", disable_web_page_preview=True
+    msg_body = (
+        f"🛒 <b>Оформление: {PERIODS[months]['label']}</b>\n"
+        f"К оплате: <b>{price_formatted}</b>\n\n"
+        f"1. Нажмите 'Оплатить' и сделайте перевод.\n"
+        f"2. После оплаты нажмите кнопку подтверждения.\n"
+        f"3. Админ проверит транзакцию и вышлет ключ."
     )
+    
+    await cb.message.edit_text(msg_body, reply_markup=kb.as_markup(), parse_mode="HTML", disable_web_page_preview=True)
 
-@dp.callback_query(F.data == "ui_back")
-async def handler_back(cb: CallbackQuery):
+@dp.callback_query(F.data == "ui_back_to_menu")
+async def handler_ui_back(cb: CallbackQuery):
     await render_main_menu(cb, cb.from_user.id, edit=True)
 
-@dp.callback_query(F.data.startswith("verif_wait_"))
-async def handler_verify_request(cb: CallbackQuery):
-    """Отправка заявки админу"""
+@dp.callback_query(F.data.startswith("verify_pay_"))
+async def handler_admin_notification(cb: CallbackQuery):
+    """Отправка заявки в чат администратора"""
     months = int(cb.data.split("_")[2])
-    curr = await db_get_user_currency(cb.from_user.id)
-    price = calculate_current_price(months, curr)
+    u_curr = await db_get_user_currency(cb.from_user.id)
+    price_val = calculate_current_price(months, u_curr)
     
-    akb = InlineKeyboardBuilder()
-    akb.row(
-        InlineKeyboardButton(text="✅ Выдать", callback_data=f"adm_ok_{cb.from_user.id}_{months}"),
-        InlineKeyboardButton(text="❌ Отказ", callback_data=f"adm_no_{cb.from_user.id}")
+    # Кнопки для админ-чата (ADM_CHAT)
+    admin_kb = InlineKeyboardBuilder()
+    admin_kb.row(
+        InlineKeyboardButton(text="✅ Выдать ключ", callback_data=f"api_approve_{cb.from_user.id}_{months}"),
+        InlineKeyboardButton(text="❌ Отказать", callback_data=f"api_decline_{cb.from_user.id}")
     )
     
     await bot.send_message(
         ADM_CHAT,
-        f"💰 <b>Заявка на ключ!</b>\nЮзер: {cb.from_user.full_name}\nID: <code>{cb.from_user.id}</code>\n"
-        f"Тариф: {months} мес.\nСумма: {price}",
-        reply_markup=akb.as_markup(), parse_mode="HTML"
+        f"💰 <b>НОВАЯ ЗАЯВКА!</b>\n\n"
+        f"👤 Клиент: {cb.from_user.full_name} (@{cb.from_user.username})\n"
+        f"🆔 ID: <code>{cb.from_user.id}</code>\n"
+        f"📦 Тариф: {months} мес.\n"
+        f"💵 Сумма: {price_val}",
+        reply_markup=admin_kb.as_markup(),
+        parse_mode="HTML"
     )
-    await cb.message.edit_text("⏳ <b>Заявка отправлена. Ожидайте активации.</b>", parse_mode="HTML")
+    
+    await cb.message.edit_text(
+        "⏳ <b>Заявка на проверке!</b>\n\n"
+        "Мы получили ваш запрос. Ключ придет в этот чат после подтверждения.", 
+        parse_mode="HTML"
+    )
 
 # ==========================================
-# 6. АДМИН-ЛОГИКА (API ГЕНЕРАЦИЯ КЛЮЧЕЙ)
+# 6. АДМИН-ЛОГИКА (УПРАВЛЕНИЕ ЧЕРЕЗ API)
 # ==========================================
 
-@dp.callback_query(F.data.startswith("adm_ok_"))
-async def handler_admin_approve(cb: CallbackQuery):
-    """Подтверждение оплаты и генерация ключа"""
-    _, _, uid, months = cb.data.split("_")
-    await cb.message.edit_text(f"⚙️ Генерирую ключ для {uid}...")
+@dp.callback_query(F.data.startswith("api_approve_"))
+async def handler_api_generate(cb: CallbackQuery):
+    """Генерация ключа через внешний API и отправка пользователю"""
+    _, _, uid, m_count = cb.data.split("_")
+    await cb.message.edit_text(f"⚙️ Выполняю генерацию для {uid}...")
     
     try:
-        r = requests.post(
-            f"{SRV_URL}/api/admin/generate-key",
-            json={"months": int(months), "user_id": uid},
-            headers={"x-admin-token": ADM_SECRET},
+        api_req = {
+            "months": int(m_count), 
+            "user_id": str(uid)
+        }
+        api_headers = {"x-admin-token": ADM_SECRET}
+        
+        resp = requests.post(
+            f"{SRV_URL}/api/admin/generate-key", 
+            json=api_req, 
+            headers=api_headers, 
             timeout=15
         )
-        if r.status_code == 200:
-            key = r.json().get("key")
-            await bot.send_message(uid, f"🎉 <b>Оплата принята!</b>\nВаш ключ: <code>{key}</code>", parse_mode="HTML")
-            await cb.message.edit_text(f"✅ Ключ <code>{key}</code> отправлен пользователю {uid}")
+        
+        if resp.status_code == 200:
+            lic_key = resp.json().get("key")
+            # Отправка юзеру
+            await bot.send_message(
+                uid, 
+                f"🎉 <b>Лицензия активирована!</b>\n\nВаш ключ доступа:\n<code>{lic_key}</code>", 
+                parse_mode="HTML"
+            )
+            # Отчет админу
+            await cb.message.edit_text(f"✅ Ключ <code>{lic_key}</code> отправлен пользователю <code>{uid}</code>")
         else:
-            await cb.message.edit_text(f"❌ Ошибка сервера: {r.status_code}")
-    except Exception as e:
-        await cb.message.edit_text(f"❌ Ошибка связи: {e}")
+            await cb.message.edit_text(f"❌ Ошибка API сервера: {resp.status_code}")
+            
+    except Exception as err:
+        logger.error(f"API Error: {err}")
+        await cb.message.edit_text(f"❌ Ошибка соединения с API: {err}")
 
-@dp.callback_query(F.data.startswith("adm_no_"))
-async def handler_admin_decline(cb: CallbackQuery):
-    uid = cb.data.split("_")[2]
+@dp.callback_query(F.data.startswith("api_decline_"))
+async def handler_api_reject(cb: CallbackQuery):
+    """Отклонение заявки пользователю"""
+    user_to_notify = cb.data.split("_")[2]
     try:
-        await bot.send_message(uid, "❌ <b>Ваш платеж не подтвержден.</b>", parse_mode="HTML")
-        await cb.message.edit_text(f"🔴 Заявка {uid} отклонена.")
-    except:
-        pass
+        await bot.send_message(user_to_notify, "❌ <b>Ваш платеж не подтвержден администратором.</b>", parse_mode="HTML")
+        await cb.message.edit_text(f"🔴 Заявка {user_to_notify} была отклонена.")
+    except Exception:
+        await cb.message.edit_text(f"🔴 Отклонено, но не удалось уведомить {user_to_notify}.")
 
 # ==========================================
-# 7. ТОЧКА ВХОДА
+# 7. ЗАПУСК ПРИЛОЖЕНИЯ
 # ==========================================
 
 async def main():
-    logger.info("✨ бот запущен")
-    # Глобальное меню (без рассылки для всех)
-    await bot.set_my_commands([BotCommand(command="start", description="🏠 Магазин")])
+    """Точка входа и инициализация лонг-поллинга"""
+    logger.info("🚀 Бот BotEngine Pro запускается...")
     
+    # Сбрасываем старые команды для чистоты
+    await bot.delete_my_commands()
+    # Устанавливаем общее меню
+    await bot.set_my_commands([BotCommand(command="start", description="🏠 Магазин / Меню")])
+    
+    # Очистка очереди обновлений и старт
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Бот выключен пользователем.")
+        logger.info("👋 Работа бота завершена.")
