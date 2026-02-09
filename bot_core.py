@@ -7,10 +7,9 @@ import sys
 import hashlib
 import time
 from datetime import datetime, timedelta
-# Добавили Callable и Awaitable для Middleware
 from typing import Dict, Optional, List, Any, Union, Callable, Awaitable
 
-# Добавили BaseMiddleware
+# Aiogram imports
 from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
 from aiogram.enums import ParseMode, ContentType, ChatMemberStatus
 from aiogram.filters import CommandStart, Command, ChatMemberUpdatedFilter
@@ -22,6 +21,15 @@ from aiogram.types import (
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 
+# --- ГЛОБАЛЬНАЯ КОНФИГУРАЦИЯ ЛОГИРОВАНИЯ ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("BotCoreEngine")
+
+# --- MIDDLEWARE ЛИЦЕНЗИИ ---
 class LicenseMiddleware(BaseMiddleware):
     def __init__(self, bot_instance):
         self.bot_instance = bot_instance
@@ -35,17 +43,12 @@ class LicenseMiddleware(BaseMiddleware):
     ) -> Any:
         # Если лицензия помечена как истекшая
         if getattr(self.bot_instance, 'license_expired', False):
+            # Проверяем, не админ ли это (админу можно отвечать даже без лицензии, если нужно, 
+            # но по умолчанию блокируем всех)
             await event.answer("❌ <b>Лицензия этого бота истекла.</b>\nПожалуйста, продлите её в панели управления.")
             return # Дальше код обработчиков не идет
         return await handler(event, data)
 
-# --- ГЛОБАЛЬНАЯ КОНФИГУРАЦИЯ ЛОГИРОВАНИЯ ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger("BotCoreEngine")
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def get_anon_id(user_id: int) -> str:
@@ -88,13 +91,14 @@ def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_
 
     return f"{status_line}\n{user_info}\n\n"
 
+
 # --- ОСНОВНОЙ КЛАСС БОТА ---
 class BotInstance:
     def __init__(self, config_data: dict):
         self.bot_id = config_data.get('id')
         self.token = config_data.get('token')
         
-        # 1. ОБЯЗАТЕЛЬНО: Объявляем переменную сразу, чтобы Middleware её видел
+        # Флаг лицензии
         self.license_expired = False 
         
         self.sb_url = os.getenv("SUPABASE_URL", "").rstrip('/')
@@ -109,37 +113,8 @@ class BotInstance:
         self.is_running = True
         self.sync_queue = asyncio.Queue()
         
-        # Сначала парсим конфиг, чтобы подгрузить license_expires_at
+        # Сначала парсим конфиг
         self.apply_config(config_data)
-
-    async def license_checker_logic(self):
-        """Вынесли логику в отдельный метод, чтобы вызывать её при старте"""
-        try:
-            curr_time = int(time.time() * 1000)
-            if self.license_expires_at and self.license_expires_at < curr_time:
-                # Проверяем через getattr для безопасности или просто по флагу
-                if not self.license_expired:
-                    logger.warning(f" [!] Лицензия {self.bot_id} истекла!")
-                    self.license_expired = True 
-                    
-                    async with httpx.AsyncClient() as client:
-                        headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
-                        await client.patch(
-                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                            json={"status": "IDLE"},
-                            headers=headers
-                        )
-            else:
-                self.license_expired = False
-        except Exception as e:
-            logger.error(f"Ошибка в license_checker_logic: {e}")
-
-    async def license_checker(self):
-        """Теперь воркер просто крутит логику в цикле"""
-        logger.info(f"[*] Мониторинг лицензии для {self.bot_id} запущен")
-        while self.is_running:
-            await self.license_checker_logic()
-            await asyncio.sleep(120)
 
     def apply_config(self, data: dict):
         """Парсинг конфигурации (без дублей)"""
@@ -164,6 +139,7 @@ class BotInstance:
         self.users_list = full_cfg.get('connectedUsers', [])
         self.license_expires_at = full_cfg.get('license_expires_at', 0)
         
+        # --- ИНИЦИАЛИЗАЦИЯ СТАТИСТИКИ ---
         incoming_stats = full_cfg.get('stats')
         if isinstance(incoming_stats, dict):
             self.stats_data = {
@@ -180,41 +156,9 @@ class BotInstance:
                 "bannedCount": 0, "history": [], "activeUsers24h": 0
             }
 
+        # --- ИНИЦИАЛИЗАЦИЯ ИСТОРИИ (UTC) ---
         now = datetime.now()
         current_date = now.strftime("%d.%m")
-        if not self.stats_data["history"]:
-            self.stats_data["history"] = [{
-                "date": current_date, "incoming": 0, "outgoing": 0,
-                "totalUsers": len(self.users_list), "activeUsers": 0
-            }]
-        
-        # --- ИНИЦИАЛИЗАЦИЯ СТАТИСТИКИ ---
-        # Мы НЕ создаем статы с нуля, а вытягиваем их из пришедшего конфига (Supabase)
-        incoming_stats = full_cfg.get('stats')
-        if isinstance(incoming_stats, dict):
-            # Если stats есть в БД, берем их как основу
-            self.stats_data = {
-                "totalMessages": incoming_stats.get("totalMessages", 0),
-                "incomingToday": incoming_stats.get("incomingToday", 0),
-                "outgoingToday": incoming_stats.get("outgoingToday", 0),
-                "bannedCount": incoming_stats.get("bannedCount", 0),
-                "activeUsers24h": incoming_stats.get("activeUsers24h", 0),
-                "history": incoming_stats.get("history", [])
-            }
-        else:
-            # Если в БД совсем пусто (первый запуск бота)
-            self.stats_data = {
-                "totalMessages": 0,
-                "incomingToday": 0,
-                "outgoingToday": 0,
-                "bannedCount": 0,
-                "history": [],
-                "activeUsers24h": 0
-            }
-
-        # --- ИНИЦИАЛИЗАЦИЯ ИСТОРИИ (UTC) ---
-        now = datetime.now() # Оставляем системный UTC
-        current_date = now.strftime("%d.%m")
         
         if not self.stats_data["history"]:
             self.stats_data["history"] = [{
@@ -225,23 +169,69 @@ class BotInstance:
                 "activeUsers": 0
             }]
 
-        # --- ИНИЦИАЛИЗАЦИЯ ИСТОРИИ (UTC) ---
-        now = datetime.now() # Оставляем системный UTC
-        current_date = now.strftime("%d.%m")
-        
-        if not self.stats_data["history"]:
-            self.stats_data["history"] = [{
-                "date": current_date,
-                "incoming": 0,
-                "outgoing": 0,
-                "totalUsers": len(self.users_list),
-                "activeUsers": 0
-            }]
+    async def sync_database_logic(self):
+        """
+        Метод для принудительной синхронизации настроек из БД при старте.
+        Восстановлен, чтобы run_instance не падал.
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                headers = {
+                    "apikey": self.sb_key, 
+                    "Authorization": f"Bearer {self.sb_key}"
+                }
+                # Запрашиваем актуальные данные бота из БД
+                response = await client.get(
+                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}&select=*",
+                    headers=headers
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    if data and len(data) > 0:
+                        # Применяем свежий конфиг
+                        self.apply_config(data[0])
+                        logger.info(f"[*] Конфигурация синхронизирована с базой данных.")
+                    else:
+                        logger.warning("[!] Бот не найден в базе данных при синхронизации.")
+                else:
+                    logger.error(f"Ошибка синхронизации БД: {response.status_code}")
+        except Exception as e:
+            logger.error(f"Ошибка в sync_database_logic: {e}")
+
+    async def license_checker_logic(self):
+        """Логика проверки лицензии"""
+        try:
+            curr_time = int(time.time() * 1000)
+            if self.license_expires_at and self.license_expires_at < curr_time:
+                if not self.license_expired:
+                    logger.warning(f" [!] Лицензия {self.bot_id} истекла!")
+                    self.license_expired = True 
+                    
+                    # Ставим статус IDLE в базе
+                    async with httpx.AsyncClient() as client:
+                        headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
+                        await client.patch(
+                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                            json={"status": "IDLE"},
+                            headers=headers
+                        )
+            else:
+                self.license_expired = False
+        except Exception as e:
+            logger.error(f"Ошибка в license_checker_logic: {e}")
+
+    async def license_checker(self):
+        """Воркер проверки лицензии"""
+        logger.info(f"[*] Мониторинг лицензии для {self.bot_id} запущен")
+        while self.is_running:
+            try:
+                await self.license_checker_logic()
+            except Exception as e:
+                logger.error(f"Ошибка в воркере лицензии: {e}")
+            await asyncio.sleep(120)
 
     async def daily_stats_rotator(self):
-        """
-        Ротация статистики с корректным сохранением данных при смене дня.
-        """
+        """Ротация статистики"""
         while self.is_running:
             try:
                 now = datetime.now()
@@ -262,50 +252,43 @@ class BotInstance:
 
                 # ПРОВЕРКА СМЕНЫ ДНЯ
                 if history[-1]["date"] != current_date:
-                    # 1. ФИКСИРУЕМ финальные данные в последнюю точку ВЧЕРАШНЕГО дня
-                    # Это гарантирует, что в Supabase улетят полные цифры за вчера
+                    # Фиксируем вчерашний день
                     history[-1]["incoming"] = self.stats_data.get("incomingToday", 0)
                     history[-1]["outgoing"] = self.stats_data.get("outgoingToday", 0)
                     history[-1]["totalUsers"] = len(self.users_list)
                     history[-1]["activeUsers"] = active_count
                     
-                    # 2. Только после сохранения обнуляем суточные счетчики
+                    # Обнуляем счетчики
                     self.stats_data["incomingToday"] = 0
                     self.stats_data["outgoingToday"] = 0
                     
-                    # 3. Создаем НОВУЮ точку для сегодняшнего дня (с нулями)
+                    # Новая точка
                     new_point = {
                         "date": current_date,
-                        "incoming": 0,
-                        "outgoing": 0,
-                        "totalUsers": len(self.users_list),
-                        "activeUsers": active_count
+                        "incoming": 0, "outgoing": 0,
+                        "totalUsers": len(self.users_list), "activeUsers": active_count
                     }
                     history.append(new_point)
                     
-                    # Оставляем 14 дней
+                    # Срез до 14 дней
                     self.stats_data["history"] = history[-14:]
-                    # Важно обновить локальную ссылку после среза
                     history = self.stats_data["history"]
                 
-                # 4. ОБНОВЛЕНИЕ ТЕКУЩЕГО ДНЯ (Real-time)
-                # Это работает всегда, обновляя самую последнюю запись в истории
+                # Обновление текущего дня (Real-time)
                 last_point = history[-1]
                 last_point["incoming"] = self.stats_data.get("incomingToday", 0)
                 last_point["outgoing"] = self.stats_data.get("outgoingToday", 0)
                 last_point["totalUsers"] = len(self.users_list)
                 last_point["activeUsers"] = active_count
 
-                # Отправляем на синхронизацию в Supabase
                 await self.sync_queue.put(("sync_state", None))
-                
                 await asyncio.sleep(60)
             except Exception as e:
                 logger.error(f"Rotator Error: {e}")
                 await asyncio.sleep(60)
                 
     async def database_sync_worker(self):
-        """Воркер синхронизации с защитой от падения"""
+        """Воркер синхронизации с Supabase"""
         async with httpx.AsyncClient(timeout=10.0) as client:
             headers = {
                 "apikey": self.sb_key,
@@ -315,10 +298,8 @@ class BotInstance:
             }
             while self.is_running:
                 try:
-                    # Безопасное получение из очереди
                     item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
                     
-                    # Проверка на "битые" данные в очереди
                     if not isinstance(item, tuple): 
                         self.sync_queue.task_done()
                         continue
@@ -351,7 +332,6 @@ class BotInstance:
                     continue
                 except Exception as e:
                     logger.error(f"Sync Worker Error: {e}")
-                    # Обязательно сообщаем очереди, что задача "выполнена" (даже с ошибкой), иначе очередь зависнет
                     try: self.sync_queue.task_done()
                     except: pass
 
@@ -364,8 +344,7 @@ class BotInstance:
         return False
 
     async def log_and_update(self, uid: int, name: str, text: str, is_admin: bool = False):
-        """Логирование и обновление статистики для графиков"""
-        # Лог сообщения
+        """Логирование и обновление статистики"""
         await self.sync_queue.put(("log_message", {
             "bot_id": self.bot_id, 
             "user_id": uid, 
@@ -374,20 +353,17 @@ class BotInstance:
             "is_from_admin": is_admin
         }))
         
-        # Обновление счетчиков
         self.stats_data["totalMessages"] = self.stats_data.get("totalMessages", 0) + 1
         stat_key = "outgoingToday" if is_admin else "incomingToday"
         self.stats_data[stat_key] = self.stats_data.get(stat_key, 0) + 1
         
-        # Обновление пользователя
         if not is_admin:
             for u in self.users_list:
                 if u['id'] == uid:
                     u['last_seen'] = int(time.time())
-                    u['name'] = name # Обновляем имя, если изменилось
+                    u['name'] = name
                     break
         
-        # Сразу пушим обновление для графиков
         await self.sync_queue.put(("sync_state", None))
 
     async def get_user_state(self, m: Message):
@@ -608,13 +584,12 @@ class BotInstance:
 
     async def run_instance(self):
         # 1. Принудительно ждем первой синхронизации базы и проверки лицензии
-        # Вместо create_task вызываем их напрямую через await ОДИН раз
         logger.info(f"[*] Бот {self.bot_id} проверяет данные перед запуском...")
         
         try:
             # Выполняем ОДИН цикл проверки лицензии и базы ДО запуска поллинга
             await self.license_checker_logic() # Проверка лицензии
-            await self.sync_database_logic()   # Загрузка настроек и кнопок
+            await self.sync_database_logic()   # Загрузка настроек
         except Exception as e:
             logger.error(f"Ошибка при первичной загрузке данных: {e}")
 
@@ -641,7 +616,7 @@ if __name__ == "__main__":
         sys.exit(1)
         
     async def main():
-        # Читаем конфиг из JSON-файла, который создал server.py
+        # Читаем конфиг из JSON-файла
         cfg_path = sys.argv[1]
         try:
             with open(cfg_path, 'r', encoding='utf-8') as f:
