@@ -457,6 +457,131 @@ async def broadcast_msg(d: dict):
     return results
 
 # ==========================================
+# 9. ADMIN PANEL & ANALYTICS (NEW)
+# ==========================================
+
+# Безопасное чтение админов из окружения
+    # Пытаемся достать строку ADMIN_DATA и превратить её в словарь
+
+try:
+    raw_admin_data = os.getenv("ADMIN_DATA", "{}")
+    ADMIN_ACCOUNTS = json.loads(raw_admin_data)
+    
+    if not ADMIN_ACCOUNTS:
+        print("⚠️ ВНИМАНИЕ: Список администраторов пуст. Проверьте .env файл!")
+except Exception as e:
+    print(f"❌ ОШИБКА: Не удалось загрузить ADMIN_DATA из .env: {e}")
+    ADMIN_ACCOUNTS = {}
+
+# Эндпоинт входа остается таким же, он просто ищет в этом словаре
+@app.post("/api/admin/login")
+async def admin_login(d: dict):
+    login = d.get('login')
+    password = d.get('password')
+    
+    if login in ADMIN_ACCOUNTS and ADMIN_ACCOUNTS[login] == password:
+        # A_SECRET — это твой глобальный ADMIN_TOKEN из server.py
+        return {"token": A_SECRET, "role": "admin", "name": login}
+    
+    raise HTTPException(401, "Неверный логин или пароль")
+    
+# Зависимость для проверки админ-токена
+async def verify_admin(x_admin_token: str = Header(None)):
+    if x_admin_token != A_SECRET:
+        raise HTTPException(403, "Invalid Admin Token")
+    return True
+
+@app.get("/api/admin/dashboard")
+async def get_admin_dashboard(authorized: bool = Header(None, alias="x-admin-token")):
+    """Глобальная статистика для дашборда"""
+    if authorized != A_SECRET: raise HTTPException(403)
+
+    # Запрашиваем данные параллельно для скорости
+    async with httpx.AsyncClient(base_url=f"{S_URL}/rest/v1/", headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}"}) as client:
+        # 1. Всего пользователей
+        r_users = await client.get("users", params={"select": "count"})
+        # 2. Всего ботов
+        r_bots = await client.get("bots", params={"select": "count"})
+        # 3. Активных ботов
+        r_active = await client.get("bots", params={"status": "eq.RUNNING", "select": "count"})
+        # 4. Всего сообщений
+        r_msgs = await client.get("bot_messages", params={"select": "count"})
+        
+        # 5. График сообщений за последние 7 дней (примерная реализация через агрегацию Supabase или raw query)
+        # Упрощенно берем последние 100 сообщений для графика "прямо сейчас"
+        r_chart = await client.get("bot_messages", params={"select": "created_at,is_from_admin", "order": "created_at.desc", "limit": "500"})
+
+    return {
+        "total_users": r_users.headers.get("content-range", "0/0").split("/")[-1],
+        "total_bots": r_bots.headers.get("content-range", "0/0").split("/")[-1],
+        "active_bots": r_active.headers.get("content-range", "0/0").split("/")[-1],
+        "total_messages": r_msgs.headers.get("content-range", "0/0").split("/")[-1],
+        "chart_data": r_chart.json()
+    }
+
+@app.get("/api/admin/users")
+async def get_all_users(x_admin_token: str = Header(None)):
+    if x_admin_token != A_SECRET: raise HTTPException(403)
+    # Получаем всех пользователей
+    r = await db.get("users", params={"select": "*", "order": "created_at.desc"})
+    return r.json()
+
+@app.get("/api/admin/bots")
+async def get_all_bots(x_admin_token: str = Header(None)):
+    if x_admin_token != A_SECRET: raise HTTPException(403)
+    # Получаем всех ботов с информацией о владельце
+    r = await db.get("bots", params={"select": "*, owner:users(email, username)", "order": "created_at.desc"})
+    return r.json()
+
+@app.post("/api/admin/user/ban")
+async def admin_ban_user(d: dict, x_admin_token: str = Header(None)):
+    if x_admin_token != A_SECRET: raise HTTPException(403)
+    # Пример: Меняем пароль на случайный, чтобы юзер не вошел, или добавляем поле is_banned в БД
+    # Пока просто стопаем его ботов
+    uid = d.get('user_id')
+    bots = await db.get("bots", params={"owner_id": f"eq.{uid}"})
+    for b in bots.json():
+        await pm.stop_bot(b['id'])
+        await db.patch("bots", params={"id": f"eq.{b['id']}"}, json={"status": "BANNED"})
+    return True
+
+@app.post("/api/admin/bot/action")
+async def admin_bot_action(d: dict, x_admin_token: str = Header(None)):
+    if x_admin_token != A_SECRET: raise HTTPException(403)
+    bid = d.get('bot_id')
+    action = d.get('action') # stop / start / delete
+    
+    if action == 'stop':
+        await pm.stop_bot(bid)
+        await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "IDLE"})
+    elif action == 'delete':
+        await pm.stop_bot(bid)
+        await db.delete("bots", params={"id": f"eq.{bid}"})
+    
+    return True
+
+@app.post("/api/admin/generate-key")
+async def admin_generate_key(d: dict, x_admin_token: str = Header(None)):
+    if x_admin_token != A_SECRET: raise HTTPException(403)
+    
+    months = d.get('months', 0)
+    days = d.get('days', 0)
+    
+    # Генерация красивого ключа (например, XXXX-XXXX-XXXX)
+    new_key = f"{secrets.token_hex(2)}-{secrets.token_hex(2)}-{secrets.token_hex(2)}".upper()
+    
+    payload = {
+        "key": new_key,
+        "months": months,
+        "days": days,
+        "used": False,
+        "created_at": int(time.time())
+    }
+    
+    await db.post("issued_keys", json=payload)
+    return {"key": new_key}
+
+# ==========================================
 # 8. СИСТЕМНЫЕ
 # ==========================================
 
