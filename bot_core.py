@@ -139,7 +139,7 @@ class BotInstance:
         """Теперь воркер просто крутит логику в цикле"""
         logger.info(f"[*] Мониторинг лицензии для {self.bot_id} запущен")
         while self.is_running:
-            await self.license_checker()
+            await self.license_checker_logic()
             await asyncio.sleep(120)
 
     def apply_config(self, data: dict):
