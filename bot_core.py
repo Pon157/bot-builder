@@ -116,7 +116,6 @@ class BotInstance:
         """Вынесли логику в отдельный метод, чтобы вызывать её при старте"""
         try:
             curr_time = int(time.time() * 1000)
-            logger.info(f"CHECK: Now={curr_time}, Expires={self.license_expires_at}")
             if self.license_expires_at and self.license_expires_at < curr_time:
                 # Проверяем через getattr для безопасности или просто по флагу
                 if not self.license_expired:
@@ -136,17 +135,12 @@ class BotInstance:
             logger.error(f"Ошибка в license_checker_logic: {e}")
 
     async def license_checker(self):
-        """Фоновый воркер: раз в 2 минуты проверяет лицензию"""
+        """Теперь воркер просто крутит логику в цикле"""
         logger.info(f"[*] Мониторинг лицензии для {self.bot_id} запущен")
         while self.is_running:
-            try:
-                # ВЫЗЫВАЕМ ЛОГИКУ, а не самого себя!
-                await self.license_checker_logic() 
-            except Exception as e:
-                logger.error(f"Ошибка в воркере лицензии: {e}")
-            
-            await asyncio.sleep(120) # Пауза 2 минуты
-            
+            await self.license_checker_logic()
+            await asyncio.sleep(120)
+
     def apply_config(self, data: dict):
         """Парсинг конфигурации (без дублей)"""
         raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
@@ -521,7 +515,7 @@ class BotInstance:
         return False
 
     async def core_handlers_setup(self):
-        self.dp.message.outer_middleware(LicenseMiddleware(self))
+        self.router.message.middleware(LicenseMiddleware(self))
         @self.router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=ChatMemberStatus.KICKED))
         async def on_user_blocked_bot(event: ChatMemberUpdated):
             user_id = event.from_user.id
@@ -613,18 +607,18 @@ class BotInstance:
         return ReplyKeyboardMarkup(keyboard=keyboard_rows, resize_keyboard=True)
 
     async def run_instance(self):
-        # 1. Принудительно проверяем лицензию ПЕРЕД запуском
+        # 1. Принудительно ждем первой синхронизации базы и проверки лицензии
+        # Вместо create_task вызываем их напрямую через await ОДИН раз
         logger.info(f"[*] Бот {self.bot_id} проверяет данные перед запуском...")
         
         try:
-            # Выполняем проверку лицензии ОДИН раз до старта
-            await self.license_checker_logic() 
-            # Строку sync_database_logic УДАЛИЛИ, так как метода нет. 
-            # Данные уже загружены в __init__ через apply_config.
+            # Выполняем ОДИН цикл проверки лицензии и базы ДО запуска поллинга
+            await self.license_checker_logic() # Проверка лицензии
+            await self.sync_database_logic()   # Загрузка настроек и кнопок
         except Exception as e:
-            logger.error(f"Ошибка при первичной проверке данных: {e}")
+            logger.error(f"Ошибка при первичной загрузке данных: {e}")
 
-        # 2. Запускаем фоновые задачи (воркеры)
+        # 2. Теперь запускаем их как фоновые задачи для обновления в будущем
         asyncio.create_task(self.database_sync_worker())
         asyncio.create_task(self.daily_stats_rotator())
         asyncio.create_task(self.license_checker())
@@ -633,15 +627,14 @@ class BotInstance:
         await self.core_handlers_setup()
         self.dp.include_router(self.router)
         
-        logger.info(f"[*] Бот {self.bot_id} запущен. Лицензия: {'Истекла' if self.license_expired else 'ОК'}")
+        logger.info(f"[*] Бот {self.bot_id} готов к работе. Лицензия: {'Истекла' if self.license_expired else 'ОК'}")
         
         try: 
-            # Запуск приема сообщений
             await self.dp.start_polling(self.bot)
         finally:
             self.is_running = False
             await self.bot.session.close()
-            
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python3 bot_core.py <config_path>")
