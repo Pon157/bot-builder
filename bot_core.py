@@ -116,6 +116,7 @@ class BotInstance:
         """Вынесли логику в отдельный метод, чтобы вызывать её при старте"""
         try:
             curr_time = int(time.time() * 1000)
+            logger.info(f"CHECK: Now={curr_time}, Expires={self.license_expires_at}")
             if self.license_expires_at and self.license_expires_at < curr_time:
                 # Проверяем через getattr для безопасности или просто по флагу
                 if not self.license_expired:
@@ -138,7 +139,7 @@ class BotInstance:
         """Теперь воркер просто крутит логику в цикле"""
         logger.info(f"[*] Мониторинг лицензии для {self.bot_id} запущен")
         while self.is_running:
-            await self.license_checker_logic()
+            await self.license_checker()
             await asyncio.sleep(120)
 
     def apply_config(self, data: dict):
@@ -515,7 +516,7 @@ class BotInstance:
         return False
 
     async def core_handlers_setup(self):
-        self.router.message.middleware(LicenseMiddleware(self))
+        self.dp.message.outer_middleware(LicenseMiddleware(self))
         @self.router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=ChatMemberStatus.KICKED))
         async def on_user_blocked_bot(event: ChatMemberUpdated):
             user_id = event.from_user.id
