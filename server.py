@@ -124,18 +124,28 @@ class BotManager:
             logger.error(f"❌ Критическая ошибка запуска {bid}: {e}")
             return str(e)
 
-    async def stop_bot(self, bid: str):
-        """Безопасная остановка процесса."""
-        p = self.procs.get(bid)
+async def stop_bot(self, bot_id: str):
+        p = self.procs.get(bot_id)
         if p:
             try:
-                p.terminate()
-                await asyncio.wait_for(p.wait(), timeout=3.0)
-            except:
-                if p: p.kill()
-            finally:
-                if bid in self.procs: del self.procs[bid]
-        return True
+                # Пытаемся корректно завершить процесс
+                p.terminate() 
+                # Даем немного времени на выход, если не вышел — убиваем
+                try:
+                    await asyncio.wait_for(p.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    p.kill()
+            except ProcessLookupError:
+                # Если процесса уже нет в системе — просто игнорируем
+                logger.warning(f"Процесс {bot_id} уже не существует.")
+            except Exception as e:
+                logger.error(f"Ошибка при остановке {bot_id}: {e}")
+            
+            # В любом случае удаляем из списка активных и чистим файл конфига
+            self.procs.pop(bot_id, None)
+            cfg_path = f"config_{bot_id}.json"
+            if os.path.exists(cfg_path):
+                os.remove(cfg_path)
 
     def get_logs(self, bid: str):
         """Чтение последних строк лога бота."""
