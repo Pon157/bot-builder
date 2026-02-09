@@ -93,7 +93,10 @@ class BotInstance:
     def __init__(self, config_data: dict):
         self.bot_id = config_data.get('id')
         self.token = config_data.get('token')
-        # Токен из .env уже подгружен в систему, но aiogram инициализируется здесь
+        
+        # Инициализируем флаг лицензии ПЕРЕД apply_config
+        self.license_expired = False 
+        
         self.sb_url = os.getenv("SUPABASE_URL", "").rstrip('/')
         self.sb_key = os.getenv("SUPABASE_KEY", "")
         
@@ -104,67 +107,63 @@ class BotInstance:
         self.msg_map = {}
         self.flood_cache = {}
         self.is_running = True
-        
-        # Очередь для моментальной синхронизации
         self.sync_queue = asyncio.Queue()
         
         self.apply_config(config_data)
 
-    # Внутри класса BotInstance (bot_core.py)
+    async def license_checker_logic(self):
+        """Отдельная логика проверки (вызывается при старте и в цикле)"""
+        try:
+            curr_time = int(time.time() * 1000)
+            if self.license_expires_at and self.license_expires_at < curr_time:
+                if not self.license_expired:
+                    logger.warning(f" [!] Лицензия {self.bot_id} истекла!")
+                    self.license_expired = True
+                    
+                    # Сообщаем Supabase
+                    async with httpx.AsyncClient() as client:
+                        headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
+                        await client.patch(
+                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                            json={"status": "IDLE"},
+                            headers=headers
+                        )
+            else:
+                self.license_expired = False
+        except Exception as e:
+            logger.error(f"Ошибка в license_checker_logic: {e}")
 
     async def license_checker(self):
-        """Проверка лицензии: меняет статус в БД и блокирует ответы пользователям"""
+        """Фоновый воркер мониторинга"""
         logger.info(f"[*] Мониторинг лицензии для {self.bot_id} запущен")
         while self.is_running:
-            try:
-                curr_time = int(time.time() * 1000)
-                # Если время вышло
-                if self.license_expires_at and self.license_expires_at < curr_time:
-                    if not getattr(self, 'license_expired', False):
-                        logger.warning(f" [!] Лицензия {self.bot_id} истекла!")
-                        self.license_expired = True # Активируем блокировку в Middleware
-                        
-                        # Сообщаем Supabase, что бот теперь IDLE
-                        async with httpx.AsyncClient() as client:
-                            headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
-                            await client.patch(
-                                f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                                json={"status": "IDLE"},
-                                headers=headers
-                            )
-                else:
-                    # Если лицензию продлили, пока бот был запущен
-                    self.license_expired = False
-                    
-            except Exception as e:
-                logger.error(f"Ошибка в license_checker: {e}")
-            
-            await asyncio.sleep(120) # Проверка каждые 2 минуты
+            await self.license_checker_logic()
+            await asyncio.sleep(120)
 
-    def apply_config(self, data: dict):
-        """Парсинг конфигурации и инициализация статистики (UTC версия)"""
-        raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
-        full_cfg = {**data, **raw_cfg} 
+    async def run_instance(self):
+        """Запуск инстанса с предварительной проверкой"""
+        logger.info(f"[*] Бот {self.bot_id} подготавливается к запуску...")
         
-        try:
-            admin_id_raw = full_cfg.get('adminChatId')
-            self.admin_chat_id = int(str(admin_id_raw).strip()) if admin_id_raw else None
-        except ValueError:
-            self.admin_chat_id = None
-
-        self.buttons = full_cfg.get('buttons', [])
-        self.triggers = full_cfg.get('triggers', [])
-        self.welcome_text = full_cfg.get('welcomeMessage', 'Здравствуйте!')
-        self.settings = full_cfg.get('settings', {})
+        # 1. Сначала проверяем лицензию ОДИН раз
+        await self.license_checker_logic()
         
-        self.use_topics = self.settings.get('useTopics', False)
-        self.topic_per_req = self.settings.get('topicPerRequest', False)
-        self.rate_limit = float(self.settings.get('rateLimit', 1.0))
-        self.auto_ban_limit = int(self.settings.get('autoBanThreshold', 3))
+        # 2. Запускаем фоновые задачи
+        asyncio.create_task(self.database_sync_worker())
+        asyncio.create_task(self.daily_stats_rotator())
+        asyncio.create_task(self.license_checker())
         
-        self.users_list = full_cfg.get('connectedUsers', [])
-
-        self.license_expires_at = full_cfg.get('license_expires_at', 0)
+        # 3. Настройка обработчиков
+        await self.core_handlers_setup()
+        self.dp.include_router(self.router)
+        
+        status_text = "ИСТЕКЛА" if self.license_expired else "ОК"
+        logger.info(f"[*] Бот {self.bot_id} запущен. Лицензия: {status_text}")
+        
+        try: 
+            await self.dp.start_polling(self.bot)
+        finally:
+            self.is_running = False
+            await self.bot.session.close()
         
         # --- ИНИЦИАЛИЗАЦИЯ СТАТИСТИКИ ---
         # Мы НЕ создаем статы с нуля, а вытягиваем их из пришедшего конфига (Supabase)
