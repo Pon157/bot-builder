@@ -584,7 +584,7 @@ class BotInstance:
             keyboard_rows.append([KeyboardButton(text=b['text']) for b in active_btns[i:i+2]])
         return ReplyKeyboardMarkup(keyboard=keyboard_rows, resize_keyboard=True)
 
-async def run_instance(self):
+    async def run_instance(self):
         # 1. Принудительно ждем первой синхронизации базы и проверки лицензии
         # Вместо create_task вызываем их напрямую через await ОДИН раз
         logger.info(f"[*] Бот {self.bot_id} проверяет данные перед запуском...")
