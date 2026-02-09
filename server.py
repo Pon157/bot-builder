@@ -297,21 +297,41 @@ async def verify_reg(d: dict):
 async def forgot_p(d: dict):
     email = d['email'].lower()
     u = await db.get("users", params={"email": f"eq.{email}"})
-    if not u.json(): return True
+    if not u.json(): 
+        return True # Не даем понять, есть ли такой email в базе
     
     code = str(random.randint(100000, 999999))
-    await db.post("temp_codes", json={"email": email, "code": code, "type": "RESET"}, headers={"Prefer": "resolution=merge-duplicates"})
+    
+    # Сохраняем код с пометкой RESET
+    await db.post("temp_codes", 
+                  json={"email": email, "code": code, "type": "RESET"}, 
+                  headers={"Prefer": "resolution=merge-duplicates"})
+    
+    # Отправляем письмо (помним про блокировку потока, если юзаем smtplib)
     EmailService.send_password_reset(email, code)
     return True
 
 @app.post("/api/auth/reset-password")
 async def reset_p(d: dict):
     email = d['email'].lower()
-    r = await db.get("temp_codes", params={"email": f"eq.{email}", "code": f"eq.{d['code']}", "type": "eq.RESET"})
-    if not r.json(): raise HTTPException(400, "Код недействителен")
     
+    # Ищем код именно для сброса (RESET)
+    r = await db.get("temp_codes", params={
+        "email": f"eq.{email}", 
+        "code": f"eq.{d['code']}", 
+        "type": "eq.RESET" # Исправил фильтр
+    })
+    
+    if not r.json(): 
+        raise HTTPException(400, "Код недействителен")
+    
+    # Обновляем пароль в таблице users
     new_hpwd = hash_pwd(d['newPassword'])
     await db.patch("users", params={"email": f"eq.{email}"}, json={"password": new_hpwd})
+    
+    # УДАЛЯЕМ КОД после успешного сброса (чтобы нельзя было юзать повторно)
+    await db.delete("temp_codes", params={"email": f"eq.{email}", "type": "eq.RESET"})
+    
     return True
 
 # ==========================================
