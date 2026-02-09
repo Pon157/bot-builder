@@ -309,19 +309,26 @@ async def verify_reg(d: dict):
 async def forgot_p(d: dict):
     email = d['email'].lower()
     
-    # Проверяем, существует ли пользователь
-    u = await db.get("users", params={"email": f"eq.{email}"})
-    if not u.json(): 
-        return True # Возвращаем True, чтобы не давать перебирать email-ы
+    # Получаем данные пользователя
+    r = await db.get("users", params={"email": f"eq.{email}"})
+    u_data = r.json()
+    
+    # ЛОГ ДЛЯ ДЕБАГА (удалишь потом)
+    print(f"DEBUG: Поиск юзера {email}, результат: {u_data}")
+    
+    # Если список пустой, письмо не шлем
+    if not u_data: 
+        return True 
     
     code = str(random.randint(100000, 999999))
     
-    # Сохраняем код с типом RESET
+    # Сохраняем код в базу
     await db.post("temp_codes", 
                   json={"email": email, "code": code, "type": "RESET"}, 
                   headers={"Prefer": "resolution=merge-duplicates"})
     
-    # Отправляем письмо в отдельном потоке
+    # ОТПРАВКА ПИСЬМА: Обязательно через run_in_threadpool
+    # так как smtplib внутри EmailService блокирует поток
     await run_in_threadpool(EmailService.send_password_reset, email, code)
     
     return True
@@ -330,7 +337,7 @@ async def forgot_p(d: dict):
 async def reset_p(d: dict):
     email = d['email'].lower()
     
-    # Ищем код именно для сброса пароля
+    # Ищем код с типом RESET
     r = await db.get("temp_codes", params={
         "email": f"eq.{email}", 
         "code": f"eq.{d['code']}", 
@@ -340,11 +347,11 @@ async def reset_p(d: dict):
     if not r.json(): 
         raise HTTPException(400, "Код недействителен или устарел")
     
-    # Обновляем пароль (используем d['newPassword'] из фронта)
+    # Обновляем пароль
     new_hpwd = hash_pwd(d['newPassword'])
     await db.patch("users", params={"email": f"eq.{email}"}, json={"password": new_hpwd})
     
-    # Очищаем использованный код
+    # Удаляем код
     await db.delete("temp_codes", params={"email": f"eq.{email}", "type": "eq.RESET"})
     
     return True
