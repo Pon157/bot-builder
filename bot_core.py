@@ -91,6 +91,38 @@ class BotInstance:
         
         self.apply_config(config_data)
 
+    # Внутри класса BotInstance (bot_core.py)
+
+    async def license_checker(self):
+        """Фоновая задача: проверяет лицензию раз в час"""
+        logger.info(f"[*] Фоновая проверка лицензии запущена для бота {self.bot_id}")
+        
+        while self.is_running:
+            try:
+                curr_time_ms = int(time.time() * 1000)
+                
+                # Если лицензия установлена и время истекло
+                if self.license_expires_at and self.license_expires_at < curr_time_ms:
+                    logger.warning(f" [!] Срок лицензии бота {self.bot_id} истек. Самоотключение...")
+                    
+                    if self.admin_chat_id:
+                        try:
+                            await self.bot.send_message(
+                                self.admin_chat_id, 
+                                "🚨 <b>Срок действия вашей лицензии истек.</b>\nБот остановлен. Пожалуйста, продлите лицензию в панели управления."
+                            )
+                        except Exception as e:
+                            logger.error(f"Не удалось отправить уведомление: {e}")
+                    
+                    # Жесткое завершение процесса
+                    os._exit(0) 
+
+            except Exception as e:
+                logger.error(f"Ошибка в license_checker: {e}")
+
+            # Ждем 1 час
+            await asyncio.sleep(3600)
+
     def apply_config(self, data: dict):
         """Парсинг конфигурации и инициализация статистики (UTC версия)"""
         raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
@@ -113,6 +145,8 @@ class BotInstance:
         self.auto_ban_limit = int(self.settings.get('autoBanThreshold', 3))
         
         self.users_list = full_cfg.get('connectedUsers', [])
+
+        self.license_expires_at = full_cfg.get('license_expires_at', 0)
         
         # --- ИНИЦИАЛИЗАЦИЯ СТАТИСТИКИ ---
         # Мы НЕ создаем статы с нуля, а вытягиваем их из пришедшего конфига (Supabase)
@@ -534,6 +568,7 @@ class BotInstance:
     async def run_instance(self):
         asyncio.create_task(self.database_sync_worker())
         asyncio.create_task(self.daily_stats_rotator())
+        asyncio.create_task(self.license_checker())
         await self.core_handlers_setup()
         self.dp.include_router(self.router)
         logger.info(f"[*] Бот {self.bot_id} запущен.")
