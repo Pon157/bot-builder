@@ -7,9 +7,11 @@ import sys
 import hashlib
 import time
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List, Any, Union
+# Добавили Callable и Awaitable для Middleware
+from typing import Dict, Optional, List, Any, Union, Callable, Awaitable
 
-from aiogram import Bot, Dispatcher, Router, F
+# Добавили BaseMiddleware
+from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
 from aiogram.enums import ParseMode, ContentType, ChatMemberStatus
 from aiogram.filters import CommandStart, Command, ChatMemberUpdatedFilter
 from aiogram.types import (
