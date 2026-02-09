@@ -179,5 +179,55 @@ export const api = {
       body: JSON.stringify({ botIds, message, photo_url: photoUrl })
     });
     return response.ok ? await response.json() : null;
+  },
+  // --- ADMIN API ---
+  adminLogin: async (login: string, pass: string) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/login`, {
+      method: 'POST',
+      body: JSON.stringify({ login, password: pass })
+    });
+    if (!response.ok) throw new Error("Неверный логин или пароль");
+    return await response.json(); // Возвращает { token: "..." }
+  },
+
+  getAdminDashboard: async (token: string) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/dashboard`, {
+      method: 'GET',
+      headers: { 'x-admin-token': token }
+    });
+    return response.json();
+  },
+
+  getAllUsers: async (token: string) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/users`, {
+      method: 'GET',
+      headers: { 'x-admin-token': token }
+    });
+    return response.json();
+  },
+
+  getAllBots: async (token: string) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/bots`, {
+      method: 'GET',
+      headers: { 'x-admin-token': token }
+    });
+    return response.json();
+  },
+
+  adminBotAction: async (token: string, botId: string, action: 'stop' | 'delete') => {
+    await fetchWithTimeout(`${getApiBase()}/admin/bot/action`, {
+      method: 'POST',
+      headers: { 'x-admin-token': token },
+      body: JSON.stringify({ bot_id: botId, action })
+    });
+  },
+  
+  generateKey: async (token: string, months: number, days: number) => {
+     const response = await fetchWithTimeout(`${getApiBase()}/admin/generate-key`, {
+        method: 'POST',
+        headers: { 'x-admin-token': token },
+        body: JSON.stringify({ months, days })
+     });
+     return response.json();
   }
 };
