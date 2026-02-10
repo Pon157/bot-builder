@@ -110,7 +110,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     } catch (e) { alert("Ошибка генерации ключа"); }
   };
 
-  // НОВАЯ ЛОГИКА: Прямой переход в Admin Editor
+// НОВАЯ ЛОГИКА: Прямой переход в Admin Editor
 const handleConfigAccess = async (botId: string) => {
   // 1. Всплывающее окно для ввода ключа
   const userKey = window.prompt("Введите активный лицензионный ключ для доступа к редактированию:");
@@ -118,26 +118,19 @@ const handleConfigAccess = async (botId: string) => {
   if (!userKey) return; // Если нажали "Отмена"
 
   try {
-    // 2. Отправляем запрос на бэкенд для проверки
-    const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/admin/verify_access_key`, {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'x-admin-token': localStorage.getItem('admin_token') || '' 
-      },
-      body: JSON.stringify({ key: userKey })
-    });
+    // 2. Используем наш сервис api (он сам подставит URL и заголовки)
+    // Передаем и КЛЮЧ, и ID БОТА
+    const data = await api.verifyAccessKey(userKey, botId);
 
-    const data = await response.json();
-
-    if (data.ok) {
+    if (data && data.ok) {
       // 3. Если ключ верный — пускаем в редактор
       navigate(`/admin/editor/${botId}`);
     } else {
       alert("Доступ запрещен: Неверный или просроченный ключ.");
     }
-  } catch (err) {
-    alert("Ошибка проверки ключа. Убедитесь, что сервер запущен.");
+  } catch (err: any) {
+    // Выводим ошибку, которую прислал сервер (например, "Ключ уже использован")
+    alert(err.message || "Ошибка проверки ключа.");
   }
 };
 
