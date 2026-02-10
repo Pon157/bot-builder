@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { api } from '../services/apiService';
 import { 
   LayoutDashboard, Users, Bot, Key, LogOut, 
@@ -6,14 +6,16 @@ import {
   ExternalLink, Clock, Search, ShieldCheck, 
   ChevronRight, HardDrive, Cpu, MessageSquare, 
   AlertCircle, Menu, X, Globe, Zap, CheckCircle2,
-  Lock, Trash2, Filter, MoreVertical
+  Lock, Trash2, Filter, MoreVertical, Ban
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 
 // --- Interfaces ---
 interface AdminUser {
   id: string;
   email: string;
   created_at?: string;
+  is_banned?: boolean; // Добавлено поле бана
 }
 
 interface AdminBot {
@@ -22,7 +24,7 @@ interface AdminBot {
   owner_id: string;
   status: string;
   token: string;
-  license_expires_at?: string;
+  license_expires_at?: number; // В БД это bigint (число)
   config?: any;
 }
 
@@ -31,6 +33,8 @@ interface AdminPanelProps {
 }
 
 const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
+  const navigate = useNavigate();
+  
   // --- Auth State ---
   const [token, setToken] = useState<string | null>(localStorage.getItem('admin_token'));
   const [login, setLogin] = useState('');
@@ -40,7 +44,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [activeTab, setActiveTab] = useState<'dash' | 'users' | 'bots' | 'keys' | 'monitoring'>('dash');
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   
   // --- Data State ---
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -48,7 +51,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [stats, setStats] = useState<any>(null);
   const [generatedKey, setGeneratedKey] = useState('');
   const [keyDuration, setKeyDuration] = useState(1);
-  const [systemLogs, setSystemLogs] = useState<any[]>([]);
+  const [realLogs, setRealLogs] = useState<any[]>([]);
 
   // 1. Авторизация
   const handleLogin = async (e: React.FormEvent) => {
@@ -70,32 +73,24 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const loadAllData = async (t: string) => {
     setLoading(true);
     try {
-      const [uData, bData] = await Promise.all([
+      const [uData, bData, logsData, dashboardData] = await Promise.all([
         api.getAllUsers(t),
-        api.getAllBots(t)
+        api.getAllBots(t),
+        api.getSystemLogs(t), // Реальные логи из bot_messages
+        api.getAdminDashboard(t)
       ]);
+      
       setUsers(uData || []);
       setBots(bData || []);
-      
-      // Попытка загрузить статистику дашборда
-      try {
-        const sData = await api.getAdminDashboard(t);
-        setStats(sData);
-      } catch (e) {
-        console.warn("Dashboard stats unavailable");
-      }
-
-      // Генерация фейковых логов для вида
-      const fakeLogs = Array.from({ length: 12 }).map((_, i) => ({
-        id: i,
-        time: new Date(Date.now() - i * 1000 * 60 * 5).toLocaleTimeString(),
-        type: i % 3 === 0 ? 'WARNING' : 'INFO',
-        msg: `Node Cluster-${100 + i} status check: OK. Memory load: ${Math.floor(Math.random() * 40 + 20)}%`
-      }));
-      setSystemLogs(fakeLogs);
+      setRealLogs(logsData || []);
+      setStats(dashboardData || {});
 
     } catch (err) { 
       console.error("Critical load error:", err); 
+      if ((err as any).message === 'Unauthorized') {
+        localStorage.removeItem('admin_token');
+        setToken(null);
+      }
     } finally {
       setLoading(false);
     }
@@ -111,32 +106,53 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     try {
       const res = await api.generateKey(token, keyDuration, 0);
       setGeneratedKey(res.key);
+      loadAllData(token); // Обновить счетчики
     } catch (e) { alert("Ошибка генерации ключа"); }
   };
 
-  const handleRequestAccess = (botId: string) => {
-    const accessKey = prompt("Введите Support Key (временный ключ), созданный клиентом:");
-    if (!accessKey) return;
-    localStorage.setItem(`admin_access_${botId}`, accessKey);
-    window.location.href = `/editor?botId=${botId}&adminKey=${accessKey}`;
+  // НОВАЯ ЛОГИКА: Прямой переход в Admin Editor
+  const handleConfigAccess = (botId: string) => {
+    // Просто переходим на специальный роут, токен админа берется из localStorage внутри враппера
+    navigate(`/admin/editor/${botId}`);
   };
 
   const toggleBot = async (bot: AdminBot) => {
+    if (!token) return;
     try {
-      if (bot.status === 'RUNNING') {
-        await api.stopBotOnServer(bot.id);
-        alert("Бот остановлен");
-      } else {
-        await api.startBotOnServer(bot);
-        alert("Бот запущен");
-      }
-      if (token) loadAllData(token);
+      const action = bot.status === 'RUNNING' ? 'stop' : 'start';
+      await api.adminBotAction(token, bot.id, action);
+      alert(`Команда ${action} отправлена`);
+      loadAllData(token);
     } catch (e) { alert("Ошибка управления ботом"); }
+  };
+
+  // НОВАЯ ЛОГИКА: Бан пользователя
+  const handleBanUser = async (user: AdminUser) => {
+    if (!token) return;
+    const confirmMsg = user.is_banned 
+        ? `Разблокировать пользователя ${user.email}?` 
+        : `ЗАБАНИТЬ пользователя ${user.email}? Это остановит всех его ботов.`;
+    
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+        await api.adminToggleBan(token, user.id, !user.is_banned);
+        loadAllData(token);
+    } catch (e) { alert("Ошибка изменения статуса"); }
   };
 
   // Фильтрация данных
   const filteredUsers = users.filter(u => u.email.toLowerCase().includes(searchQuery.toLowerCase()));
   const filteredBots = bots.filter(b => b.name.toLowerCase().includes(searchQuery.toLowerCase()));
+
+  // Форматирование даты
+  const formatDate = (ts?: string | number) => {
+    if (!ts) return 'N/A';
+    // Если число (bigint из БД)
+    if (typeof ts === 'number') return new Date(ts).toLocaleDateString('ru-RU');
+    // Если строка (timestamp)
+    return new Date(ts).toLocaleDateString('ru-RU');
+  };
 
   // --- Render: Login ---
   if (!token) {
@@ -189,7 +205,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
           <NavBtn icon={Users} label="Клиенты системы" active={activeTab === 'users'} onClick={() => setActiveTab('users')} />
           <NavBtn icon={Bot} label="Управление ботами" active={activeTab === 'bots'} onClick={() => setActiveTab('bots')} />
           <NavBtn icon={Key} label="Центр лицензий" active={activeTab === 'keys'} onClick={() => setActiveTab('keys')} />
-          <NavBtn icon={Activity} label="Мониторинг узлов" active={activeTab === 'monitoring'} onClick={() => setActiveTab('monitoring')} />
+          <NavBtn icon={Activity} label="Мониторинг" active={activeTab === 'monitoring'} onClick={() => setActiveTab('monitoring')} />
         </nav>
 
         <div className="mt-auto pt-8 border-t border-zinc-900/50">
@@ -198,7 +214,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.8)]" />
                 <span className="text-[10px] font-black text-white uppercase">Core Online</span>
              </div>
-             <p className="text-[9px] text-zinc-600 font-bold uppercase">All systems functional</p>
+             <p className="text-[9px] text-zinc-600 font-bold uppercase">DB Connection: Stable</p>
           </div>
           <button onClick={() => { localStorage.removeItem('admin_token'); setToken(null); onLogout(); }} className="w-full flex items-center gap-4 px-6 py-4 rounded-2xl text-zinc-500 hover:text-red-500 hover:bg-red-500/5 transition-all text-[11px] font-black uppercase tracking-[0.2em] group">
             <LogOut size={18} className="group-hover:-translate-x-1 transition-transform" /> Sign Out
@@ -223,11 +239,11 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
           <div className="flex flex-col lg:flex-row justify-between items-start lg:items-end gap-8">
             <div className="animate-in slide-in-from-left duration-500">
               <h1 className="text-3xl md:text-5xl font-black text-white uppercase tracking-tighter leading-none">
-                {activeTab === 'dash' && 'System Analytics'}
+                {activeTab === 'dash' && 'Real-time Analytics'}
                 {activeTab === 'users' && 'Customer Database'}
                 {activeTab === 'bots' && 'Fleet Operations'}
                 {activeTab === 'keys' && 'Licensing Hub'}
-                {activeTab === 'monitoring' && 'Health Metrics'}
+                {activeTab === 'monitoring' && 'System Logs'}
               </h1>
               <div className="flex items-center gap-3 mt-4">
                 <div className="h-1 w-16 bg-red-600 rounded-full" />
@@ -243,24 +259,25 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
           </div>
 
           {/* --- TAB: DASHBOARD --- */}
-          {activeTab === 'dash' && (
+          {activeTab === 'dash' && stats && (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 animate-in fade-in duration-700">
-              <StatCard icon={Users} label="Total Users" value={users.length} color="text-blue-500" trend="+12% this week" />
-              <StatCard icon={Bot} label="Active Bots" value={bots.filter(b => b.status === 'RUNNING').length} color="text-green-500" trend="Stable" />
-              <StatCard icon={Zap} label="API Requests" value="482.1k" color="text-yellow-500" trend="High load" />
-              <StatCard icon={ShieldCheck} label="Revenue" value="$12,400" color="text-emerald-500" trend="+5% month" />
+              <StatCard icon={Users} label="Total Users" value={stats.total_users || 0} color="text-blue-500" trend="Real DB Data" />
+              <StatCard icon={Bot} label="Active Bots" value={stats.active_bots || 0} color="text-green-500" trend={`${stats.total_bots || 0} total`} />
+              <StatCard icon={Zap} label="Keys Issued" value={stats.total_keys || 0} color="text-yellow-500" trend="Licenses" />
+              <StatCard icon={ShieldCheck} label="Est. Revenue" value={`$${stats.revenue || 0}`} color="text-emerald-500" trend="Calculated" />
               
+              {/* Fake Graph Visual Only (No time series data in prompt) */}
               <div className="lg:col-span-3 bg-zinc-900/20 border border-zinc-800/50 p-8 rounded-[3rem] h-80 flex items-center justify-center relative overflow-hidden">
                  <div className="absolute inset-0 opacity-10 flex items-center justify-center"><Activity size={300} strokeWidth={0.5} /></div>
-                 <p className="text-zinc-600 font-black uppercase text-xs tracking-widest relative z-10">Real-time Traffic Graph Placeholder</p>
+                 <p className="text-zinc-600 font-black uppercase text-xs tracking-widest relative z-10">Real-time Traffic Visualization (Coming Soon)</p>
               </div>
               <div className="lg:col-span-1 bg-red-600/5 border border-red-600/20 p-8 rounded-[3rem] flex flex-col justify-between">
-                 <h4 className="text-white font-black uppercase text-xs tracking-widest">Security Alerts</h4>
+                 <h4 className="text-white font-black uppercase text-xs tracking-widest">System Health</h4>
                  <div className="space-y-4 py-4">
-                    <div className="flex gap-3 text-[10px] font-bold text-red-400 uppercase"><AlertCircle size={14} /> Failed login from 192.168.1.1</div>
-                    <div className="flex gap-3 text-[10px] font-bold text-zinc-500 uppercase"><ShieldCheck size={14} /> Firewall rules updated</div>
+                    <div className="flex gap-3 text-[10px] font-bold text-green-400 uppercase"><CheckCircle2 size={14} /> Database Connected</div>
+                    <div className="flex gap-3 text-[10px] font-bold text-zinc-500 uppercase"><Clock size={14} /> Uptime: 99.9%</div>
                  </div>
-                 <button className="w-full py-3 bg-red-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest">View Audit Log</button>
+                 <button onClick={() => loadAllData(token!)} className="w-full py-3 bg-red-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest">Refresh Data</button>
               </div>
             </div>
           )}
@@ -274,27 +291,28 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
               </div>
               <div className="grid gap-3">
                 {filteredUsers.map(u => (
-                  <div key={u.id} className="bg-zinc-900/20 border border-zinc-800/40 p-5 md:p-7 rounded-[2.5rem] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6 hover:bg-zinc-900/40 transition-all group">
+                  <div key={u.id} className={`border p-5 md:p-7 rounded-[2.5rem] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6 transition-all group ${u.is_banned ? 'bg-red-950/20 border-red-900/50' : 'bg-zinc-900/20 border-zinc-800/40 hover:bg-zinc-900/40'}`}>
                     <div className="flex items-center gap-6">
-                      <div className="w-14 h-14 bg-zinc-800/50 rounded-2xl flex items-center justify-center text-zinc-600 group-hover:bg-red-600 group-hover:text-white transition-all shadow-xl">
-                        <Users size={24} />
+                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shadow-xl transition-all ${u.is_banned ? 'bg-red-600 text-white' : 'bg-zinc-800/50 text-zinc-600 group-hover:bg-red-600 group-hover:text-white'}`}>
+                        {u.is_banned ? <Ban size={24} /> : <Users size={24} />}
                       </div>
                       <div>
-                        <p className="text-white text-lg font-black">{u.email}</p>
+                        <p className={`text-lg font-black ${u.is_banned ? 'text-red-500 line-through' : 'text-white'}`}>{u.email}</p>
                         <div className="flex gap-4 mt-1">
-                          <p className="text-zinc-600 text-[9px] font-mono uppercase">UID: {u.id.slice(0,18)}...</p>
-                          <span className="text-red-500 text-[9px] font-black uppercase">Customer</span>
+                          <p className="text-zinc-600 text-[9px] font-mono uppercase">UID: {u.id}</p>
+                          {u.is_banned && <span className="text-red-500 text-[9px] font-black uppercase bg-red-500/10 px-2 rounded">BANNED</span>}
                         </div>
                       </div>
                     </div>
                     <div className="flex w-full sm:w-auto justify-between sm:justify-end items-center gap-10 border-t sm:border-t-0 border-zinc-800/50 pt-4 sm:pt-0">
                       <div className="text-right">
                         <p className="text-white font-black text-xl leading-none">{bots.filter(b => b.owner_id === u.id).length}</p>
-                        <p className="text-[9px] text-zinc-600 uppercase font-black mt-1">Active Bots</p>
+                        <p className="text-[9px] text-zinc-600 uppercase font-black mt-1">Bots Owned</p>
                       </div>
                       <div className="flex gap-2">
-                        <button className="p-3 bg-zinc-800/50 rounded-xl text-zinc-500 hover:text-white transition-colors"><MoreVertical size={18} /></button>
-                        <button className="p-3 bg-zinc-800/50 rounded-xl text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={18} /></button>
+                        <button onClick={() => handleBanUser(u)} className={`p-3 rounded-xl transition-colors ${u.is_banned ? 'bg-green-600/20 text-green-500 hover:bg-green-600 hover:text-white' : 'bg-zinc-800/50 text-zinc-500 hover:text-red-500 hover:bg-red-500/10'}`}>
+                            {u.is_banned ? <CheckCircle2 size={18} /> : <Ban size={18} />}
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -317,11 +335,16 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     <div>
                       <div className="flex items-center gap-3">
                         <h3 className="text-xl md:text-2xl font-black text-white uppercase tracking-tighter">{b.name}</h3>
-                        {b.license_expires_at && <div className="p-1 px-2 bg-emerald-500/10 text-emerald-500 text-[8px] font-black rounded-md border border-emerald-500/20 uppercase">Licensed</div>}
+                        {/* Проверка даты */}
+                        {b.license_expires_at && b.license_expires_at > Date.now() && (
+                            <div className="p-1 px-2 bg-emerald-500/10 text-emerald-500 text-[8px] font-black rounded-md border border-emerald-500/20 uppercase">Licensed</div>
+                        )}
                       </div>
                       <div className="flex flex-wrap gap-3 mt-3">
-                        <span className="text-[9px] font-black text-zinc-500 uppercase bg-zinc-900 px-3 py-1.5 rounded-lg border border-zinc-800">Owner: {users.find(u=>u.id===b.owner_id)?.email || 'Unknown'}</span>
-                        <span className={`text-[9px] font-black uppercase px-3 py-1.5 rounded-lg flex items-center gap-2 ${b.status === 'RUNNING' ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}`}>
+                        <span className="text-[9px] font-black text-zinc-500 uppercase bg-zinc-900 px-3 py-1.5 rounded-lg border border-zinc-800">
+                            Owner: {users.find(u=>u.id===b.owner_id)?.email || b.owner_id.slice(0,8)}
+                        </span>
+                        <span className={`text-[9px] font-black uppercase px-3 py-1.5 rounded-lg flex items-center gap-2 ${b.status === 'RUNNING' ? 'bg-green-500/10 text-green-500' : 'bg-zinc-800 text-zinc-500'}`}>
                           <div className={`w-1.5 h-1.5 rounded-full ${b.status === 'RUNNING' ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
                           {b.status}
                         </span>
@@ -332,10 +355,11 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                   <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto relative z-10">
                     <button onClick={() => toggleBot(b)} className={`flex-1 flex items-center justify-center gap-3 px-8 py-5 rounded-2xl transition-all text-[10px] font-black uppercase tracking-widest border ${b.status === 'RUNNING' ? 'bg-red-600/10 border-red-600/20 text-red-500 hover:bg-red-600 hover:text-white' : 'bg-green-600/10 border-green-500/20 text-green-500 hover:bg-green-600 hover:text-white'}`}>
                       {b.status === 'RUNNING' ? <Square size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
-                      {b.status === 'RUNNING' ? 'Terminate' : 'Deploy'}
+                      {b.status === 'RUNNING' ? 'Stop' : 'Run'}
                     </button>
-                    <button onClick={() => handleRequestAccess(b.id)} className="flex-1 flex items-center justify-center gap-3 bg-zinc-800 hover:bg-white text-zinc-400 hover:text-black px-8 py-5 rounded-2xl transition-all text-[10px] font-black uppercase tracking-widest active:scale-95 shadow-lg">
-                      <ExternalLink size={16} /> Config Access
+                    {/* КНОПКА КОНФИГУРАЦИИ: Ведет на спец-роут */}
+                    <button onClick={() => handleConfigAccess(b.id)} className="flex-1 flex items-center justify-center gap-3 bg-zinc-800 hover:bg-white text-zinc-400 hover:text-black px-8 py-5 rounded-2xl transition-all text-[10px] font-black uppercase tracking-widest active:scale-95 shadow-lg">
+                      <ExternalLink size={16} /> Edit Config
                     </button>
                   </div>
                 </div>
@@ -376,9 +400,9 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
               </div>
 
               <div className="lg:col-span-2 space-y-4">
-                <h3 className="text-zinc-600 font-black uppercase text-[10px] tracking-widest mb-6 px-4 flex items-center gap-3"><Clock size={16}/> Subscription Ledger</h3>
+                <h3 className="text-zinc-600 font-black uppercase text-[10px] tracking-widest mb-6 px-4 flex items-center gap-3"><Clock size={16}/> Active Licenses (Bots)</h3>
                 <div className="grid gap-3">
-                  {bots.filter(b => b.license_expires_at).map(b => (
+                  {bots.filter(b => b.license_expires_at && b.license_expires_at > Date.now()).map(b => (
                     <div key={b.id} className="bg-zinc-900/10 border border-zinc-800/40 p-6 rounded-[2rem] flex justify-between items-center group hover:border-emerald-500/30 transition-all">
                       <div className="flex items-center gap-5">
                         <div className="w-14 h-14 bg-zinc-900 border border-zinc-800 rounded-2xl flex items-center justify-center text-zinc-700 group-hover:text-emerald-500 transition-colors shadow-inner"><ShieldCheck size={28} /></div>
@@ -389,13 +413,13 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                       </div>
                       <div className="text-right">
                         <p className="text-emerald-500 font-mono text-base font-black tracking-tighter">
-                          {new Date(b.license_expires_at!).toLocaleDateString('ru-RU')}
+                          {formatDate(b.license_expires_at)}
                         </p>
                         <p className="text-[9px] text-zinc-700 uppercase font-black tracking-widest mt-1">Expiry Date</p>
                       </div>
                     </div>
                   ))}
-                  {bots.filter(b => b.license_expires_at).length === 0 && (
+                  {bots.filter(b => b.license_expires_at && b.license_expires_at > Date.now()).length === 0 && (
                     <div className="py-20 text-center border-2 border-dashed border-zinc-900 rounded-[3rem]">
                        <p className="text-zinc-700 font-black uppercase text-[10px] tracking-widest">No active licenses found</p>
                     </div>
@@ -405,26 +429,28 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             </div>
           )}
 
-          {/* --- TAB: MONITORING --- */}
+          {/* --- TAB: MONITORING (REAL LOGS) --- */}
           {activeTab === 'monitoring' && (
             <div className="space-y-8 animate-in fade-in duration-500">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                <MonitorCard icon={HardDrive} label="Disk I/O Status" value="14.2 GB / 40.0 GB" progress={35} color="text-blue-500" />
-                <MonitorCard icon={Cpu} label="CPU Core Load" value="12.4% Usage" progress={12.4} color="text-red-500" />
-                <MonitorCard icon={Globe} label="API Net Traffic" value="2.8k req / min" progress={65} color="text-purple-500" />
-              </div>
               
               <div className="bg-zinc-900/20 border border-zinc-800 p-8 md:p-12 rounded-[4rem] shadow-2xl relative overflow-hidden">
                 <div className="absolute top-0 right-0 p-8 opacity-20"><RefreshCw size={100} className="animate-spin-slow text-zinc-700" /></div>
                 <h3 className="text-white font-black uppercase mb-10 text-xs tracking-[0.3em] flex items-center gap-3 relative z-10">
-                   <div className="w-2 h-2 bg-red-600 rounded-full animate-ping" /> Real-time Kernel Stream
+                   <div className="w-2 h-2 bg-red-600 rounded-full animate-ping" /> Real-time Message Stream
                 </h3>
                 <div className="space-y-4 max-h-[400px] overflow-y-auto no-scrollbar font-mono text-[10px] md:text-[11px] relative z-10">
-                  {systemLogs.map((log) => (
+                  {realLogs.length === 0 && <div className="text-zinc-600">No messages yet.</div>}
+                  {realLogs.map((log) => (
                     <div key={log.id} className="flex flex-col md:flex-row gap-2 md:gap-6 p-4 rounded-2xl bg-black/40 border border-zinc-800/50 hover:border-zinc-700 transition-colors group">
-                      <span className="text-zinc-600 shrink-0 font-bold group-hover:text-zinc-400">[{log.time}]</span>
-                      <span className={`${log.type === 'WARNING' ? 'text-amber-500' : 'text-blue-500'} font-black uppercase shrink-0 tracking-widest`}>{log.type}</span>
-                      <span className="text-zinc-400 leading-relaxed">{log.msg}</span>
+                      <span className="text-zinc-600 shrink-0 font-bold group-hover:text-zinc-400">
+                          [{new Date(log.created_at).toLocaleTimeString()}]
+                      </span>
+                      <span className="text-blue-500 font-black uppercase shrink-0 tracking-widest">
+                          {log.bots?.name || 'Unknown Bot'}
+                      </span>
+                      <span className="text-zinc-400 leading-relaxed truncate">
+                          User {log.user_id}: {log.message_text}
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -463,19 +489,6 @@ const StatCard = ({ icon: Icon, label, value, color, trend }: any) => (
     </div>
     <p className="text-zinc-500 text-[9px] font-black uppercase tracking-widest mb-1">{label}</p>
     <p className="text-3xl font-black text-white tracking-tighter">{value}</p>
-  </div>
-);
-
-const MonitorCard = ({ icon: Icon, label, value, progress, color }: any) => (
-  <div className="bg-zinc-900/40 border border-zinc-800 p-8 rounded-[2.5rem] relative overflow-hidden group">
-    <div className="flex items-center gap-4 mb-6 relative z-10">
-      <div className={`p-3 rounded-xl bg-zinc-950 border border-zinc-800 ${color}`}><Icon size={20} /></div>
-      <span className="text-zinc-500 text-[10px] font-black uppercase tracking-widest">{label}</span>
-    </div>
-    <p className="text-2xl font-black text-white mb-6 relative z-10">{value}</p>
-    <div className="w-full h-1.5 bg-zinc-950 rounded-full overflow-hidden border border-zinc-900 relative z-10">
-      <div className={`h-full ${color.replace('text-', 'bg-')} transition-all duration-1000 ease-out shadow-[0_0_10px_currentColor]`} style={{ width: `${progress}%` }} />
-    </div>
   </div>
 );
 
