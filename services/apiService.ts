@@ -172,6 +172,16 @@ export const api = {
     return response.ok ? await response.json() : { status: 'error' };
   },
 
+  getBotStats: async (botId: string): Promise<any> => {
+  try {
+    const response = await fetchWithTimeout(`${getApiBase()}/bots/stats/${botId}`, { method: 'GET' });
+    if (!response.ok) return { stats: { total_messages: 0, active_users: 0 } }; // Заглушка при ошибке
+    return await response.json();
+  } catch (e) { 
+    return { stats: { total_messages: 0, active_users: 0 } }; 
+  }
+},
+
   // Обновленный sendBroadcast с поддержкой фото
   sendBroadcast: async (botIds: string[], message: string, photoUrl?: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/bots/broadcast`, {
@@ -268,5 +278,4 @@ adminLogin: async (login: string, pass: string) => {
     });
     return response.ok;
   }
-};
 };
