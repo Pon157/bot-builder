@@ -420,47 +420,56 @@ async def save_bot(b: dict):
         # 2. Работаем с токеном
         raw_token = b.get('token', '')
         if raw_token:
+            # Шифруем только если это новый чистый токен
             final_token = encrypt_val(raw_token) if not raw_token.startswith('gAAAA') else raw_token
         else:
             final_token = curr.get('token', '')
 
-        # 3. Формируем конфиг (настройки бота)
-        # Если фронтенд шлет настройки в b['settings'], берем их. 
-        # Если нет — фильтруем как у тебя было.
-        if 'settings' in b:
-            ui_cfg = b['settings']
-        else:
-            sys_keys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
-            ui_cfg = {k: v for k, v in b.items() if k not in sys_keys}
+        # 3. Формируем настройки (то что пойдет в колонку config)
+        # Сохраняем все, что не является системными полями таблицы
+        sys_table_columns = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
+        
+        # Выделяем настройки (settings, buttons, triggers и т.д.)
+        ui_config = {}
+        for k, v in b.items():
+            if k not in sys_table_columns:
+                ui_config[k] = v
+        
+        # Если прилетел явный объект settings (как в твоем BotEditor), сохраняем и его содержимое
+        if 'settings' in b and isinstance(b['settings'], dict):
+            ui_config.update(b['settings'])
 
-        # 4. Собираем финальный объект для базы
-        payload = {
+        # 4. Формируем объект именно для БД (согласно структуре таблицы)
+        db_payload = {
             "id": bid,
             "owner_id": b.get('owner_id') or curr.get('owner_id'),
             "name": b.get("name") or curr.get("name", "Unnamed Bot"),
             "token": final_token,
-            "status": curr.get("status", "IDLE"), # Статус лучше не менять при обычном сохранении
+            "status": curr.get("status") or b.get("status") or "IDLE",
             "license_expires_at": b.get("license_expires_at") or curr.get("license_expires_at", 0),
-            "config": ui_cfg
+            "config": ui_config # Все кнопки и триггеры улетают в JSON колонку
         }
 
-        # 5. UPSERT запрос (обновить если есть, создать если нет)
-        # ВАЖНО: Добавляем on_conflict=id
-        headers = {
-            "Prefer": "return=representation,resolution=merge-duplicates"
-        }
-        
-        # Используем PATCH если бот точно существует, так надежнее
+        # 5. Сохранение
         if curr:
-            res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=payload)
+            res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
         else:
-            res = await db.post("bots", json=payload, headers=headers)
+            res = await db.post("bots", json=db_payload)
 
         if res.status_code not in [200, 201, 204]:
             logger.error(f"DB Error: {res.text}")
             raise HTTPException(res.status_code, f"Database error: {res.text}")
 
-        return {"status": "success", "payload": payload}
+        # --- КРИТИЧЕСКИ ВАЖНЫЙ МОМЕНТ ДЛЯ ФРОНТЕНДА ---
+        # Мы должны вернуть объект в "плоском" виде, как его ждет BotEditor
+        # Чтобы localBot.buttons не стал undefined
+        response_data = {
+            **db_payload,
+            **ui_config  # Разворачиваем конфиг обратно в корень объекта
+        }
+        # Убираем зашифрованный токен из ответа для безопасности (или оставляем как есть)
+        
+        return response_data
 
     except Exception as e:
         logger.error(f"🚨 Save Bot Error: {e}")
