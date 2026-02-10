@@ -181,13 +181,19 @@ export const api = {
     return response.ok ? await response.json() : null;
   },
   // --- ADMIN API ---
-  adminLogin: async (login: string, pass: string) => {
+adminLogin: async (login: string, pass: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/login`, {
       method: 'POST',
       body: JSON.stringify({ login, password: pass })
     });
     if (!response.ok) throw new Error("Неверный логин или пароль");
-    return await response.json(); // Возвращает { token: "..." }
+    const data = await response.json();
+    
+    // Сохраняем токен сразу, чтобы не потерять при редиректе
+    if (data.token) {
+        localStorage.setItem('admin_token', data.token);
+    }
+    return data; 
   },
 
   getAdminDashboard: async (token: string) => {
@@ -195,6 +201,7 @@ export const api = {
       method: 'GET',
       headers: { 'x-admin-token': token }
     });
+    if (!response.ok) throw new Error("Unauthorized");
     return response.json();
   },
 
@@ -214,12 +221,34 @@ export const api = {
     return response.json();
   },
 
-  adminBotAction: async (token: string, botId: string, action: 'stop' | 'delete') => {
-    await fetchWithTimeout(`${getApiBase()}/admin/bot/action`, {
+  // Новый метод: Бан пользователя
+  adminBanUser: async (token: string, userId: string) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/user/ban`, {
+      method: 'POST',
+      headers: { 'x-admin-token': token },
+      body: JSON.stringify({ user_id: userId })
+    });
+    return response.ok;
+  },
+
+  // Улучшенный метод: Управление ботами (теперь поддерживает start)
+  adminBotAction: async (token: string, botId: string, action: 'stop' | 'delete' | 'start') => {
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/bot/action`, {
       method: 'POST',
       headers: { 'x-admin-token': token },
       body: JSON.stringify({ bot_id: botId, action })
     });
+    return response.ok;
+  },
+
+  // Прямой старт бота (через передачу объекта)
+  adminStartBotDirect: async (token: string, botConfig: BotConfig) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/bots/start`, {
+      method: 'POST',
+      headers: { 'x-admin-token': token },
+      body: JSON.stringify({ bot: botConfig })
+    });
+    return response.json();
   },
   
   generateKey: async (token: string, months: number, days: number) => {
@@ -229,5 +258,15 @@ export const api = {
         body: JSON.stringify({ months, days })
      });
      return response.json();
+  },
+
+  // Создание временного доступа для админа (Support Mode)
+  createTempAccess: async (botId: string, key: string) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/temp-access`, {
+      method: 'POST',
+      body: JSON.stringify({ botId, key })
+    });
+    return response.ok;
   }
+};
 };
