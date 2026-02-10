@@ -263,30 +263,29 @@ adminLogin: async (login: string, pass: string) => {
   
 // В файле apiService.ts внутри объекта api:
 
-generateKey: async (token: string, months: number, botId: string) => { // Переименовали days в botId
-    console.log("🚀 Отправка запроса на генерацию ключа для бота:", botId);
+// Исправленная версия в apiService.ts
+generateKey: async (token: string, months: number, botName: string) => {
+    console.log("🚀 Отправка названия бота на сервер:", botName);
     
     const response = await fetchWithTimeout(`${getApiBase()}/admin/generate_key`, {
         method: 'POST',
         headers: { 
             'x-admin-token': token,
-            'Content-Type': 'application/json' // Добавили заголовок, чтобы сервер точно понял JSON
+            'Content-Type': 'application/json' // Обязательно для передачи JSON
         },
-        // ИСПРАВЛЕНО: Отправляем bot_id вместо days
+        // КЛЮЧЕВОЙ МОМЕНТ: переименовываем отправляемое поле в bot_id
         body: JSON.stringify({ 
             months: months, 
-            bot_id: botId 
+            bot_id: botName // Теперь бэкенд увидит это поле!
         })
     });
     
     if (!response.ok) {
         const err = await response.json();
-        throw new Error(err.detail || "Ошибка сервера при генерации");
+        throw new Error(err.detail || "Ошибка сервера");
     }
     
-    const data = await response.json();
-    console.log("✅ Ключ успешно получен:", data);
-    return data;
+    return await response.json();
 },
 
   // Создание временного доступа для админа (Support Mode)
