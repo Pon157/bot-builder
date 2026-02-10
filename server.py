@@ -592,34 +592,38 @@ async def get_admin_dashboard(x_admin_token: str = Header(None)):
     if not verify_admin_token(x_admin_token):
         raise HTTPException(401, "Invalid admin token")
 
-    # Чистка временных доступов
-    now = time.time()
-    expired = [k for k, v in TEMP_ADMIN_ACCESS.items() if v['expires'] < now]
-    for k in expired: del TEMP_ADMIN_ACCESS[k]
-
     try:
-        # Запрашиваем данные из всех таблиц
-        u_res = await db.get("users")
-        b_res = await db.get("bots")
-        k_res = await db.get("issued_keys")
+        # 1. Считаем пользователей
+        u_req = await db.get("users", params={"select": "count"})
+        # Supabase возвращает count в заголовке Content-Range, если запросить с head/count, 
+        # но через простой get JSON вернет весь список. 
+        # Для оптимизации лучше использовать count=exact, но пока загрузим списки (если база небольшая)
         
-        users = u_res.json() if u_res.status_code == 200 else []
-        bots = b_res.json() if b_res.status_code == 200 else []
-        keys = k_res.json() if k_res.status_code == 200 else []
+        users = (await db.get("users")).json()
+        bots = (await db.get("bots")).json()
+        keys = (await db.get("issued_keys")).json()
+        
+        # Считаем сообщения за сегодня для статистики
+        today_start = datetime.now().replace(hour=0, minute=0, second=0).isoformat()
+        msgs_today_req = await db.get("bot_messages", params={"created_at": f"gte.{today_start}", "select": "count"})
+        # Если API Supabase настроен верно, можно получить count. Если нет - берем длину.
+        # Для надежности в рамках текущего кода (где db.get возвращает json):
+        
+        # ПРИМЕЧАНИЕ: При большой БД это нужно переделать на select=count
+        
+        active_bots_count = len([b for b in bots if b.get('status') == 'RUNNING'])
         
         return {
             "total_users": len(users),
             "total_bots": len(bots),
-            "active_bots": len([b for b in bots if b.get('status') == 'RUNNING']),
+            "active_bots": active_bots_count,
             "total_keys": len(keys),
-            "unused_keys": len([k for k in keys if not k.get('used')]),
-            "active_temp_keys": len(TEMP_ADMIN_ACCESS),
-            "server_uptime": "Online",
-            "db_status": "Connected"
+            "revenue": len([k for k in keys if k.get('used')]) * 10, # Пример: $10 за ключ
+            "msg_traffic": "N/A" # Сложно посчитать без count(*) запроса
         }
     except Exception as e:
-        logger.error(f"❌ Ошибка дашборда: {e}")
-        return {"error": "Database error", "details": str(e)}
+        logger.error(f"Dashboard error: {e}")
+        return {"total_users": 0, "total_bots": 0, "active_bots": 0}
 
 # --- [ УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ] ---
 
@@ -634,15 +638,19 @@ async def get_all_users(x_admin_token: str = Header(None)):
 async def admin_ban_user(d: dict, x_admin_token: str = Header(None)):
     if not verify_admin_token(x_admin_token): raise HTTPException(403)
     uid = d.get('user_id')
+    is_banned = d.get('is_banned', True) # True = забанить, False = разбанить
     
-    # Стопаем всех ботов пользователя и ставим статус BANNED
-    bots = await db.get("bots", params={"owner_id": f"eq.{uid}"})
-    for b in bots.json():
-        await pm.stop_bot(b['id'])
-        await db.patch("bots", params={"id": f"eq.{b['id']}"}, json={"status": "BANNED"})
+    # Обновляем юзера
+    await db.patch("users", params={"id": f"eq.{uid}"}, json={"is_banned": is_banned})
     
-    logger.warning(f"🚫 Пользователь {uid} забанен")
-    return {"status": "success"}
+    if is_banned:
+        # Стопаем всех ботов
+        bots = await db.get("bots", params={"owner_id": f"eq.{uid}"})
+        for b in bots.json():
+            await pm.stop_bot(b['id'])
+            await db.patch("bots", params={"id": f"eq.{b['id']}"}, json={"status": "BANNED"})
+    
+    return {"status": "success", "banned": is_banned}
 
 # --- [ УПРАВЛЕНИЕ БОТАМИ ] ---
 
@@ -714,6 +722,87 @@ async def admin_start_bot_direct(request: Request, x_admin_token: str = Header(N
     bot_data = data.get("bot")
     success = await start_bot_process(bot_data)
     return {"status": "started" if success else "failed"}
+
+@app.get("/api/admin/system-logs")
+async def get_admin_logs(x_admin_token: str = Header(None)):
+    if not verify_admin_token(x_admin_token): raise HTTPException(403)
+    
+    # Берем последние 20 сообщений из bot_messages как "Логи системы"
+    # join не обязателен, но полезен
+    r = await db.get("bot_messages", params={
+        "select": "*, bots(name)",
+        "order": "created_at.desc",
+        "limit": 20
+    })
+    return r.json()
+
+@app.get("/api/admin/bot/{bot_id}")
+async def get_bot_for_admin(bot_id: str, x_admin_token: str = Header(None)):
+    if not verify_admin_token(x_admin_token): raise HTTPException(403)
+    
+    r = await db.get("bots", params={"id": f"eq.{bot_id}"})
+    if not r.json():
+        raise HTTPException(404, "Bot not found")
+        
+    bot_data = r.json()[0]
+    # Мержим конфиг
+    full_bot = {**bot_data, **(bot_data.get("config") or {})}
+    # Токен отдаем как есть (зашифрованным), Editor его не показывает, но использует для save
+    return full_bot
+
+@app.post("/api/admin/bot/save")
+async def save_bot_admin(b: dict, x_admin_token: str = Header(None)):
+    """
+    Сохранение конфигурации бота администратором.
+    Игнорирует проверку владельца (owner_id), позволяя редактировать любого бота.
+    """
+    if not verify_admin_token(x_admin_token):
+        raise HTTPException(403, "Forbidden: Invalid admin token")
+    
+    bid = b.get('id')
+    if not bid:
+        raise HTTPException(400, "Bot ID is required")
+
+    # 1. Отделяем системные поля от полей конфигурации (как в обычном save_bot)
+    sys_keys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config', 'stats', 'created_at']
+    ui_cfg = {k: v for k, v in b.items() if k not in sys_keys}
+    
+    # 2. Формируем полезную нагрузку для базы данных
+    payload = {
+        "config": ui_cfg,
+        "name": b.get('name', 'Unnamed Bot')
+    }
+
+    try:
+        # 3. Обновляем данные в БД через твой db (Supabase/Postgrest)
+        update_res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=payload)
+        
+        if update_res.status_code not in [200, 201, 204]:
+            logger.error(f"DB Update Error: {update_res.text}")
+            raise HTTPException(500, "Failed to update bot in database")
+
+        # 4. СИНХРОНИЗАЦИЯ: Если бот сейчас запущен, его нужно перезапустить с новым конфигом
+        # Получаем актуальные данные из БД (включая токен и полные поля)
+        current_res = await db.get("bots", params={"id": f"eq.{bid}"})
+        if current_res.status_code == 200 and current_res.json():
+            bot_actual = current_res.json()[0]
+            
+            # Если статус RUNNING — дергаем менеджер процессов
+            if bot_actual.get("status") == "RUNNING":
+                logger.info(f"🔄 Admin: Restarting bot {bid} after config change...")
+                await pm.stop_bot(bid) # Остановка старого процесса
+                # Запуск нового процесса с обновленным bot_actual (включая новый config)
+                success = await start_bot_process(bot_actual) 
+                if not success:
+                    # Если не зафорсилось, ставим статус IDLE, чтобы не висел "битый" RUNNING
+                    await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "IDLE"})
+        
+        logger.info(f"✅ Admin saved bot {bid} successfully")
+        return {"status": "success", "bot": b}
+
+    except Exception as e:
+        logger.error(f"🚨 Error in save_bot_admin: {e}")
+        raise HTTPException(500, str(e))
     
 # ==========================================
 # 8. СИСТЕМНЫЕ
