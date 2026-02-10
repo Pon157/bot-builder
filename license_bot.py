@@ -76,7 +76,7 @@ supabase: Client = create_client(SB_URL, SB_KEY)
 # ==========================================
 # 2. ЭКОНОМИЧЕСКАЯ МОДЕЛЬ
 # ==========================================
-BASE_PRICE_RUB = 89.9
+BASE_PRICE_RUB = 91
 CURRENCIES = {
     "RUB": {"symbol": "₽", "rate": 1.0},
     "USD": {"symbol": "$", "rate": 0.011},
@@ -86,9 +86,9 @@ CURRENCIES = {
     "KZT": {"symbol": "₸", "rate": 5.20}
 }
 PERIODS = {
-    1: {"label": "1 Месяц", "mult": 0.9},
-    3: {"label": "3 Месяца", "mult": 2.3},
-    12: {"label": "1 Год", "mult": 7.7}
+    1: {"label": "1 Месяц", "mult": 1.0},
+    3: {"label": "3 Месяца", "mult": 2.5},
+    12: {"label": "1 Год", "mult": 8.0}
 }
 
 # ==========================================
