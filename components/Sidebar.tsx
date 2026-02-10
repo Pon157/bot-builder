@@ -40,36 +40,31 @@ const Sidebar: React.FC<SidebarProps> = ({
 
 // Функция для создания ключа через систему лицензий
 const createSupportKey = async () => {
-  // Проверяем, что бот выбран, иначе не к кому привязывать ключ
-  if (!selectedBotId) {
-    alert("Ошибка: Сначала выберите проект (бота) из списка.");
-    return;
-  }
-  
-  // Берем токен из localStorage, как указано в твоих инструкциях
-  const adminToken = localStorage.getItem('admin_token');
-  
-  if (!adminToken) {
-    alert("Ошибка: Вы не авторизованы как администратор.");
-    return;
-  }
-
-  try {
-    console.log(`📡 Генерируем ключ для бота: ${selectedBotId}`);
+    // 1. Спрашиваем НАЗВАНИЕ бота
+    const targetName = prompt("Введите НАЗВАНИЕ бота для привязки ключа:", "");
     
-    // ИСПРАВЛЕНО: Вместо 0 передаем selectedBotId в третий аргумент
-    // Аргументы: токен, количество месяцев (1), ID текущего бота
-    const res = await api.generateKey(adminToken, 1, selectedBotId); 
-    
-    if (res && res.key) {
-      alert(`✅ Лицензионный ключ создан: ${res.key}\n\nКлюч привязан к этому боту и записан в базу. Передайте его администратору.`);
-    } else {
-      throw new Error("Сервер не вернул ключ");
+    if (!targetName) {
+        alert("Генерация отменена: Название бота обязательно.");
+        return;
     }
-  } catch (e: any) {
-    console.error("Support key error:", e);
-    alert(`❌ Не удалось создать ключ: ${e.message || "Ошибка сервера"}`);
-  }
+
+    const adminToken = localStorage.getItem('admin_token');
+    if (!adminToken) {
+        alert("Ошибка: Вы не авторизованы как администратор.");
+        return;
+    }
+
+    try {
+        // Передаем название в поле bot_id (на сервере мы будем знать, что это имя)
+        const res = await api.generateKey(adminToken, 1, targetName); 
+        
+        if (res && res.key) {
+            alert(`✅ Ключ создан для бота "${targetName}"\nКЛЮЧ: ${res.key}`);
+        }
+    } catch (e) {
+        console.error("Support key error:", e);
+        alert("Ошибка при генерации ключа.");
+    }
 };
 
   return (
