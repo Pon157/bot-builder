@@ -759,21 +759,30 @@ async def generate_key(data: dict, x_admin_token: str = Header(None)):
     if not verify_admin_token(x_admin_token):
         raise HTTPException(403, "Forbidden")
 
+    # Генерируем ключ
     new_key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+    
+    # Получаем данные из data
     months = data.get("months", 1)
-    target_bot_id = data.get("bot_id") # Получаем ID бота из запроса
+    # ВАЖНО: убедись, что фронтенд шлет именно "bot_id"
+    target_bot_id = data.get("bot_id") 
 
     payload = {
         "key": new_key,
         "duration_months": int(months),
-        "bot_id": target_bot_id, # Записываем привязку!
+        "bot_id": target_bot_id, 
+        "is_used": False, # Явно задаем статус
         "created_at": datetime.now().isoformat()
     }
+
+    logger.info(f"📡 Generating key {new_key} for bot {target_bot_id}")
 
     res = await db.post("keys", json=payload)
     if res.status_code in [200, 201]:
         return {"status": "success", "key": new_key}
-    raise HTTPException(500, "Ошибка записи в БД")
+    
+    logger.error(f"❌ DB Error: {res.text}")
+    raise HTTPException(500, f"Ошибка записи: {res.text}")
         
 # --- [ ПОДДЕРЖКА И ПРЯМОЙ ДОСТУП ] ---
 
@@ -883,34 +892,40 @@ async def save_bot(b: dict):
         
 @app.post("/api/admin/verify_access_key")
 async def verify_access_key(data: dict, x_admin_token: str = Header(None)):
-    # Проверка админа
     if not verify_admin_token(x_admin_token):
         raise HTTPException(403, "Forbidden")
 
-    input_key = data.get("key")
-    if not input_key:
-        raise HTTPException(400, "Key is required")
+    input_key = data.get("key", "").strip()
+    current_bot_id = data.get("bot_id") # Бот, которого пытаются открыть
 
-    # Делаем запрос к базе
-    logger.info(f"🔍 Checking key: {input_key} in table 'keys'...")
-    res = await db.get("keys", params={"key": f"eq.{input_key}"})
+    # 1. Ищем ключ: совпадает текст + совпадает bot_id + еще не использован
+    params = {
+        "key": f"eq.{input_key}",
+        "bot_id": f"eq.{current_bot_id}",
+        "is_used": "eq.false"
+    }
     
-    # ЛОГИРУЕМ ОТВЕТ БАЗЫ ДЛЯ ОТЛАДКИ
-    logger.info(f"📡 DB Response Status: {res.status_code}")
-    logger.info(f"📡 DB Response Body: {res.text}")
+    res = await db.get("keys", params=params)
+    keys_found = res.json()
 
-    if res.status_code != 200:
-        logger.error(f"🚨 Supabase returned error {res.status_code}: {res.text}")
-        # Если база дает 404 — значит RLS или таблицы нет
-        raise HTTPException(500, f"Database error: {res.status_code}")
+    if res.status_code == 200 and len(keys_found) > 0:
+        found_key = keys_found[0]
+        key_id = found_key.get("id")
 
-    key_data = res.json()
-    if key_data and len(key_data) > 0:
-        logger.info(f"✅ Access granted for key: {input_key}")
-        return {"ok": True}
-    
-    logger.warning(f"❌ Key {input_key} not found in DB")
-    raise HTTPException(404, "Invalid key")
+        # 2. ПОМЕЧАЕМ КАК ИСПОЛЬЗОВАННЫЙ
+        # В Supabase это делается через PATCH по ID записи
+        update_res = await db.patch("keys", params={"id": f"eq.{key_id}"}, json={"is_used": True})
+        
+        if update_res.status_code in [200, 204]:
+            logger.info(f"✅ Key {input_key} activated for bot {current_bot_id}")
+            return {"ok": True}
+        else:
+            logger.error(f"❌ Failed to mark key as used: {update_res.text}")
+            raise HTTPException(500, "Ошибка при активации ключа")
+
+    # Если не нашли или bot_id не совпал
+    logger.warning(f"❌ Invalid key attempt: {input_key} for bot {current_bot_id}")
+    raise HTTPException(401, "Ключ недействителен или уже использован для другого бота")
     
 # ==========================================
 # 8. СИСТЕМНЫЕ
