@@ -8,7 +8,6 @@ import BroadcastManager from './components/BroadcastManager';
 import Auth from './components/Auth';
 import Profile from './components/Profile';
 import CreateBotModal from './components/CreateBotModal';
-import AdminPanel from './components/AdminPanel'; // <--- НОВЫЙ ИМПОРТ
 import { api } from './services/apiService';
 import { Menu, X } from 'lucide-react';
 
@@ -127,7 +126,7 @@ const App: React.FC = () => {
   const handleCreateBot = async (name: string, token: string) => {
     if (!user) return;
     const newBotId = `bot_${Math.random().toString(36).substr(2, 9)}`;
-    
+    // ... логика создания объекта newBot (как в твоем исходном коде) ...
     const newBot: BotConfig = {
         id: newBotId,
         owner_id: user.id,
@@ -168,6 +167,7 @@ const App: React.FC = () => {
       setBots(prev => [...prev, newBot]);
       setSelectedBotId(newBotId);
       setIsModalOpen(false);
+      // После создания перекидываем в редактор через навигацию (нужен useNavigate, который ниже в роутах)
     } catch (e) {
       alert("Ошибка при создании бота");
     }
@@ -178,19 +178,13 @@ const App: React.FC = () => {
   return (
     <BrowserRouter>
       <Routes>
-        {/* 1. Публичный роут авторизации ОБЫЧНЫХ пользователей */}
+        {/* Публичный роут авторизации */}
         <Route 
           path="/auth" 
           element={!user ? <Auth onLogin={handleLogin} /> : <Navigate to="/dashboard" replace />} 
         />
 
-        {/* 2. СЕКРЕТНЫЙ РОУТ ДЛЯ АДМИНОВ (Использует .env, не требует Supabase User) */}
-        <Route 
-           path="/admin-zone" 
-           element={<AdminPanel onLogout={() => window.location.href = '/auth'} />} 
-        />
-
-        {/* 3. Защищенные роуты приложения */}
+        {/* Защищенные роуты внутри MainLayout */}
         <Route 
           path="*" 
           element={
