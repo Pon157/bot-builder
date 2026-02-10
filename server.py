@@ -755,35 +755,37 @@ async def get_all_keys(x_admin_token: str = Header(None)):
 
 @app.post("/api/admin/generate_key")
 async def generate_key(data: dict, x_admin_token: str = Header(None)):
+    # Проверка прав админа
     if not verify_admin_token(x_admin_token):
-        raise HTTPException(403, "Invalid admin token")
+        raise HTTPException(403, "Forbidden")
 
-    # Генерируем ключ
+    # Генерируем ключ (6 символов)
     import secrets
     import string
     new_key = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
     
-    # Подготавливаем данные
+    # Срок действия (по умолчанию 1 месяц)
     duration = data.get("duration_months", 1)
+    
     payload = {
         "key": new_key,
         "duration_months": int(duration),
         "created_at": datetime.now().isoformat()
     }
 
-    logger.info(f"🚀 Attempting to save key {new_key} to DB...")
+    logger.info(f"💾 Попытка записи ключа {new_key} в таблицу 'keys'...")
 
     # Отправка в Supabase
     res = await db.post("keys", json=payload)
     
     if res.status_code in [200, 201]:
-        logger.info(f"✅ Key {new_key} successfully saved to table 'keys'")
+        logger.info(f"✅ Ключ {new_key} успешно сохранен!")
         return {"status": "success", "key": new_key}
     else:
-        # ЭТО САМОЕ ВАЖНОЕ: выведет, почему база отказала
-        logger.error(f"❌ DB INSERT ERROR: {res.status_code} - {res.text}")
-        raise HTTPException(500, f"Database refused to save key: {res.text}")
-
+        # Если здесь будет ошибка - мы увидим её в логах pm2
+        logger.error(f"❌ Ошибка Supabase: {res.status_code} - {res.text}")
+        raise HTTPException(500, f"Ошибка БД: {res.text}")
+        
 # --- [ ПОДДЕРЖКА И ПРЯМОЙ ДОСТУП ] ---
 
 @app.post("/api/admin/temp-access")
