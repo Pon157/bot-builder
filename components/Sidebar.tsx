@@ -1,6 +1,16 @@
-
 import React from 'react';
 import { BotConfig, User } from '../types';
+import { api } from '../services/apiService';
+import { 
+  LayoutDashboard, 
+  Send, 
+  UserCircle, 
+  Plus, 
+  LogOut, 
+  ShieldCheck, 
+  Bot,
+  Terminal
+} from 'lucide-react';
 
 interface SidebarProps {
   activeTab: string;
@@ -14,10 +24,35 @@ interface SidebarProps {
   isOpen?: boolean;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, bots, selectedBotId, setSelectedBotId, onAddBot, user, onLogout, isOpen }) => {
-  // Исправлено: используем правильное имя поля license_expires_at
+const Sidebar: React.FC<SidebarProps> = ({ 
+  activeTab, 
+  setActiveTab, 
+  bots, 
+  selectedBotId, 
+  setSelectedBotId, 
+  onAddBot, 
+  user, 
+  onLogout, 
+  isOpen 
+}) => {
   const expiry = Number(user.license_expires_at) || 0;
   const daysRemaining = Math.max(0, Math.ceil((expiry - Date.now()) / (1000 * 60 * 60 * 24)));
+
+  // Функция для создания временного ключа доступа администратору
+  const createSupportKey = async () => {
+    if (!selectedBotId) return;
+    
+    // Генерируем случайный короткий ключ
+    const key = Math.random().toString(36).substring(2, 8).toUpperCase();
+    
+    try {
+      await api.createTempAccess(selectedBotId, key);
+      alert(`Ключ доступа создан: ${key}\n\nПередайте этот ключ администратору. Доступ к редактору этого бота будет открыт в течение 20 минут.`);
+    } catch (e) {
+      console.error("Support key error:", e);
+      alert("Не удалось создать ключ доступа. Попробуйте позже.");
+    }
+  };
 
   return (
     <aside className={`
@@ -25,84 +60,113 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, bots, select
       md:relative md:translate-x-0
       ${isOpen ? 'translate-x-0' : '-translate-x-full'}
     `}>
+      {/* Логотип */}
       <div className="p-6 border-b border-zinc-800 flex items-center gap-3">
-        <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-            <span className="font-bold text-white text-xs">DE</span>
+        <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shadow-lg shadow-blue-600/20">
+            <Terminal size={18} className="text-white" />
         </div>
-        <h1 className="text-xl font-bold tracking-tight text-white">Dialoge Engine<span className="text-blue-500 text-sm ml-1 uppercase">Beta</span></h1>
+        <h1 className="text-xl font-bold tracking-tight text-white italic">
+            Dialoge<span className="text-blue-500 not-italic">Engine</span>
+        </h1>
       </div>
 
       <nav className="flex-1 overflow-y-auto p-4 space-y-8 no-scrollbar">
+        {/* Главное меню */}
         <div>
-            <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-widest mb-4 px-2">Главное</h2>
+            <h2 className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em] mb-4 px-2">Консоль</h2>
             <ul className="space-y-1">
                 <li 
-                    className={`flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer transition-colors ${activeTab === 'dashboard' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900'}`}
+                    className={`flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer transition-all font-medium text-sm ${activeTab === 'dashboard' ? 'bg-zinc-800 text-white shadow-inner' : 'text-zinc-400 hover:bg-zinc-900'}`}
                     onClick={() => setActiveTab('dashboard')}
                 >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    <LayoutDashboard size={18} />
                     Дашборд
                 </li>
                 <li 
-                    className={`flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer transition-colors ${activeTab === 'broadcast' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900'}`}
+                    className={`flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer transition-all font-medium text-sm ${activeTab === 'broadcast' ? 'bg-zinc-800 text-white shadow-inner' : 'text-zinc-400 hover:bg-zinc-900'}`}
                     onClick={() => setActiveTab('broadcast')}
                 >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    <Send size={18} />
                     Рассылка
                 </li>
                 <li 
-                    className={`flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer transition-colors ${activeTab === 'profile' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900'}`}
+                    className={`flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer transition-all font-medium text-sm ${activeTab === 'profile' ? 'bg-zinc-800 text-white shadow-inner' : 'text-zinc-400 hover:bg-zinc-900'}`}
                     onClick={() => setActiveTab('profile')}
                 >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                    Профиль и Ключ
+                    <UserCircle size={18} />
+                    Профиль и Лицензия
                 </li>
             </ul>
         </div>
 
+        {/* Секция ботов */}
         <div>
             <div className="flex items-center justify-between mb-4 px-2">
-                <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">Ваши боты</h2>
+                <h2 className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em]">Ваши проекты</h2>
                 <button 
                     onClick={onAddBot}
-                    className="p-1 hover:bg-zinc-800 rounded-md transition-colors text-blue-500"
+                    className="p-1 hover:bg-blue-600/10 rounded-md transition-colors text-blue-500"
+                    title="Создать бота"
                 >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    <Plus size={18} />
                 </button>
             </div>
             <ul className="space-y-1">
-                {bots.map(bot => (
+                {bots.length === 0 ? (
+                  <p className="px-2 py-4 text-[10px] text-zinc-700 font-bold uppercase tracking-widest text-center border border-dashed border-zinc-800 rounded-xl">
+                    Нет активных ботов
+                  </p>
+                ) : bots.map(bot => (
                     <li 
                         key={bot.id}
-                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer transition-all ${selectedBotId === bot.id && activeTab === 'editor' ? 'bg-blue-600/10 text-blue-400 border border-blue-600/20' : 'text-zinc-400 hover:bg-zinc-900 border border-transparent'}`}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer transition-all border ${selectedBotId === bot.id && activeTab === 'editor' ? 'bg-blue-600/10 text-blue-400 border-blue-600/20 shadow-lg shadow-blue-900/5' : 'text-zinc-400 hover:bg-zinc-900 border-transparent'}`}
                         onClick={() => { setSelectedBotId(bot.id); setActiveTab('editor'); }}
                     >
-                        <div className={`w-2 h-2 rounded-full shrink-0 ${bot.status === 'RUNNING' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-zinc-600'}`}></div>
-                        <span className="truncate flex-1 text-sm">{bot.name}</span>
+                        <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${bot.status === 'RUNNING' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-zinc-700'}`}></div>
+                        <span className="truncate flex-1 text-sm font-medium">{bot.name}</span>
+                        {selectedBotId === bot.id && <Bot size={14} className="opacity-40" />}
                     </li>
                 ))}
             </ul>
         </div>
+
+        {/* Кнопка доступа для поддержки */}
+        {selectedBotId && activeTab === 'editor' && (
+            <div className="px-2 pt-4">
+                <button 
+                    onClick={createSupportKey}
+                    className="w-full flex items-center justify-center gap-2 py-3 bg-orange-500/5 border border-orange-500/10 rounded-xl text-orange-500/70 hover:text-orange-500 hover:bg-orange-500/10 hover:border-orange-500/30 transition-all group"
+                >
+                    <ShieldCheck size={16} className="group-hover:scale-110 transition-transform" />
+                    <span className="text-[10px] font-black uppercase tracking-tighter">Доступ поддержке</span>
+                </button>
+            </div>
+        )}
       </nav>
 
-      <div className="p-4 border-t border-zinc-800 shrink-0">
-        <div className="flex items-center justify-between p-3 rounded-2xl bg-zinc-900/50 border border-zinc-800/50">
+      {/* Футер пользователя */}
+      <div className="p-4 border-t border-zinc-800 shrink-0 bg-[#121212]">
+        <div className="flex items-center justify-between p-3 rounded-2xl bg-zinc-900/50 border border-zinc-800/50 backdrop-blur-md">
             <div className="flex items-center gap-2 overflow-hidden">
-                <div className="w-9 h-9 rounded-xl bg-blue-600/20 text-blue-500 flex items-center justify-center text-sm font-bold shrink-0">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 text-white flex items-center justify-center text-sm font-black shrink-0 shadow-lg">
                     {user.username.charAt(0).toUpperCase()}
                 </div>
                 <div className="truncate">
-                    <p className="text-xs font-bold text-white truncate">{user.username}</p>
-                    <p className={`text-[10px] truncate font-bold ${daysRemaining < 3 ? 'text-red-500' : 'text-zinc-500'}`}>
-                        {daysRemaining} дн. доступа
-                    </p>
+                    <p className="text-xs font-bold text-white truncate leading-none mb-1">{user.username}</p>
+                    <div className="flex items-center gap-1.5">
+                        <div className={`w-1 h-1 rounded-full ${daysRemaining < 3 ? 'bg-red-500 animate-pulse' : 'bg-blue-500'}`}></div>
+                        <p className={`text-[9px] truncate font-black uppercase tracking-tighter ${daysRemaining < 3 ? 'text-red-500' : 'text-zinc-500'}`}>
+                            {daysRemaining} дн. доступа
+                        </p>
+                    </div>
                 </div>
             </div>
             <button 
                 onClick={onLogout}
-                className="p-2 hover:bg-red-500/10 text-zinc-500 hover:text-red-500 rounded-lg transition-all"
+                className="p-2 hover:bg-red-500/10 text-zinc-600 hover:text-red-500 rounded-lg transition-all active:scale-90"
+                title="Выйти"
             >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                <LogOut size={18} />
             </button>
         </div>
       </div>
