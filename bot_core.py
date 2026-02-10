@@ -7,9 +7,11 @@ import sys
 import hashlib
 import time
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List, Any, Union
+# Добавили Callable и Awaitable для Middleware
+from typing import Dict, Optional, List, Any, Union, Callable, Awaitable
 
-from aiogram import Bot, Dispatcher, Router, F
+# Добавили BaseMiddleware
+from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
 from aiogram.enums import ParseMode, ContentType, ChatMemberStatus
 from aiogram.filters import CommandStart, Command, ChatMemberUpdatedFilter
 from aiogram.types import (
@@ -19,6 +21,23 @@ from aiogram.types import (
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
+
+class LicenseMiddleware(BaseMiddleware):
+    def __init__(self, bot_instance):
+        self.bot_instance = bot_instance
+        super().__init__()
+
+    async def __call__(
+        self,
+        handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]],
+        event: Message,
+        data: Dict[str, Any]
+    ) -> Any:
+        # Если лицензия помечена как истекшая
+        if getattr(self.bot_instance, 'license_expired', False):
+            await event.answer("❌ <b>Лицензия этого бота истекла.</b>\nПожалуйста, продлите её в панели управления.")
+            return # Дальше код обработчиков не идет
+        return await handler(event, data)
 
 # --- ГЛОБАЛЬНАЯ КОНФИГУРАЦИЯ ЛОГИРОВАНИЯ ---
 logging.basicConfig(
@@ -74,7 +93,10 @@ class BotInstance:
     def __init__(self, config_data: dict):
         self.bot_id = config_data.get('id')
         self.token = config_data.get('token')
-        # Токен из .env уже подгружен в систему, но aiogram инициализируется здесь
+        
+        # 1. ОБЯЗАТЕЛЬНО: Объявляем переменную сразу, чтобы Middleware её видел
+        self.license_expired = False 
+        
         self.sb_url = os.getenv("SUPABASE_URL", "").rstrip('/')
         self.sb_key = os.getenv("SUPABASE_KEY", "")
         
@@ -85,14 +107,42 @@ class BotInstance:
         self.msg_map = {}
         self.flood_cache = {}
         self.is_running = True
-        
-        # Очередь для моментальной синхронизации
         self.sync_queue = asyncio.Queue()
         
+        # Сначала парсим конфиг, чтобы подгрузить license_expires_at
         self.apply_config(config_data)
 
+    async def license_checker_logic(self):
+        """Вынесли логику в отдельный метод, чтобы вызывать её при старте"""
+        try:
+            curr_time = int(time.time() * 1000)
+            if self.license_expires_at and self.license_expires_at < curr_time:
+                # Проверяем через getattr для безопасности или просто по флагу
+                if not self.license_expired:
+                    logger.warning(f" [!] Лицензия {self.bot_id} истекла!")
+                    self.license_expired = True 
+                    
+                    async with httpx.AsyncClient() as client:
+                        headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
+                        await client.patch(
+                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                            json={"status": "IDLE"},
+                            headers=headers
+                        )
+            else:
+                self.license_expired = False
+        except Exception as e:
+            logger.error(f"Ошибка в license_checker_logic: {e}")
+
+    async def license_checker(self):
+        """Теперь воркер просто крутит логику в цикле"""
+        logger.info(f"[*] Мониторинг лицензии для {self.bot_id} запущен")
+        while self.is_running:
+            await self.license_checker_logic()
+            await asyncio.sleep(120)
+
     def apply_config(self, data: dict):
-        """Парсинг конфигурации и инициализация статистики (UTC версия)"""
+        """Парсинг конфигурации (без дублей)"""
         raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
         full_cfg = {**data, **raw_cfg} 
         
@@ -111,8 +161,32 @@ class BotInstance:
         self.topic_per_req = self.settings.get('topicPerRequest', False)
         self.rate_limit = float(self.settings.get('rateLimit', 1.0))
         self.auto_ban_limit = int(self.settings.get('autoBanThreshold', 3))
-        
         self.users_list = full_cfg.get('connectedUsers', [])
+        self.license_expires_at = full_cfg.get('license_expires_at', 0)
+        
+        incoming_stats = full_cfg.get('stats')
+        if isinstance(incoming_stats, dict):
+            self.stats_data = {
+                "totalMessages": incoming_stats.get("totalMessages", 0),
+                "incomingToday": incoming_stats.get("incomingToday", 0),
+                "outgoingToday": incoming_stats.get("outgoingToday", 0),
+                "bannedCount": incoming_stats.get("bannedCount", 0),
+                "activeUsers24h": incoming_stats.get("activeUsers24h", 0),
+                "history": incoming_stats.get("history", [])
+            }
+        else:
+            self.stats_data = {
+                "totalMessages": 0, "incomingToday": 0, "outgoingToday": 0,
+                "bannedCount": 0, "history": [], "activeUsers24h": 0
+            }
+
+        now = datetime.now()
+        current_date = now.strftime("%d.%m")
+        if not self.stats_data["history"]:
+            self.stats_data["history"] = [{
+                "date": current_date, "incoming": 0, "outgoing": 0,
+                "totalUsers": len(self.users_list), "activeUsers": 0
+            }]
         
         # --- ИНИЦИАЛИЗАЦИЯ СТАТИСТИКИ ---
         # Мы НЕ создаем статы с нуля, а вытягиваем их из пришедшего конфига (Supabase)
@@ -441,6 +515,7 @@ class BotInstance:
         return False
 
     async def core_handlers_setup(self):
+        self.router.message.middleware(LicenseMiddleware(self))
         @self.router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=ChatMemberStatus.KICKED))
         async def on_user_blocked_bot(event: ChatMemberUpdated):
             user_id = event.from_user.id
@@ -532,11 +607,28 @@ class BotInstance:
         return ReplyKeyboardMarkup(keyboard=keyboard_rows, resize_keyboard=True)
 
     async def run_instance(self):
+        # 1. Принудительно ждем первой синхронизации базы и проверки лицензии
+        # Вместо create_task вызываем их напрямую через await ОДИН раз
+        logger.info(f"[*] Бот {self.bot_id} проверяет данные перед запуском...")
+        
+        try:
+            # Выполняем ОДИН цикл проверки лицензии и базы ДО запуска поллинга
+            await self.license_checker_logic() # Проверка лицензии
+            await self.sync_database_logic()   # Загрузка настроек и кнопок
+        except Exception as e:
+            logger.error(f"Ошибка при первичной загрузке данных: {e}")
+
+        # 2. Теперь запускаем их как фоновые задачи для обновления в будущем
         asyncio.create_task(self.database_sync_worker())
         asyncio.create_task(self.daily_stats_rotator())
+        asyncio.create_task(self.license_checker())
+        
+        # 3. Настраиваем хендлеры и роутеры
         await self.core_handlers_setup()
         self.dp.include_router(self.router)
-        logger.info(f"[*] Бот {self.bot_id} запущен.")
+        
+        logger.info(f"[*] Бот {self.bot_id} готов к работе. Лицензия: {'Истекла' if self.license_expired else 'ОК'}")
+        
         try: 
             await self.dp.start_polling(self.bot)
         finally:
