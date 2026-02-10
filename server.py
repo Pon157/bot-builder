@@ -755,36 +755,34 @@ async def get_all_keys(x_admin_token: str = Header(None)):
 
 @app.post("/api/admin/generate_key")
 async def generate_key(data: dict, x_admin_token: str = Header(None)):
-    # Проверка прав админа
     if not verify_admin_token(x_admin_token):
         raise HTTPException(403, "Forbidden")
 
-    # Генерируем ключ (6 символов)
     import secrets
     import string
+    # Генерируем ключ
     new_key = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
     
-    # Срок действия (по умолчанию 1 месяц)
-    duration = data.get("duration_months", 1)
+    # Собираем данные. months и days берем из запроса фронтенда
+    months = data.get("months", 1)
     
     payload = {
         "key": new_key,
-        "duration_months": int(duration),
+        "duration_months": int(months),
         "created_at": datetime.now().isoformat()
     }
 
-    logger.info(f"💾 Попытка записи ключа {new_key} в таблицу 'keys'...")
+    logger.info(f"💾 Пытаюсь записать ключ {new_key} в Supabase...")
 
-    # Отправка в Supabase
+    # ЗАПИСЬ В ТАБЛИЦУ keys
     res = await db.post("keys", json=payload)
     
     if res.status_code in [200, 201]:
-        logger.info(f"✅ Ключ {new_key} успешно сохранен!")
+        logger.info(f"✅ Успешно! Ключ в базе.")
         return {"status": "success", "key": new_key}
     else:
-        # Если здесь будет ошибка - мы увидим её в логах pm2
-        logger.error(f"❌ Ошибка Supabase: {res.status_code} - {res.text}")
-        raise HTTPException(500, f"Ошибка БД: {res.text}")
+        logger.error(f"❌ Ошибка базы: {res.text}")
+        raise HTTPException(500, f"Ошибка записи: {res.text}")
         
 # --- [ ПОДДЕРЖКА И ПРЯМОЙ ДОСТУП ] ---
 
