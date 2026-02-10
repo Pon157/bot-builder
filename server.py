@@ -756,55 +756,63 @@ async def get_all_keys(x_admin_token: str = Header(None)):
 
 @app.post("/api/admin/generate_key")
 async def generate_key(data: dict, x_admin_token: str = Header(None)):
+    # 1. Проверка токена (берём из .env через твою функцию)
     if not verify_admin_token(x_admin_token):
         raise HTTPException(403, "Forbidden")
 
-    # 1. Получаем название бота из запроса (которое ты ввел в prompt)
-    bot_name_input = data.get("bot_id") # В поле bot_id теперь прилетает имя
-    if not bot_name_input:
-        raise HTTPException(400, "Название бота обязательно")
-
-    # 2. Ищем бота в таблице public.bots по названию
-    # Используем ilike для поиска без учета регистра
-    bot_res = await db.get("bots", params={"name": f"ilike.{bot_name_input.strip()}"})
-    bots_found = bot_res.json()
-
-    if not bots_found:
-        raise HTTPException(404, f"Бот с названием '{bot_name_input}' не найден в базе")
+    # 2. Извлекаем название бота (которое ты ввёл в prompt)
+    # Используем .get("bot_id"), так как фронтенд шлет имя в этом поле
+    bot_name_input = data.get("bot_id")
     
-    # Берем ID первого найденного бота
-    target_bot_id = bots_found[0]['id']
-    real_bot_name = bots_found[0]['name']
+    if not bot_name_input:
+        logger.error("❌ Ошибка: Название бота не получено от фронтенда")
+        raise HTTPException(400, "Название бота обязательно (поле bot_id пустое)")
 
-    # 3. Генерируем уникальный ключ
+    # 3. Ищем ID бота в таблице public.bots по колонке 'name'
+    # Используем ilike для поиска без учета регистра (чтобы 'Бот' и 'бот' работали одинаково)
+    try:
+        bot_res = await db.get("bots", params={"name": f"ilike.{bot_name_input.strip()}"})
+        bots_found = bot_res.json()
+        
+        if not bots_found or len(bots_found) == 0:
+            logger.warning(f"⚠️ Бот с именем '{bot_name_input}' не найден в таблице bots")
+            raise HTTPException(404, f"Бот '{bot_name_input}' не найден")
+            
+        # Берем данные первого найденного бота
+        target_bot_id = bots_found[0]['id']  # Это будет оригинальный ID бота (текст)
+        real_name = bots_found[0]['name']
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обращении к таблице bots: {str(e)}")
+        raise HTTPException(500, "Ошибка базы данных при поиске бота")
+
+    # 4. Генерируем ключ
     import secrets
     import string
     new_key = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
     
-    months = data.get("months", 1)
-
-    # 4. Формируем payload для таблицы keys
+    # 5. Сохраняем ключ в таблицу public.keys
     payload = {
         "key": new_key,
-        "duration_months": int(months),
-        "bot_id": target_bot_id, # Записываем УЖЕ ID, а не имя!
+        "duration_months": int(data.get("months", 1)),
+        "bot_id": target_bot_id,  # ЗАПИСЫВАЕМ ТЕХНИЧЕСКИЙ ID
         "is_used": False,
         "created_at": datetime.now().isoformat()
     }
 
-    logger.info(f"📡 Generating key {new_key} for bot '{real_bot_name}' (ID: {target_bot_id})")
-
     res = await db.post("keys", json=payload)
+    
     if res.status_code in [200, 201]:
+        logger.info(f"✅ Ключ {new_key} создан для {real_name} (ID: {target_bot_id})")
         return {
             "status": "success", 
             "key": new_key, 
-            "bot_name": real_bot_name, 
-            "bot_id": target_bot_id
+            "bot_id": target_bot_id,
+            "bot_name": real_name
         }
     
-    logger.error(f"❌ DB Error: {res.text}")
-    raise HTTPException(500, f"Ошибка записи ключа: {res.text}")
+    logger.error(f"❌ Ошибка записи ключа: {res.text}")
+    raise HTTPException(500, "Не удалось сохранить ключ в базу")
         
 # --- [ ПОДДЕРЖКА И ПРЯМОЙ ДОСТУП ] ---
 
