@@ -263,12 +263,20 @@ adminLogin: async (login: string, pass: string) => {
   
 // В файле apiService.ts внутри объекта api:
 
-generateKey: async (token: string, months: number, days: number) => {
-    console.log("🚀 Отправка запроса на генерацию ключа...");
-    const response = await fetchWithTimeout(`${getApiBase()}/admin/generate_key`, { // Было generate-key
+generateKey: async (token: string, months: number, botId: string) => { // Переименовали days в botId
+    console.log("🚀 Отправка запроса на генерацию ключа для бота:", botId);
+    
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/generate_key`, {
         method: 'POST',
-        headers: { 'x-admin-token': token },
-        body: JSON.stringify({ months, days })
+        headers: { 
+            'x-admin-token': token,
+            'Content-Type': 'application/json' // Добавили заголовок, чтобы сервер точно понял JSON
+        },
+        // ИСПРАВЛЕНО: Отправляем bot_id вместо days
+        body: JSON.stringify({ 
+            months: months, 
+            bot_id: botId 
+        })
     });
     
     if (!response.ok) {
@@ -277,7 +285,7 @@ generateKey: async (token: string, months: number, days: number) => {
     }
     
     const data = await response.json();
-    console.log("✅ Ключ получен от сервера:", data);
+    console.log("✅ Ключ успешно получен:", data);
     return data;
 },
 
