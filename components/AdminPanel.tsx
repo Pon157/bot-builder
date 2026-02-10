@@ -111,10 +111,35 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   };
 
   // НОВАЯ ЛОГИКА: Прямой переход в Admin Editor
-  const handleConfigAccess = (botId: string) => {
-    // Просто переходим на специальный роут, токен админа берется из localStorage внутри враппера
-    navigate(`/admin/editor/${botId}`);
-  };
+const handleConfigAccess = async (botId: string) => {
+  // 1. Всплывающее окно для ввода ключа
+  const userKey = window.prompt("Введите активный лицензионный ключ для доступа к редактированию:");
+  
+  if (!userKey) return; // Если нажали "Отмена"
+
+  try {
+    // 2. Отправляем запрос на бэкенд для проверки
+    const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/admin/verify_access_key`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'x-admin-token': localStorage.getItem('admin_token') || '' 
+      },
+      body: JSON.stringify({ key: userKey })
+    });
+
+    const data = await response.json();
+
+    if (data.ok) {
+      // 3. Если ключ верный — пускаем в редактор
+      navigate(`/admin/editor/${botId}`);
+    } else {
+      alert("Доступ запрещен: Неверный или просроченный ключ.");
+    }
+  } catch (err) {
+    alert("Ошибка проверки ключа. Убедитесь, что сервер запущен.");
+  }
+};
 
   const toggleBot = async (bot: AdminBot) => {
     if (!token) return;
