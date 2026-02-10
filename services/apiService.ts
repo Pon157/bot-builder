@@ -277,5 +277,42 @@ adminLogin: async (login: string, pass: string) => {
       body: JSON.stringify({ botId, key })
     });
     return response.ok;
+  },
+  // Получить реальные логи сообщений
+  getSystemLogs: async (token: string) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/system-logs`, {
+      method: 'GET',
+      headers: { 'x-admin-token': token }
+    });
+    return response.json();
+  },
+
+  // Бан/Разбан (обновленный)
+  adminToggleBan: async (token: string, userId: string, isBanned: boolean) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/user/ban`, {
+      method: 'POST',
+      headers: { 'x-admin-token': token },
+      body: JSON.stringify({ user_id: userId, is_banned: isBanned })
+    });
+    return response.ok;
+  },
+
+  // Получить бота от имени Админа
+  getBotAsAdmin: async (token: string, botId: string) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/bot/${botId}`, {
+      method: 'GET',
+      headers: { 'x-admin-token': token }
+    });
+    return response.ok ? await response.json() : null;
+  },
+
+  // Сохранить бота от имени Админа
+  saveBotAsAdmin: async (token: string, bot: any) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/bot/save`, {
+      method: 'POST',
+      headers: { 'x-admin-token': token },
+      body: JSON.stringify(bot)
+    });
+    return response.ok ? await response.json() : null;
   }
 };
