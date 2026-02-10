@@ -815,59 +815,80 @@ async def get_bot_for_admin(bot_id: str, x_admin_token: str = Header(None)):
     # Токен отдаем как есть (зашифрованным), Editor его не показывает, но использует для save
     return full_bot
 
-@app.post("/api/admin/bot/save")
-async def save_bot_admin(b: dict, x_admin_token: str = Header(None)):
-    """
-    Сохранение конфигурации бота администратором.
-    Игнорирует проверку владельца (owner_id), позволяя редактировать любого бота.
-    """
-    if not verify_admin_token(x_admin_token):
-        raise HTTPException(403, "Forbidden: Invalid admin token")
-    
-    bid = b.get('id')
-    if not bid:
-        raise HTTPException(400, "Bot ID is required")
-
-    # 1. Отделяем системные поля от полей конфигурации (как в обычном save_bot)
-    sys_keys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config', 'stats', 'created_at']
-    ui_cfg = {k: v for k, v in b.items() if k not in sys_keys}
-    
-    # 2. Формируем полезную нагрузку для базы данных
-    payload = {
-        "config": ui_cfg,
-        "name": b.get('name', 'Unnamed Bot')
-    }
-
+@app.post("/api/bots/save")
+async def save_bot(b: dict):
     try:
-        # 3. Обновляем данные в БД через твой db (Supabase/Postgrest)
-        update_res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=payload)
-        
-        if update_res.status_code not in [200, 201, 204]:
-            logger.error(f"DB Update Error: {update_res.text}")
-            raise HTTPException(500, "Failed to update bot in database")
+        bid = b.get('id')
+        if not bid:
+            raise HTTPException(400, "Missing bot ID")
 
-        # 4. СИНХРОНИЗАЦИЯ: Если бот сейчас запущен, его нужно перезапустить с новым конфигом
-        # Получаем актуальные данные из БД (включая токен и полные поля)
-        current_res = await db.get("bots", params={"id": f"eq.{bid}"})
-        if current_res.status_code == 200 and current_res.json():
-            bot_actual = current_res.json()[0]
-            
-            # Если статус RUNNING — дергаем менеджер процессов
-            if bot_actual.get("status") == "RUNNING":
-                logger.info(f"🔄 Admin: Restarting bot {bid} after config change...")
-                await pm.stop_bot(bid) # Остановка старого процесса
-                # Запуск нового процесса с обновленным bot_actual (включая новый config)
-                success = await start_bot_process(bot_actual) 
-                if not success:
-                    # Если не зафорсилось, ставим статус IDLE, чтобы не висел "битый" RUNNING
-                    await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "IDLE"})
-        
-        logger.info(f"✅ Admin saved bot {bid} successfully")
-        return {"status": "success", "bot": b}
+        # 1. Получаем текущее состояние из БД, чтобы не затереть то, что не прислал фронт
+        old_r = await db.get("bots", params={"id": f"eq.{bid}"})
+        old_data = old_r.json()
+        curr = old_data[0] if isinstance(old_data, list) and len(old_data) > 0 else {}
+
+        # 2. Обработка токена (Шифруем, только если это новый чистый токен)
+        raw_token = b.get('token', '')
+        if raw_token:
+            # Если токен не начинается на gAAAA (признак шифрования Fernet), шифруем его
+            final_token = encrypt_val(raw_token) if not raw_token.startswith('gAAAA') else raw_token
+        else:
+            final_token = curr.get('token', '')
+
+        # 3. Формируем конфиг (JSON-колонку в БД)
+        # Мы берем из входящих данных все, что касается настроек интерфейса
+        ui_config = {
+            "buttons": b.get("buttons", curr.get("config", {}).get("buttons", [])),
+            "triggers": b.get("triggers", curr.get("config", {}).get("triggers", [])),
+            "settings": b.get("settings", curr.get("config", {}).get("settings", {}))
+        }
+
+        # 4. Собираем объект именно под структуру твоей таблицы в Supabase
+        db_payload = {
+            "id": bid,
+            "owner_id": b.get('owner_id') or curr.get('owner_id'),
+            "name": b.get("name") or curr.get("name", "Unnamed Bot"),
+            "token": final_token,
+            "status": curr.get("status", "IDLE"),
+            "license_expires_at": b.get("license_expires_at") or curr.get("license_expires_at", 0),
+            "config": ui_config  # Вся логика кнопок уходит сюда
+        }
+
+        # 5. Сохраняем в базу (PATCH обновляет только указанного бота)
+        res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
+
+        if res.status_code not in [200, 201, 204]:
+            logger.error(f"🚨 DB Error on save: {res.text}")
+            raise HTTPException(res.status_code, f"Database error: {res.text}")
+
+        # 6. ВАЖНО: Возвращаем фронтенду "плоский" объект
+        # Чтобы BotEditor увидел updated.buttons и не очистил инпуты
+        return {
+            **db_payload,
+            "buttons": ui_config["buttons"],
+            "triggers": ui_config["triggers"],
+            "settings": ui_config["settings"]
+        }
 
     except Exception as e:
-        logger.error(f"🚨 Error in save_bot_admin: {e}")
+        logger.error(f"🚨 Critical Save Error: {e}")
         raise HTTPException(500, str(e))
+        
+@app.post("/api/admin/verify_license_key")
+async def verify_license_key(data: dict):
+    key_value = data.get("key")
+    if not key_value:
+        raise HTTPException(400, "Ключ не указан")
+
+    # Ищем ключ в таблице keys
+    res = await db.get("keys", params={"key": f"eq.{key_value}"})
+    key_data = res.json()
+
+    if not key_data:
+        raise HTTPException(404, "Такой ключ не найден в системе")
+
+    # Если ключ найден, возвращаем успех
+    return {"status": "success", "message": "Доступ разрешен"}
     
 # ==========================================
 # 8. СИСТЕМНЫЕ
