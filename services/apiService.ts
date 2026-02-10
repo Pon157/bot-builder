@@ -264,6 +264,8 @@ adminLogin: async (login: string, pass: string) => {
 // В файле apiService.ts внутри объекта api:
 
 // Исправленная версия в apiService.ts
+// В файле apiService.ts найди и замени функцию generateKey:
+
 generateKey: async (token: string, months: number, botName: string) => {
     console.log("🚀 Отправка названия бота на сервер:", botName);
     
@@ -271,12 +273,13 @@ generateKey: async (token: string, months: number, botName: string) => {
         method: 'POST',
         headers: { 
             'x-admin-token': token,
-            'Content-Type': 'application/json' // Обязательно для передачи JSON
+            'Content-Type': 'application/json' 
         },
-        // КЛЮЧЕВОЙ МОМЕНТ: переименовываем отправляемое поле в bot_id
+        // КЛЮЧЕВОЙ МОМЕНТ: Поле ДОЛЖНО называться "bot_id", 
+        // потому что бэкенд ищет именно его через data.get("bot_id")
         body: JSON.stringify({ 
             months: months, 
-            bot_id: botName // Теперь бэкенд увидит это поле!
+            bot_id: botName 
         })
     });
     
