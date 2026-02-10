@@ -306,6 +306,25 @@ adminLogin: async (login: string, pass: string) => {
     return response.ok ? await response.json() : null;
   },
 
+  // Добавь это внутрь объекта api в apiService.ts
+verifyAccessKey: async (token: string, key: string) => {
+  const response = await fetchWithTimeout(`${getApiBase()}/admin/verify_access_key`, {
+    method: 'POST',
+    headers: { 
+      'x-admin-token': token 
+    },
+    body: JSON.stringify({ key })
+  });
+  
+  // Если ключ неверный, бэкенд вернет 401 или 404, и response.ok будет false
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Неверный ключ доступа");
+  }
+  
+  return await response.json(); // Ожидаем { "ok": true }
+},
+
   // Сохранить бота от имени Админа
   saveBotAsAdmin: async (token: string, bot: any) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/bot/save`, {
