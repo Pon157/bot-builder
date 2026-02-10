@@ -874,21 +874,27 @@ async def save_bot(b: dict):
         logger.error(f"🚨 Critical Save Error: {e}")
         raise HTTPException(500, str(e))
         
-@app.post("/api/admin/verify_license_key")
-async def verify_license_key(data: dict):
-    key_value = data.get("key")
-    if not key_value:
-        raise HTTPException(400, "Ключ не указан")
+# Добавь этот эндпоинт, чтобы исправить 404
+@app.post("/api/admin/verify_access_key")
+async def verify_access_key(data: dict, x_admin_token: str = Header(None)):
+    # Проверка, что запрос шлет именно админ
+    if not verify_admin_token(x_admin_token):
+        raise HTTPException(403, "Forbidden: Invalid admin token")
 
-    # Ищем ключ в таблице keys
-    res = await db.get("keys", params={"key": f"eq.{key_value}"})
-    key_data = res.json()
+    input_key = data.get("key")
+    if not input_key:
+        raise HTTPException(400, "Key is required")
 
-    if not key_data:
-        raise HTTPException(404, "Такой ключ не найден в системе")
-
-    # Если ключ найден, возвращаем успех
-    return {"status": "success", "message": "Доступ разрешен"}
+    # Ищем этот ключ в таблице 'keys' в базе данных
+    # (Это те самые ключи, которые ты создаешь в License Hub)
+    res = await db.get("keys", params={"key": f"eq.{input_key}"})
+    
+    if res.status_code == 200 and len(res.json()) > 0:
+        logger.info(f"✅ Access granted with key: {input_key}")
+        return {"ok": True}
+    
+    logger.warning(f"❌ Access denied for key: {input_key}")
+    raise HTTPException(404, "Invalid key")
     
 # ==========================================
 # 8. СИСТЕМНЫЕ
