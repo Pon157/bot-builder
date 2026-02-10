@@ -758,31 +758,21 @@ async def generate_key(data: dict, x_admin_token: str = Header(None)):
     if not verify_admin_token(x_admin_token):
         raise HTTPException(403, "Forbidden")
 
-    import secrets
-    import string
-    # Генерируем ключ
-    new_key = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
-    
-    # Собираем данные. months и days берем из запроса фронтенда
+    new_key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
     months = data.get("months", 1)
-    
+    target_bot_id = data.get("bot_id") # Получаем ID бота из запроса
+
     payload = {
         "key": new_key,
         "duration_months": int(months),
+        "bot_id": target_bot_id, # Записываем привязку!
         "created_at": datetime.now().isoformat()
     }
 
-    logger.info(f"💾 Пытаюсь записать ключ {new_key} в Supabase...")
-
-    # ЗАПИСЬ В ТАБЛИЦУ keys
     res = await db.post("keys", json=payload)
-    
     if res.status_code in [200, 201]:
-        logger.info(f"✅ Успешно! Ключ в базе.")
         return {"status": "success", "key": new_key}
-    else:
-        logger.error(f"❌ Ошибка базы: {res.text}")
-        raise HTTPException(500, f"Ошибка записи: {res.text}")
+    raise HTTPException(500, "Ошибка записи в БД")
         
 # --- [ ПОДДЕРЖКА И ПРЯМОЙ ДОСТУП ] ---
 
