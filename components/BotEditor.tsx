@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { BotConfig, BotStatus } from '../types';
 import { api } from '../services/apiService';
@@ -14,9 +13,10 @@ interface BotEditorProps {
   bot: BotConfig;
   onUpdate: (bot: BotConfig) => void;
   onDelete: () => void;
+  isAdminMode?: boolean; // Флаг режима администратора (поддержки)
 }
 
-const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
+const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminMode }) => {
   const [activeTab, setActiveTab] = useState<'settings' | 'logic' | 'interface' | 'logs' | 'stats' | 'chat'>('settings');
   const [isProcessing, setIsProcessing] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
@@ -112,7 +112,14 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
             <Cpu className="w-8 h-8" />
           </div>
           <div>
-            <h1 className="text-3xl font-black text-white">{bot.name}</h1>
+            <div className="flex items-center gap-3">
+                <h1 className="text-3xl font-black text-white">{bot.name}</h1>
+                {isAdminMode && (
+                    <div className="px-2 py-1 bg-orange-500/10 border border-orange-500/20 rounded-lg text-orange-500 text-[8px] font-black uppercase tracking-widest">
+                        Support Access
+                    </div>
+                )}
+            </div>
             <div className="flex items-center gap-2 mt-1">
               <span className={`w-2 h-2 rounded-full ${bot.status === BotStatus.RUNNING ? 'bg-blue-500 animate-pulse' : 'bg-zinc-600'}`}></span>
               <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">{bot.status}</span>
@@ -251,9 +258,21 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete }) => {
                       </button>
                     </div>
                 </div>
-                <button onClick={() => window.confirm("Вы точно хотите удалить этот инстанс?") && onDelete()} className="w-full p-5 text-[10px] font-black uppercase text-rose-500 bg-rose-500/5 rounded-3xl border border-rose-500/10 hover:bg-rose-500/10 transition-all flex items-center justify-center gap-2">
-                    <Trash2 className="w-4 h-4" /> Удалить навсегда
-                </button>
+                
+                {/* --- ЗОНА ОПАСНЫХ ДЕЙСТВИЙ --- */}
+                {isAdminMode ? (
+                  <div className="mt-8 p-6 border border-zinc-800 bg-zinc-900/40 rounded-[2rem] flex items-center gap-4 opacity-50 pointer-events-none">
+                     <div className="p-3 bg-zinc-800 rounded-xl"><Lock size={20} /></div>
+                     <div>
+                       <h4 className="text-[10px] font-black uppercase text-zinc-400 tracking-widest">Admin Protection</h4>
+                       <p className="text-[9px] text-zinc-600 uppercase">Deletion disabled in Support Mode</p>
+                     </div>
+                  </div>
+                ) : (
+                  <button onClick={() => window.confirm("Вы точно хотите удалить этот инстанс?") && onDelete()} className="w-full p-5 text-[10px] font-black uppercase text-rose-500 bg-rose-500/5 rounded-3xl border border-rose-500/10 hover:bg-rose-500/10 transition-all flex items-center justify-center gap-2">
+                      <Trash2 className="w-4 h-4" /> Удалить навсегда
+                  </button>
+                )}
             </div>
           </div>
         )}
