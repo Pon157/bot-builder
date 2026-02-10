@@ -362,16 +362,25 @@ async def reset_p(d: dict):
 # ==========================================
 
 @app.get("/api/bots/stats/{bot_id}")
-async def get_bot_stats(bot_id: str):
-    # Мы возвращаем структуру, которую ждет твой JS (index-BHV-mBYx.js)
-    return {
-        "stats": {
-            "total_messages": 0,
-            "active_users": 0,
-            "new_users_today": 0,
-            "status": "online"
+async def get_bot_stats_api(bot_id: str):
+    """
+    Отдает статистику конкретного бота. 
+    Структура должна быть {"stats": {...}}, иначе фронт упадет.
+    """
+    try:
+        # Пока отдаем заглушку, чтобы оживить интерфейс
+        # Позже здесь можно сделать реальный запрос к БД
+        return {
+            "stats": {
+                "total_messages": 0,
+                "active_users": 0,
+                "new_users_today": 0,
+                "commands_executed": 0
+            }
         }
-    }
+    except Exception as e:
+        logger.error(f"Error in get_bot_stats: {e}")
+        return {"stats": {"total_messages": 0, "active_users": 0}}
 
 @app.get("/api/bots/{uid}")
 async def get_user_bots(uid: str):
