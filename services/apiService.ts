@@ -261,37 +261,29 @@ adminLogin: async (login: string, pass: string) => {
     return response.json();
   },
   
-// В файле apiService.ts внутри объекта api:
-
-// Исправленная версия в apiService.ts
-// В файле apiService.ts найди и замени функцию generateKey:
-
-generateKey: async (token: string, months: number, botName: string) => {
+// 1. Генерация ключа (по названию бота)
+  generateKey: async (token: string, months: number, botName: string) => {
     console.log("🚀 Отправка названия бота на сервер:", botName);
-    
     const response = await fetchWithTimeout(`${getApiBase()}/admin/generate_key`, {
-        method: 'POST',
-        headers: { 
-            'x-admin-token': token,
-            'Content-Type': 'application/json' 
-        },
-        // КЛЮЧЕВОЙ МОМЕНТ: Поле ДОЛЖНО называться "bot_id", 
-        // потому что бэкенд ищет именно его через data.get("bot_id")
-        body: JSON.stringify({ 
-            months: months, 
-            bot_id: botName 
-        })
+      method: 'POST',
+      headers: { 
+        'x-admin-token': token,
+        'Content-Type': 'application/json' 
+      },
+      body: JSON.stringify({ 
+        months: months, 
+        bot_id: botName 
+      })
     });
     
     if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.detail || "Ошибка сервера");
+      const err = await response.json();
+      throw new Error(err.detail || "Ошибка сервера");
     }
-    
     return await response.json();
-},
+  },
 
-  // Создание временного доступа для админа (Support Mode)
+  // 2. Создание временного доступа
   createTempAccess: async (botId: string, key: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/temp-access`, {
       method: 'POST',
@@ -299,7 +291,8 @@ generateKey: async (token: string, months: number, botName: string) => {
     });
     return response.ok;
   },
-  // Получить реальные логи сообщений
+
+  // 3. Получить системные логи
   getSystemLogs: async (token: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/system-logs`, {
       method: 'GET',
@@ -308,7 +301,7 @@ generateKey: async (token: string, months: number, botName: string) => {
     return response.json();
   },
 
-  // Бан/Разбан (обновленный)
+  // 4. Бан/Разбан пользователя
   adminToggleBan: async (token: string, userId: string, isBanned: boolean) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/user/ban`, {
       method: 'POST',
@@ -318,7 +311,7 @@ generateKey: async (token: string, months: number, botName: string) => {
     return response.ok;
   },
 
-  // Получить бота от имени Админа
+  // 5. Получить данные бота (для админа)
   getBotAsAdmin: async (token: string, botId: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/bot/${botId}`, {
       method: 'GET',
@@ -327,37 +320,28 @@ generateKey: async (token: string, months: number, botName: string) => {
     return response.ok ? await response.json() : null;
   },
 
-verifyAccessKey: async (key: string, botId: string) => {
+  // 6. ПРОВЕРКА КЛЮЧА (Исправлено: без дублей и ошибок синтаксиса)
+  verifyAccessKey: async (key: string, botId: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/verify_access_key`, {
-        method: 'POST',
-        headers: { 
-            'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({ 
-            key: key.trim(), 
-            bot_id: botId 
-        })
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json' 
+      },
+      body: JSON.stringify({ 
+        key: key.trim(), 
+        bot_id: botId 
+      })
     });
 
-    // Исправляем блок обработки ошибок, на который ругался Vite
     if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || "Неверный ключ доступа");
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || "Неверный ключ доступа");
     }
 
-    return await response.json();
-  }, // <--- И здесь запятая, если дальше есть другие методы
-  
-  // Если ключ неверный, бэкенд вернет 401 или 404, и response.ok будет false
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || "Неверный ключ доступа");
-  }
-  
-  return await response.json(); // Ожидаем { "ok": true }
-},
+    return await response.json(); // Ожидаем { "ok": true }
+  },
 
-  // Сохранить бота от имени Админа
+  // 7. Сохранить изменения бота (для админа)
   saveBotAsAdmin: async (token: string, bot: any) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/bot/save`, {
       method: 'POST',
@@ -366,4 +350,3 @@ verifyAccessKey: async (key: string, botId: string) => {
     });
     return response.ok ? await response.json() : null;
   }
-};
