@@ -386,24 +386,26 @@ const App: React.FC = () => {
                     />
                   } />
                   
-                  <Route path="/editor" element={
-                    (() => {
-                      const currentBot = bots.find(b => b.id === selectedBotId);
-                      return currentBot ? (
-                        <BotEditor 
-                          bot={currentBot} 
-                          onUpdate={(updated) => setBots(prev => prev.map(b => b.id === updated.id ? updated : b))} 
-                          onDelete={async () => { 
-                            if (window.confirm("Удалить бота навсегда?")) {
-                              await api.deleteBot(user.id, selectedBotId!); 
-                              syncData(user.id);
-                              navigate('/dashboard');
-                            }
-                          }} 
-                        />
-                      ) : <Navigate to="/dashboard" replace />;
-                    })()
-                  } />
+<Route path="/editor" element={
+  (() => {
+    const currentBot = bots.find(b => b.id === selectedBotId);
+    return currentBot ? (
+      <BotEditor 
+        // ДОБАВЬ ЭТУ СТРОКУ НИЖЕ:
+        key={currentBot.id} 
+        bot={currentBot} 
+        onUpdate={(updated) => setBots(prev => prev.map(b => b.id === updated.id ? updated : b))} 
+        onDelete={async () => { 
+          if (window.confirm("Удалить бота навсегда?")) {
+            await api.deleteBot(user.id, selectedBotId!); 
+            syncData(user.id);
+            navigate('/dashboard');
+          }
+        }} 
+      />
+    ) : <Navigate to="/dashboard" replace />;
+  })()
+} />
                   
                   <Route path="/broadcast" element={<BroadcastManager bots={bots} />} />
                   
