@@ -55,6 +55,7 @@ S_KEY = os.getenv("SUPABASE_KEY", "")
 A_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
 # Читаем токен из .env (как ты просил запомнить)
 E_KEY = os.getenv("ENCRYPTION_KEY")
+A_SECRET = os.getenv("ADMIN_TOKEN")
 
 if not E_KEY:
     # Генерируем временный, если забыл добавить в .env, но лучше прописать!
@@ -499,123 +500,132 @@ async def broadcast_msg(d: dict):
     return results
 
 # ==========================================
-# 9. ADMIN PANEL & ANALYTICS (NEW)
+# 9. ADMIN PANEL & ANALYTICS (FULL VERSION)
 # ==========================================
 
-# Безопасное чтение админов из окружения
-    # Пытаемся достать строку ADMIN_DATA и превратить её в словарь
+# 1. Инициализация и конфиги
+A_SECRET = os.getenv("ADMIN_TOKEN")
 
 try:
     raw_admin_data = os.getenv("ADMIN_DATA", "{}")
     ADMIN_ACCOUNTS = json.loads(raw_admin_data)
-    
     if not ADMIN_ACCOUNTS:
-        print("⚠️ ВНИМАНИЕ: Список администраторов пуст. Проверьте .env файл!")
+        print("⚠️ ВНИМАНИЕ: Список администраторов пуст. Проверьте .env!")
 except Exception as e:
-    print(f"❌ ОШИБКА: Не удалось загрузить ADMIN_DATA из .env: {e}")
+    print(f"❌ ОШИБКА ADMIN_DATA: {e}")
     ADMIN_ACCOUNTS = {}
 
-# Эндпоинт входа остается таким же, он просто ищет в этом словаре
+# Временное хранилище для гостевых доступов
+TEMP_ADMIN_ACCESS = {}
+
+# 2. Функции проверки безопасности
+def verify_admin_token(token: str) -> bool:
+    """Глобальная проверка токена"""
+    if not token or not A_SECRET:
+        return False
+    return token == A_SECRET
+
+# --- ЭНДПОИНТЫ ВХОДА И СТАТИСТИКИ ---
+
 @app.post("/api/admin/login")
 async def admin_login(d: dict):
     login = d.get('login')
     password = d.get('password')
-    
     if login in ADMIN_ACCOUNTS and ADMIN_ACCOUNTS[login] == password:
-        # A_SECRET — это твой глобальный ADMIN_TOKEN из server.py
         return {"token": A_SECRET, "role": "admin", "name": login}
-    
     raise HTTPException(401, "Неверный логин или пароль")
-    
-# Зависимость для проверки админ-токена
-async def verify_admin(x_admin_token: str = Header(None)):
-    if x_admin_token != A_SECRET:
-        raise HTTPException(403, "Invalid Admin Token")
-    return True
 
 @app.get("/api/admin/dashboard")
 async def get_admin_dashboard(x_admin_token: str = Header(None)):
-    """
-    Важно: Мы добавили Header(None), чтобы FastAPI не падал, 
-    если заголовок пришел под другим именем или пустой.
-    """
     if not verify_admin_token(x_admin_token):
-        raise HTTPException(status_code=401, detail="Invalid admin token")
+        raise HTTPException(401, "Invalid admin token")
 
-    # Чистим старые ключи доступа заодно
+    # Чистка старых временных ключей
     now = time.time()
     expired = [k for k, v in TEMP_ADMIN_ACCESS.items() if v['expires'] < now]
     for k in expired: del TEMP_ADMIN_ACCESS[k]
 
-    # Считаем статистику из БД
     try:
-        users_res = await db.get("users")
-        bots_res = await db.get("bots")
+        # Собираем данные из БД
+        u_res = await db.get("users")
+        b_res = await db.get("bots")
+        k_res = await db.get("issued_keys")
         
-        users_count = len(users_res.json()) if users_res.status_code == 200 else 0
-        bots_data = bots_res.json() if bots_res.status_code == 200 else []
+        users_data = u_res.json() if u_res.status_code == 200 else []
+        bots_data = b_res.json() if b_res.status_code == 200 else []
+        keys_data = k_res.json() if k_res.status_code == 200 else []
         
         return {
-            "total_users": users_count,
+            "total_users": len(users_data),
             "total_bots": len(bots_data),
             "active_bots": len([b for b in bots_data if b.get('status') == 'RUNNING']),
-            "total_messages": 0, # Можно вытянуть из таблицы сообщений, если нужно
+            "total_keys": len(keys_data),
+            "active_temp_keys": len(TEMP_ADMIN_ACCESS),
             "server_uptime": "Online",
-            "active_temp_keys": len(TEMP_ADMIN_ACCESS)
+            "db_status": "Connected"
         }
     except Exception as e:
         logger.error(f"Dashboard error: {e}")
-        return {"error": "Database connection failed"}
+        return {"error": "Database error", "details": str(e)}
+
+# --- УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ---
 
 @app.get("/api/admin/users")
 async def get_all_users(x_admin_token: str = Header(None)):
-    if x_admin_token != A_SECRET: raise HTTPException(403)
-    # Получаем всех пользователей
+    if not verify_admin_token(x_admin_token): raise HTTPException(403)
     r = await db.get("users", params={"select": "*", "order": "created_at.desc"})
-    return r.json()
-
-@app.get("/api/admin/bots")
-async def get_all_bots(x_admin_token: str = Header(None)):
-    if x_admin_token != A_SECRET: raise HTTPException(403)
-    # Получаем всех ботов с информацией о владельце
-    r = await db.get("bots", params={"select": "*, owner:users(email, username)", "order": "created_at.desc"})
     return r.json()
 
 @app.post("/api/admin/user/ban")
 async def admin_ban_user(d: dict, x_admin_token: str = Header(None)):
-    if x_admin_token != A_SECRET: raise HTTPException(403)
-    # Пример: Меняем пароль на случайный, чтобы юзер не вошел, или добавляем поле is_banned в БД
-    # Пока просто стопаем его ботов
+    if not verify_admin_token(x_admin_token): raise HTTPException(403)
     uid = d.get('user_id')
+    # Останавливаем и помечаем ботов как забаненные
     bots = await db.get("bots", params={"owner_id": f"eq.{uid}"})
     for b in bots.json():
         await pm.stop_bot(b['id'])
         await db.patch("bots", params={"id": f"eq.{b['id']}"}, json={"status": "BANNED"})
-    return True
+    # Можно добавить флаг is_banned в таблицу users, если она поддерживает
+    return {"status": "ok", "target_uid": uid}
+
+# --- УПРАВЛЕНИЕ БОТАМИ ---
+
+@app.get("/api/admin/bots")
+async def get_all_bots(x_admin_token: str = Header(None)):
+    if not verify_admin_token(x_admin_token): raise HTTPException(403)
+    # Тянем ботов вместе с данными владельцев (email/username)
+    r = await db.get("bots", params={"select": "*, owner:users(email, username)", "order": "created_at.desc"})
+    return r.json()
 
 @app.post("/api/admin/bot/action")
 async def admin_bot_action(d: dict, x_admin_token: str = Header(None)):
-    if x_admin_token != A_SECRET: raise HTTPException(403)
+    if not verify_admin_token(x_admin_token): raise HTTPException(403)
     bid = d.get('bot_id')
-    action = d.get('action') # stop / start / delete
+    action = d.get('action') 
     
     if action == 'stop':
         await pm.stop_bot(bid)
         await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "IDLE"})
+    elif action == 'start':
+        # Находим данные бота для запуска
+        b_res = await db.get("bots", params={"id": f"eq.{bid}"})
+        if b_res.status_code == 200 and b_res.json():
+            await start_bot_process(b_res.json()[0])
     elif action == 'delete':
         await pm.stop_bot(bid)
         await db.delete("bots", params={"id": f"eq.{bid}"})
     
-    return True
+    return {"status": "done", "action": action}
+
+# --- ЛИЦЕНЗИОННЫЕ КЛЮЧИ ---
 
 @app.post("/api/admin/generate-key")
 async def admin_generate_key(d: dict, x_admin_token: str = Header(None)):
-    if x_admin_token != A_SECRET: raise HTTPException(403)
+    if not verify_admin_token(x_admin_token): raise HTTPException(403)
     
     months = d.get('months', 0)
     days = d.get('days', 0)
-    
-    # Генерация красивого ключа (например, XXXX-XXXX-XXXX)
+    # Генерируем ключ формата XXXX-XXXX-XXXX
     new_key = f"{secrets.token_hex(2)}-{secrets.token_hex(2)}-{secrets.token_hex(2)}".upper()
     
     payload = {
@@ -625,47 +635,40 @@ async def admin_generate_key(d: dict, x_admin_token: str = Header(None)):
         "used": False,
         "created_at": int(time.time())
     }
-    
     await db.post("issued_keys", json=payload)
     return {"key": new_key}
 
+# --- ВРЕМЕННЫЙ ДОСТУП (ДЛЯ ПОДДЕРЖКИ) ---
+
 @app.post("/api/admin/temp-access")
 async def create_temp_access(request: Request):
-    """Создает временный ключ, который пользователь дает админу"""
+    """Создает сессию, чтобы админ мог зайти в редактор чужого бота"""
     data = await request.json()
     bot_id = data.get("botId")
     key = data.get("key")
     
     if not bot_id or not key:
-        raise HTTPException(status_code=400, detail="Missing data")
+        raise HTTPException(400, "Missing botId or key")
         
-    # Записываем: ключ действителен 20 минут (1200 секунд)
     TEMP_ADMIN_ACCESS[key] = {
         "bot_id": bot_id,
-        "expires": time.time() + 1200
+        "expires": time.time() + 1200 # 20 минут
     }
-    logger.info(f"[!] Создан временный доступ для бота {bot_id} по ключу {key}")
+    logger.info(f"TEMP ACCESS: Ключ {key} создан для бота {bot_id}")
     return {"status": "ok"}
 
 @app.post("/api/admin/bots/start")
-async def admin_start_bot(request: Request, x_admin_token: str = Header(None)):
-    if not verify_admin_token(x_admin_token):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-        
+async def admin_start_bot_direct(request: Request, x_admin_token: str = Header(None)):
+    """Принудительный запуск из админки"""
+    if not verify_admin_token(x_admin_token): raise HTTPException(401)
     data = await request.json()
-    bot_data = data.get("bot") # Передаем объект бота целиком
+    bot_data = data.get("bot")
     
-    if not bot_data:
-        raise HTTPException(status_code=400, detail="Bot data missing")
-        
-    # Вызываем твою существующую функцию запуска процесса
-    # (у тебя в server.py она обычно называется start_bot_process)
+    if not bot_data: raise HTTPException(400, "Bot data missing")
+    
     success = await start_bot_process(bot_data)
-    
-    if success:
-        return {"status": "started"}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to start bot process")
+    return {"status": "started" if success else "failed"}
+
 # ==========================================
 # 8. СИСТЕМНЫЕ
 # ==========================================
