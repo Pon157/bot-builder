@@ -896,12 +896,17 @@ async def verify_access_key(data: dict, x_admin_token: str = Header(None)):
         raise HTTPException(403, "Forbidden")
 
     input_key = data.get("key", "").strip()
-    current_bot_id = data.get("bot_id") # Бот, которого пытаются открыть
+    # Получаем название бота и приводим к нижнему регистру для поиска
+    current_bot_name = str(data.get("bot_id", "")).strip().lower()
 
-    # 1. Ищем ключ: совпадает текст + совпадает bot_id + еще не использован
+    if not current_bot_name or not input_key:
+        raise HTTPException(400, "Ключ и название бота обязательны")
+
+    # 1. Ищем ключ в базе
+    # ВАЖНО: При генерации тоже стоит сохранять название в нижнем регистре
     params = {
         "key": f"eq.{input_key}",
-        "bot_id": f"eq.{current_bot_id}",
+        "bot_id": f"eq.{current_bot_name}",
         "is_used": "eq.false"
     }
     
@@ -913,19 +918,17 @@ async def verify_access_key(data: dict, x_admin_token: str = Header(None)):
         key_id = found_key.get("id")
 
         # 2. ПОМЕЧАЕМ КАК ИСПОЛЬЗОВАННЫЙ
-        # В Supabase это делается через PATCH по ID записи
         update_res = await db.patch("keys", params={"id": f"eq.{key_id}"}, json={"is_used": True})
         
         if update_res.status_code in [200, 204]:
-            logger.info(f"✅ Key {input_key} activated for bot {current_bot_id}")
+            logger.info(f"✅ Ключ {input_key} успешно активирован для бота {current_bot_name}")
             return {"ok": True}
         else:
-            logger.error(f"❌ Failed to mark key as used: {update_res.text}")
-            raise HTTPException(500, "Ошибка при активации ключа")
+            logger.error(f"❌ Не удалось обновить статус ключа: {update_res.text}")
+            raise HTTPException(500, "Ошибка при активации")
 
-    # Если не нашли или bot_id не совпал
-    logger.warning(f"❌ Invalid key attempt: {input_key} for bot {current_bot_id}")
-    raise HTTPException(401, "Ключ недействителен или уже использован для другого бота")
+    logger.warning(f"❌ Неверный ключ или имя бота: {input_key} / {current_bot_name}")
+    raise HTTPException(401, "Ключ не подходит к этому боту или уже использован")
     
 # ==========================================
 # 8. СИСТЕМНЫЕ
