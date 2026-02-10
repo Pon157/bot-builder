@@ -756,33 +756,33 @@ async def get_all_keys(x_admin_token: str = Header(None)):
 @app.post("/api/admin/generate_key")
 async def generate_key(data: dict, x_admin_token: str = Header(None)):
     if not verify_admin_token(x_admin_token):
-        raise HTTPException(403, "Forbidden")
+        raise HTTPException(403, "Invalid admin token")
 
-    # 1. Генерируем сам код
-    # Можно использовать secrets для надежности
+    # Генерируем ключ
     import secrets
     import string
-    new_key = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
+    new_key = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
     
-    duration_months = data.get("duration_months", 1)
-    
-    # 2. Формируем данные для вставки
-    # Убедись, что имена колонок (key, duration_months) совпадают с БД
+    # Подготавливаем данные
+    duration = data.get("duration_months", 1)
     payload = {
         "key": new_key,
-        "duration_months": duration_months,
+        "duration_months": int(duration),
         "created_at": datetime.now().isoformat()
     }
 
-    # 3. Вставляем в таблицу keys
+    logger.info(f"🚀 Attempting to save key {new_key} to DB...")
+
+    # Отправка в Supabase
     res = await db.post("keys", json=payload)
     
     if res.status_code in [200, 201]:
-        logger.info(f"✅ Новый ключ создан в БД: {new_key}")
+        logger.info(f"✅ Key {new_key} successfully saved to table 'keys'")
         return {"status": "success", "key": new_key}
     else:
-        logger.error(f"🚨 Ошибка вставки ключа в БД: {res.text}")
-        raise HTTPException(500, f"DB Error: {res.text}")
+        # ЭТО САМОЕ ВАЖНОЕ: выведет, почему база отказала
+        logger.error(f"❌ DB INSERT ERROR: {res.status_code} - {res.text}")
+        raise HTTPException(500, f"Database refused to save key: {res.text}")
 
 # --- [ ПОДДЕРЖКА И ПРЯМОЙ ДОСТУП ] ---
 
