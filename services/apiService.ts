@@ -328,14 +328,21 @@ generateKey: async (token: string, months: number, botName: string) => {
   },
 
   // Добавь это внутрь объекта api в apiService.ts
-verifyAccessKey: async (token: string, key: string) => {
-  const response = await fetchWithTimeout(`${getApiBase()}/admin/verify_access_key`, {
-    method: 'POST',
-    headers: { 
-      'x-admin-token': token 
-    },
-    body: JSON.stringify({ key })
-  });
+// В apiService.ts
+verifyAccessKey: async (key: string, botId: string) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/verify_access_key`, {
+        method: 'POST',
+        headers: { 
+            'Content-Type': 'application/json' 
+            // Здесь токен админа обычно не нужен, так как это вход для саппорта
+        },
+        body: JSON.stringify({ 
+            key: key.trim(), 
+            bot_id: botId  // ВАЖНО: здесь должен быть ID бота, который мы пытаемся открыть
+        })
+    });
+    return response.json();
+},
   
   // Если ключ неверный, бэкенд вернет 401 или 404, и response.ok будет false
   if (!response.ok) {
