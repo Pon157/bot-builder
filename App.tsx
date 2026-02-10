@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useParams } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { BotConfig, BotStatus, User } from './types';
 import Dashboard from './components/Dashboard';
@@ -8,11 +8,80 @@ import BroadcastManager from './components/BroadcastManager';
 import Auth from './components/Auth';
 import Profile from './components/Profile';
 import CreateBotModal from './components/CreateBotModal';
-import AdminPanel from './components/AdminPanel'; // <--- НОВЫЙ ИМПОРТ
+import AdminPanel from './components/AdminPanel';
 import { api } from './services/apiService';
-import { Menu, X } from 'lucide-react';
+import { Menu, X, ArrowLeft } from 'lucide-react';
 
-// Вспомогательный компонент для обертки основного контента (Layout)
+// --- СПЕЦИАЛЬНЫЙ КОМПОНЕНТ: Редактор для Админа ---
+// Позволяет редактировать любого бота по ID, используя токен админа из localStorage
+const AdminBotEditorWrapper = () => {
+  const { botId } = useParams<{ botId: string }>();
+  const [bot, setBot] = useState<BotConfig | null>(null);
+  const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+  const adminToken = localStorage.getItem('admin_token');
+
+  useEffect(() => {
+    const loadBotAsAdmin = async () => {
+      if (!adminToken || !botId) {
+        navigate('/admin-zone');
+        return;
+      }
+      try {
+        const data = await api.getBotAsAdmin(adminToken, botId);
+        if (data) setBot(data);
+        else navigate('/admin-zone');
+      } catch (e) {
+        console.error("Admin access error:", e);
+        navigate('/admin-zone');
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadBotAsAdmin();
+  }, [botId, adminToken, navigate]);
+
+  if (loading) return (
+    <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+      <div className="text-zinc-500 font-black uppercase tracking-widest animate-pulse">Loading Admin Context...</div>
+    </div>
+  );
+
+  if (!bot) return null;
+
+  return (
+    <div className="bg-[#050505] min-h-screen p-4 md:p-12 overflow-y-auto">
+      <div className="max-w-6xl mx-auto">
+        <button 
+          onClick={() => navigate('/admin-zone')} 
+          className="mb-8 flex items-center gap-2 text-zinc-500 hover:text-white transition-colors uppercase text-[10px] font-black tracking-widest"
+        >
+          <ArrowLeft size={14} /> Back to Admin Terminal
+        </button>
+        
+        <div className="bg-red-600/5 border border-red-600/20 p-4 rounded-2xl mb-8 flex items-center gap-3">
+          <div className="w-2 h-2 bg-red-600 rounded-full animate-pulse" />
+          <span className="text-red-500 text-[10px] font-black uppercase tracking-widest">
+            Privileged Access Mode: Editing Bot {bot.name} (ID: {bot.id})
+          </span>
+        </div>
+
+        <BotEditor 
+          bot={bot} 
+          onUpdate={async (updated) => {
+            if (adminToken) {
+              await api.saveBotAsAdmin(adminToken, updated);
+              setBot(updated);
+            }
+          }} 
+          onDelete={() => alert("Admin cannot delete bots from this view. Use the main Admin Panel list.")}
+        />
+      </div>
+    </div>
+  );
+};
+
+// --- LAYOUT КОМПОНЕНТ ---
 const MainLayout: React.FC<{
   user: User;
   bots: BotConfig[];
@@ -25,8 +94,6 @@ const MainLayout: React.FC<{
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
-
-  // Определяем активную вкладку на основе URL для синхронизации с Sidebar
   const activeTab = location.pathname.split('/')[1] || 'dashboard';
 
   return (
@@ -68,6 +135,7 @@ const MainLayout: React.FC<{
   );
 };
 
+// --- ГЛАВНЫЙ КОМПОНЕНТ APP ---
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [bots, setBots] = useState<BotConfig[]>([]);
@@ -127,41 +195,23 @@ const App: React.FC = () => {
   const handleCreateBot = async (name: string, token: string) => {
     if (!user) return;
     const newBotId = `bot_${Math.random().toString(36).substr(2, 9)}`;
-    
-    const newBot: BotConfig = {
-        id: newBotId,
-        owner_id: user.id,
-        name,
-        token,
-        status: BotStatus.IDLE,
-        created_at: Date.now(),
-        license_expires_at: Date.now() + (3 * 24 * 3600 * 1000),
-        usersCount: 0,
-        description: 'Новый бот BotEngine',
-        adminChatId: '',
-        welcomeMessage: `Добро пожаловать в ${name}!`,
-        logs: [],
-        connectedUsers: [],
-        subscribers: [],
-        triggers: [],
-        buttons: [],
-        stats: { totalMessages: 0, incomingToday: 0, outgoingToday: 0, activeUsers24h: 0, bannedCount: 0, history: [] },
-        settings: { 
-          useTopics: false, 
-          topicPerRequest: false, 
-          anonymousTopics: false,
-          autoApproveJoin: false, 
-          forwardToAdmin: true, 
-          antiSpam: true, 
-          rateLimit: 15, 
-          showUserInfo: true, 
-          showUsername: true, 
-          autoBanThreshold: 0,
-          showHeaderId: true,
-          showHeaderName: true,
-          showHeaderUsername: true
-        }
-      };
+    const newBot: any = { // Используем any для краткости, в идеале BotConfig
+      id: newBotId,
+      owner_id: user.id,
+      name,
+      token,
+      status: BotStatus.IDLE,
+      created_at: Date.now(),
+      license_expires_at: Date.now() + (3 * 24 * 3600 * 1000),
+      settings: { 
+        useTopics: false, 
+        forwardToAdmin: true, 
+        antiSpam: true, 
+        rateLimit: 15, 
+        showUserInfo: true, 
+        showUsername: true 
+      }
+    };
 
     try {
       await api.saveBot(user.id, newBot);
@@ -178,19 +228,25 @@ const App: React.FC = () => {
   return (
     <BrowserRouter>
       <Routes>
-        {/* 1. Публичный роут авторизации ОБЫЧНЫХ пользователей */}
+        {/* Публичный роут авторизации */}
         <Route 
           path="/auth" 
           element={!user ? <Auth onLogin={handleLogin} /> : <Navigate to="/dashboard" replace />} 
         />
 
-        {/* 2. СЕКРЕТНЫЙ РОУТ ДЛЯ АДМИНОВ (Использует .env, не требует Supabase User) */}
+        {/* СЕКРЕТНЫЙ РОУТ ДЛЯ АДМИНОВ */}
         <Route 
            path="/admin-zone" 
            element={<AdminPanel onLogout={() => window.location.href = '/auth'} />} 
         />
 
-        {/* 3. Защищенные роуты приложения */}
+        {/* СПЕЦИАЛЬНЫЙ РОУТ: Редактирование бота админом */}
+        <Route 
+          path="/admin/editor/:botId" 
+          element={<AdminBotEditorWrapper />} 
+        />
+
+        {/* Защищенные роуты приложения */}
         <Route 
           path="*" 
           element={
