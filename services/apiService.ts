@@ -261,14 +261,25 @@ adminLogin: async (login: string, pass: string) => {
     return response.json();
   },
   
-  generateKey: async (token: string, months: number, days: number) => {
-     const response = await fetchWithTimeout(`${getApiBase()}/admin/generate-key`, {
+// В файле apiService.ts внутри объекта api:
+
+generateKey: async (token: string, months: number, days: number) => {
+    console.log("🚀 Отправка запроса на генерацию ключа...");
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/generate_key`, { // Было generate-key
         method: 'POST',
         headers: { 'x-admin-token': token },
         body: JSON.stringify({ months, days })
-     });
-     return response.json();
-  },
+    });
+    
+    if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || "Ошибка сервера при генерации");
+    }
+    
+    const data = await response.json();
+    console.log("✅ Ключ получен от сервера:", data);
+    return data;
+},
 
   // Создание временного доступа для админа (Support Mode)
   createTempAccess: async (botId: string, key: string) => {
