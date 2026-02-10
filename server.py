@@ -921,22 +921,20 @@ async def save_bot(b: dict):
         raise HTTPException(500, str(e))
         
 @app.post("/api/admin/verify_access_key")
-async def verify_access_key(data: dict, x_admin_token: str = Header(None)):
-    if not verify_admin_token(x_admin_token):
-        raise HTTPException(403, "Forbidden")
-
+async def verify_access_key(data: dict):
+    # УБРАЛИ проверку x_admin_token, так как ключ вводит НЕ админ
+    
     input_key = data.get("key", "").strip()
-    # Получаем название бота и приводим к нижнему регистру для поиска
-    current_bot_name = str(data.get("bot_id", "")).strip().lower()
+    # Получаем то, что прислал фронтенд (может быть ID или имя)
+    requested_bot = str(data.get("bot_id", "")).strip()
 
-    if not current_bot_name or not input_key:
-        raise HTTPException(400, "Ключ и название бота обязательны")
+    if not requested_bot or not input_key:
+        raise HTTPException(400, "Ключ и идентификатор бота обязательны")
 
-    # 1. Ищем ключ в базе
-    # ВАЖНО: При генерации тоже стоит сохранять название в нижнем регистре
+    # 1. Ищем ключ. 
+    # Мы ищем запись, где ключ совпадает И (bot_id совпадает с присланным)
     params = {
         "key": f"eq.{input_key}",
-        "bot_id": f"eq.{current_bot_name}",
         "is_used": "eq.false"
     }
     
@@ -945,20 +943,22 @@ async def verify_access_key(data: dict, x_admin_token: str = Header(None)):
 
     if res.status_code == 200 and len(keys_found) > 0:
         found_key = keys_found[0]
-        key_id = found_key.get("id")
-
-        # 2. ПОМЕЧАЕМ КАК ИСПОЛЬЗОВАННЫЙ
-        update_res = await db.patch("keys", params={"id": f"eq.{key_id}"}, json={"is_used": True})
+        # Проверяем, привязан ли ключ именно к этому боту (регистронезависимо)
+        key_target = str(found_key.get("bot_id", "")).lower()
         
-        if update_res.status_code in [200, 204]:
-            logger.info(f"✅ Ключ {input_key} успешно активирован для бота {current_bot_name}")
-            return {"ok": True}
-        else:
-            logger.error(f"❌ Не удалось обновить статус ключа: {update_res.text}")
-            raise HTTPException(500, "Ошибка при активации")
+        if key_target == requested_bot.lower():
+            key_id = found_key.get("id")
 
-    logger.warning(f"❌ Неверный ключ или имя бота: {input_key} / {current_bot_name}")
-    raise HTTPException(401, "Ключ не подходит к этому боту или уже использован")
+            # 2. ПОМЕЧАЕМ КАК ИСПОЛЬЗОВАННЫЙ
+            update_res = await db.patch("keys", params={"id": f"eq.{key_id}"}, json={"is_used": True})
+            
+            if update_res.status_code in [200, 204]:
+                logger.info(f"✅ Ключ {input_key} активирован для {requested_bot}")
+                return {"ok": True}
+        else:
+            logger.warning(f"❌ Ключ {input_key} принадлежит {key_target}, а запрошен для {requested_bot}")
+
+    raise HTTPException(401, "Ключ не подходит или уже использован")
     
 # ==========================================
 # 8. СИСТЕМНЫЕ
