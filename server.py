@@ -300,29 +300,64 @@ async def get_user_bots(uid: str):
 
 @app.post("/api/bots/save")
 async def save_bot(b: dict):
-    bid = b['id']
-    # Шифруем токен перед отправкой в базу
-    raw_token = b.get('token', '')
-    # Если токен пришел уже зашифрованным (начинается на gAAAA), не шифруем второй раз
-    final_token = encrypt_val(raw_token) if not raw_token.startswith('gAAAA') else raw_token
-    
-    old_r = await db.get("bots", params={"id": f"eq.{bid}"})
-    curr = old_r.json()[0] if old_r.json() else {}
-    
-    sys_keys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
-    ui_cfg = {k: v for k, v in b.items() if k not in sys_keys}
-    
-    payload = {
-        "id": bid,
-        "owner_id": b['owner_id'],
-        "name": b["name"],
-        "token": final_token,
-        "status": b.get("status", curr.get("status", "IDLE")),
-        "license_expires_at": b.get("license_expires_at") or curr.get("license_expires_at", 0),
-        "config": ui_cfg
-    }
-    await db.post("bots", json=payload, headers={"Prefer": "resolution=merge-duplicates"})
-    return payload
+    try:
+        bid = b.get('id')
+        if not bid:
+            raise HTTPException(400, "Missing bot ID")
+
+        # 1. Получаем текущее состояние бота из БД
+        old_r = await db.get("bots", params={"id": f"eq.{bid}"})
+        old_data = old_r.json()
+        curr = old_data[0] if isinstance(old_data, list) and len(old_data) > 0 else {}
+
+        # 2. Работаем с токеном
+        raw_token = b.get('token', '')
+        if raw_token:
+            final_token = encrypt_val(raw_token) if not raw_token.startswith('gAAAA') else raw_token
+        else:
+            final_token = curr.get('token', '')
+
+        # 3. Формируем конфиг (настройки бота)
+        # Если фронтенд шлет настройки в b['settings'], берем их. 
+        # Если нет — фильтруем как у тебя было.
+        if 'settings' in b:
+            ui_cfg = b['settings']
+        else:
+            sys_keys = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
+            ui_cfg = {k: v for k, v in b.items() if k not in sys_keys}
+
+        # 4. Собираем финальный объект для базы
+        payload = {
+            "id": bid,
+            "owner_id": b.get('owner_id') or curr.get('owner_id'),
+            "name": b.get("name") or curr.get("name", "Unnamed Bot"),
+            "token": final_token,
+            "status": curr.get("status", "IDLE"), # Статус лучше не менять при обычном сохранении
+            "license_expires_at": b.get("license_expires_at") or curr.get("license_expires_at", 0),
+            "config": ui_cfg
+        }
+
+        # 5. UPSERT запрос (обновить если есть, создать если нет)
+        # ВАЖНО: Добавляем on_conflict=id
+        headers = {
+            "Prefer": "return=representation,resolution=merge-duplicates"
+        }
+        
+        # Используем PATCH если бот точно существует, так надежнее
+        if curr:
+            res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=payload)
+        else:
+            res = await db.post("bots", json=payload, headers=headers)
+
+        if res.status_code not in [200, 201, 204]:
+            logger.error(f"DB Error: {res.text}")
+            raise HTTPException(res.status_code, f"Database error: {res.text}")
+
+        return {"status": "success", "payload": payload}
+
+    except Exception as e:
+        logger.error(f"🚨 Save Bot Error: {e}")
+        raise HTTPException(500, str(e))
 
 @app.post("/api/bots/start")
 async def start_handler(req: dict):
