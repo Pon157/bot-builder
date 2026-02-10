@@ -350,3 +350,4 @@ adminLogin: async (login: string, pass: string) => {
     });
     return response.ok ? await response.json() : null;
   }
+};
