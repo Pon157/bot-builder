@@ -111,23 +111,25 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   };
 
 const handleConfigAccess = async (botId: string) => {
+  // 1. Спрашиваем ключ
   const userKey = window.prompt("Введите активный лицензионный ключ для доступа к редактированию:");
   if (!userKey) return;
 
   try {
-    // Используем готовый сервис. Он отправит JSON { key, bot_id } 
-    // и НЕ будет слать лишних админ-токенов, которые вызывают 403
+    // 2. Вызываем метод из apiService.ts
+    // Он отправит POST { key: userKey, bot_id: botId }
     const data = await api.verifyAccessKey(userKey, botId);
 
-    if (data.ok) {
+    if (data && data.ok) {
+      // 3. Успех! Переходим в редактор
       navigate(`/admin/editor/${botId}`);
     } else {
       alert("Доступ запрещен: Неверный или просроченный ключ.");
     }
   } catch (err: any) {
-    // Если сервер вернул 403, ошибка вылетит здесь
-    console.error("Verification error:", err);
-    alert(err.message || "Ошибка доступа (403). Возможно, ключ не подходит к этому Bot ID.");
+    // Если сервер вернул 403, мы увидим причину здесь
+    console.error("403 Error Details:", err);
+    alert(err.message || "Ошибка доступа (403). Ключ не подходит к этому боту.");
   }
 };
 
