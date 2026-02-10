@@ -38,19 +38,29 @@ const Sidebar: React.FC<SidebarProps> = ({
   const expiry = Number(user.license_expires_at) || 0;
   const daysRemaining = Math.max(0, Math.ceil((expiry - Date.now()) / (1000 * 60 * 60 * 24)));
 
-  // Функция для создания временного ключа доступа администратору
+// Функция для создания ключа через систему лицензий
   const createSupportKey = async () => {
     if (!selectedBotId) return;
     
-    // Генерируем случайный короткий ключ
-    const key = Math.random().toString(36).substring(2, 8).toUpperCase();
+    // Берем токен админа из localStorage (как мы договаривались хранить его)
+    const adminToken = localStorage.getItem('admin_token');
     
+    if (!adminToken) {
+      alert("Ошибка: Вы не авторизованы как администратор.");
+      return;
+    }
+
     try {
-      await api.createTempAccess(selectedBotId, key);
-      alert(`Ключ доступа создан: ${key}\n\nПередайте этот ключ администратору. Доступ к редактору этого бота будет открыт в течение 20 минут.`);
+      // Вызываем метод генерации полноценного ключа (на 1 месяц для поддержки)
+      // ВАЖНО: используем api.generateKey, а не tempAccess
+      const res = await api.generateKey(adminToken, 1, 0); 
+      
+      if (res && res.key) {
+        alert(`Лицензионный ключ создан: ${res.key}\n\nЭтот ключ теперь записан в базу данных. Передайте его администратору.`);
+      }
     } catch (e) {
       console.error("Support key error:", e);
-      alert("Не удалось создать ключ доступа. Попробуйте позже.");
+      alert("Не удалось создать лицензионный ключ. Проверьте соединение.");
     }
   };
 
