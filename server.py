@@ -35,6 +35,8 @@ from aiogram.exceptions import TelegramForbiddenError
 
 from starlette.concurrency import run_in_threadpool
 
+from datetime import datetime  # <--- Добавь это в начало файла
+
 # ==========================================
 # 1. ИНИЦИАЛИЗАЦИЯ И БЕЗОПАСНОСТЬ
 # ==========================================
@@ -432,14 +434,33 @@ async def save_bot(b: dict):
 @app.post("/api/bots/start")
 async def start_handler(req: dict):
     bid = req.get('id')
-    r = await db.get("bots", params={"id": f"eq.{bid}"})
-    if not r.json(): raise HTTPException(404, "Бот не найден")
     
-    data = r.json()[0]
-    # Пытаемся запустить
-    if await pm.start_bot(bid, data) is True:
+    # 1. Получаем данные бота и сразу данные владельца через join (если позволяет БД)
+    # Или делаем два запроса для надежности
+    r = await db.get("bots", params={"id": f"eq.{bid}"})
+    if not r.json(): 
+        raise HTTPException(404, "Бот не найден")
+    
+    bot_data = r.json()[0]
+    owner_id = bot_data.get('owner_id')
+
+    # 2. ПРОВЕРКА НА БАН: Проверяем статус пользователя в таблице users
+    u_res = await db.get("users", params={"id": f"eq.{owner_id}"})
+    if u_res.status_code == 200 and u_res.json():
+        user_data = u_res.json()[0]
+        if user_data.get("is_banned") is True:
+            # Если пользователь забанен, принудительно ставим боту статус BANNED
+            await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "BANNED"})
+            logger.warning(f"🚫 Отказ в запуске: Владелец бота {bid} заблокирован.")
+            raise HTTPException(403, "Ваш аккаунт заблокирован. Запуск ботов невозможен.")
+
+    # 3. Пытаемся запустить процесс
+    # Передаем bot_data целиком, чтобы pm имел доступ к токену и конфигу
+    if await pm.start_bot(bid, bot_data) is True:
         await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "RUNNING"})
-        return True
+        logger.info(f"🚀 Бот {bid} успешно запущен")
+        return {"status": "success"}
+    
     raise HTTPException(500, "Ошибка запуска процесса")
 
 @app.post("/api/bots/stop/{bid}")
