@@ -874,34 +874,36 @@ async def save_bot(b: dict):
         logger.error(f"🚨 Critical Save Error: {e}")
         raise HTTPException(500, str(e))
         
-# Добавь этот эндпоинт, чтобы исправить 404
-# Вставь это ПЕРЕД блоком "if __name__ == '__main__':"
 @app.post("/api/admin/verify_access_key")
 async def verify_access_key(data: dict, x_admin_token: str = Header(None)):
-    # Проверка админ-токена (берется из .env)
+    # Проверка админа
     if not verify_admin_token(x_admin_token):
-        logger.warning("🚫 Попытка входа с неверным админ-токеном")
         raise HTTPException(403, "Forbidden")
 
     input_key = data.get("key")
     if not input_key:
         raise HTTPException(400, "Key is required")
 
-    # ВАЖНО: Проверь, что в Supabase таблица называется именно 'keys'
+    # Делаем запрос к базе
+    logger.info(f"🔍 Checking key: {input_key} in table 'keys'...")
     res = await db.get("keys", params={"key": f"eq.{input_key}"})
     
-    # Если база вернула 404, значит таблицы 'keys' нет в Supabase
-    if res.status_code == 404:
-        logger.error("🚨 Ошибка: Таблица 'keys' не найдена в базе данных Supabase!")
-        raise HTTPException(500, "Database table 'keys' missing")
+    # ЛОГИРУЕМ ОТВЕТ БАЗЫ ДЛЯ ОТЛАДКИ
+    logger.info(f"📡 DB Response Status: {res.status_code}")
+    logger.info(f"📡 DB Response Body: {res.text}")
 
-    data_list = res.json()
-    if res.status_code == 200 and len(data_list) > 0:
-        logger.info(f"✅ Доступ разрешен по ключу: {input_key}")
+    if res.status_code != 200:
+        logger.error(f"🚨 Supabase returned error {res.status_code}: {res.text}")
+        # Если база дает 404 — значит RLS или таблицы нет
+        raise HTTPException(500, f"Database error: {res.status_code}")
+
+    key_data = res.json()
+    if key_data and len(key_data) > 0:
+        logger.info(f"✅ Access granted for key: {input_key}")
         return {"ok": True}
     
-    logger.warning(f"❌ Ключ не найден: {input_key}")
-    raise HTTPException(401, "Invalid key")
+    logger.warning(f"❌ Key {input_key} not found in DB")
+    raise HTTPException(404, "Invalid key")
     
 # ==========================================
 # 8. СИСТЕМНЫЕ
