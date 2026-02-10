@@ -753,20 +753,36 @@ async def get_all_keys(x_admin_token: str = Header(None)):
     r = await db.get("issued_keys", params={"order": "created_at.desc"})
     return r.json()
 
-@app.post("/api/admin/generate-key")
-async def admin_generate_key(d: dict, x_admin_token: str = Header(None)):
-    if not verify_admin_token(x_admin_token): raise HTTPException(403)
+@app.post("/api/admin/generate_key")
+async def generate_key(data: dict, x_admin_token: str = Header(None)):
+    if not verify_admin_token(x_admin_token):
+        raise HTTPException(403, "Forbidden")
+
+    # 1. Генерируем сам код
+    # Можно использовать secrets для надежности
+    import secrets
+    import string
+    new_key = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
     
-    new_key = f"{secrets.token_hex(2)}-{secrets.token_hex(2)}-{secrets.token_hex(2)}".upper()
+    duration_months = data.get("duration_months", 1)
+    
+    # 2. Формируем данные для вставки
+    # Убедись, что имена колонок (key, duration_months) совпадают с БД
     payload = {
         "key": new_key,
-        "months": d.get('months', 0),
-        "days": d.get('days', 0),
-        "used": False,
-        "created_at": int(time.time())
+        "duration_months": duration_months,
+        "created_at": datetime.now().isoformat()
     }
-    await db.post("issued_keys", json=payload)
-    return {"key": new_key}
+
+    # 3. Вставляем в таблицу keys
+    res = await db.post("keys", json=payload)
+    
+    if res.status_code in [200, 201]:
+        logger.info(f"✅ Новый ключ создан в БД: {new_key}")
+        return {"status": "success", "key": new_key}
+    else:
+        logger.error(f"🚨 Ошибка вставки ключа в БД: {res.text}")
+        raise HTTPException(500, f"DB Error: {res.text}")
 
 # --- [ ПОДДЕРЖКА И ПРЯМОЙ ДОСТУП ] ---
 
