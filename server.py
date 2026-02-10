@@ -361,6 +361,21 @@ async def reset_p(d: dict):
 # 5. УПРАВЛЕНИЕ БОТАМИ
 # ==========================================
 
+@app.get("/api/auth/user/{user_id}")
+async def get_user_data(user_id: str):
+    """Возвращает данные пользователя. Если не найден — создаем заглушку, чтобы фронт не падал."""
+    try:
+        res = await db.get("users", params={"id": f"eq.{user_id}"})
+        data = res.json()
+        if res.status_code == 200 and len(data) > 0:
+            return data[0]
+        
+        # Если юзера нет в БД, отдаем минимальный объект, чтобы редактор открылся
+        return {"id": user_id, "email": "user@example.com", "role": "user"}
+    except Exception as e:
+        logger.error(f"Error fetching user {user_id}: {e}")
+        raise HTTPException(status_code=404, detail="User not found")
+
 @app.get("/api/bots/stats/{bot_id}")
 async def get_bot_stats_api(bot_id: str):
     """
