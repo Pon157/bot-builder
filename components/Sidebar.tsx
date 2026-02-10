@@ -39,30 +39,38 @@ const Sidebar: React.FC<SidebarProps> = ({
   const daysRemaining = Math.max(0, Math.ceil((expiry - Date.now()) / (1000 * 60 * 60 * 24)));
 
 // Функция для создания ключа через систему лицензий
-  const createSupportKey = async () => {
-    if (!selectedBotId) return;
-    
-    // Берем токен админа из localStorage (как мы договаривались хранить его)
-    const adminToken = localStorage.getItem('admin_token');
-    
-    if (!adminToken) {
-      alert("Ошибка: Вы не авторизованы как администратор.");
-      return;
-    }
+const createSupportKey = async () => {
+  // Проверяем, что бот выбран, иначе не к кому привязывать ключ
+  if (!selectedBotId) {
+    alert("Ошибка: Сначала выберите проект (бота) из списка.");
+    return;
+  }
+  
+  // Берем токен из localStorage, как указано в твоих инструкциях
+  const adminToken = localStorage.getItem('admin_token');
+  
+  if (!adminToken) {
+    alert("Ошибка: Вы не авторизованы как администратор.");
+    return;
+  }
 
-    try {
-      // Вызываем метод генерации полноценного ключа (на 1 месяц для поддержки)
-      // ВАЖНО: используем api.generateKey, а не tempAccess
-      const res = await api.generateKey(adminToken, 1, 0); 
-      
-      if (res && res.key) {
-        alert(`Лицензионный ключ создан: ${res.key}\n\nЭтот ключ теперь записан в базу данных. Передайте его администратору.`);
-      }
-    } catch (e) {
-      console.error("Support key error:", e);
-      alert("Не удалось создать лицензионный ключ. Проверьте соединение.");
+  try {
+    console.log(`📡 Генерируем ключ для бота: ${selectedBotId}`);
+    
+    // ИСПРАВЛЕНО: Вместо 0 передаем selectedBotId в третий аргумент
+    // Аргументы: токен, количество месяцев (1), ID текущего бота
+    const res = await api.generateKey(adminToken, 1, selectedBotId); 
+    
+    if (res && res.key) {
+      alert(`✅ Лицензионный ключ создан: ${res.key}\n\nКлюч привязан к этому боту и записан в базу. Передайте его администратору.`);
+    } else {
+      throw new Error("Сервер не вернул ключ");
     }
-  };
+  } catch (e: any) {
+    console.error("Support key error:", e);
+    alert(`❌ Не удалось создать ключ: ${e.message || "Ошибка сервера"}`);
+  }
+};
 
   return (
     <aside className={`
