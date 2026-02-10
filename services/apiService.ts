@@ -327,22 +327,26 @@ generateKey: async (token: string, months: number, botName: string) => {
     return response.ok ? await response.json() : null;
   },
 
-  // Добавь это внутрь объекта api в apiService.ts
-// В apiService.ts
 verifyAccessKey: async (key: string, botId: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/verify_access_key`, {
         method: 'POST',
         headers: { 
             'Content-Type': 'application/json' 
-            // Здесь токен админа обычно не нужен, так как это вход для саппорта
         },
         body: JSON.stringify({ 
             key: key.trim(), 
-            bot_id: botId  // ВАЖНО: здесь должен быть ID бота, который мы пытаемся открыть
+            bot_id: botId 
         })
     });
-    return response.json();
-},
+
+    // Исправляем блок обработки ошибок, на который ругался Vite
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Неверный ключ доступа");
+    }
+
+    return await response.json();
+  }, // <--- И здесь запятая, если дальше есть другие методы
   
   // Если ключ неверный, бэкенд вернет 401 или 404, и response.ok будет false
   if (!response.ok) {
