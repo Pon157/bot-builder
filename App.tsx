@@ -22,37 +22,41 @@ const AdminBotEditorWrapper: React.FC = () => {
   const [bot, setBot] = useState<BotConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [accessKey, setAccessKey] = useState<string>(""); // Для ввода ключа, если его нет
   const navigate = useNavigate();
   
-  // Берем админ-токен, который сохранился после входа в /admin-zone
   const adminToken = localStorage.getItem('admin_token');
 
+  const loadBotData = async (keyToUse?: string) => {
+    if (!adminToken || !botId) {
+      navigate('/admin-zone');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+      
+      // Запрашиваем данные бота. 
+      // Сервер проверит adminToken и наличие ключа в TEMP_ADMIN_ACCESS
+      const data = await api.getBotAsAdmin(adminToken, botId);
+      
+      if (data) {
+        setBot(data);
+      } else {
+        setError("Доступ закрыт. Пользователь должен сгенерировать ключ доступа в своей панели.");
+      }
+    } catch (err: any) {
+      console.error("Admin Editor Error:", err);
+      setError(err.message || "Ошибка авторизации в режиме поддержки");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const loadBotData = async () => {
-      if (!adminToken || !botId) {
-        navigate('/admin-zone');
-        return;
-      }
-
-      try {
-        setLoading(true);
-        // Запрашиваем данные бота через специальный админский метод
-        const data = await api.getBotAsAdmin(adminToken, botId);
-        if (data) {
-          setBot(data);
-        } else {
-          setError("Бот не найден или доступ запрещен");
-        }
-      } catch (err) {
-        console.error("Admin Editor Error:", err);
-        setError("Ошибка при загрузке данных бота");
-      } finally {
-        setLoading(false);
-      }
-    };
-
     loadBotData();
-  }, [botId, adminToken, navigate]);
+  }, [botId, adminToken]);
 
   if (loading) {
     return (
@@ -67,13 +71,29 @@ const AdminBotEditorWrapper: React.FC = () => {
     );
   }
 
+  // Если доступ не подтвержден (нужен ключ или время истекло)
   if (error || !bot) {
     return (
-      <div className="min-h-screen bg-[#050505] flex flex-col items-center justify-center p-6">
-        <div className="text-red-500 font-black uppercase mb-4">{error}</div>
-        <button onClick={() => navigate('/admin-zone')} className="px-6 py-3 bg-zinc-900 rounded-xl text-white">
-          Вернуться в админку
-        </button>
+      <div className="min-h-screen bg-[#050505] flex flex-col items-center justify-center p-6 text-center">
+        <ShieldAlert size={48} className="text-red-600 mb-6 opacity-50" />
+        <div className="text-red-500 font-black uppercase mb-2 tracking-widest">Access Denied</div>
+        <div className="text-zinc-500 text-xs max-w-xs mb-8 uppercase font-bold leading-relaxed">
+          {error || "Для редактирования этого бота требуется активный временный ключ доступа."}
+        </div>
+        <div className="flex gap-4">
+            <button 
+                onClick={() => navigate('/admin-zone')} 
+                className="px-8 py-4 bg-zinc-900 border border-zinc-800 rounded-2xl text-white text-[10px] font-black uppercase tracking-widest hover:bg-zinc-800 transition-all"
+            >
+                В терминал
+            </button>
+            <button 
+                onClick={() => loadBotData()} 
+                className="px-8 py-4 bg-red-600 rounded-2xl text-white text-[10px] font-black uppercase tracking-widest hover:bg-red-700 transition-all shadow-lg shadow-red-600/20"
+            >
+                Повторить попытку
+            </button>
+        </div>
       </div>
     );
   }
@@ -81,33 +101,48 @@ const AdminBotEditorWrapper: React.FC = () => {
   return (
     <div className="bg-[#050505] min-h-screen p-4 md:p-12 overflow-y-auto">
       <div className="max-w-6xl mx-auto">
-        {/* Хедер режима супер-админа */}
+        {/* Хедер режима поддержки (Admin Mode) */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-12">
           <button 
             onClick={() => navigate('/admin-zone')} 
-            className="flex items-center gap-2 text-zinc-500 hover:text-white transition-colors uppercase text-[10px] font-black tracking-widest"
+            className="flex items-center gap-2 text-zinc-500 hover:text-white transition-colors uppercase text-[10px] font-black tracking-widest group"
           >
-            <ArrowLeft size={14} /> Вернуться в терминал
+            <ArrowLeft size={14} className="group-hover:-translate-x-1 transition-transform" /> 
+            Back to Terminal
           </button>
           
-          <div className="flex items-center gap-3 px-4 py-2 bg-red-600/10 border border-red-600/20 rounded-full">
-            <div className="w-2 h-2 bg-red-600 rounded-full animate-pulse" />
-            <span className="text-red-500 text-[10px] font-black uppercase tracking-widest">
-              Support Mode: {bot.name}
-            </span>
+          <div className="flex items-center gap-4">
+              <div className="flex flex-col items-end">
+                  <span className="text-white text-[10px] font-black uppercase tracking-widest">{bot.name}</span>
+                  <span className="text-zinc-600 text-[8px] font-bold uppercase tracking-tighter">Support Session Active</span>
+              </div>
+              <div className="flex items-center gap-3 px-4 py-2 bg-red-600/10 border border-red-600/20 rounded-full">
+                <div className="w-2 h-2 bg-red-600 rounded-full animate-pulse" />
+                <span className="text-red-500 text-[10px] font-black uppercase tracking-widest">
+                  Support Mode
+                </span>
+              </div>
           </div>
         </div>
 
+        {/* ПЕРЕДАЕМ isAdminMode={true} чтобы скрыть кнопку удаления */}
         <BotEditor 
           bot={bot} 
+          isAdminMode={true} 
           onUpdate={async (updatedBot) => {
             if (adminToken) {
-              await api.saveBotAsAdmin(adminToken, updatedBot);
-              setBot(updatedBot);
+              try {
+                await api.saveBotAsAdmin(adminToken, updatedBot);
+                setBot(updatedBot);
+              } catch (e) {
+                alert("Ошибка сохранения: сессия поддержки могла истечь");
+              }
             }
           }} 
           onDelete={() => {
-            alert("Удаление ботов доступно только из списка в админ-панели");
+            // Эта функция не будет вызвана, так как кнопка скроется,
+            // но оставляем заглушку для безопасности
+            console.warn("Delete attempt in support mode blocked.");
           }}
         />
       </div>
