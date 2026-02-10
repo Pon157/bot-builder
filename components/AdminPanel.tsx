@@ -110,27 +110,24 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     } catch (e) { alert("Ошибка генерации ключа"); }
   };
 
-// НОВАЯ ЛОГИКА: Прямой переход в Admin Editor
 const handleConfigAccess = async (botId: string) => {
-  // 1. Всплывающее окно для ввода ключа
   const userKey = window.prompt("Введите активный лицензионный ключ для доступа к редактированию:");
-  
-  if (!userKey) return; // Если нажали "Отмена"
+  if (!userKey) return;
 
   try {
-    // 2. Используем наш сервис api (он сам подставит URL и заголовки)
-    // Передаем и КЛЮЧ, и ID БОТА
+    // Используем готовый сервис. Он отправит JSON { key, bot_id } 
+    // и НЕ будет слать лишних админ-токенов, которые вызывают 403
     const data = await api.verifyAccessKey(userKey, botId);
 
-    if (data && data.ok) {
-      // 3. Если ключ верный — пускаем в редактор
+    if (data.ok) {
       navigate(`/admin/editor/${botId}`);
     } else {
       alert("Доступ запрещен: Неверный или просроченный ключ.");
     }
   } catch (err: any) {
-    // Выводим ошибку, которую прислал сервер (например, "Ключ уже использован")
-    alert(err.message || "Ошибка проверки ключа.");
+    // Если сервер вернул 403, ошибка вылетит здесь
+    console.error("Verification error:", err);
+    alert(err.message || "Ошибка доступа (403). Возможно, ключ не подходит к этому Bot ID.");
   }
 };
 
