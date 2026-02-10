@@ -759,30 +759,52 @@ async def generate_key(data: dict, x_admin_token: str = Header(None)):
     if not verify_admin_token(x_admin_token):
         raise HTTPException(403, "Forbidden")
 
-    # Генерируем ключ
-    new_key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-    
-    # Получаем данные из data
-    months = data.get("months", 1)
-    # ВАЖНО: убедись, что фронтенд шлет именно "bot_id"
-    target_bot_id = data.get("bot_id") 
+    # 1. Получаем название бота из запроса (которое ты ввел в prompt)
+    bot_name_input = data.get("bot_id") # В поле bot_id теперь прилетает имя
+    if not bot_name_input:
+        raise HTTPException(400, "Название бота обязательно")
 
+    # 2. Ищем бота в таблице public.bots по названию
+    # Используем ilike для поиска без учета регистра
+    bot_res = await db.get("bots", params={"name": f"ilike.{bot_name_input.strip()}"})
+    bots_found = bot_res.json()
+
+    if not bots_found:
+        raise HTTPException(404, f"Бот с названием '{bot_name_input}' не найден в базе")
+    
+    # Берем ID первого найденного бота
+    target_bot_id = bots_found[0]['id']
+    real_bot_name = bots_found[0]['name']
+
+    # 3. Генерируем уникальный ключ
+    import secrets
+    import string
+    new_key = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
+    
+    months = data.get("months", 1)
+
+    # 4. Формируем payload для таблицы keys
     payload = {
         "key": new_key,
         "duration_months": int(months),
-        "bot_id": target_bot_id, 
-        "is_used": False, # Явно задаем статус
+        "bot_id": target_bot_id, # Записываем УЖЕ ID, а не имя!
+        "is_used": False,
         "created_at": datetime.now().isoformat()
     }
 
-    logger.info(f"📡 Generating key {new_key} for bot {target_bot_id}")
+    logger.info(f"📡 Generating key {new_key} for bot '{real_bot_name}' (ID: {target_bot_id})")
 
     res = await db.post("keys", json=payload)
     if res.status_code in [200, 201]:
-        return {"status": "success", "key": new_key}
+        return {
+            "status": "success", 
+            "key": new_key, 
+            "bot_name": real_bot_name, 
+            "bot_id": target_bot_id
+        }
     
     logger.error(f"❌ DB Error: {res.text}")
-    raise HTTPException(500, f"Ошибка записи: {res.text}")
+    raise HTTPException(500, f"Ошибка записи ключа: {res.text}")
         
 # --- [ ПОДДЕРЖКА И ПРЯМОЙ ДОСТУП ] ---
 
