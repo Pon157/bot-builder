@@ -875,26 +875,33 @@ async def save_bot(b: dict):
         raise HTTPException(500, str(e))
         
 # Добавь этот эндпоинт, чтобы исправить 404
+# Вставь это ПЕРЕД блоком "if __name__ == '__main__':"
 @app.post("/api/admin/verify_access_key")
 async def verify_access_key(data: dict, x_admin_token: str = Header(None)):
-    # Проверка, что запрос шлет именно админ
+    # Проверка админ-токена (берется из .env)
     if not verify_admin_token(x_admin_token):
-        raise HTTPException(403, "Forbidden: Invalid admin token")
+        logger.warning("🚫 Попытка входа с неверным админ-токеном")
+        raise HTTPException(403, "Forbidden")
 
     input_key = data.get("key")
     if not input_key:
         raise HTTPException(400, "Key is required")
 
-    # Ищем этот ключ в таблице 'keys' в базе данных
-    # (Это те самые ключи, которые ты создаешь в License Hub)
+    # ВАЖНО: Проверь, что в Supabase таблица называется именно 'keys'
     res = await db.get("keys", params={"key": f"eq.{input_key}"})
     
-    if res.status_code == 200 and len(res.json()) > 0:
-        logger.info(f"✅ Access granted with key: {input_key}")
+    # Если база вернула 404, значит таблицы 'keys' нет в Supabase
+    if res.status_code == 404:
+        logger.error("🚨 Ошибка: Таблица 'keys' не найдена в базе данных Supabase!")
+        raise HTTPException(500, "Database table 'keys' missing")
+
+    data_list = res.json()
+    if res.status_code == 200 and len(data_list) > 0:
+        logger.info(f"✅ Доступ разрешен по ключу: {input_key}")
         return {"ok": True}
     
-    logger.warning(f"❌ Access denied for key: {input_key}")
-    raise HTTPException(404, "Invalid key")
+    logger.warning(f"❌ Ключ не найден: {input_key}")
+    raise HTTPException(401, "Invalid key")
     
 # ==========================================
 # 8. СИСТЕМНЫЕ
