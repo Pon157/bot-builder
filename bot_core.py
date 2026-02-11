@@ -112,6 +112,51 @@ class BotInstance:
         # Сначала парсим конфиг, чтобы подгрузить license_expires_at
         self.apply_config(config_data)
 
+    async def register_event(self, is_incoming: bool = True):
+    """Обновляет статистику в памяти и отправляет в Supabase"""
+    try:
+        today = datetime.now().strftime("%d.%m")
+        # Инициализируем структуру, если её нет
+        if "stats" not in self.config or not isinstance(self.config["stats"], dict):
+            self.config["stats"] = {"history": [], "totalMessages": 0}
+        
+        st = self.config["stats"]
+        st["totalMessages"] = st.get("totalMessages", 0) + 1
+        
+        if is_incoming:
+            st["incomingToday"] = st.get("incomingToday", 0) + 1
+        else:
+            st["outgoingToday"] = st.get("outgoingToday", 0) + 1
+
+        # Обновляем историю для графиков
+        history = st.get("history", [])
+        day_entry = next((item for item in history if item["date"] == today), None)
+
+        if day_entry:
+            if is_incoming: day_entry["incoming"] += 1
+            else: day_entry["outgoing"] += 1
+        else:
+            history.append({
+                "date": today, 
+                "incoming": 1 if is_incoming else 0, 
+                "outgoing": 0 if is_incoming else 1,
+                "totalUsers": len(self.config.get("connectedUsers", [])),
+                "activeUsers": 1
+            })
+
+        st["history"] = history[-14:] # Храним только 2 недели
+        
+        # ОТПРАВКА В БАЗУ
+        async with httpx.AsyncClient() as client:
+            await client.patch(
+                f"{self.supabase_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                headers=self.headers,
+                json={"stats": st}
+            )
+    except Exception as e:
+        logger.error(f"❌ Ошибка обновления статистики: {e}")
+        
+
     async def update_stats(self, is_incoming: bool = True):
     try:
         today = datetime.now().strftime("%d.%m")
