@@ -447,67 +447,53 @@ async def get_user_bots(user_id: str):
 async def save_bot(b: dict):
     try:
         bid = b.get('id')
-        if not bid:
-            raise HTTPException(400, "Missing bot ID")
+        if not bid: raise HTTPException(400, "Missing bot ID")
 
-        # 1. Загружаем текущие данные из базы (чтобы не потерять их)
+        # 1. Берем текущие данные из базы как эталон
         old_r = await db.get("bots", params={"id": f"eq.{bid}"})
-        curr = old_r.json()[0] if (old_r.status_code == 200 and old_r.json()) else {}
-        old_config = curr.get("config", {})
-        if not isinstance(old_config, dict): old_config = {}
-
-        # 2. Входящие данные (могут быть в корне или в объекте config)
-        inc_cfg = b.get("config", {})
-        if not isinstance(inc_cfg, dict): inc_cfg = {}
-
-        # Функция-помощник: берет первое НЕ None и НЕ пустое значение (для списков)
-        def pick(new_val, inc_val, old_val, default=None):
-            if new_val is not None: return new_val
-            if inc_val is not None: return inc_val
-            return old_val if old_val is not None else default
-
-        # 3. Собираем ID и Welcome (с сохранением старых, если новые не пришли)
-        vk_id = pick(b.get("vk_group_id"), inc_cfg.get("vk_group_id"), old_config.get("vk_group_id"))
-        adm_id = pick(b.get("admin_chat_id"), inc_cfg.get("admin_chat_id"), old_config.get("admin_chat_id"))
-        # Дополнительно проверяем CamelCase для админа
-        if not adm_id:
-            adm_id = pick(b.get("adminChatId"), inc_cfg.get("adminChatId"), old_config.get("adminChatId"))
-
-        welcome = pick(b.get("welcomeMessage"), inc_cfg.get("welcomeMessage"), old_config.get("welcomeMessage"), "Здравствуйте!")
-
-        # 4. Собираем СЛОЖНЫЕ объекты (кнопки, триггеры, настройки)
-        # Если в запросе их нет (None), берем строго из базы
-        final_buttons = b.get("buttons") if b.get("buttons") is not None else old_config.get("buttons", [])
-        final_triggers = b.get("triggers") if b.get("triggers") is not None else old_config.get("triggers", [])
+        if old_r.status_code != 200 or not old_r.json():
+            raise HTTPException(404, "Bot not found")
         
-        # Глубокое слияние настроек (settings)
-        old_settings = old_config.get("settings", {})
-        new_settings = b.get("settings") or inc_cfg.get("settings") or {}
-        final_settings = {**old_settings, **new_settings}
+        curr = old_r.json()[0]
+        old_config = curr.get("config", {})
 
-        # 5. Формируем финальный конфиг, который уйдет в JSONB
+        # Входящие данные (поддержка обоих форматов передачи)
+        inc_cfg = b.get("config", {}) if isinstance(b.get("config"), dict) else {}
+
+        # Функция выбора: Новое значение -> Значение из вложенного конфига -> Старое из базы
+        def pick(val_root, val_cfg, val_old, default=None):
+            if val_root is not None: return val_root
+            if val_cfg is not None: return val_cfg
+            return val_old if val_old is not None else default
+
+        # 2. Собираем настройки (SETTINGS) - Глубокое слияние
+        # Это решит проблему с "блоком безопасности" и галочками
+        incoming_settings = b.get("settings") or inc_cfg.get("settings") or {}
+        updated_settings = {
+            **old_config.get("settings", {}),
+            **incoming_settings
+        }
+
+        # 3. Собираем всё остальное (Кнопки, Темы, Приветствие)
         ui_config = {
-            "buttons": final_buttons,
-            "triggers": final_triggers,
-            "welcomeMessage": welcome,
-            "vk_group_id": vk_id,
-            "admin_chat_id": adm_id,
-            "adminChatId": adm_id, 
-            "settings": final_settings,
-            # Сохраняем статистику и пользователей, чтобы не затереть их при сохранении настроек
+            # Если фронт прислал [] (пустой список), pick выберет его, так как это не None
+            "buttons": pick(b.get("buttons"), inc_cfg.get("buttons"), old_config.get("buttons"), []),
+            "triggers": pick(b.get("triggers"), inc_cfg.get("triggers"), old_config.get("triggers"), []),
+            "welcomeMessage": pick(b.get("welcomeMessage"), inc_cfg.get("welcomeMessage"), old_config.get("welcomeMessage"), "Здравствуйте!"),
+            "vk_group_id": pick(b.get("vk_group_id"), inc_cfg.get("vk_group_id"), old_config.get("vk_group_id")),
+            "admin_chat_id": pick(b.get("admin_chat_id"), inc_cfg.get("admin_chat_id"), old_config.get("admin_chat_id")),
+            "adminChatId": pick(b.get("admin_chat_id"), inc_cfg.get("admin_chat_id"), old_config.get("admin_chat_id")),
+            "settings": updated_settings,
+            # Обязательно сохраняем статистику, иначе она обнулится!
             "stats": old_config.get("stats", {}),
             "connectedUsers": old_config.get("connectedUsers", [])
         }
 
-        logger.info(f"✅ SAVING BOT {bid}: Admin={adm_id}, Welcome={welcome[:10]}, Buttons={len(final_buttons)}")
-
-        # Обработка токена
+        # 4. Подготовка к сохранению
         raw_token = b.get('token')
         final_token = curr.get('token')
         if raw_token and not str(raw_token).startswith('gAAAA'):
             final_token = encrypt_val(raw_token)
-        elif raw_token:
-            final_token = raw_token
 
         db_payload = {
             "name": b.get("name") or curr.get("name"),
@@ -516,12 +502,18 @@ async def save_bot(b: dict):
             "config": ui_config 
         }
 
+        # 5. Пишем в базу
         res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
-        
         if res.status_code not in [200, 201, 204]:
             raise HTTPException(res.status_code, f"DB Error: {res.text}")
 
-        return { **curr, **db_payload, "config": ui_config }
+        # 6. ВАЖНО: Возвращаем фронтенду ПОЛНЫЙ объект, чтобы он обновил состояние
+        # Мы возвращаем структуру, идентичную той, что лежит в базе
+        return {
+            **curr,        # Старые системные поля (id, created_at)
+            **db_payload,  # Новые поля (name, token, config)
+            "config": ui_config # Явно отдаем новый конфиг
+        }
 
     except Exception as e:
         logger.error(f"🚨 Save error: {e}", exc_info=True)
