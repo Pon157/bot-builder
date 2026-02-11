@@ -448,10 +448,12 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
               </div>
             )}
 
-            {/* --- ВКЛАДКА: ЧАТ --- */}
+{/* --- ВКЛАДКА: ЧАТ --- */}
             {activeTab === 'chat' && (
               <div className="bg-[#111] border border-zinc-800 rounded-[2.5rem] h-[700px] overflow-hidden flex flex-col p-8 shadow-2xl relative animate-in fade-in duration-500">
-                <h2 className="text-sm font-black text-white uppercase mb-6 flex items-center gap-2"><MessageSquare className="w-4 h-4 text-blue-500" /> CRM История сообщений</h2>
+                <h2 className="text-sm font-black text-white uppercase mb-6 flex items-center gap-2">
+                  <MessageSquare className="w-4 h-4 text-blue-500" /> CRM История сообщений
+                </h2>
                 <div className="flex-1 overflow-y-auto no-scrollbar space-y-6 pr-4">
                   {messages.length === 0 ? (
                     <p className="text-center text-zinc-700 py-32 uppercase text-[10px] font-black tracking-widest opacity-20">История пуста</p>
@@ -465,15 +467,15 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                       </div>
                     ))
                   )}
-</div>
+                </div>
               </div>
-            )}
+            )} {/* <--- ОБЯЗАТЕЛЬНО ПРОВЕРЬ ЭТУ СКОБКУ ТУТ */}
 
             {/* --- ВКЛАДКИ СТАТИСТИКИ И ЛОГОВ --- */}
             {activeTab === 'stats' && <BotStatsView bot={bot} onUpdate={onUpdate} />}
             {activeTab === 'logs' && <BotConsole botId={bot.id} />}
 
-          </div> {/* Конец контейнера для контента вкладок (был на строке 475) */}
+          </div> {/* Конец контейнера для контента вкладок */}
         </div> {/* Конец обертки анимации всей правой части */}
       </div> {/* Конец GRID основной разметки редактора */}
     </div> // Конец основного фонового div
