@@ -479,64 +479,60 @@ async def save_bot(b: dict):
         if not bid: 
             raise HTTPException(400, "ID бота потерян")
 
-        # 1. Получаем текущие данные из базы
+        # 1. Достаем текущие данные
         old_r = await db.get("bots", params={"id": f"eq.{bid}"})
         if old_r.status_code != 200:
-            raise HTTPException(old_r.status_code, "Ошибка связи с БД")
-
+            raise HTTPException(old_r.status_code, "Бот не найден")
+        
         bots = old_r.json()
         if not bots:
-            raise HTTPException(404, "Бот не найден")
-
+            raise HTTPException(404, "Бот отсутствует в базе")
+        
         curr = bots[0]
         old_config = curr.get("config", {}) or {}
 
-        # 2. Очистка BIGINT (чтобы не падал SQL)
+        # 2. Функция чистки INT (чтобы BigInt в БД не ругался)
         def clean_int(val):
             if val is None or str(val).strip() in ["", "null", "None"]: 
                 return None
-            try:
-                return int(float(str(val).strip()))
-            except:
-                return None
+            try: return int(float(str(val).strip()))
+            except: return None
 
-        # ПРИОРИТЕТ СОХРАНЕНИЯ: 
-        # Если в запросе 'b' есть ключ, берем его. Даже если там 0. 
-        # Если ключа нет совсем — берем из базы.
+        # --- КЛЮЧЕВОЙ МОМЕНТ: ПРИОРИТЕТЫ ---
+        # Мы берем новое значение ТОЛЬКО если оно пришло. 
+        # Если в b["admin_chat_id"] пришло что-то — берем. Если нет — оставляем то, что в базе.
         
-        new_admin_id = clean_int(b.get("admin_chat_id")) if "admin_chat_id" in b else \
-                       clean_int(b.get("adminChatId")) if "adminChatId" in b else \
-                       clean_int(curr.get("admin_chat_id"))
+        new_admin_id = clean_int(b.get("admin_chat_id"))
+        if new_admin_id is None and "adminChatId" in b:
+            new_admin_id = clean_int(b.get("adminChatId"))
+        if new_admin_id is None: # Если фронт вообще не прислал поле, берем из базы
+            new_admin_id = clean_int(curr.get("admin_chat_id"))
 
-        new_vk_id = clean_int(b.get("vk_group_id")) if "vk_group_id" in b else \
-                    clean_int(b.get("vkGroupId")) if "vkGroupId" in b else \
-                    clean_int(curr.get("vk_group_id"))
+        new_vk_id = clean_int(b.get("vk_group_id"))
+        if new_vk_id is None and "vkGroupId" in b:
+            new_vk_id = clean_int(b.get("vkGroupId"))
+        if new_vk_id is None:
+            new_vk_id = clean_int(curr.get("vk_group_id"))
 
-        # 3. Собираем конфиг так, чтобы НЕ ЗАТИРАТЬ старое новыми пустышками
+        # 3. Сборка конфига (JSONB)
         inc_cfg = b.get("config", {}) if isinstance(b.get("config"), dict) else {}
         
-        def safe_get(key, default_val):
-            # Проверяем все места по очереди. Если ключ существует — берем его.
-            if key in b: return b[key]
-            if key in inc_cfg: return inc_cfg[key]
-            return old_config.get(key, default_val)
-
+        # Чтобы инпуты (welcomeMessage и т.д.) не терлись:
         ui_config = {
-            "stats": old_config.get("stats", {}),
-            "buttons": safe_get("buttons", []),
-            "triggers": safe_get("triggers", []),
-            "welcomeMessage": safe_get("welcomeMessage", "Привет!"),
+            "buttons": b.get("buttons") if b.get("buttons") is not None else inc_cfg.get("buttons", old_config.get("buttons", [])),
+            "triggers": b.get("triggers") if b.get("triggers") is not None else inc_cfg.get("triggers", old_config.get("triggers", [])),
+            "welcomeMessage": b.get("welcomeMessage") if b.get("welcomeMessage") is not None else inc_cfg.get("welcomeMessage", old_config.get("welcomeMessage", "Привет!")),
             "settings": {**old_config.get("settings", {}), **(b.get("settings") or inc_cfg.get("settings") or {})},
             "connectedUsers": old_config.get("connectedUsers", [])
         }
 
-        # 4. Обработка токена (берем старый, если новый не прислали)
+        # 4. Токен
         raw_token = b.get('token')
         final_token = curr.get('token')
-        if raw_token and not str(raw_token).startswith('gAAAA') and len(str(raw_token)) > 10:
+        if raw_token and not str(raw_token).startswith('gAAAA') and len(str(raw_token)) > 5:
             final_token = encrypt_val(raw_token)
 
-        # 5. Финальный пакет для базы
+        # 5. Пакет для БД
         db_payload = {
             "name": b.get("name") or curr.get("name"),
             "token": final_token,
@@ -546,20 +542,18 @@ async def save_bot(b: dict):
             "vk_group_id": new_vk_id
         }
 
-        # 6. PATCH запрос
+        # 6. Сохранение
         res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
-        
         if res.status_code not in [200, 201, 204]:
-            logger.error(f"❌ Patch Error: {res.text}")
-            raise HTTPException(res.status_code, "Ошибка сохранения в БД")
+            raise HTTPException(res.status_code, f"Ошибка БД: {res.text}")
 
-        # Возвращаем смерженный объект
+        # 7. ВОЗВРАТ (Чтобы фронтенд сразу увидел изменения и не затирал инпуты)
         return {
-            **curr,
-            **db_payload,
+            **curr,        # Старые данные
+            **db_payload,  # Новые данные из БД
             "id": bid,
-            "adminChatId": new_admin_id,
-            "vkGroupId": new_vk_id
+            "adminChatId": new_admin_id, # Дублируем для фронта в camelCase
+            "vkGroupId": new_vk_id       # Дублируем для фронта в camelCase
         }
 
     except Exception as e:
