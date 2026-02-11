@@ -156,7 +156,7 @@ class BotManager:
             
             # В любом случае удаляем из списка активных и чистим файл конфига
             self.procs.pop(bot_id, None)
-            cfg_path = f"config_{bot_id}.json"
+            cfg_path = f"active_bots/cfg_{bot_id}.json"
             if os.path.exists(cfg_path):
                 os.remove(cfg_path)
 
@@ -198,8 +198,9 @@ async def lifespan(app: FastAPI):
                 active_bots = r.json()
                 logger.info(f"Найдено {len(active_bots)} активных ботов для автозапуска")
                 for b in active_bots:
-                    cfg = {**(b.get("config") or {}), **b}
-                    await pm.start_bot(b['id'], cfg)
+                    inner_cfg = b.get("config") or {}
+                    merged = {**inner_cfg, **b}
+                    await pm.start_bot(b['id'], merged)
             else:
                 logger.error(f"Ошибка получения списка ботов: {r.status_code}")
                 
@@ -473,9 +474,37 @@ async def save_bot(b: dict):
 
         bots = old_r.json()
         if not bots:
-            logger.warning(f"⚠️ Бот {bid} не найден. Проверь ID в таблице.")
-            raise HTTPException(404, f"Бот {bid} не найден в БД")
-        
+            # Бот не найден — делаем upsert (фронт мог вызвать save сразу после create)
+            logger.warning(f"⚠️ Бот {bid} не найден при save — выполняем upsert")
+            raw_tok = b.get("token", "")
+            enc_tok = encrypt_val(raw_tok) if raw_tok and not str(raw_tok).startswith("gAAAA") else raw_tok
+            upsert_payload = {
+                "id": bid,
+                "owner_id": b.get("owner_id", ""),
+                "name": b.get("name", "Новый бот"),
+                "token": enc_tok,
+                "platform": b.get("platform", "vk"),
+                "status": "IDLE",
+                "license_expires_at": int(time.time() * 1000) + (24 * 3600 * 1000),
+                "created_at": int(time.time() * 1000),
+                "config": {
+                    "buttons": b.get("buttons", []),
+                    "triggers": b.get("triggers", []),
+                    "welcomeMessage": b.get("welcomeMessage", "Привет!"),
+                    "settings": b.get("settings") or {"forwardToAdmin": True},
+                    "connectedUsers": []
+                },
+                "stats": {},
+                "admin_chat_id": None,
+                "vk_group_id": None
+            }
+            ins = await db.post("bots", json=upsert_payload)
+            if ins.status_code not in [200, 201, 204]:
+                logger.error(f"❌ Upsert провалился: {ins.text}")
+                raise HTTPException(500, f"Не удалось создать бота: {ins.text}")
+            logger.info(f"✅ Бот {bid} создан через upsert в save")
+            return {**upsert_payload, "id": bid}
+
         curr = bots[0]
         old_config = curr.get("config", {}) or {}
 
@@ -568,9 +597,10 @@ async def start_handler(req: dict):
             logger.warning(f"🚫 Отказ в запуске: Владелец бота {bid} заблокирован.")
             raise HTTPException(403, "Ваш аккаунт заблокирован. Запуск ботов невозможен.")
 
-    # 3. Пытаемся запустить процесс
-    # Передаем bot_data целиком, чтобы pm имел доступ к токену и конфигу
-    if await pm.start_bot(bid, bot_data) is True:
+    # 3. Мержим config (JSONB) с корневыми полями — vkbot_core ждёт platform, admin_chat_id и т.д. на верхнем уровне
+    inner_cfg = bot_data.get("config") or {}
+    merged = {**inner_cfg, **bot_data}
+    if await pm.start_bot(bid, merged) is True:
         await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "RUNNING"})
         logger.info(f"🚀 Бот {bid} успешно запущен")
         return {"status": "success"}
@@ -973,7 +1003,6 @@ async def verify_access_key(data: dict):
     raise HTTPException(401, "Ключ не подходит или уже использован")
 
 #VK CREATION
-import json # Не забудь импортировать в начале файла
 
 @app.post("/api/bots/create")
 async def create_bot_endpoint(d: dict):
@@ -1037,7 +1066,3 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
 async def ping_pong():
     return {"status": "online", "server_time": time.time()}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
