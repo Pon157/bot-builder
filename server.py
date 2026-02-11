@@ -400,11 +400,21 @@ async def get_bot_stats_api(bot_id: str):
         logger.error(f"Error in get_bot_stats: {e}")
         return {"stats": {"total_messages": 0, "active_users": 0}}
 
-@app.get("/api/bots/{uid}")
-async def get_user_bots(uid: str):
-    r = await db.get("bots", params={"owner_id": f"eq.{uid}"})
-    # При передаче на фронт токены остаются зашифрованными (безопасность!)
-    return [{**b, **(b.get("config") or {})} for b in r.json()]
+@app.get("/api/bots/{user_id}")
+async def get_bots(user_id: str):
+    res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
+    bots = res.json()
+    
+    # Распаковываем конфиг для фронтенда
+    for bot in bots:
+        cfg = bot.get("config", {})
+        bot["vk_group_id"] = cfg.get("vk_group_id")
+        bot["admin_chat_id"] = cfg.get("admin_chat_id")
+        bot["buttons"] = cfg.get("buttons", [])
+        bot["triggers"] = cfg.get("triggers", [])
+        bot["settings"] = cfg.get("settings", {})
+        
+    return bots
 
 @app.post("/api/bots/save")
 async def save_bot(b: dict):
