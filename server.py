@@ -479,7 +479,7 @@ async def save_bot(b: dict):
         if not bid: 
             raise HTTPException(400, "ID бота потерян")
 
-        # 1. Получаем текущее состояние из БД
+        # 1. Получаем текущее состояние из БД для проверки существования и получения старых данных
         old_r = await db.get("bots", params={"id": f"eq.{bid}"})
         if old_r.status_code != 200:
             logger.error(f"❌ Supabase error: {old_r.text}")
@@ -487,11 +487,13 @@ async def save_bot(b: dict):
 
         bots = old_r.json()
         
-        # --- ЛОГИКА UPSERT (Если бота нет в базе) ---
+        # --- ЛОГИКА СОЗДАНИЯ (UPSERT), если бота нет в базе ---
         if not bots:
-            logger.warning(f"⚠️ Бот {bid} не найден — выполняем upsert")
+            logger.warning(f"⚠️ Бот {bid} не найден — выполняем создание (upsert)")
             raw_tok = b.get("token", "")
+            # Шифруем токен, если он пришел открытым текстом
             enc_tok = encrypt_val(raw_tok) if raw_tok and not str(raw_tok).startswith("gAAAA") else raw_tok
+            
             upsert_payload = {
                 "id": bid,
                 "owner_id": b.get("owner_id", ""),
@@ -512,45 +514,44 @@ async def save_bot(b: dict):
                 "admin_chat_id": None,
                 "vk_group_id": None
             }
-            await db.post("bots", json=upsert_payload)
+            ins_res = await db.post("bots", json=upsert_payload)
+            if ins_res.status_code not in [200, 201, 204]:
+                 raise HTTPException(ins_res.status_code, f"Ошибка создания: {ins_res.text}")
             return {**upsert_payload, "id": bid}
 
+        # --- ЛОГИКА ОБНОВЛЕНИЯ СУЩЕСТВУЮЩЕГО БОТА ---
         curr = bots[0]
         old_config = curr.get("config", {}) or {}
         inc_cfg = b.get("config", {}) if isinstance(b.get("config"), dict) else {}
         
-        # Определяем платформу (из запроса или из базы)
+        # Определяем платформу (приоритет запросу, иначе из базы)
         platform = b.get('platform') or curr.get('platform') or 'vk'
 
-        # 2. Функция очистки BIGINT
+        # Функция для превращения строк в числа (BigInt для БД)
         def clean_int(val):
             if val is None or str(val).strip() in ["", "null", "None"]: 
                 return None
             try: return int(float(str(val).strip()))
             except: return None
 
-        # 3. РАЗДЕЛЬНАЯ ЛОГИКА СОХРАНЕНИЯ ПО ПЛАТФОРМАМ (Исправлено)
-        # Инициализируем текущими значениями из базы
-        new_admin_id = curr.get("admin_chat_id")
-        new_vk_id = curr.get("vk_group_id")
+        # 3. УМНОЕ РАСПРЕДЕЛЕНИЕ ID ПО КОЛОНКАМ
+        # Мы ищем входящие ID во всех возможных ключах (camelCase и snake_case)
+        incoming_tg = b.get("adminChatId") or b.get("admin_chat_id") or inc_cfg.get("adminChatId") or inc_cfg.get("admin_chat_id")
+        incoming_vk = b.get("vkGroupId") or b.get("vk_group_id") or inc_cfg.get("vkGroupId") or inc_cfg.get("vk_group_id")
 
-        if platform == 'tg':
-            # Если бот ТГ — ищем только ключи для ТГ
-            tg_raw = b.get("adminChatId") or b.get("admin_chat_id") or inc_cfg.get("adminChatId") or inc_cfg.get("admin_chat_id")
-            if tg_raw is not None or "adminChatId" in b or "admin_chat_id" in b:
-                new_admin_id = clean_int(tg_raw)
-            # Для ТГ бота колонка ВК должна быть пустой (или не меняться)
-            new_vk_id = None 
+        # Если значение пришло в запросе — чистим его. Если НЕ ПРИШЛО — берем то, что уже лежит в БД.
+        # Это предотвращает затирание данных при частичном сохранении.
+        if incoming_tg is not None or "adminChatId" in b or "admin_chat_id" in b:
+            new_admin_id = clean_int(incoming_tg)
+        else:
+            new_admin_id = clean_int(curr.get("admin_chat_id"))
 
-        elif platform == 'vk':
-            # Если бот ВК — ищем только ключи для ВК
-            vk_raw = b.get("vkGroupId") or b.get("vk_group_id") or inc_cfg.get("vkGroupId") or inc_cfg.get("vk_group_id")
-            if vk_raw is not None or "vkGroupId" in b or "vk_group_id" in b:
-                new_vk_id = clean_int(vk_raw)
-            # Для ВК бота колонка ТГ должна быть пустой
-            new_admin_id = None
+        if incoming_vk is not None or "vkGroupId" in b or "vk_group_id" in b:
+            new_vk_id = clean_int(incoming_vk)
+        else:
+            new_vk_id = clean_int(curr.get("vk_group_id"))
 
-        # 4. Собираем конфиг (JSONB)
+        # 4. СОБИРАЕМ КОНФИГ (JSONB)
         def get_val(key, default=None):
             val = b.get(key)
             if val is None: val = inc_cfg.get(key)
@@ -566,42 +567,42 @@ async def save_bot(b: dict):
             "connectedUsers": old_config.get("connectedUsers", [])
         }
 
-        # 5. Токен
+        # 5. ТОКЕН (Шифруем только если он новый/измененный)
         raw_token = b.get('token')
         final_token = curr.get('token')
         if raw_token and not str(raw_token).startswith('gAAAA') and len(str(raw_token)) > 5:
             final_token = encrypt_val(raw_token)
 
-        # 6. Пакет для PATCH (Колонки строго распределены)
+        # 6. ФОРМИРУЕМ ПАКЕТ ДЛЯ PATCH (Колонки строго как в Supabase)
         db_payload = {
             "name": b.get("name") or curr.get("name"),
             "token": final_token,
             "platform": platform,
             "config": ui_config,
-            "admin_chat_id": new_admin_id, # Сюда попадет только если platform == 'tg'
-            "vk_group_id": new_vk_id       # Сюда попадет только если platform == 'vk'
+            "admin_chat_id": new_admin_id, # TG ID идет сюда
+            "vk_group_id": new_vk_id       # VK ID идет сюда
         }
 
-        # 7. Отправка в БД
-        logger.info(f"💾 Saving bot {bid} ({platform}). TG Column: {new_admin_id}, VK Column: {new_vk_id}")
+        # 7. ОТПРАВКА В БАЗУ ДАННЫХ
+        logger.info(f"💾 Saving bot {bid} ({platform}). Payload TG: {new_admin_id}, VK: {new_vk_id}")
         res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
         
         if res.status_code not in [200, 201, 204]:
             logger.error(f"❌ Patch error: {res.text}")
-            raise HTTPException(res.status_code, f"Ошибка БД: {res.text}")
+            raise HTTPException(res.status_code, f"Ошибка сохранения в БД: {res.text}")
 
-        # 8. Возврат для фронтенда (с поддержкой обоих форматов)
+        # 8. ВОЗВРАТ (Отдаем фронтенду актуальные данные)
         return {
             **curr,
             **db_payload,
             **ui_config,
-            "adminChatId": new_admin_id,
+            "adminChatId": new_admin_id, # Возвращаем оба варианта ключей для совместимости
             "vkGroupId": new_vk_id,
             "id": bid
         }
 
     except Exception as e:
-        logger.error(f"🚨 Ошибка сохранения: {e}", exc_info=True)
+        logger.error(f"🚨 Критическая ошибка сохранения: {e}", exc_info=True)
         raise HTTPException(500, str(e))
         
 @app.post("/api/bots/start")
