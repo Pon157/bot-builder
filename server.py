@@ -482,14 +482,14 @@ async def save_bot(b: dict):
         # 1. Достаем то, что СЕЙЧАС лежит в базе
         old_r = await db.get("bots", params={"id": f"eq.{bid}"})
         
-        # Логируем для отладки, если не нашли
         if old_r.status_code != 200:
             logger.error(f"❌ Supabase error: {old_r.text}")
             raise HTTPException(old_r.status_code, "Ошибка связи с БД")
 
         bots = old_r.json()
+        
+        # Если бота нет в базе, создаем его (upsert)
         if not bots:
-            # Бот не найден — делаем upsert (фронт мог вызвать save сразу после create)
             logger.warning(f"⚠️ Бот {bid} не найден при save — выполняем upsert")
             raw_tok = b.get("token", "")
             enc_tok = encrypt_val(raw_tok) if raw_tok and not str(raw_tok).startswith("gAAAA") else raw_tok
@@ -517,21 +517,29 @@ async def save_bot(b: dict):
             if ins.status_code not in [200, 201, 204]:
                 logger.error(f"❌ Upsert провалился: {ins.text}")
                 raise HTTPException(500, f"Не удалось создать бота: {ins.text}")
-            logger.info(f"✅ Бот {bid} создан через upsert в save")
             return {**upsert_payload, "id": bid}
 
         curr = bots[0]
         old_config = curr.get("config", {}) or {}
 
-        # 2. Обработка BIGINT колонок (ВАЖНО для твоей таблицы)
+        # 2. ВАЖНО: Обработка BIGINT колонок с ПРИОРИТЕТОМ НОВЫХ ДАННЫХ
         def clean_int(val):
-            if val is None or str(val).strip() == "" or val == "null": return None
-            try: return int(val)
-            except: return None
+            if val is None or str(val).strip() == "" or val == "null": 
+                return None
+            try: 
+                return int(str(val).strip())
+            except: 
+                return None
 
-        # Ищем новые значения или оставляем старые
-        new_admin_id = clean_int(b.get("admin_chat_id") or b.get("adminChatId") or curr.get("admin_chat_id"))
-        new_vk_id = clean_int(b.get("vk_group_id") or b.get("vkGroupId") or curr.get("vk_group_id"))
+        # Сначала проверяем, пришло ли новое значение с фронтенда (b.get или b.get('config'))
+        # Если пришло — используем его. Если нет — берем старое из базы.
+        new_admin_id = clean_int(b.get("admin_chat_id") or b.get("adminChatId"))
+        if new_admin_id is None:
+            new_admin_id = clean_int(curr.get("admin_chat_id"))
+
+        new_vk_id = clean_int(b.get("vk_group_id") or b.get("vkGroupId"))
+        if new_vk_id is None:
+            new_vk_id = clean_int(curr.get("vk_group_id"))
 
         # 3. Собираем конфиг (JSONB)
         inc_cfg = b.get("config", {}) if isinstance(b.get("config"), dict) else {}
@@ -553,27 +561,30 @@ async def save_bot(b: dict):
 
         # 4. Обработка токена
         raw_token = b.get('token')
-        final_token = curr.get('token')
+        final_token = curr.get('token') # По умолчанию старый (зашифрованный)
+        
+        # Шифруем только если пришел новый чистый токен
         if raw_token and not str(raw_token).startswith('gAAAA'):
             final_token = encrypt_val(raw_token)
 
-        # 5. Собираем финальный пакет (С учетом колонок в твоем SQL)
+        # 5. Собираем финальный пакет для PATCH
         db_payload = {
             "name": b.get("name") or curr.get("name"),
             "token": final_token,
             "platform": b.get('platform') or curr.get('platform'),
             "config": ui_config,
-            "admin_chat_id": new_admin_id, # Пишем в колонку bigint
-            "vk_group_id": new_vk_id      # Пишем в колонку bigint
+            "admin_chat_id": new_admin_id, 
+            "vk_group_id": new_vk_id      
         }
 
-        # 6. Сохраняем
+        # 6. Сохраняем в Supabase
         res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
         
         if res.status_code not in [200, 201, 204]:
+            logger.error(f"❌ Ошибка PATCH: {res.text}")
             raise HTTPException(res.status_code, f"Ошибка сохранения: {res.text}")
 
-        # Возвращаем всё в корень для фронтенда
+        # Возвращаем обновленный объект для фронтенда
         return {
             **curr,
             **db_payload,
@@ -584,7 +595,7 @@ async def save_bot(b: dict):
         }
 
     except HTTPException as he:
-        raise he # Прокидываем 404/400 как есть
+        raise he
     except Exception as e:
         logger.error(f"🚨 Ошибка сохранения: {e}", exc_info=True)
         raise HTTPException(500, str(e))
