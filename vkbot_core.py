@@ -575,52 +575,28 @@ class BotInstance:
             await self.log_and_update(user['id'], user['first_name'], m.text or "[Медиа]")
 
     async def run_instance(self):
-    logger.info(f"[*] Бот VK {self.bot_id} запускается...")
-    
-    await self.license_checker_logic()
-    await self.core_handlers_setup()
+        logger.info(f"[*] Бот VK {self.bot_id} запускается...")
+        
+        # --- ПРОВЕРКА ТОКЕНА ---
+        try:
+            # Делаем пробный запрос к API ВК
+            group_info = await self.bot.api.groups.get_by_id()
+            logger.info(f"✅ Токен валиден! Работаем от имени группы: {group_info[0].name}")
+        except Exception as e:
+            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА ТОКЕНА: {e}")
+            logger.error("Проверь, расшифрован ли токен и включен ли Long Poll в настройках группы.")
+            return # Прекращаем запуск
+        # -----------------------
 
-    logger.info(f"[*] Бот VK {self.bot_id} готов. AdminID: {self.admin_chat_id}")
+        await self.license_checker_logic()
+        await self.core_handlers_setup()
 
-    # Запускаем фоновые задачи
-    asyncio.create_task(self.database_sync_worker())
-    asyncio.create_task(self.daily_stats_rotator())
-    asyncio.create_task(self.license_checker())
+        logger.info(f"[*] Бот VK {self.bot_id} готов. AdminID: {self.admin_chat_id}")
 
-    # Просто вызываем поллинг без лишних оберток, которые могут закрыть loop раньше времени
-    await self.bot.run_polling()
+        # Запускаем фоновые задачи
+        asyncio.create_task(self.database_sync_worker())
+        asyncio.create_task(self.daily_stats_rotator())
+        asyncio.create_task(self.license_checker())
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python3 vkbot_core.py <config_path>")
-        sys.exit(1)
-
-    cfg_path = sys.argv[1]
-    try:
-        with open(cfg_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-    except Exception as e:
-        logger.error(f"Не удалось прочитать конфиг {cfg_path}: {e}")
-        sys.exit(1)
-
-    async def start():
-        await instance.run_instance()
-
-    # Попробуй запустить вот так:
-    try:
-        # Это заставит vkbottle взять управление на себя корректно
-        asyncio.get_event_loop().run_until_complete(start())
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен пользователем")
-    except Exception as e:
-        logger.error(f"🚨 Критическая ошибка: {e}")
-
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(main())
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен вручную (Ctrl+C)")
-    finally:
-        # Даем фоновым задачам шанс закрыться без Warning
-        loop.stop()
-
+        logger.info("🚀 Запуск Long Poll поллинга...")
+        await self.bot.run_polling()
