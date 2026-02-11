@@ -423,7 +423,7 @@ async def get_bot_stats_api(bot_id: str):
         logger.error(f"Error in get_bot_stats: {e}")
         return {"stats": {"total_messages": 0, "active_users": 0}}
 
-@app.get("/api/bots/{user_id}")
+@@app.get("/api/bots/{user_id}")
 async def get_user_bots(user_id: str):
     try:
         res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
@@ -443,19 +443,24 @@ async def get_user_bots(user_id: str):
                 except:
                     cfg = {}
             
-            # 2. РАСПАКОВКА ДЛЯ ФРОНТЕНДА
-            # --- ВОТ ЭТОЙ СТРОКИ НЕ ХВАТАЛО ---
-            bot["welcomeMessage"] = cfg.get("welcomeMessage") or ""
-            # ----------------------------------
+            # 2. РАСПАКОВКА ID (Сначала из колонок БД, потом из конфига)
+            # Это самое важное: берем значение прямо из bot["admin_chat_id"], 
+            # которое пришло из таблицы Supabase
+            db_admin_id = bot.get("admin_chat_id")
+            db_vk_id = bot.get("vk_group_id")
+            
+            # Если в колонках пусто, проверяем внутри конфига (на всякий случай)
+            final_admin_id = db_admin_id if db_admin_id is not None else cfg.get("admin_chat_id") or cfg.get("adminChatId")
+            final_vk_id = db_vk_id if db_vk_id is not None else cfg.get("vk_group_id") or cfg.get("vkGroupId")
 
-            bot["vk_group_id"] = cfg.get("vk_group_id") or ""
-            bot["vkGroupId"] = cfg.get("vk_group_id") or ""
-            
-            # Убеждаемся, что админ ID есть во всех вариантах написания
-            adm_id = cfg.get("admin_chat_id") or cfg.get("adminChatId") or ""
-            bot["admin_chat_id"] = adm_id
-            bot["adminChatId"] = adm_id
-            
+            # 3. ПРИСВАИВАЕМ ВСЕ ВАРИАНТЫ ДЛЯ ФРОНТЕНДА
+            bot["admin_chat_id"] = final_admin_id
+            bot["adminChatId"] = final_admin_id
+            bot["vk_group_id"] = final_vk_id
+            bot["vkGroupId"] = final_vk_id
+
+            # Остальные поля
+            bot["welcomeMessage"] = cfg.get("welcomeMessage") or ""
             bot["buttons"] = cfg.get("buttons") if cfg.get("buttons") is not None else []
             bot["triggers"] = cfg.get("triggers") if cfg.get("triggers") is not None else []
             
@@ -533,7 +538,7 @@ async def save_bot(b: dict):
             except: return None
 
         # 3. УМНОЕ РАСПРЕДЕЛЕНИЕ ID ПО ПЛАТФОРМАМ
-        # Ищем любое входящее числовое ID в запросе
+        # Ищем входящий ID: сначала в корне, потом в конфиге
         raw_incoming_id = (
             b.get("adminChatId") or b.get("admin_chat_id") or 
             b.get("vkGroupId") or b.get("vk_group_id") or
@@ -544,15 +549,15 @@ async def save_bot(b: dict):
         new_admin_id = curr.get("admin_chat_id")
         new_vk_id = curr.get("vk_group_id")
 
-        # Если пришло новое значение — распределяем его по платформе
+        # Если пришло новое значение — распределяем его строго по платформе
         if raw_incoming_id is not None:
             val = clean_int(raw_incoming_id)
             if platform == 'vk':
                 new_vk_id = val
-                new_admin_id = None # Очищаем чужую колонку
+                new_admin_id = None # Очищаем ТГ колонку для бота ВК
             else: # tg
                 new_admin_id = val
-                new_vk_id = None # Очищаем чужую колонку
+                new_vk_id = None    # Очищаем ВК колонку для бота ТГ
 
         # 4. СОБИРАЕМ КОНФИГ (JSONB)
         def get_val(key, default=None):
@@ -561,22 +566,26 @@ async def save_bot(b: dict):
             if val is None: val = old_config.get(key)
             return val if val is not None else default
 
+        # Специальная проверка для кнопок, чтобы они всегда были списком
+        btns = get_val("buttons", [])
+        if not isinstance(btns, list): btns = []
+
         ui_config = {
             "stats": old_config.get("stats", {}),
-            "buttons": get_val("buttons", []),
+            "buttons": btns,
             "triggers": get_val("triggers", []),
             "welcomeMessage": get_val("welcomeMessage", "Привет!"),
             "settings": {**old_config.get("settings", {}), **(b.get("settings") or inc_cfg.get("settings") or {})},
             "connectedUsers": old_config.get("connectedUsers", [])
         }
 
-        # 5. ТОКЕН
+        # 5. ТОКЕН (Берем новый или оставляем старый зашифрованный)
         raw_token = b.get('token')
         final_token = curr.get('token')
         if raw_token and not str(raw_token).startswith('gAAAA') and len(str(raw_token)) > 5:
             final_token = encrypt_val(raw_token)
 
-        # 6. ФОРМИРУЕМ ПАКЕТ ДЛЯ PATCH
+        # 6. ФОРМИРУЕМ ПАКЕТ ДЛЯ PATCH (Колонки таблицы Supabase)
         db_payload = {
             "name": b.get("name") or curr.get("name"),
             "token": final_token,
@@ -587,14 +596,14 @@ async def save_bot(b: dict):
         }
 
         # 7. ОТПРАВКА В БАЗУ ДАННЫХ
-        logger.info(f"💾 Saving bot {bid} ({platform}). TG Col: {new_admin_id}, VK Col: {new_vk_id}")
+        logger.info(f"💾 Saving bot {bid} ({platform}). DB Payload: TG={new_admin_id}, VK={new_vk_id}")
         res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
         
         if res.status_code not in [200, 201, 204]:
             logger.error(f"❌ Patch error: {res.text}")
             raise HTTPException(res.status_code, f"Ошибка сохранения в БД: {res.text}")
 
-        # 8. ВОЗВРАТ
+        # 8. ВОЗВРАТ АКТУАЛЬНЫХ ДАННЫХ
         return {
             **curr,
             **db_payload,
