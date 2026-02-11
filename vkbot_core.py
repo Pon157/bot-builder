@@ -574,7 +574,7 @@ class BotInstance:
             await self.forward_to_admin(m, user, is_first=is_new)
             await self.log_and_update(user['id'], user['first_name'], m.text or "[Медиа]")
 
-async def run_instance(self):
+    async def run_instance(self):
         """
         Основной метод запуска логики бота.
         Вызывается из блока __main__.
