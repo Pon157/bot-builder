@@ -291,8 +291,11 @@ class BotInstance:
                             )
 
                             # 4. ОБНОВЛЯЕМ ПАМЯТЬ БОТА
-                            # Чтобы бот сразу "увидел" новые кнопки без рестарта
-                            self.apply_config({"config": remote_config})
+                            # Передаём полный merged-конфиг, чтобы не потерять admin_chat_id и vk_group_id
+                            self.apply_config({
+                                **remote_data,          # корневые поля (admin_chat_id, vk_group_id, token...)
+                                "config": remote_config # вложенный конфиг (buttons, triggers, settings...)
+                            })
 
                     self.sync_queue.task_done()
                 except asyncio.TimeoutError:
@@ -369,19 +372,23 @@ class BotInstance:
         header_text = format_admin_header(user, self.settings, is_first, btn_text)
         
         try:
-            # В ВК "пересылка" делается через forward_messages=[id]
-            # Мы отправляем сообщение админу, прикрепляя оригинальное сообщение
+            # В ВК пересылка сообщений между чатами требует указания peer_id источника.
+            # forward_messages работает только внутри одного диалога.
+            # Используем forward с указанием peer_id исходного чата (от кого пришло).
             sent_msg_id = await self.bot.api.messages.send(
                 peer_id=self.admin_chat_id,
                 message=header_text,
-                forward_messages=[m.id],
+                forward={
+                    "peer_id": m.peer_id,
+                    "message_ids": [m.id],
+                    "is_reply": False
+                },
                 random_id=0
             )
-            
+
             # Сохраняем маппинг: ID сообщения у админа -> ID пользователя
-            # Это нужно, чтобы админ мог ответить реплаем
             self.msg_map[sent_msg_id] = user['id']
-            
+
         except Exception as e:
             logger.error(f"Forwarding Error: {e}")
 
@@ -575,20 +582,20 @@ class BotInstance:
         except Exception as e:
             logger.error(f"Ошибка Init: {e}")
 
-        # Запускаем фоновые задачи
-        asyncio.create_task(self.database_sync_worker())
-        asyncio.create_task(self.daily_stats_rotator())
-        asyncio.create_task(self.license_checker())
-        
+        # Сначала регистрируем хендлеры
         await self.core_handlers_setup()
-        
+
         logger.info(f"[*] Бот VK {self.bot_id} готов. AdminID: {self.admin_chat_id}")
-        
-        try: 
-            # Вместо простого await, используем конструкцию, которая не даст vkbottle закрыть loop
+
+        # Запускаем фоновые задачи ПОСЛЕ того как event loop уже работает
+        loop = asyncio.get_event_loop()
+        loop.create_task(self.database_sync_worker())
+        loop.create_task(self.daily_stats_rotator())
+        loop.create_task(self.license_checker())
+
+        try:
             await self.bot.run_polling()
         except Exception as e:
-            # Если это та самая ошибка закрытия loop - просто игнорим её, она не критична
             if "close a running event loop" not in str(e):
                 logger.error(f"Polling Error: {e}")
         finally:
@@ -598,25 +605,17 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python3 vkbot_core.py <config_path>")
         sys.exit(1)
-        
+
     cfg_path = sys.argv[1]
-    with open(cfg_path, 'r', encoding='utf-8') as f:
-        config = json.load(f)
-    
-    # ВНИМАНИЕ: Здесь должно быть имя твоего класса из начала файла
-    bot_engine = BotCoreEngineVK(config) 
+    try:
+        with open(cfg_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except Exception as e:
+        logger.error(f"Не удалось прочитать конфиг {cfg_path}: {e}")
+        sys.exit(1)
 
-    loop = asyncio.get_event_loop()
-    
-    # Настраиваем хендлеры
-    loop.run_until_complete(bot_engine.core_handlers_setup())
-    
-    # Запускаем фоновые задачи
-    loop.create_task(bot_engine.database_sync_worker())
-    loop.create_task(bot_engine.daily_stats_rotator())
-    loop.create_task(bot_engine.license_checker())
+    async def main():
+        instance = BotInstance(config)
+        await instance.run_instance()
 
-    logger.info(f"[*] Бот VK {bot_engine.bot_id} готов к работе. AdminID: {bot_engine.admin_chat_id}")
-
-    # Запуск поллинга vkbottle
-    bot_engine.bot.run_forever()
+    asyncio.run(main())
