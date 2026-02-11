@@ -179,11 +179,16 @@ class BotInstance:
         }
 
     async def database_sync_worker(self):
-        """Воркер с защитой от затирания внешних настроек"""
         async with httpx.AsyncClient(timeout=10.0) as client:
-            headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
+            headers = {
+                "apikey": self.sb_key,
+                "Authorization": f"Bearer {self.sb_key}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal"
+            }
             while self.is_running:
                 try:
+                    # Ждем задачу из очереди (например, "sync_state")
                     item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
                     action, payload = item
                     
@@ -191,29 +196,46 @@ class BotInstance:
                         await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
                     
                     elif action == "sync_state":
-                        # 1. СНАЧАЛА ПОЛУЧАЕМ АКТУАЛЬНЫЙ КОНФИГ ИЗ БАЗЫ
-                        res_get = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
-                        db_data = res_get.json()[0] if res_get.status_code == 200 and res_get.json() else {}
-                        db_config = db_data.get("config", {})
-
-                        # 2. ОБЪЕДИНЯЕМ: Системные данные бота + Настройки из админки
-                        # Это не даст боту затереть кнопки, измененные в админке
-                        new_config = {
-                            **db_config, # Берем всё, что сейчас в базе (кнопки, триггеры, настройки)
-                            "connectedUsers": self.users_list, # Обновляем только то, что знает бот
-                            "stats": self.stats_data,
-                            "admin_chat_id": self.admin_chat_id,
-                            "adminChatId": self.admin_chat_id
-                        }
-                        
-                        await client.patch(
+                        # 1. ПОЛУЧАЕМ актуальный конфиг из базы прямо сейчас
+                        # Это нужно, чтобы не затереть изменения из админки
+                        res = await client.get(
                             f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", 
-                            json={"config": new_config}, 
                             headers=headers
                         )
+                        
+                        if res.status_code == 200 and res.json():
+                            remote_data = res.json()[0]
+                            remote_config = remote_data.get("config", {})
+                            
+                            # 2. ОБЪЕДИНЯЕМ данные
+                            # Мы оставляем кнопки, триггеры и настройки из БАЗЫ (админки)
+                            # Но обновляем статистику и список пользователей из ПАМЯТИ бота
+                            new_config = {
+                                **remote_config, # Всё что в базе (кнопки, темы, приветствие)
+                                "stats": self.stats_data, # Статистика от бота
+                                "connectedUsers": self.users_list, # Юзеры от бота
+                                "admin_chat_id": self.admin_chat_id,
+                                "adminChatId": self.admin_chat_id
+                            }
+
+                            # 3. ОТПРАВЛЯЕМ обратно
+                            await client.patch(
+                                f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", 
+                                json={"config": new_config}, 
+                                headers=headers
+                            )
+                            
+                            # 4. ОБНОВЛЯЕМ ПАМЯТЬ БОТА
+                            # Чтобы бот сразу узнал о новых кнопках из админки
+                            self.apply_config({"config": remote_config})
+                    
                     self.sync_queue.task_done()
-                except asyncio.TimeoutError: continue
-                except Exception as e: logger.error(f"Sync error: {e}")
+                except asyncio.TimeoutError:
+                    continue
+                except Exception as e:
+                    logger.error(f"Sync Worker Error: {e}")
+                    try: self.sync_queue.task_done()
+                    except: pass
         
         # --- ИНИЦИАЛИЗАЦИЯ СТАТИСТИКИ ---
         # Мы НЕ создаем статы с нуля, а вытягиваем их из пришедшего конфига (Supabase)
