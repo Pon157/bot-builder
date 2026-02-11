@@ -404,48 +404,37 @@ async def get_user_data(user_id: str):
 
 @app.get("/api/bots/stats/{bot_id}")
 async def get_bot_stats_api(bot_id: str):
-    """
-    Получает реальную статистику из колонки stats таблицы bots.
-    """
     try:
-        # 1. Запрашиваем данные конкретного бота
+        # 1. Тянем бота из БД
         res = await db.get("bots", params={"id": f"eq.{bot_id}"})
-        
         if res.status_code != 200 or not res.json():
-            logger.warning(f"⚠️ Бот {bot_id} не найден для статистики")
             return {"stats": {"history": [], "totalMessages": 0}}
-
+        
         bot_data = res.json()[0]
         
-        # 2. Достаем поле stats (в Supabase это обычно тип JSONB)
-        db_stats = bot_data.get("stats")
-        
-        # Если данные пришли строкой (иногда бывает при кривом импорте), парсим в dict
-        if isinstance(db_stats, str):
-            try:
-                db_stats = json.loads(db_stats)
-            except:
-                db_stats = {}
-        
-        if not db_stats:
-            db_stats = {}
+        # 2. Получаем поле stats
+        # В Supabase это JSONB, но мы подстрахуемся на случай строки
+        s = bot_data.get("stats")
+        if isinstance(s, str):
+            try: s = json.loads(s)
+            except: s = {}
+        if not s: s = {}
 
-        # 3. Формируем ответ СТРОГО в том формате, который ты прислал
-        # Фронтенд-графики заработают, так как мы отдаем массив 'history'
+        # 3. Формируем ответ ровно так, как ждет фронтенд
+        # Если в базе нет ключа history, отдаем пустой список, чтобы график не упал
         return {
             "stats": {
-                "history": db_stats.get("history", []),
-                "bannedCount": db_stats.get("bannedCount", 0),
-                "incomingToday": db_stats.get("incomingToday", 0),
-                "outgoingToday": db_stats.get("outgoingToday", 0),
-                "totalMessages": db_stats.get("totalMessages", 0),
-                "activeUsers24h": db_stats.get("activeUsers24h", 0)
+                "history": s.get("history", []),
+                "bannedCount": s.get("bannedCount", 0),
+                "incomingToday": s.get("incomingToday", 0),
+                "outgoingToday": s.get("outgoingToday", 0),
+                "totalMessages": s.get("totalMessages", 0),
+                "activeUsers24h": s.get("activeUsers24h", 0)
             }
         }
-
     except Exception as e:
-        logger.error(f"🚨 Ошибка API статистики: {e}")
-        return {"stats": {"history": [], "totalMessages": 0, "error": str(e)}}
+        logger.error(f"🚨 Error fetching stats for {bot_id}: {e}")
+        return {"stats": {"history": [], "totalMessages": 0}}
         
 @app.get("/api/bots/{user_id}")
 async def get_user_bots(user_id: str):
