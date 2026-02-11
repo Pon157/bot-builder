@@ -1,3 +1,7 @@
+
+Dashboard 1 · TSX
+Copy
+
 import React, { useState } from 'react';
 import { BotConfig } from '../types';
 
@@ -84,9 +88,13 @@ const Dashboard: React.FC<DashboardProps> = ({ bots, onSelectBot, onAddBot }) =>
                   <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${bot.status === 'RUNNING' ? 'bg-blue-500/10 text-blue-500' : 'bg-zinc-900 text-zinc-600'}`}>
                       {/* Меняем иконку в зависимости от платформы */}
                       {bot.platform === 'vk' ? (
-                        <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M13.162 18.994c-6.098 0-9.57-4.172-9.714-11.107h3.047c.101 5.088 2.339 7.243 4.116 7.688V7.887H13.5v4.39c1.673-.18 3.514-2.185 4.102-4.39h2.903a9.408 9.408 0 01-3.763 5.483 9.771 9.771 0 014.436 5.624h-3.235c-.636-1.992-2.228-3.528-4.557-3.757v3.757h-.224z"/></svg>
+                        <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                          <path d="M13.162 18.994c-6.098 0-9.57-4.172-9.714-11.107h3.047c.101 5.088 2.339 7.243 4.116 7.688V7.887H13.5v4.39c1.673-.18 3.514-2.185 4.102-4.39h2.903a9.408 9.408 0 01-3.763 5.483 9.771 9.771 0 014.436 5.624h-3.235c-.636-1.992-2.228-3.528-4.557-3.757v3.757h-.224z"/>
+                        </svg>
                       ) : (
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                          <path d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
                       )}
                   </div>
                   <span className={`text-[9px] px-3 py-1 rounded-full font-black uppercase ${bot.status === 'RUNNING' ? 'bg-green-500/10 text-green-500' : 'bg-zinc-800 text-zinc-500'}`}>
