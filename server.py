@@ -959,6 +959,57 @@ async def verify_access_key(data: dict):
             logger.warning(f"❌ Ключ {input_key} принадлежит {key_target}, а запрошен для {requested_bot}")
 
     raise HTTPException(401, "Ключ не подходит или уже использован")
+
+#VK CREATION
+@app.post("/api/bots/create")
+async def create_bot_endpoint(d: dict):
+    try:
+        owner_id = d.get('owner_id')
+        name = d.get('name', 'New Bot')
+        token = d.get('token', '')
+        platform = d.get('platform', 'telegram') # По умолчанию TG
+
+        if not owner_id or not token:
+            raise HTTPException(400, "Owner ID and Token are required")
+
+        # Генерируем новый ID для бота (например, b_ + 8 символов)
+        bot_id = f"b_{secrets.token_hex(4)}"
+        
+        # Шифруем токен перед сохранением
+        encrypted_token = encrypt_val(token)
+
+        new_bot_payload = {
+            "id": bot_id,
+            "owner_id": owner_id,
+            "name": name,
+            "token": encrypted_token,
+            "platform": platform, # <--- Сохраняем платформу!
+            "status": "IDLE",
+            "created_at": int(time.time() * 1000),
+            "license_expires_at": int(time.time() * 1000) + (24 * 3600 * 1000), # +1 день пробный
+            "config": {
+                "buttons": [],
+                "triggers": [],
+                "settings": {
+                    "forwardToAdmin": True,
+                    "antiSpam": False,
+                    "showHeaderId": True
+                }
+            }
+        }
+
+        # Сохраняем в Supabase
+        res = await db.post("bots", json=new_bot_payload)
+        
+        if res.status_code not in [200, 201, 204]:
+            logger.error(f"DB Error on create: {res.text}")
+            raise HTTPException(res.status_code, f"Database error: {res.text}")
+
+        return new_bot_payload
+
+    except Exception as e:
+        logger.error(f"🚨 Create Bot Error: {e}")
+        raise HTTPException(500, str(e))
     
 # ==========================================
 # 8. СИСТЕМНЫЕ
