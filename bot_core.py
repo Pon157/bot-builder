@@ -142,16 +142,23 @@ class BotInstance:
             await asyncio.sleep(120)
 
     def apply_config(self, data: dict):
-        """Парсинг конфигурации (без дублей)"""
+        """Парсинг конфигурации (исправленный, читает все форматы ID)"""
+        # 1. Объединяем корневой объект и вложенный config, чтобы искать везде
         raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
         full_cfg = {**data, **raw_cfg} 
         
+        # 2. ИЩЕМ ID ГРУППЫ ВК (Сохраняем в память бота)
+        # Ищем и snake_case (от сервера), и CamelCase (от старых версий)
+        self.vk_group_id = full_cfg.get('vk_group_id') or full_cfg.get('vkGroupId')
+
+        # 3. ИЩЕМ ID АДМИНА
         try:
-            admin_id_raw = full_cfg.get('adminChatId')
+            admin_id_raw = full_cfg.get('admin_chat_id') or full_cfg.get('adminChatId')
             self.admin_chat_id = int(str(admin_id_raw).strip()) if admin_id_raw else None
         except ValueError:
             self.admin_chat_id = None
 
+        # 4. Остальные настройки
         self.buttons = full_cfg.get('buttons', [])
         self.triggers = full_cfg.get('triggers', [])
         self.welcome_text = full_cfg.get('welcomeMessage', 'Здравствуйте!')
@@ -164,6 +171,7 @@ class BotInstance:
         self.users_list = full_cfg.get('connectedUsers', [])
         self.license_expires_at = full_cfg.get('license_expires_at', 0)
         
+        # 5. Статистика (без изменений)
         incoming_stats = full_cfg.get('stats')
         if isinstance(incoming_stats, dict):
             self.stats_data = {
@@ -305,7 +313,7 @@ class BotInstance:
                 await asyncio.sleep(60)
                 
     async def database_sync_worker(self):
-        """Воркер синхронизации с защитой от падения"""
+        """Воркер синхронизации с защитой от падения (исправленный)"""
         async with httpx.AsyncClient(timeout=10.0) as client:
             headers = {
                 "apikey": self.sb_key,
@@ -318,7 +326,7 @@ class BotInstance:
                     # Безопасное получение из очереди
                     item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
                     
-                    # Проверка на "битые" данные в очереди
+                    # Проверка на "битые" данные
                     if not isinstance(item, tuple): 
                         self.sync_queue.task_done()
                         continue
@@ -329,6 +337,7 @@ class BotInstance:
                         await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
                     
                     elif action == "sync_state":
+                        # СОБИРАЕМ ПОЛНЫЙ КОНФИГ, ЧТОБЫ НЕ ЗАТЕРЕТЬ ДАННЫЕ В БД
                         update_payload = {
                             "config": {
                                 "connectedUsers": self.users_list,
@@ -337,21 +346,28 @@ class BotInstance:
                                 "buttons": self.buttons,
                                 "triggers": self.triggers,
                                 "welcomeMessage": self.welcome_text,
-                                "adminChatId": self.admin_chat_id
+                                # Сохраняем оба формата ID, чтобы и старый, и новый код работали
+                                "adminChatId": self.admin_chat_id, 
+                                "admin_chat_id": self.admin_chat_id,
+                                # Сохраняем VK ID (getattr нужен, если в TG боте этого поля нет в __init__)
+                                "vk_group_id": getattr(self, 'vk_group_id', None)
                             }
                         }
-                        await client.patch(
+                        
+                        res = await client.patch(
                             f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", 
                             json=update_payload, 
                             headers=headers
                         )
+                        
+                        if res.status_code not in [200, 201, 204]:
+                            logger.error(f"Sync DB Error: {res.status_code} {res.text}")
                     
                     self.sync_queue.task_done()
                 except asyncio.TimeoutError:
                     continue
                 except Exception as e:
                     logger.error(f"Sync Worker Error: {e}")
-                    # Обязательно сообщаем очереди, что задача "выполнена" (даже с ошибкой), иначе очередь зависнет
                     try: self.sync_queue.task_done()
                     except: pass
 
