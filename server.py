@@ -423,7 +423,7 @@ async def get_bot_stats_api(bot_id: str):
         logger.error(f"Error in get_bot_stats: {e}")
         return {"stats": {"total_messages": 0, "active_users": 0}}
 
-@@app.get("/api/bots/{user_id}")
+@app.get("/api/bots/{user_id}")
 async def get_user_bots(user_id: str):
     try:
         res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
