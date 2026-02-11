@@ -382,5 +382,21 @@ adminLogin: async (login: string, pass: string) => {
       })
     });
     return response.ok;
+  },
+
+  // --- BOT MANAGEMENT ---
+  
+  // Добавь этот метод, его не было в твоем списке
+  createBot: async (userId: string, name: string, token: string, platform: 'telegram' | 'vk'): Promise<BotConfig | null> => {
+    const response = await fetchWithTimeout(`${getApiBase()}/bots/create`, {
+      method: 'POST',
+      body: JSON.stringify({ 
+        owner_id: userId, 
+        name, 
+        token, 
+        platform // Передаем платформу на бэкенд
+      })
+    });
+    return response.ok ? await response.json() : null;
   }
 };
