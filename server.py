@@ -117,7 +117,7 @@ class BotManager:
         # ОПРЕДЕЛЯЕМ ФАЙЛ БОТА В ЗАВИСИМОСТИ ОТ ПЛАТФОРМЫ
         platform = config.get('platform', 'telegram').lower()
         if platform == 'vk':
-            bot_file = "vkbot_core__2_.py"
+            bot_file = "vkbot_core.py"
         else:
             bot_file = "bot_core.py"
         
