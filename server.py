@@ -450,70 +450,65 @@ async def save_bot(b: dict):
         if not bid:
             raise HTTPException(400, "Missing bot ID")
 
-        # 1. Загружаем текущие данные из базы
+        # 1. Загружаем текущие данные из базы (чтобы не потерять их)
         old_r = await db.get("bots", params={"id": f"eq.{bid}"})
         curr = old_r.json()[0] if (old_r.status_code == 200 and old_r.json()) else {}
         old_config = curr.get("config", {})
-        if not isinstance(old_config, dict):
-            old_config = {}
+        if not isinstance(old_config, dict): old_config = {}
 
-        # 2. Извлекаем входящий конфиг (если фронт прислал данные внутри него)
+        # 2. Входящие данные (могут быть в корне или в объекте config)
         inc_cfg = b.get("config", {})
-        if not isinstance(inc_cfg, dict):
-            inc_cfg = {}
+        if not isinstance(inc_cfg, dict): inc_cfg = {}
 
-        # Функция-помощник: берет первое значение, которое не является None
-        # Это позволяет сохранять пустые строки "", если ты их ввел в инпут
-        def pick(*args):
-            for a in args:
-                if a is not None:
-                    return a
-            return None
+        # Функция-помощник: берет первое НЕ None и НЕ пустое значение (для списков)
+        def pick(new_val, inc_val, old_val, default=None):
+            if new_val is not None: return new_val
+            if inc_val is not None: return inc_val
+            return old_val if old_val is not None else default
 
-        # 3. Собираем переменные с жестким приоритетом: 
-        # Корень запроса > Объект config в запросе > Старая база
+        # 3. Собираем ID и Welcome (с сохранением старых, если новые не пришли)
         vk_id = pick(b.get("vk_group_id"), inc_cfg.get("vk_group_id"), old_config.get("vk_group_id"))
+        adm_id = pick(b.get("admin_chat_id"), inc_cfg.get("admin_chat_id"), old_config.get("admin_chat_id"))
+        # Дополнительно проверяем CamelCase для админа
+        if not adm_id:
+            adm_id = pick(b.get("adminChatId"), inc_cfg.get("adminChatId"), old_config.get("adminChatId"))
+
+        welcome = pick(b.get("welcomeMessage"), inc_cfg.get("welcomeMessage"), old_config.get("welcomeMessage"), "Здравствуйте!")
+
+        # 4. Собираем СЛОЖНЫЕ объекты (кнопки, триггеры, настройки)
+        # Если в запросе их нет (None), берем строго из базы
+        final_buttons = b.get("buttons") if b.get("buttons") is not None else old_config.get("buttons", [])
+        final_triggers = b.get("triggers") if b.get("triggers") is not None else old_config.get("triggers", [])
         
-        adm_id = pick(
-            b.get("admin_chat_id"), 
-            b.get("adminChatId"), 
-            inc_cfg.get("admin_chat_id"), 
-            inc_cfg.get("adminChatId"), 
-            old_config.get("admin_chat_id")
-        )
+        # Глубокое слияние настроек (settings)
+        old_settings = old_config.get("settings", {})
+        new_settings = b.get("settings") or inc_cfg.get("settings") or {}
+        final_settings = {**old_settings, **new_settings}
 
-        welcome = pick(
-            b.get("welcomeMessage"), 
-            inc_cfg.get("welcomeMessage"), 
-            old_config.get("welcomeMessage")
-        )
-
-        # 4. Формируем финальный объект config (JSONB)
+        # 5. Формируем финальный конфиг, который уйдет в JSONB
         ui_config = {
-            "buttons": pick(b.get("buttons"), inc_cfg.get("buttons"), old_config.get("buttons"), []),
-            "triggers": pick(b.get("triggers"), inc_cfg.get("triggers"), old_config.get("triggers"), []),
-            "welcomeMessage": welcome if welcome is not None else "Здравствуйте!",
+            "buttons": final_buttons,
+            "triggers": final_triggers,
+            "welcomeMessage": welcome,
             "vk_group_id": vk_id,
             "admin_chat_id": adm_id,
-            "adminChatId": adm_id, # Дублируем для совместимости со старым кодом ботов
-            "settings": {
-                **old_config.get("settings", {}),
-                **inc_cfg.get("settings", {}),
-                **b.get("settings", {})
-            }
+            "adminChatId": adm_id, 
+            "settings": final_settings,
+            # Сохраняем статистику и пользователей, чтобы не затереть их при сохранении настроек
+            "stats": old_config.get("stats", {}),
+            "connectedUsers": old_config.get("connectedUsers", [])
         }
 
-        # Логируем результат перед отправкой в базу
-        logger.info(f"🔒 FINAL SAVE -> VK: {vk_id} | ADMIN: {adm_id} | WELCOME: {str(welcome)[:15] if welcome else 'None'}...")
+        logger.info(f"✅ SAVING BOT {bid}: Admin={adm_id}, Welcome={welcome[:10]}, Buttons={len(final_buttons)}")
 
-        # Обработка токена (шифруем только если это не зашифрованная строка gAAAA...)
+        # Обработка токена
         raw_token = b.get('token')
-        if raw_token:
-            final_token = encrypt_val(raw_token) if not str(raw_token).startswith('gAAAA') else raw_token
-        else:
-            final_token = curr.get('token', '')
+        final_token = curr.get('token')
+        if raw_token and not str(raw_token).startswith('gAAAA'):
+            final_token = encrypt_val(raw_token)
+        elif raw_token:
+            final_token = raw_token
 
-        # 5. Подготовка данных для Supabase
         db_payload = {
             "name": b.get("name") or curr.get("name"),
             "token": final_token,
@@ -521,21 +516,12 @@ async def save_bot(b: dict):
             "config": ui_config 
         }
 
-        # Отправляем PATCH запрос
         res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
         
         if res.status_code not in [200, 201, 204]:
-            logger.error(f"❌ Supabase Error: {res.text}")
             raise HTTPException(res.status_code, f"DB Error: {res.text}")
 
-        # Возвращаем объединенный объект, чтобы фронтенд сразу обновил интерфейс
-        return {
-            **curr,
-            **db_payload,
-            "vk_group_id": vk_id,
-            "admin_chat_id": adm_id,
-            "welcomeMessage": welcome
-        }
+        return { **curr, **db_payload, "config": ui_config }
 
     except Exception as e:
         logger.error(f"🚨 Save error: {e}", exc_info=True)
