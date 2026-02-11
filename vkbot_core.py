@@ -574,37 +574,39 @@ class BotInstance:
             await self.forward_to_admin(m, user, is_first=is_new)
             await self.log_and_update(user['id'], user['first_name'], m.text or "[Медиа]")
 
-    async def run_instance(self):
+async def run_instance(self):
+        """
+        Основной метод запуска логики бота.
+        Вызывается из блока __main__.
+        """
         logger.info(f"[*] Бот VK {self.bot_id} запускается...")
         
         # --- ПРОВЕРКА ТОКЕНА ---
         try:
-            # Вызываем API ВК для проверки токена
+            # Делаем пробный запрос к API ВК для валидации токена
             response = await self.bot.api.groups.get_by_id()
             
-            # В новых версиях vkbottle response — это объект. 
-            # Достаем имя группы безопасно:
+            # vkbottle может возвращать либо список, либо объект с атрибутом groups
             if isinstance(response, list):
                 group_name = response[0].name
             else:
-                # Если это объект GroupsGetByIdObjectResponseModel
                 group_name = response.groups[0].name
 
             logger.info(f"✅ Токен валиден! Работаем от имени группы: {group_name}")
         except Exception as e:
             logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА ТОКЕНА: {e}")
-            logger.error("Проверь: 1. Токен (должен быть расшифрован). 2. Long Poll (должен быть ВКЛ в ВК).")
-            return # Выходим, чтобы не плодить ошибки в цикле
+            logger.error("Проверь: 1. Токен (расшифрован ли?). 2. Long Poll (включен ли в настройках группы?).")
+            return # Прекращаем запуск, так как без токена поллинг не пойдет
         # -----------------------
 
-        # Проверка лицензии и настройка кнопок/команд
+        # Проверка лицензии (из БД) и регистрация хендлеров (кнопки/команды)
         await self.license_checker_logic()
         await self.core_handlers_setup()
 
         logger.info(f"[*] Бот VK {self.bot_id} готов. AdminID: {self.admin_chat_id}")
 
-        # Запускаем фоновые задачи (синхронизация с БД и т.д.)
-        # Используем create_task, чтобы они не блокировали основной поток поллинга
+        # Запускаем фоновые задачи через create_task
+        # Они будут работать параллельно с основным циклом сообщений
         asyncio.create_task(self.database_sync_worker())
         asyncio.create_task(self.daily_stats_rotator())
         asyncio.create_task(self.license_checker())
@@ -612,19 +614,32 @@ class BotInstance:
         logger.info("🚀 Запуск Long Poll поллинга...")
         
         try:
-            # Запускаем бесконечное ожидание сообщений
+            # Запускаем бесконечный цикл прослушивания сообщений
             await self.bot.run_polling()
         except Exception as e:
-            logger.error(f"🚨 Ошибка во время поллинга: {e}")
+            # Ловим ошибки самого поллинга (отвал сети и т.д.)
+            if "close a running event loop" not in str(e):
+                logger.error(f"🚨 Ошибка во время поллинга: {e}")
         finally:
+            self.is_running = False
             logger.warning(f"⚠️ Поллинг бота {self.bot_id} завершен.")
-            
+
+# ==========================================================
+# БЛОК ЗАПУСКА СКРИПТА
+# ==========================================================
 if __name__ == "__main__":
+    import sys
+    import json
+    import asyncio
+
+    # Проверка аргументов командной строки
     if len(sys.argv) < 2:
         print("Usage: python3 vkbot_core.py <config_path>")
         sys.exit(1)
 
     cfg_path = sys.argv[1]
+    
+    # Загружаем конфигурацию бота из JSON файла
     try:
         with open(cfg_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
@@ -632,22 +647,31 @@ if __name__ == "__main__":
         logger.error(f"Не удалось прочитать конфиг {cfg_path}: {e}")
         sys.exit(1)
 
-    # 1. Создаем объект бота ПЕРЕД запуском цикла
-    # Убедись, что имя класса совпадает (BotInstance или BotCoreEngineVK)
+    # 1. Инициализируем объект бота (имя класса должно совпадать с твоим)
     instance = BotInstance(config) 
 
+    # 2. Создаем и настраиваем цикл событий (Event Loop)
+    # Это предотвращает ошибки "No current event loop"
+    loop = asyncio.get_event_loop()
+
     async def main():
+        """Обертка для запуска асинхронного метода инстанса"""
         await instance.run_instance()
 
-    # 2. Единая точка входа в цикл событий
-    loop = asyncio.get_event_loop()
     try:
+        # Запускаем выполнение и держим процесс открытым
         loop.run_until_complete(main())
     except KeyboardInterrupt:
         logger.info("Бот остановлен пользователем (Ctrl+C)")
     except Exception as e:
         logger.error(f"🚨 Критическая ошибка при работе: {e}", exc_info=True)
     finally:
-        # Корректно закрываем цикл, если он еще не закрыт
+        # Пытаемся корректно завершить оставшиеся задачи
+        try:
+            # Даем небольшую паузу для завершения фоновых задач
+            loop.run_until_complete(asyncio.sleep(0.1))
+        except:
+            pass
+        
         if not loop.is_closed():
             loop.close()
