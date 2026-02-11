@@ -501,7 +501,7 @@ async def save_bot(b: dict):
 
     except Exception as e:
         logger.error(f"🚨 Save error: {e}")
-        raise HTTPException(500, str(e))))
+        raise HTTPException(500, str(e))
         
 @app.post("/api/bots/start")
 async def start_handler(req: dict):
