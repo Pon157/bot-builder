@@ -1,4 +1,3 @@
-
 export enum BotStatus {
   IDLE = 'IDLE',
   RUNNING = 'RUNNING',
@@ -6,16 +5,20 @@ export enum BotStatus {
   STARTING = 'STARTING'
 }
 
-export interface TelegramUser {
-  id: number;
+// Переименовали в BotUser, так как пользователи теперь не только из Telegram
+export interface BotUser {
+  id: number | string; // В ВК ID может быть строкой или большим числом
   first_name: string;
-  username?: string;
+  last_name?: string;    // Добавили для ВК
+  username?: string;     // Для Telegram
+  domain?: string;       // Аналог username в ВК
   is_banned: boolean;
   is_active: boolean; 
   joined_at: number;
   last_seen?: number;
-  thread_id?: number;
+  thread_id?: number;    // Только для Telegram (Topics)
   warns: number;
+  platform: 'telegram' | 'vk'; // Чтобы отличать юзеров в базе
 }
 
 export interface StatPoint {
@@ -48,6 +51,7 @@ export interface BotConfig {
   owner_id: string;
   name: string;
   token: string;
+  platform: 'telegram' | 'vk'; // СТРОГО ОБЯЗАТЕЛЬНО для логики isVK
   status: BotStatus;
   created_at: number;
   license_expires_at: number;
@@ -56,13 +60,15 @@ export interface BotConfig {
   adminChatId: string;
   welcomeMessage: string;
   logs: MessageLog[];
-  connectedUsers: TelegramUser[];
+  connectedUsers: BotUser[]; // Обновили тип здесь
   subscribers: number[]; 
   triggers: { keyword: string; response: string }[];
   buttons: { 
     text: string; 
     response: string; 
     type?: 'message' | 'request';
+    // Цвета кнопок для ВК (в ТГ будут игнорироваться)
+    color?: 'primary' | 'secondary' | 'negative' | 'positive'; 
     adminTemplate?: string; 
   }[];
   stats: BotStats;
@@ -78,10 +84,12 @@ export interface BotConfig {
     rateLimit: number;
     autoBanThreshold: number;
     adminMessageTemplate?: string;
-    // Новые поля для настройки заголовка
     showHeaderId: boolean;
     showHeaderName: boolean;
     showHeaderUsername: boolean;
+    // Настройки для Callback API ВК
+    vkConfirmCode?: string;
+    vkSecretKey?: string;
   };
 }
 
