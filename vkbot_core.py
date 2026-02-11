@@ -579,28 +579,46 @@ class BotInstance:
         
         # --- ПРОВЕРКА ТОКЕНА ---
         try:
-            # Делаем пробный запрос к API ВК
-            group_info = await self.bot.api.groups.get_by_id()
-            logger.info(f"✅ Токен валиден! Работаем от имени группы: {group_info[0].name}")
+            # Вызываем API ВК для проверки токена
+            response = await self.bot.api.groups.get_by_id()
+            
+            # В новых версиях vkbottle response — это объект. 
+            # Достаем имя группы безопасно:
+            if isinstance(response, list):
+                group_name = response[0].name
+            else:
+                # Если это объект GroupsGetByIdObjectResponseModel
+                group_name = response.groups[0].name
+
+            logger.info(f"✅ Токен валиден! Работаем от имени группы: {group_name}")
         except Exception as e:
             logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА ТОКЕНА: {e}")
-            logger.error("Проверь, расшифрован ли токен и включен ли Long Poll в настройках группы.")
-            return # Прекращаем запуск
+            logger.error("Проверь: 1. Токен (должен быть расшифрован). 2. Long Poll (должен быть ВКЛ в ВК).")
+            return # Выходим, чтобы не плодить ошибки в цикле
         # -----------------------
 
+        # Проверка лицензии и настройка кнопок/команд
         await self.license_checker_logic()
         await self.core_handlers_setup()
 
         logger.info(f"[*] Бот VK {self.bot_id} готов. AdminID: {self.admin_chat_id}")
 
-        # Запускаем фоновые задачи
+        # Запускаем фоновые задачи (синхронизация с БД и т.д.)
+        # Используем create_task, чтобы они не блокировали основной поток поллинга
         asyncio.create_task(self.database_sync_worker())
         asyncio.create_task(self.daily_stats_rotator())
         asyncio.create_task(self.license_checker())
 
         logger.info("🚀 Запуск Long Poll поллинга...")
-        await self.bot.run_polling()
-
+        
+        try:
+            # Запускаем бесконечное ожидание сообщений
+            await self.bot.run_polling()
+        except Exception as e:
+            logger.error(f"🚨 Ошибка во время поллинга: {e}")
+        finally:
+            logger.warning(f"⚠️ Поллинг бота {self.bot_id} завершен.")
+            
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python3 vkbot_core.py <config_path>")
