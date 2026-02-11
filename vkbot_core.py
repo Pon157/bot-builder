@@ -595,17 +595,20 @@ class BotInstance:
             logger.info(f"✅ Токен валиден! Работаем от имени группы: {group_name}")
         except Exception as e:
             logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА ТОКЕНА: {e}")
-            logger.error("Проверь: 1. Токен (расшифрован ли?). 2. Long Poll (включен ли в настройках группы?).")
-            return # Прекращаем запуск
+            logger.error("Проверь: 1. Токен (расшифрован ли?). 2. Long Poll (включен ли в ВК?).")
+            return 
         # -----------------------
 
-        # Проверка лицензии и регистрация хендлеров (кнопки/команды)
+        # Инициализация логики (лицензия, хендлеры)
         await self.license_checker_logic()
         await self.core_handlers_setup()
 
         logger.info(f"[*] Бот VK {self.bot_id} готов. AdminID: {self.admin_chat_id}")
 
-        # Запускаем фоновые задачи (синхронизация БД, статы, лицензия)
+        # Устанавливаем флаг работы перед запуском задач
+        self.is_running = True
+
+        # Запускаем фоновые задачи
         asyncio.create_task(self.database_sync_worker())
         asyncio.create_task(self.daily_stats_rotator())
         asyncio.create_task(self.license_checker())
@@ -613,17 +616,18 @@ class BotInstance:
         logger.info("🚀 Запуск Long Poll поллинга...")
         
         try:
-            # Создаем задачу поллинга
-            polling_task = asyncio.create_task(self.bot.run_polling())
+            # Запускаем поллинг как отдельную задачу
+            asyncio.create_task(self.bot.run_polling())
             
-            # ВАЖНО: Принудительно ждем завершения задачи, 
-            # чтобы event loop не закрылся раньше времени.
-            await polling_task
-            
+            # БЛОКИРУЮЩИЙ ЦИКЛ (Wait Loop)
+            # Это «якорь», который удерживает процесс от завершения.
+            # Пока само приложение не будет остановлено, мы спим здесь.
+            while self.is_running:
+                await asyncio.sleep(1)
+                
         except Exception as e:
-            # Игнорируем специфическую ошибку закрытия цикла при выходе
             if "close a running event loop" not in str(e):
-                logger.error(f"🚨 Ошибка во время поллинга: {e}")
+                logger.error(f"🚨 Ошибка в жизненном цикле бота: {e}")
         finally:
             self.is_running = False
             logger.warning(f"⚠️ Поллинг бота {self.bot_id} завершен.")
