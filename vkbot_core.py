@@ -586,7 +586,7 @@ class BotInstance:
             # Делаем пробный запрос к API ВК для валидации токена
             response = await self.bot.api.groups.get_by_id()
             
-            # vkbottle может возвращать либо список, либо объект с атрибутом groups
+            # Безопасно извлекаем имя группы (поддержка разных версий vkbottle)
             if isinstance(response, list):
                 group_name = response[0].name
             else:
@@ -596,17 +596,16 @@ class BotInstance:
         except Exception as e:
             logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА ТОКЕНА: {e}")
             logger.error("Проверь: 1. Токен (расшифрован ли?). 2. Long Poll (включен ли в настройках группы?).")
-            return # Прекращаем запуск, так как без токена поллинг не пойдет
+            return # Прекращаем запуск
         # -----------------------
 
-        # Проверка лицензии (из БД) и регистрация хендлеров (кнопки/команды)
+        # Проверка лицензии и регистрация хендлеров (кнопки/команды)
         await self.license_checker_logic()
         await self.core_handlers_setup()
 
         logger.info(f"[*] Бот VK {self.bot_id} готов. AdminID: {self.admin_chat_id}")
 
-        # Запускаем фоновые задачи через create_task
-        # Они будут работать параллельно с основным циклом сообщений
+        # Запускаем фоновые задачи (синхронизация БД, статы, лицензия)
         asyncio.create_task(self.database_sync_worker())
         asyncio.create_task(self.daily_stats_rotator())
         asyncio.create_task(self.license_checker())
@@ -614,15 +613,20 @@ class BotInstance:
         logger.info("🚀 Запуск Long Poll поллинга...")
         
         try:
-            # Запускаем бесконечный цикл прослушивания сообщений
-            await self.bot.run_polling()
+            # Создаем задачу поллинга
+            polling_task = asyncio.create_task(self.bot.run_polling())
+            
+            # ВАЖНО: Принудительно ждем завершения задачи, 
+            # чтобы event loop не закрылся раньше времени.
+            await polling_task
+            
         except Exception as e:
-            # Ловим ошибки самого поллинга (отвал сети и т.д.)
+            # Игнорируем специфическую ошибку закрытия цикла при выходе
             if "close a running event loop" not in str(e):
                 logger.error(f"🚨 Ошибка во время поллинга: {e}")
         finally:
             self.is_running = False
-            logger.warning(f"⚠️ Поллинг бота {self.bot_id} завершен.")
+            logger.warning(f"⚠️ Поллинг бота {self.bot_id} завершен.")bot_id} завершен.")
 
 # ==========================================================
 # БЛОК ЗАПУСКА СКРИПТА
