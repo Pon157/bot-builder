@@ -405,20 +405,27 @@ async def get_user_data(user_id: str):
 @app.get("/api/bots/stats/{bot_id}")
 async def get_bot_stats_api(bot_id: str):
     try:
-        # 1. Тянем данные бота
+        # 1. Запрашиваем данные бота из таблицы
         res = await db.get("bots", params={"id": f"eq.{bot_id}"})
+        
         if res.status_code != 200 or not res.json():
+            logger.warning(f"⚠️ Статистика не найдена для бота {bot_id}")
             return {"stats": {"history": [], "totalMessages": 0}}
 
         bot_data = res.json()[0]
+        
+        # 2. Достаем поле stats (оно должно быть JSONB в Supabase)
         s = bot_data.get("stats") or {}
-
-        # Если stats пришла как строка (бывает в Supabase), парсим её
+        
+        # Если вдруг в базе лежит строка вместо объекта, парсим её
         if isinstance(s, str):
-            try: s = json.loads(s)
-            except: s = {}
+            try:
+                import json
+                s = json.loads(s)
+            except:
+                s = {}
 
-        # 2. Формируем ответ, который ОЖИДАЕТ фронтенд (с историей)
+        # 3. Отдаем структуру, которую ждет твой фронтенд для графиков
         return {
             "stats": {
                 "history": s.get("history", []),
@@ -430,7 +437,7 @@ async def get_bot_stats_api(bot_id: str):
             }
         }
     except Exception as e:
-        logger.error(f"🚨 Ошибка статистики: {e}")
+        logger.error(f"🚨 Ошибка API статистики: {e}")
         return {"stats": {"history": [], "totalMessages": 0}}
         
 @app.get("/api/bots/{user_id}")
