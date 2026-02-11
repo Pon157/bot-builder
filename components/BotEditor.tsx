@@ -7,7 +7,8 @@ import {
   Settings, Cpu, BarChart3, Terminal, X, Save, Power, 
   Ticket, Plus, MessageSquare, CheckSquare, 
   Square, Zap, Sliders, Layout, Lock, Trash2, AlertCircle, 
-  Send, Globe // Globe используем как иконку для VK за неимением логотипа
+  Send, Globe, 
+  ShieldAlert // <--- ДОБАВЬ ЭТО СЮДА
 } from 'lucide-react';
 
 interface BotEditorProps {
