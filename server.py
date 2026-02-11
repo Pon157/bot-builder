@@ -420,22 +420,28 @@ async def get_user_bots(user_id: str):
                 except:
                     cfg = {}
             
-            # 2. РАСПАКОВКА (Важно: даем значения по умолчанию, чтобы не было null/undefined)
-            # Добавляем и snake_case и camelCase на всякий случай для фронта
+            # 2. РАСПАКОВКА ДЛЯ ФРОНТЕНДА
+            # --- ВОТ ЭТОЙ СТРОКИ НЕ ХВАТАЛО ---
+            bot["welcomeMessage"] = cfg.get("welcomeMessage") or ""
+            # ----------------------------------
+
             bot["vk_group_id"] = cfg.get("vk_group_id") or ""
             bot["vkGroupId"] = cfg.get("vk_group_id") or ""
             
-            bot["admin_chat_id"] = cfg.get("admin_chat_id") or ""
-            bot["adminChatId"] = cfg.get("admin_chat_id") or ""
+            # Убеждаемся, что админ ID есть во всех вариантах написания
+            adm_id = cfg.get("admin_chat_id") or cfg.get("adminChatId") or ""
+            bot["admin_chat_id"] = adm_id
+            bot["adminChatId"] = adm_id
             
             bot["buttons"] = cfg.get("buttons") if cfg.get("buttons") is not None else []
             bot["triggers"] = cfg.get("triggers") if cfg.get("triggers") is not None else []
             
-            # Настройки тоже должны быть всегда словарем
+            # Настройки
             bot["settings"] = cfg.get("settings") if isinstance(cfg.get("settings"), dict) else {
                 "forwardToAdmin": True,
                 "antiSpam": False,
-                "showHeaderId": True
+                "showHeaderId": True,
+                "useTopics": False
             }
             
         return bots
