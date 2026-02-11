@@ -142,59 +142,78 @@ class BotInstance:
             await asyncio.sleep(120)
 
     def apply_config(self, data: dict):
-        """Парсинг конфигурации (исправленный, читает все форматы ID)"""
-        # 1. Объединяем корневой объект и вложенный config, чтобы искать везде
+        """Парсинг конфигурации с приоритетом новых полей"""
         raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
         full_cfg = {**data, **raw_cfg} 
         
-        # 2. ИЩЕМ ID ГРУППЫ ВК (Сохраняем в память бота)
-        # Ищем и snake_case (от сервера), и CamelCase (от старых версий)
         self.vk_group_id = full_cfg.get('vk_group_id') or full_cfg.get('vkGroupId')
 
-        # 3. ИЩЕМ ID АДМИНА
-        try:
-            admin_id_raw = full_cfg.get('admin_chat_id') or full_cfg.get('adminChatId')
-            self.admin_chat_id = int(str(admin_id_raw).strip()) if admin_id_raw else None
-        except ValueError:
-            self.admin_chat_id = None
+        # Читаем Admin ID
+        admin_id_raw = full_cfg.get('admin_chat_id') or full_cfg.get('adminChatId')
+        self.admin_chat_id = int(str(admin_id_raw).strip()) if admin_id_raw else None
 
-        # 4. Остальные настройки
+        # Настройки безопасности и тем
+        self.settings = full_cfg.get('settings', {})
+        self.use_topics = self.settings.get('useTopics', False) # Исправлено: берем из settings
+        self.topic_per_req = self.settings.get('topicPerRequest', False)
+        
+        # Кнопки и триггеры
         self.buttons = full_cfg.get('buttons', [])
         self.triggers = full_cfg.get('triggers', [])
         self.welcome_text = full_cfg.get('welcomeMessage', 'Здравствуйте!')
-        self.settings = full_cfg.get('settings', {})
         
-        self.use_topics = self.settings.get('useTopics', False)
-        self.topic_per_req = self.settings.get('topicPerRequest', False)
         self.rate_limit = float(self.settings.get('rateLimit', 1.0))
         self.auto_ban_limit = int(self.settings.get('autoBanThreshold', 3))
         self.users_list = full_cfg.get('connectedUsers', [])
         self.license_expires_at = full_cfg.get('license_expires_at', 0)
         
-        # 5. Статистика (без изменений)
-        incoming_stats = full_cfg.get('stats')
-        if isinstance(incoming_stats, dict):
-            self.stats_data = {
-                "totalMessages": incoming_stats.get("totalMessages", 0),
-                "incomingToday": incoming_stats.get("incomingToday", 0),
-                "outgoingToday": incoming_stats.get("outgoingToday", 0),
-                "bannedCount": incoming_stats.get("bannedCount", 0),
-                "activeUsers24h": incoming_stats.get("activeUsers24h", 0),
-                "history": incoming_stats.get("history", [])
-            }
-        else:
-            self.stats_data = {
-                "totalMessages": 0, "incomingToday": 0, "outgoingToday": 0,
-                "bannedCount": 0, "history": [], "activeUsers24h": 0
-            }
+        # Статистика
+        incoming_stats = full_cfg.get('stats', {})
+        self.stats_data = {
+            "totalMessages": incoming_stats.get("totalMessages", 0),
+            "incomingToday": incoming_stats.get("incomingToday", 0),
+            "outgoingToday": incoming_stats.get("outgoingToday", 0),
+            "bannedCount": incoming_stats.get("bannedCount", 0),
+            "activeUsers24h": incoming_stats.get("activeUsers24h", 0),
+            "history": incoming_stats.get("history", [])
+        }
 
-        now = datetime.now()
-        current_date = now.strftime("%d.%m")
-        if not self.stats_data["history"]:
-            self.stats_data["history"] = [{
-                "date": current_date, "incoming": 0, "outgoing": 0,
-                "totalUsers": len(self.users_list), "activeUsers": 0
-            }]
+    async def database_sync_worker(self):
+        """Воркер с защитой от затирания внешних настроек"""
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
+            while self.is_running:
+                try:
+                    item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
+                    action, payload = item
+                    
+                    if action == "log_message":
+                        await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
+                    
+                    elif action == "sync_state":
+                        # 1. СНАЧАЛА ПОЛУЧАЕМ АКТУАЛЬНЫЙ КОНФИГ ИЗ БАЗЫ
+                        res_get = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
+                        db_data = res_get.json()[0] if res_get.status_code == 200 and res_get.json() else {}
+                        db_config = db_data.get("config", {})
+
+                        # 2. ОБЪЕДИНЯЕМ: Системные данные бота + Настройки из админки
+                        # Это не даст боту затереть кнопки, измененные в админке
+                        new_config = {
+                            **db_config, # Берем всё, что сейчас в базе (кнопки, триггеры, настройки)
+                            "connectedUsers": self.users_list, # Обновляем только то, что знает бот
+                            "stats": self.stats_data,
+                            "admin_chat_id": self.admin_chat_id,
+                            "adminChatId": self.admin_chat_id
+                        }
+                        
+                        await client.patch(
+                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", 
+                            json={"config": new_config}, 
+                            headers=headers
+                        )
+                    self.sync_queue.task_done()
+                except asyncio.TimeoutError: continue
+                except Exception as e: logger.error(f"Sync error: {e}")
         
         # --- ИНИЦИАЛИЗАЦИЯ СТАТИСТИКИ ---
         # Мы НЕ создаем статы с нуля, а вытягиваем их из пришедшего конфига (Supabase)
@@ -312,64 +331,6 @@ class BotInstance:
                 logger.error(f"Rotator Error: {e}")
                 await asyncio.sleep(60)
                 
-    async def database_sync_worker(self):
-        """Воркер синхронизации с защитой от падения (исправленный)"""
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            headers = {
-                "apikey": self.sb_key,
-                "Authorization": f"Bearer {self.sb_key}",
-                "Content-Type": "application/json",
-                "Prefer": "return=minimal"
-            }
-            while self.is_running:
-                try:
-                    # Безопасное получение из очереди
-                    item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
-                    
-                    # Проверка на "битые" данные
-                    if not isinstance(item, tuple): 
-                        self.sync_queue.task_done()
-                        continue
-                    
-                    action, payload = item
-                    
-                    if action == "log_message":
-                        await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
-                    
-                    elif action == "sync_state":
-                        # СОБИРАЕМ ПОЛНЫЙ КОНФИГ, ЧТОБЫ НЕ ЗАТЕРЕТЬ ДАННЫЕ В БД
-                        update_payload = {
-                            "config": {
-                                "connectedUsers": self.users_list,
-                                "stats": self.stats_data,
-                                "settings": self.settings,
-                                "buttons": self.buttons,
-                                "triggers": self.triggers,
-                                "welcomeMessage": self.welcome_text,
-                                # Сохраняем оба формата ID, чтобы и старый, и новый код работали
-                                "adminChatId": self.admin_chat_id, 
-                                "admin_chat_id": self.admin_chat_id,
-                                # Сохраняем VK ID (getattr нужен, если в TG боте этого поля нет в __init__)
-                                "vk_group_id": getattr(self, 'vk_group_id', None)
-                            }
-                        }
-                        
-                        res = await client.patch(
-                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", 
-                            json=update_payload, 
-                            headers=headers
-                        )
-                        
-                        if res.status_code not in [200, 201, 204]:
-                            logger.error(f"Sync DB Error: {res.status_code} {res.text}")
-                    
-                    self.sync_queue.task_done()
-                except asyncio.TimeoutError:
-                    continue
-                except Exception as e:
-                    logger.error(f"Sync Worker Error: {e}")
-                    try: self.sync_queue.task_done()
-                    except: pass
 
     async def check_antispam(self, user_id: int) -> bool:
         if self.rate_limit <= 0: return False
