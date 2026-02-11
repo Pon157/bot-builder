@@ -135,26 +135,34 @@ class BotInstance:
             await asyncio.sleep(120)
 
     def apply_config(self, data: dict):
+        """Парсинг конфигурации для VK-бота (с поддержкой vk_group_id)"""
         raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
         full_cfg = {**data, **raw_cfg} 
         
+        # 1. Читаем VK Group ID (пытаемся найти во всех вариантах написания)
+        self.vk_group_id = full_cfg.get('vk_group_id') or full_cfg.get('vkGroupId')
+
+        # 2. Читаем Admin Chat ID
         try:
-            admin_id_raw = full_cfg.get('adminChatId')
-            # В ВК ID пользователя - это int.
+            # Ищем и новый формат (admin_chat_id), и старый (adminChatId)
+            admin_id_raw = full_cfg.get('admin_chat_id') or full_cfg.get('adminChatId')
             self.admin_chat_id = int(str(admin_id_raw).strip()) if admin_id_raw else None
         except ValueError:
             self.admin_chat_id = None
 
+        # 3. Основные настройки
         self.buttons = full_cfg.get('buttons', [])
         self.triggers = full_cfg.get('triggers', [])
         self.welcome_text = full_cfg.get('welcomeMessage', 'Здравствуйте!')
         self.settings = full_cfg.get('settings', {})
         
+        # Настройки лимитов
         self.rate_limit = float(self.settings.get('rateLimit', 1.0))
         self.auto_ban_limit = int(self.settings.get('autoBanThreshold', 3))
         self.users_list = full_cfg.get('connectedUsers', [])
         self.license_expires_at = full_cfg.get('license_expires_at', 0)
         
+        # 4. Обработка статистики
         incoming_stats = full_cfg.get('stats')
         if isinstance(incoming_stats, dict):
             self.stats_data = {
@@ -171,6 +179,7 @@ class BotInstance:
                 "bannedCount": 0, "history": [], "activeUsers24h": 0
             }
 
+        # 5. Инициализация истории, если она пуста
         now = datetime.now()
         current_date = now.strftime("%d.%m")
         if not self.stats_data["history"]:
@@ -229,6 +238,7 @@ class BotInstance:
                 await asyncio.sleep(60)
 
     async def database_sync_worker(self):
+        """Воркер синхронизации для VK (с сохранением vk_group_id)"""
         async with httpx.AsyncClient(timeout=10.0) as client:
             headers = {
                 "apikey": self.sb_key,
@@ -238,7 +248,9 @@ class BotInstance:
             }
             while self.is_running:
                 try:
+                    # Ожидание задачи из очереди
                     item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
+                    
                     if not isinstance(item, tuple): 
                         self.sync_queue.task_done()
                         continue
@@ -246,9 +258,11 @@ class BotInstance:
                     action, payload = item
                     
                     if action == "log_message":
+                        # Логирование сообщений в БД
                         await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
                     
                     elif action == "sync_state":
+                        # ФОРМИРУЕМ PAYLOAD (Важно: ВК бот должен возвращать свой ID группы)
                         update_payload = {
                             "config": {
                                 "connectedUsers": self.users_list,
@@ -257,20 +271,30 @@ class BotInstance:
                                 "buttons": self.buttons,
                                 "triggers": self.triggers,
                                 "welcomeMessage": self.welcome_text,
+                                
+                                # ПРИНЦИПИАЛЬНО ДЛЯ ВК:
+                                "vk_group_id": getattr(self, 'vk_group_id', None),
+                                
+                                # Для совместимости с админкой
+                                "admin_chat_id": self.admin_chat_id,
                                 "adminChatId": self.admin_chat_id
                             }
                         }
-                        await client.patch(
+                        
+                        res = await client.patch(
                             f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", 
                             json=update_payload, 
                             headers=headers
                         )
+                        
+                        if res.status_code not in [200, 201, 204]:
+                            logger.error(f"VK Sync DB Error: {res.status_code} {res.text}")
                     
                     self.sync_queue.task_done()
                 except asyncio.TimeoutError:
                     continue
                 except Exception as e:
-                    logger.error(f"Sync Worker Error: {e}")
+                    logger.error(f"Sync Worker Error (VK): {e}")
                     try: self.sync_queue.task_done()
                     except: pass
 
