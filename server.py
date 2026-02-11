@@ -401,20 +401,30 @@ async def get_bot_stats_api(bot_id: str):
         return {"stats": {"total_messages": 0, "active_users": 0}}
 
 @app.get("/api/bots/{user_id}")
-async def get_bots(user_id: str):
-    res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
-    bots = res.json()
-    
-    # Распаковываем конфиг для фронтенда
-    for bot in bots:
-        cfg = bot.get("config", {})
-        bot["vk_group_id"] = cfg.get("vk_group_id")
-        bot["admin_chat_id"] = cfg.get("admin_chat_id")
-        bot["buttons"] = cfg.get("buttons", [])
-        bot["triggers"] = cfg.get("triggers", [])
-        bot["settings"] = cfg.get("settings", {})
+async def get_user_bots(user_id: str):
+    try:
+        res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
+        if res.status_code != 200:
+            return []
         
-    return bots
+        bots = res.json()
+        
+        # РАСПАКОВКА: вытаскиваем данные из конфига наружу для фронтенда
+        for bot in bots:
+            cfg = bot.get("config", {})
+            if isinstance(cfg, str): cfg = json.loads(cfg)
+            
+            # Если на фронте поля называются так, то заполняем их из конфига
+            bot["vk_group_id"] = cfg.get("vk_group_id")
+            bot["admin_chat_id"] = cfg.get("admin_chat_id")
+            bot["buttons"] = cfg.get("buttons", [])
+            bot["triggers"] = cfg.get("triggers", [])
+            bot["settings"] = cfg.get("settings", {})
+            
+        return bots
+    except Exception as e:
+        logger.error(f"Error getting bots: {e}")
+        return []
 
 @app.post("/api/bots/save")
 async def save_bot(b: dict):
