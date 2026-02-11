@@ -405,23 +405,20 @@ async def get_user_data(user_id: str):
 @app.get("/api/bots/stats/{bot_id}")
 async def get_bot_stats_api(bot_id: str):
     try:
-        # 1. Тянем бота из БД
+        # 1. Тянем данные бота
         res = await db.get("bots", params={"id": f"eq.{bot_id}"})
         if res.status_code != 200 or not res.json():
             return {"stats": {"history": [], "totalMessages": 0}}
-        
+
         bot_data = res.json()[0]
-        
-        # 2. Получаем поле stats
-        # В Supabase это JSONB, но мы подстрахуемся на случай строки
-        s = bot_data.get("stats")
+        s = bot_data.get("stats") or {}
+
+        # Если stats пришла как строка (бывает в Supabase), парсим её
         if isinstance(s, str):
             try: s = json.loads(s)
             except: s = {}
-        if not s: s = {}
 
-        # 3. Формируем ответ ровно так, как ждет фронтенд
-        # Если в базе нет ключа history, отдаем пустой список, чтобы график не упал
+        # 2. Формируем ответ, который ОЖИДАЕТ фронтенд (с историей)
         return {
             "stats": {
                 "history": s.get("history", []),
@@ -433,7 +430,7 @@ async def get_bot_stats_api(bot_id: str):
             }
         }
     except Exception as e:
-        logger.error(f"🚨 Error fetching stats for {bot_id}: {e}")
+        logger.error(f"🚨 Ошибка статистики: {e}")
         return {"stats": {"history": [], "totalMessages": 0}}
         
 @app.get("/api/bots/{user_id}")
