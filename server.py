@@ -447,54 +447,54 @@ async def get_user_bots(user_id: str):
 async def save_bot(b: dict):
     try:
         bid = b.get('id')
-        if not bid: raise HTTPException(400, "Missing bot ID")
+        if not bid: raise HTTPException(400, "ID бота потерян")
 
-        # 1. Берем текущие данные из базы как эталон
+        # 1. Достаем то, что СЕЙЧАС лежит в базе (эталон)
         old_r = await db.get("bots", params={"id": f"eq.{bid}"})
         if old_r.status_code != 200 or not old_r.json():
-            raise HTTPException(404, "Bot not found")
+            raise HTTPException(404, "Бот не найден в БД")
         
         curr = old_r.json()[0]
         old_config = curr.get("config", {})
+        if not isinstance(old_config, dict): old_config = {}
 
-        # Входящие данные (поддержка обоих форматов передачи)
+        # 2. Определяем, откуда пришли новые данные (из корня или из вложенного config)
         inc_cfg = b.get("config", {}) if isinstance(b.get("config"), dict) else {}
 
-        # Функция выбора: Новое значение -> Значение из вложенного конфига -> Старое из базы
-        def pick(val_root, val_cfg, val_old, default=None):
-            if val_root is not None: return val_root
-            if val_cfg is not None: return val_cfg
-            return val_old if val_old is not None else default
+        # Универсальный помощник: берет новое, если нет — из инкаминг-конфига, если нет — из базы
+        def get_val(key, default=None):
+            val = b.get(key)
+            if val is None: val = inc_cfg.get(key)
+            if val is None: val = old_config.get(key)
+            return val if val is not None else default
 
-        # 2. Собираем настройки (SETTINGS) - Глубокое слияние
-        # Это решит проблему с "блоком безопасности" и галочками
-        incoming_settings = b.get("settings") or inc_cfg.get("settings") or {}
-        updated_settings = {
-            **old_config.get("settings", {}),
-            **incoming_settings
-        }
+        # 3. Собираем SETTINGS (слияние, чтобы не слетали галочки безопасности)
+        old_settings = old_config.get("settings", {})
+        new_settings = b.get("settings") or inc_cfg.get("settings") or {}
+        merged_settings = {**old_settings, **new_settings}
 
-        # 3. Собираем всё остальное (Кнопки, Темы, Приветствие)
+        # 4. Формируем UI CONFIG (точно по твоему JSON)
         ui_config = {
-            # Если фронт прислал [] (пустой список), pick выберет его, так как это не None
-            "buttons": pick(b.get("buttons"), inc_cfg.get("buttons"), old_config.get("buttons"), []),
-            "triggers": pick(b.get("triggers"), inc_cfg.get("triggers"), old_config.get("triggers"), []),
-            "welcomeMessage": pick(b.get("welcomeMessage"), inc_cfg.get("welcomeMessage"), old_config.get("welcomeMessage"), "Здравствуйте!"),
-            "vk_group_id": pick(b.get("vk_group_id"), inc_cfg.get("vk_group_id"), old_config.get("vk_group_id")),
-            "admin_chat_id": pick(b.get("admin_chat_id"), inc_cfg.get("admin_chat_id"), old_config.get("admin_chat_id")),
-            "adminChatId": pick(b.get("admin_chat_id"), inc_cfg.get("admin_chat_id"), old_config.get("admin_chat_id")),
-            "settings": updated_settings,
-            # Обязательно сохраняем статистику, иначе она обнулится!
-            "stats": old_config.get("stats", {}),
-            "connectedUsers": old_config.get("connectedUsers", [])
+            "stats": old_config.get("stats", {}), # Сохраняем историю и счетчики
+            "buttons": get_val("buttons", []),
+            "settings": merged_settings,
+            "triggers": get_val("triggers", []),
+            "adminChatId": get_val("adminChatId") or get_val("admin_chat_id"),
+            "admin_chat_id": get_val("admin_chat_id") or get_val("adminChatId"),
+            "connectedUsers": old_config.get("connectedUsers", []),
+            "welcomeMessage": get_val("welcomeMessage")
         }
 
-        # 4. Подготовка к сохранению
+        # 5. Обработка токена (чтобы не зашифровать уже зашифрованное)
         raw_token = b.get('token')
         final_token = curr.get('token')
-        if raw_token and not str(raw_token).startswith('gAAAA'):
-            final_token = encrypt_val(raw_token)
+        if raw_token:
+            if not str(raw_token).startswith('gAAAA'):
+                final_token = encrypt_val(raw_token)
+            else:
+                final_token = raw_token
 
+        # Собираем финальный пакет для Supabase
         db_payload = {
             "name": b.get("name") or curr.get("name"),
             "token": final_token,
@@ -502,21 +502,26 @@ async def save_bot(b: dict):
             "config": ui_config 
         }
 
-        # 5. Пишем в базу
+        # 6. Сохраняем в базу
         res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
+        
         if res.status_code not in [200, 201, 204]:
-            raise HTTPException(res.status_code, f"DB Error: {res.text}")
+            raise HTTPException(res.status_code, f"Ошибка БД: {res.text}")
 
-        # 6. ВАЖНО: Возвращаем фронтенду ПОЛНЫЙ объект, чтобы он обновил состояние
-        # Мы возвращаем структуру, идентичную той, что лежит в базе
-        return {
-            **curr,        # Старые системные поля (id, created_at)
-            **db_payload,  # Новые поля (name, token, config)
-            "config": ui_config # Явно отдаем новый конфиг
+        # 7. ВОЗВРАЩАЕМ ПОЛНЫЙ ОБЪЕКТ (чтобы фронтенд обновил инпуты и ничего не стер)
+        # Мы "разворачиваем" конфиг в корень для фронтенда
+        response_data = {
+            **curr,
+            **db_payload,
+            **ui_config, # Выносим welcomeMessage, buttons и т.д. в корень
+            "id": bid
         }
+        
+        logger.info(f"✅ Успешное сохранение бота {bid}. Кнопок: {len(ui_config['buttons'])}")
+        return response_data
 
     except Exception as e:
-        logger.error(f"🚨 Save error: {e}", exc_info=True)
+        logger.error(f"🚨 Ошибка сохранения: {e}", exc_info=True)
         raise HTTPException(500, str(e))
         
 @app.post("/api/bots/start")
