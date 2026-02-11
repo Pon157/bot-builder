@@ -965,6 +965,8 @@ async def verify_access_key(data: dict):
     raise HTTPException(401, "Ключ не подходит или уже использован")
 
 #VK CREATION
+import json # Не забудь импортировать в начале файла
+
 @app.post("/api/bots/create")
 async def create_bot_endpoint(d: dict):
     try:
@@ -979,7 +981,29 @@ async def create_bot_endpoint(d: dict):
         bot_id = f"b_{secrets.token_hex(4)}"
         encrypted_token = encrypt_val(token)
 
-        # Формируем объект ПРАВИЛЬНО с самого начала
+        # 1. Сначала создаем структуру конфига как словарь
+        config_dict = {
+            "stats": {"history": [], "totalMessages": 0},
+            "buttons": [],
+            "triggers": [],
+            "vk_group_id": "", 
+            "admin_chat_id": "",
+            "welcomeMessage": "Привет! Я твой новый бот.",
+            "settings": {
+                "forwardToAdmin": True,
+                "antiSpam": False,
+                "rateLimit": 1,
+                "useTopics": False,
+                "showHeaderId": True,
+                "showUserInfo": True,
+                "showUsername": True,
+                "notifyOnBlock": True,
+                "notifyOnStart": True,
+                "showHeaderName": True
+            }
+        }
+
+        # 2. Формируем финальный объект для вставки
         new_bot_payload = {
             "id": bot_id,
             "owner_id": owner_id,
@@ -988,41 +1012,38 @@ async def create_bot_endpoint(d: dict):
             "platform": platform,
             "status": "IDLE",
             "created_at": int(time.time() * 1000),
-            "license_expires_at": int(time.time() * 1000) + (24 * 3600 * 1000),
-            "config": {
-                "buttons": [],
-                "triggers": [],
-                # Инициализируем поля ВК/Админа, чтобы они существовали в JSONB
-                "vk_group_id": None, 
-                "admin_chat_id": None,
-                "settings": {
-                    "forwardToAdmin": True,
-                    "antiSpam": False,
-                    "showHeaderId": True
-                }
-            }
+            "license_expires_at": int(time.time() * 1000) + (30 * 24 * 3600 * 1000), # Даем 30 дней сразу
+            # ВАЖНО: преобразуем словарь в JSON-строку, если колонка в БД ждет строку
+            "config": config_dict 
         }
 
-        # Сохраняем в Supabase
+        # 3. Сохраняем в Supabase
         res = await db.post("bots", json=new_bot_payload)
         
         if res.status_code not in [200, 201, 204]:
-            logger.error(f"DB Error on create: {res.text}")
+            logger.error(f"❌ Ошибка Supabase: {res.text}")
             raise HTTPException(res.status_code, f"Database error: {res.text}")
 
-        # ВАЖНО: Распаковываем поля для фронтенда перед возвратом
-        # Чтобы фронтенд сразу записал их в стейт и инпуты не были undefined
+        logger.info(f"✅ Бот {bot_id} успешно создан в БД")
+
+        # 4. Возвращаем "плоский" объект для фронтенда (чтобы инпуты сразу заполнились)
         return {
-            **new_bot_payload,
-            "vk_group_id": None,
-            "admin_chat_id": None,
+            "id": bot_id,
+            "owner_id": owner_id,
+            "name": name,
+            "token": token, # Возвращаем сырой токен, чтобы юзер его видел один раз
+            "platform": platform,
+            "status": "IDLE",
+            "welcomeMessage": config_dict["welcomeMessage"],
+            "vk_group_id": "",
+            "admin_chat_id": "",
             "buttons": [],
             "triggers": [],
-            "settings": new_bot_payload["config"]["settings"]
+            "settings": config_dict["settings"]
         }
 
     except Exception as e:
-        logger.error(f"🚨 Create Bot Error: {e}")
+        logger.error(f"🚨 Ошибка при создании бота: {e}", exc_info=True)
         raise HTTPException(500, str(e))
     
 # ==========================================
