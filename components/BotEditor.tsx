@@ -172,6 +172,21 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                       </h2>
                   
                   <div className="space-y-5">
+                    <div className="mb-6 p-1 bg-black/40 border border-zinc-800 rounded-2xl flex gap-1">
+                      {['telegram', 'vk'].map((p) => (
+                        <button
+                          key={p}
+                          onClick={() => handleLocalUpdate({ ...bot, platform: p as any })}
+                          className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                            bot.platform === p 
+                              ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' 
+                              : 'text-zinc-500 hover:text-zinc-300'
+                          }`}
+                        >
+                          {p === 'telegram' ? 'Telegram Bot' : 'VK Community'}
+                        </button>
+                      ))}
+                    </div>
                     <label className="block">
                       <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
                         {isVK ? 'ВКонтакте Access Token' : 'Telegram Bot Token'}
