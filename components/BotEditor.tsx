@@ -21,6 +21,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
   const [isProcessing, setIsProcessing] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
+  const isVK = bot.platform === 'vk';
 
   const defaultSettings: BotConfig['settings'] = {
     useTopics: false,
@@ -106,35 +107,45 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
         </div>
       )}
 
-      <header className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] flex flex-col md:flex-row justify-between items-center gap-6 shadow-2xl relative overflow-hidden">
-        <div className="flex items-center gap-6 relative z-10">
-          <div className={`w-16 h-16 rounded-2xl flex items-center justify-center border-2 ${bot.status === BotStatus.RUNNING ? 'bg-blue-500/10 border-blue-500/30 text-blue-500' : 'bg-zinc-900 border-zinc-800 text-zinc-600'}`}>
-            <Cpu className="w-8 h-8" />
-          </div>
-          <div>
-            <div className="flex items-center gap-3">
-                <h1 className="text-3xl font-black text-white">{bot.name}</h1>
-                {isAdminMode && (
-                    <div className="px-2 py-1 bg-orange-500/10 border border-orange-500/20 rounded-lg text-orange-500 text-[8px] font-black uppercase tracking-widest">
-                        Support Access
-                    </div>
-                )}
-            </div>
-            <div className="flex items-center gap-2 mt-1">
-              <span className={`w-2 h-2 rounded-full ${bot.status === BotStatus.RUNNING ? 'bg-blue-500 animate-pulse' : 'bg-zinc-600'}`}></span>
-              <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">{bot.status}</span>
-            </div>
-          </div>
+<header className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] flex flex-col md:flex-row justify-between items-center gap-6 shadow-2xl relative overflow-hidden">
+  <div className="flex items-center gap-6 relative z-10">
+    {/* Иконка меняется в зависимости от платформы */}
+    <div className={`w-16 h-16 rounded-2xl flex items-center justify-center border-2 ${bot.status === BotStatus.RUNNING ? 'bg-blue-500/10 border-blue-500/30 text-blue-500' : 'bg-zinc-900 border-zinc-800 text-zinc-600'}`}>
+      {isVK ? <Globe className="w-8 h-8" /> : <Cpu className="w-8 h-8" />}
+    </div>
+
+    <div>
+      <div className="flex items-center gap-3">
+        <h1 className="text-3xl font-black text-white">{bot.name}</h1>
+        
+        {/* Бейдж платформы */}
+        <div className={`px-2 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest border ${isVK ? 'bg-blue-500/10 border-blue-500/20 text-blue-400' : 'bg-sky-500/10 border-sky-500/20 text-sky-400'}`}>
+          {bot.platform || 'telegram'}
         </div>
-        <div className="flex gap-4 relative z-10">
-           <button onClick={syncState} disabled={isProcessing} className={`px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all ${hasUnsavedChanges ? 'bg-blue-600 text-white animate-pulse' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}>
-             <Save className="w-4 h-4" /> Сохранить
-           </button>
-           <button onClick={handleToggleServer} disabled={isProcessing} className={`px-10 py-4 rounded-2xl font-black text-xs uppercase transition-all flex items-center gap-2 shadow-xl ${bot.status === BotStatus.RUNNING ? 'bg-red-500/10 text-red-500 border border-red-500/20' : 'bg-blue-600 text-white'}`}>
-             <Power className="w-4 h-4" /> {bot.status === BotStatus.RUNNING ? 'Остановить' : 'Запустить'}
-           </button>
-        </div>
-      </header>
+
+        {isAdminMode && (
+          <div className="px-2 py-1 bg-orange-500/10 border border-orange-500/20 rounded-lg text-orange-500 text-[8px] font-black uppercase tracking-widest">
+            Support Access
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 mt-1">
+        <span className={`w-2 h-2 rounded-full ${bot.status === BotStatus.RUNNING ? 'bg-blue-500 animate-pulse' : 'bg-zinc-600'}`}></span>
+        <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">{bot.status}</span>
+      </div>
+    </div>
+  </div>
+
+  <div className="flex gap-4 relative z-10">
+    <button onClick={syncState} disabled={isProcessing} className={`px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all ${hasUnsavedChanges ? 'bg-blue-600 text-white animate-pulse' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}>
+      <Save className="w-4 h-4" /> Сохранить
+    </button>
+    <button onClick={handleToggleServer} disabled={isProcessing} className={`px-10 py-4 rounded-2xl font-black text-xs uppercase transition-all flex items-center gap-2 shadow-xl ${bot.status === BotStatus.RUNNING ? 'bg-red-500/10 text-red-500 border border-red-500/20' : 'bg-blue-600 text-white'}`}>
+      <Power className="w-4 h-4" /> {bot.status === BotStatus.RUNNING ? 'Остановить' : 'Запустить'}
+    </button>
+  </div>
+</header>
 
       <div className="flex gap-2 border-b border-zinc-800 overflow-x-auto no-scrollbar">
         {[
@@ -150,29 +161,61 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
         ))}
       </div>
 
-      <div className="min-h-[400px]">
-        {activeTab === 'settings' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-8">
-              <section>
-                <h2 className="text-sm font-black text-white uppercase flex items-center gap-2 mb-6">
-                  <Sliders className="w-4 h-4 text-blue-500" /> Системная конфигурация
-                </h2>
-                <div className="space-y-5">
-                  <label className="block">
-                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Telegram Bot Token</span>
-                    <input type="password" placeholder="Токен от @BotFather" className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white font-mono outline-none focus:border-blue-500 transition-all" value={bot.token} onChange={e => handleLocalUpdate({...bot, token: e.target.value})} />
-                  </label>
-                  <label className="block">
-                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">ID Группы Админов (Forum)</span>
-                    <input type="text" placeholder="-100..." className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-blue-500 transition-all" value={bot.adminChatId} onChange={e => handleLocalUpdate({...bot, adminChatId: e.target.value})} />
-                  </label>
-                  <label className="block">
-                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Приветствие (/start)</span>
-                    <textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] outline-none text-xs focus:border-blue-500 transition-all resize-none" value={bot.welcomeMessage || ""} onChange={e => handleLocalUpdate({...bot, welcomeMessage: e.target.value})} />
-                  </label>
-                </div>
-              </section>
+<section>
+  <h2 className="text-sm font-black text-white uppercase flex items-center gap-2 mb-6">
+    <Sliders className="w-4 h-4 text-blue-500" /> Системная конфигурация
+  </h2>
+  
+  <div className="space-y-5">
+    {/* ПОЛЕ ТОКЕНА */}
+    <label className="block">
+      <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
+        {/* Если платформа vk — пишем "ВКонтакте...", иначе "Telegram..." */}
+        {isVK ? 'ВКонтакте Access Token' : 'Telegram Bot Token'}
+      </span>
+      <input 
+        type="password" 
+        // Меняем подсказку в зависимости от платформы
+        placeholder={isVK ? "Введите токен доступа группы" : "Токен от @BotFather"} 
+        className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white font-mono outline-none focus:border-blue-500 transition-all" 
+        value={bot.token} 
+        onChange={e => handleLocalUpdate({...bot, token: e.target.value})} 
+      />
+    </label>
+
+    {/* ПОЛЕ ID ГРУППЫ / СООБЩЕСТВА */}
+    <label className="block">
+      <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
+        {isVK ? 'ID Сообщества (цифры)' : 'ID Группы Админов (Forum)'}
+      </span>
+      <input 
+        type="text" 
+        placeholder={isVK ? "Например: 12345678" : "-100..."} 
+        className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-blue-500 transition-all" 
+        value={bot.adminChatId} 
+        onChange={e => handleLocalUpdate({...bot, adminChatId: e.target.value})} 
+      />
+    </label>
+
+    {/* ПОЛЕ ПРИВЕТСТВИЯ */}
+    <label className="block">
+      <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
+        {isVK ? 'Текст приветствия' : 'Приветствие (/start)'}
+      </span>
+      <textarea 
+        placeholder={isVK ? "Придет пользователю при первом сообщении" : "Текст для команды /start"}
+        className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] outline-none text-xs focus:border-blue-500 transition-all resize-none" 
+        value={bot.welcomeMessage || ""} 
+        onChange={e => handleLocalUpdate({...bot, welcomeMessage: e.target.value})} 
+      />
+    </label>
+    
+    {/* Напоминание про .env (согласно твоим правилам) */}
+    <p className="text-[8px] text-zinc-600 mt-2 ml-2 uppercase font-black tracking-widest opacity-50">
+      * Данные синхронизируются с системным .env
+    </p>
+  </div>
+</section>
 
               <section className="space-y-6">
                 <h2 className="text-sm font-black text-white uppercase flex items-center gap-2 mb-6">
@@ -239,25 +282,54 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                   </div>
                 </div>
 
-                <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
-                    <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
-                      <ShieldAlert className="w-4 h-4 text-emerald-500" /> Форум (Темы) и Анонимность
-                    </h3>
-                    <div className="space-y-3">
-                      <button onClick={() => updateSetting('useTopics', !safeSettings.useTopics)} className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${safeSettings.useTopics ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
-                        <div className="text-left"><p className="text-xs font-bold">Использовать Темы (Forum)</p><p className="text-[9px] uppercase opacity-50">Для супергрупп</p></div>
-                        {safeSettings.useTopics ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
-                      </button>
-                      <button onClick={() => updateSetting('topicPerRequest', !safeSettings.topicPerRequest)} className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${safeSettings.topicPerRequest ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
-                        <div className="text-left"><p className="text-xs font-bold">Новая ветка на каждый тикет</p><p className="text-[9px] uppercase opacity-50">Ticket System Mode</p></div>
-                        {safeSettings.topicPerRequest ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
-                      </button>
-                      <button onClick={() => updateSetting('anonymousTopics', !safeSettings.anonymousTopics)} className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${safeSettings.anonymousTopics ? 'bg-zinc-800 text-white' : 'bg-black border-zinc-800 text-zinc-600'}`}>
-                        <div className="text-left"><p className="text-xs font-bold">Анонимные ID (Anon ID)</p><p className="text-[9px] uppercase opacity-50">Хешировать данные в группе</p></div>
-                        {safeSettings.anonymousTopics ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
-                      </button>
-                    </div>
-                </div>
+<div className={`bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6 transition-all ${isVK ? 'opacity-40 select-none' : ''}`}>
+  <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
+    <ShieldAlert className={`w-4 h-4 ${isVK ? 'text-zinc-500' : 'text-emerald-500'}`} /> 
+    Форум (Темы) и Анонимность
+    {isVK && <span className="text-[9px] bg-rose-500/20 text-rose-500 px-2 py-0.5 rounded-md ml-auto">Только Telegram</span>}
+  </h3>
+  
+  <div className="space-y-3">
+    {/* Кнопка: Использовать Темы */}
+    <button 
+      disabled={isVK}
+      onClick={() => updateSetting('useTopics', !safeSettings.useTopics)} 
+      className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${!isVK && safeSettings.useTopics ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-black border-zinc-800 text-zinc-600'}`}
+    >
+      <div className="text-left">
+        <p className="text-xs font-bold">Использовать Темы (Forum)</p>
+        <p className="text-[9px] uppercase opacity-50">Для супергрупп</p>
+      </div>
+      {isVK ? <Lock className="w-4 h-4" /> : (safeSettings.useTopics ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />)}
+    </button>
+
+    {/* Кнопка: Темы на каждый тикет */}
+    <button 
+      disabled={isVK}
+      onClick={() => updateSetting('topicPerRequest', !safeSettings.topicPerRequest)} 
+      className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${!isVK && safeSettings.topicPerRequest ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-black border-zinc-800 text-zinc-600'}`}
+    >
+      <div className="text-left">
+        <p className="text-xs font-bold">Новая ветка на каждый тикет</p>
+        <p className="text-[9px] uppercase opacity-50">Ticket System Mode</p>
+      </div>
+      {isVK ? <Lock className="w-4 h-4" /> : (safeSettings.topicPerRequest ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />)}
+    </button>
+
+    {/* Кнопка: Анонимность */}
+    <button 
+      disabled={isVK}
+      onClick={() => updateSetting('anonymousTopics', !safeSettings.anonymousTopics)} 
+      className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${!isVK && safeSettings.anonymousTopics ? 'bg-zinc-800 text-white' : 'bg-black border-zinc-800 text-zinc-600'}`}
+    >
+      <div className="text-left">
+        <p className="text-xs font-bold">Анонимные ID (Anon ID)</p>
+        <p className="text-[9px] uppercase opacity-50">Хешировать данные в группе</p>
+      </div>
+      {isVK ? <Lock className="w-4 h-4" /> : (safeSettings.anonymousTopics ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />)}
+    </button>
+  </div>
+</div>
                 
                 {/* --- ЗОНА ОПАСНЫХ ДЕЙСТВИЙ --- */}
                 {isAdminMode ? (
