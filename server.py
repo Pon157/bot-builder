@@ -882,7 +882,6 @@ async def save_bot(b: dict):
             final_token = curr.get('token', '')
 
         # 3. Формируем конфиг (JSON-колонку в БД)
-        # Мы берем из входящих данных все, что касается настроек интерфейса
         ui_config = {
             "buttons": b.get("buttons", curr.get("config", {}).get("buttons", [])),
             "triggers": b.get("triggers", curr.get("config", {}).get("triggers", [])),
@@ -895,9 +894,10 @@ async def save_bot(b: dict):
             "owner_id": b.get('owner_id') or curr.get('owner_id'),
             "name": b.get("name") or curr.get("name", "Unnamed Bot"),
             "token": final_token,
+            "platform": b.get('platform') or curr.get('platform', 'telegram'), # <--- ТЕПЕРЬ ПЛАТФОРМА СОХРАНЯЕТСЯ
             "status": curr.get("status", "IDLE"),
             "license_expires_at": b.get("license_expires_at") or curr.get("license_expires_at", 0),
-            "config": ui_config  # Вся логика кнопок уходит сюда
+            "config": ui_config
         }
 
         # 5. Сохраняем в базу (PATCH обновляет только указанного бота)
@@ -908,9 +908,9 @@ async def save_bot(b: dict):
             raise HTTPException(res.status_code, f"Database error: {res.text}")
 
         # 6. ВАЖНО: Возвращаем фронтенду "плоский" объект
-        # Чтобы BotEditor увидел updated.buttons и не очистил инпуты
         return {
             **db_payload,
+            "platform": db_payload["platform"], # Возвращаем платформу для UI
             "buttons": ui_config["buttons"],
             "triggers": ui_config["triggers"],
             "settings": ui_config["settings"]
