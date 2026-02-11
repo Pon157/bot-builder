@@ -603,19 +603,20 @@ if __name__ == "__main__":
     with open(cfg_path, 'r', encoding='utf-8') as f:
         config = json.load(f)
     
-    bot_engine = VKBotCore(config)
+    # ВНИМАНИЕ: Здесь должно быть имя твоего класса из начала файла
+    bot_engine = BotCoreEngineVK(config) 
 
-    # 1. Сначала настраиваем хендлеры (синхронно, так как они просто регистрируются)
-    # Нам нужно вынести это из run_instance, если мы запускаем через bot.run_forever
     loop = asyncio.get_event_loop()
+    
+    # Настраиваем хендлеры
     loop.run_until_complete(bot_engine.core_handlers_setup())
     
-    # 2. Запускаем фоновые задачи
+    # Запускаем фоновые задачи
     loop.create_task(bot_engine.database_sync_worker())
     loop.create_task(bot_engine.daily_stats_rotator())
     loop.create_task(bot_engine.license_checker())
 
     logger.info(f"[*] Бот VK {bot_engine.bot_id} готов к работе. AdminID: {bot_engine.admin_chat_id}")
 
-    # 3. ЗАПУСК, который НЕ ВЫЛЕТАЕТ
+    # Запуск поллинга vkbottle
     bot_engine.bot.run_forever()
