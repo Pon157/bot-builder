@@ -460,79 +460,87 @@ async def get_user_bots(user_id: str):
 async def save_bot(b: dict):
     try:
         bid = b.get('id')
-        if not bid: raise HTTPException(400, "ID бота потерян")
+        if not bid: 
+            raise HTTPException(400, "ID бота потерян")
 
-        # 1. Достаем то, что СЕЙЧАС лежит в базе (эталон)
+        # 1. Достаем то, что СЕЙЧАС лежит в базе
         old_r = await db.get("bots", params={"id": f"eq.{bid}"})
-        if old_r.status_code != 200 or not old_r.json():
-            raise HTTPException(404, "Бот не найден в БД")
         
-        curr = old_r.json()[0]
-        old_config = curr.get("config", {})
-        if not isinstance(old_config, dict): old_config = {}
+        # Логируем для отладки, если не нашли
+        if old_r.status_code != 200:
+            logger.error(f"❌ Supabase error: {old_r.text}")
+            raise HTTPException(old_r.status_code, "Ошибка связи с БД")
 
-        # 2. Определяем, откуда пришли новые данные (из корня или из вложенного config)
+        bots = old_r.json()
+        if not bots:
+            logger.warning(f"⚠️ Бот {bid} не найден. Проверь ID в таблице.")
+            raise HTTPException(404, f"Бот {bid} не найден в БД")
+        
+        curr = bots[0]
+        old_config = curr.get("config", {}) or {}
+
+        # 2. Обработка BIGINT колонок (ВАЖНО для твоей таблицы)
+        def clean_int(val):
+            if val is None or str(val).strip() == "" or val == "null": return None
+            try: return int(val)
+            except: return None
+
+        # Ищем новые значения или оставляем старые
+        new_admin_id = clean_int(b.get("admin_chat_id") or b.get("adminChatId") or curr.get("admin_chat_id"))
+        new_vk_id = clean_int(b.get("vk_group_id") or b.get("vkGroupId") or curr.get("vk_group_id"))
+
+        # 3. Собираем конфиг (JSONB)
         inc_cfg = b.get("config", {}) if isinstance(b.get("config"), dict) else {}
-
-        # Универсальный помощник: берет новое, если нет — из инкаминг-конфига, если нет — из базы
+        
         def get_val(key, default=None):
             val = b.get(key)
             if val is None: val = inc_cfg.get(key)
             if val is None: val = old_config.get(key)
             return val if val is not None else default
 
-        # 3. Собираем SETTINGS (слияние, чтобы не слетали галочки безопасности)
-        old_settings = old_config.get("settings", {})
-        new_settings = b.get("settings") or inc_cfg.get("settings") or {}
-        merged_settings = {**old_settings, **new_settings}
-
-        # 4. Формируем UI CONFIG (точно по твоему JSON)
         ui_config = {
-            "stats": old_config.get("stats", {}), # Сохраняем историю и счетчики
+            "stats": old_config.get("stats", {}),
             "buttons": get_val("buttons", []),
-            "settings": merged_settings,
+            "settings": {**old_config.get("settings", {}), **(b.get("settings") or inc_cfg.get("settings") or {})},
             "triggers": get_val("triggers", []),
-            "adminChatId": get_val("adminChatId") or get_val("admin_chat_id"),
-            "admin_chat_id": get_val("admin_chat_id") or get_val("adminChatId"),
-            "connectedUsers": old_config.get("connectedUsers", []),
-            "welcomeMessage": get_val("welcomeMessage")
+            "welcomeMessage": get_val("welcomeMessage", "Привет!"),
+            "connectedUsers": old_config.get("connectedUsers", [])
         }
 
-        # 5. Обработка токена (чтобы не зашифровать уже зашифрованное)
+        # 4. Обработка токена
         raw_token = b.get('token')
         final_token = curr.get('token')
-        if raw_token:
-            if not str(raw_token).startswith('gAAAA'):
-                final_token = encrypt_val(raw_token)
-            else:
-                final_token = raw_token
+        if raw_token and not str(raw_token).startswith('gAAAA'):
+            final_token = encrypt_val(raw_token)
 
-        # Собираем финальный пакет для Supabase
+        # 5. Собираем финальный пакет (С учетом колонок в твоем SQL)
         db_payload = {
             "name": b.get("name") or curr.get("name"),
             "token": final_token,
             "platform": b.get('platform') or curr.get('platform'),
-            "config": ui_config 
+            "config": ui_config,
+            "admin_chat_id": new_admin_id, # Пишем в колонку bigint
+            "vk_group_id": new_vk_id      # Пишем в колонку bigint
         }
 
-        # 6. Сохраняем в базу
+        # 6. Сохраняем
         res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
         
         if res.status_code not in [200, 201, 204]:
-            raise HTTPException(res.status_code, f"Ошибка БД: {res.text}")
+            raise HTTPException(res.status_code, f"Ошибка сохранения: {res.text}")
 
-        # 7. ВОЗВРАЩАЕМ ПОЛНЫЙ ОБЪЕКТ (чтобы фронтенд обновил инпуты и ничего не стер)
-        # Мы "разворачиваем" конфиг в корень для фронтенда
-        response_data = {
+        # Возвращаем всё в корень для фронтенда
+        return {
             **curr,
             **db_payload,
-            **ui_config, # Выносим welcomeMessage, buttons и т.д. в корень
+            **ui_config,
+            "admin_chat_id": new_admin_id,
+            "vk_group_id": new_vk_id,
             "id": bid
         }
-        
-        logger.info(f"✅ Успешное сохранение бота {bid}. Кнопок: {len(ui_config['buttons'])}")
-        return response_data
 
+    except HTTPException as he:
+        raise he # Прокидываем 404/400 как есть
     except Exception as e:
         logger.error(f"🚨 Ошибка сохранения: {e}", exc_info=True)
         raise HTTPException(500, str(e))
