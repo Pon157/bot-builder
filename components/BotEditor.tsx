@@ -469,14 +469,17 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
               </div>
             )}
 
-            {activeTab === 'stats' && <BotStatsView bot={bot} onUpdate={onUpdate} />}
+{activeTab === 'stats' && <BotStatsView bot={bot} onUpdate={onUpdate} />}
             {activeTab === 'logs' && <BotConsole botId={bot.id} />}
+
           </div> {/* Конец контейнера для контента вкладок */}
         </div> {/* Конец обертки анимации всей правой части */}
       </div> {/* Конец GRID основной разметки редактора */}
-    </div>
+    </div> // Конец главного фонового div
   );
 };
+
+export default BotEditor;
 
 export default BotEditor;
 
