@@ -596,19 +596,26 @@ class BotInstance:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python3 bot_core_vk.py <config_path>")
+        print("Usage: python3 vkbot_core.py <config_path>")
         sys.exit(1)
         
-    async def main():
-        cfg_path = sys.argv[1]
-        try:
-            with open(cfg_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            
-            instance = BotInstance(config)
-            await instance.run_instance()
-            
-        except Exception as e:
-            logger.error(f"FATAL ERROR: {e}")
+    cfg_path = sys.argv[1]
+    with open(cfg_path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+    
+    bot_engine = VKBotCore(config)
 
-    asyncio.run(main())
+    # 1. Сначала настраиваем хендлеры (синхронно, так как они просто регистрируются)
+    # Нам нужно вынести это из run_instance, если мы запускаем через bot.run_forever
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(bot_engine.core_handlers_setup())
+    
+    # 2. Запускаем фоновые задачи
+    loop.create_task(bot_engine.database_sync_worker())
+    loop.create_task(bot_engine.daily_stats_rotator())
+    loop.create_task(bot_engine.license_checker())
+
+    logger.info(f"[*] Бот VK {bot_engine.bot_id} готов к работе. AdminID: {bot_engine.admin_chat_id}")
+
+    # 3. ЗАПУСК, который НЕ ВЫЛЕТАЕТ
+    bot_engine.bot.run_forever()
