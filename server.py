@@ -114,17 +114,24 @@ class BotManager:
         
         self.log_paths[bid] = log_path
         
+        # ОПРЕДЕЛЯЕМ ФАЙЛ БОТА В ЗАВИСИМОСТИ ОТ ПЛАТФОРМЫ
+        platform = config.get('platform', 'telegram').lower()
+        if platform == 'vk':
+            bot_file = "vkbot_core__2_.py"
+        else:
+            bot_file = "bot_core.py"
+        
         try:
             env = os.environ.copy()
             env.update({"SUPABASE_URL": S_URL, "SUPABASE_KEY": S_KEY})
             l_out = open(log_path, "a", encoding="utf-8")
             
             p = await asyncio.create_subprocess_exec(
-                sys.executable, "bot_core.py", cfg_path,
+                sys.executable, bot_file, cfg_path,
                 stdout=l_out, stderr=l_out, env=env
             )
             self.procs[bid] = p
-            logger.info(f"🚀 Бот {bid} запущен (PID: {p.pid})")
+            logger.info(f"🚀 Бот {bid} ({platform.upper()}) запущен (PID: {p.pid})")
             return True
         except Exception as e:
             logger.error(f"❌ Критическая ошибка запуска {bid}: {e}")
