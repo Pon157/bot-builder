@@ -417,30 +417,36 @@ async def save_bot(b: dict):
         old_r = await db.get("bots", params={"id": f"eq.{bid}"})
         old_data = old_r.json()
         curr = old_data[0] if isinstance(old_data, list) and len(old_data) > 0 else {}
+        old_config = curr.get("config", {})
 
-        # 2. Обработка токена
+        # 2. Обработка токена (с учетом шифрования)
         raw_token = b.get('token', '')
         if raw_token:
+            # Шифруем, если это новый токен
             final_token = encrypt_val(raw_token) if not raw_token.startswith('gAAAA') else raw_token
         else:
             final_token = curr.get('token', '')
 
-        # 3. Формируем конфиг (кнопки, триггеры)
+        # 3. Формируем конфиг (МЕРЖИМ данные, чтобы ничего не очищалось)
+        # Проверяем на None, чтобы пустой список [] не считался отсутствием данных
         ui_config = {
-            "buttons": b.get("buttons", curr.get("config", {}).get("buttons", [])),
-            "triggers": b.get("triggers", curr.get("config", {}).get("triggers", [])),
-            "settings": b.get("settings", curr.get("config", {}).get("settings", {}))
+            "buttons": b.get("buttons") if b.get("buttons") is not None else old_config.get("buttons", []),
+            "triggers": b.get("triggers") if b.get("triggers") is not None else old_config.get("triggers", []),
+            "settings": {**old_config.get("settings", {}), **b.get("settings", {})}
         }
 
-        # 4. Собираем объект для БД (теперь с платформой!)
+        # 4. Собираем объект для БД (добавляем поля ВК)
         db_payload = {
             "id": bid,
             "owner_id": b.get('owner_id') or curr.get('owner_id'),
             "name": b.get("name") or curr.get("name", "Unnamed Bot"),
             "token": final_token,
-            "platform": b.get('platform') or curr.get('platform', 'telegram'), # <-- КРИТИЧНО
+            "platform": b.get('platform') or curr.get('platform', 'telegram'),
             "status": curr.get("status", "IDLE"),
             "license_expires_at": b.get("license_expires_at") or curr.get("license_expires_at", 0),
+            # Новые поля для ВК
+            "vk_group_id": b.get("vk_group_id") if b.get("vk_group_id") is not None else curr.get("vk_group_id"),
+            "admin_chat_id": b.get("admin_chat_id") if b.get("admin_chat_id") is not None else curr.get("admin_chat_id"),
             "config": ui_config 
         }
 
@@ -450,10 +456,9 @@ async def save_bot(b: dict):
         if res.status_code not in [200, 201, 204]:
             raise HTTPException(res.status_code, f"Database error: {res.text}")
 
-        # 6. Возвращаем плоский объект фронтенду
+        # 6. Возвращаем плоский объект (чтобы фронт сразу обновил стейт)
         return {
             **db_payload,
-            "platform": db_payload["platform"],
             "buttons": ui_config["buttons"],
             "triggers": ui_config["triggers"],
             "settings": ui_config["settings"]
