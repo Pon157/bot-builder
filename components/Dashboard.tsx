@@ -70,12 +70,12 @@ const Dashboard: React.FC<DashboardProps> = ({ bots, onSelectBot, onAddBot }) =>
       {bots.map(bot => (
           <div 
               key={bot.id}
-              className="bg-[#111] border border-zinc-800 rounded-[2.5rem] p-8 hover:border-blue-500/50 transition-all cursor-pointer group relative overflow-hidden"
+              className="bg-[#111] border border-zinc-800 rounded-[2.5rem] p-8 hover:border-blue-500/50 transition-all cursor-pointer group relative"
               onClick={() => onSelectBot(bot.id)}
           >
               {/* Индикатор платформы в углу */}
-              <div className="absolute top-0 right-10 transform -translate-y-1/2">
-                <span className="bg-zinc-800 text-zinc-500 text-[8px] font-black px-3 py-4 rounded-b-xl uppercase tracking-tighter">
+              <div className="absolute top-0 right-6 transform -translate-y-1/2">
+                <span className="bg-zinc-800 text-zinc-500 text-[8px] font-black px-3 py-1.5 rounded-xl uppercase tracking-wider shadow-lg">
                   {bot.platform || 'telegram'}
                 </span>
               </div>
