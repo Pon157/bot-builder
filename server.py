@@ -409,21 +409,38 @@ async def get_user_bots(user_id: str):
         
         bots = res.json()
         
-        # РАСПАКОВКА: вытаскиваем данные из конфига наружу для фронтенда
         for bot in bots:
-            cfg = bot.get("config", {})
-            if isinstance(cfg, str): cfg = json.loads(cfg)
+            # 1. Безопасно достаем конфиг
+            cfg = bot.get("config")
+            if not cfg: 
+                cfg = {}
+            elif isinstance(cfg, str): 
+                try:
+                    cfg = json.loads(cfg)
+                except:
+                    cfg = {}
             
-            # Если на фронте поля называются так, то заполняем их из конфига
-            bot["vk_group_id"] = cfg.get("vk_group_id")
-            bot["admin_chat_id"] = cfg.get("admin_chat_id")
-            bot["buttons"] = cfg.get("buttons", [])
-            bot["triggers"] = cfg.get("triggers", [])
-            bot["settings"] = cfg.get("settings", {})
+            # 2. РАСПАКОВКА (Важно: даем значения по умолчанию, чтобы не было null/undefined)
+            # Добавляем и snake_case и camelCase на всякий случай для фронта
+            bot["vk_group_id"] = cfg.get("vk_group_id") or ""
+            bot["vkGroupId"] = cfg.get("vk_group_id") or ""
+            
+            bot["admin_chat_id"] = cfg.get("admin_chat_id") or ""
+            bot["adminChatId"] = cfg.get("admin_chat_id") or ""
+            
+            bot["buttons"] = cfg.get("buttons") if cfg.get("buttons") is not None else []
+            bot["triggers"] = cfg.get("triggers") if cfg.get("triggers") is not None else []
+            
+            # Настройки тоже должны быть всегда словарем
+            bot["settings"] = cfg.get("settings") if isinstance(cfg.get("settings"), dict) else {
+                "forwardToAdmin": True,
+                "antiSpam": False,
+                "showHeaderId": True
+            }
             
         return bots
     except Exception as e:
-        logger.error(f"Error getting bots: {e}")
+        logger.error(f"🚨 Error getting bots: {e}")
         return []
 
 @app.post("/api/bots/save")
@@ -433,26 +450,24 @@ async def save_bot(b: dict):
         if not bid:
             raise HTTPException(400, "Missing bot ID")
 
-        # 1. Загружаем то, что СЕЙЧАС лежит в базе
+        # 1. Загружаем текущие данные из базы (чтобы не потерять то, что не прислал фронт)
         old_r = await db.get("bots", params={"id": f"eq.{bid}"})
         old_data = old_r.json()
         curr = old_data[0] if isinstance(old_data, list) and len(old_data) > 0 else {}
         
-        # Получаем текущий конфиг из JSONB колонки
         old_config = curr.get("config", {})
         if not isinstance(old_config, dict):
             old_config = {}
 
-        # 2. Обработка токена
-        raw_token = b.get('token', '')
+        # 2. Токен: шифруем только если он новый и не зашифрован
+        raw_token = b.get('token')
         if raw_token:
-            final_token = encrypt_val(raw_token) if not raw_token.startswith('gAAAA') else raw_token
+            final_token = encrypt_val(raw_token) if not str(raw_token).startswith('gAAAA') else raw_token
         else:
             final_token = curr.get('token', '')
 
-        # 3. Собираем конфиг (Учитываем плоскую структуру от фронтенда)
-        # Если фронтенд прислал поле в корне (b.get), берем его. 
-        # Если нет — ищем его внутри старого конфига.
+        # 3. Собираем конфиг (УМНЫЙ МЕРЖ)
+        # Используем проверку "is not None", чтобы пустые строки или 0 не игнорировались
         ui_config = {
             "buttons": b.get("buttons") if b.get("buttons") is not None else old_config.get("buttons", []),
             "triggers": b.get("triggers") if b.get("triggers") is not None else old_config.get("triggers", []),
@@ -460,29 +475,34 @@ async def save_bot(b: dict):
                 **old_config.get("settings", {}),
                 **b.get("settings", {})
             },
-            # Важные поля ID (пробуем взять отовсюду)
-            "vk_group_id": b.get("vk_group_id") or b.get("vkGroupId") or old_config.get("vk_group_id"),
-            "admin_chat_id": b.get("admin_chat_id") or b.get("adminChatId") or old_config.get("admin_chat_id")
+            # Явная проверка для ID
+            "vk_group_id": b.get("vk_group_id") if b.get("vk_group_id") is not None else \
+                           b.get("vkGroupId") if b.get("vkGroupId") is not None else \
+                           old_config.get("vk_group_id"),
+            
+            "admin_chat_id": b.get("admin_chat_id") if b.get("admin_chat_id") is not None else \
+                             b.get("adminChatId") if b.get("adminChatId") is not None else \
+                             old_config.get("admin_chat_id")
         }
 
-        # 4. Payload для Supabase
+        # 4. Формируем Payload для Supabase
         db_payload = {
             "id": bid,
             "owner_id": b.get('owner_id') or curr.get('owner_id'),
-            "name": b.get("name") or curr.get("name"),
+            "name": b.get("name") if b.get("name") is not None else curr.get("name"),
             "token": final_token,
             "platform": b.get('platform') or curr.get('platform', 'telegram'),
             "config": ui_config 
         }
 
-        # 5. Сохраняем
+        # 5. Отправляем в БД
         res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
         
         if res.status_code not in [200, 201, 204]:
-            raise HTTPException(res.status_code, f"DB Error: {res.text}")
+            logger.error(f"DB Error: {res.text}")
+            raise HTTPException(res.status_code, f"Database error: {res.text}")
 
-        # 6. ВАЖНО: Возвращаем "плоскую" структуру для фронтенда!
-        # Чтобы React/Vue сразу увидел изменения в инпутах
+        # 6. Возвращаем плоскую структуру (распаковываем config обратно)
         return {
             **db_payload,
             "vk_group_id": ui_config["vk_group_id"],
