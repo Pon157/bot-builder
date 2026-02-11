@@ -98,14 +98,14 @@ class BotManager:
         self.log_paths: Dict[str, str] = {}
 
     async def start_bot(self, bid: str, config: dict):
-        """Запуск отдельного процесса для бота."""
+        """Запуск процесса бота с 'живым' пробросом логов в консоль и файл."""
         await self.stop_bot(bid)
         
         os.makedirs("active_bots", exist_ok=True)
         cfg_path = f"active_bots/cfg_{bid}.json"
         log_path = f"active_bots/bot_{bid}.log"
         
-        # Расшифровываем токен для реальной работы
+        # Расшифровываем токен (согласно твоим правилам хранения в .env)
         raw_token = decrypt_val(config.get('token', ''))
         config['token'] = raw_token
         
@@ -113,24 +113,41 @@ class BotManager:
             json.dump(config, f, indent=4)
         
         self.log_paths[bid] = log_path
-        
-        # ОПРЕДЕЛЯЕМ ФАЙЛ БОТА В ЗАВИСИМОСТИ ОТ ПЛАТФОРМЫ
         platform = config.get('platform', 'telegram').lower()
-        if platform == 'vk':
-            bot_file = "vkbot_core.py"
-        else:
-            bot_file = "bot_core.py"
+        bot_file = "vkbot_core.py" if platform == 'vk' else "bot_core.py"
         
         try:
+            # 1. Подготовка окружения
             env = os.environ.copy()
+            # ПРИНУДИТЕЛЬНО отключаем буферизацию Python, чтобы логи писались мгновенно
+            env["PYTHONUNBUFFERED"] = "1" 
             env.update({"SUPABASE_URL": S_URL, "SUPABASE_KEY": S_KEY})
-            l_out = open(log_path, "a", encoding="utf-8")
             
+            # 2. Запуск через PIPE, чтобы сервер мог перехватывать поток
             p = await asyncio.create_subprocess_exec(
                 sys.executable, bot_file, cfg_path,
-                stdout=l_out, stderr=l_out, env=env
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
             )
             self.procs[bid] = p
+
+            # 3. Фоновая задача для записи в файл И вывода в PM2 сервера
+            async def log_reader(stream, file_path, prefix):
+                with open(file_path, "a", encoding="utf-8") as f:
+                    while True:
+                        line = await stream.readline()
+                        if not line: break
+                        msg = line.decode('utf-8', errors='replace')
+                        # Пишем в лог-файл для фронтенда
+                        f.write(msg)
+                        f.flush()
+                        # Дублируем в консоль PM2 (увидишь через pm2 logs bot-api)
+                        print(f"[{prefix}] {msg.strip()}", flush=True)
+
+            asyncio.create_task(log_reader(p.stdout, log_path, f"STDOUT_{bid}"))
+            asyncio.create_task(log_reader(p.stderr, log_path, f"STDERR_{bid}"))
+
             logger.info(f"🚀 Бот {bid} ({platform.upper()}) запущен (PID: {p.pid})")
             return True
         except Exception as e:
@@ -138,27 +155,25 @@ class BotManager:
             return str(e)
 
     async def stop_bot(self, bot_id: str):
+        """Остановка бота с очисткой ресурсов."""
         p = self.procs.get(bot_id)
         if p:
             try:
-                # Пытаемся корректно завершить процесс
                 p.terminate() 
-                # Даем немного времени на выход, если не вышел — убиваем
                 try:
-                    await asyncio.wait_for(p.wait(), timeout=2.0)
+                    await asyncio.wait_for(p.wait(), timeout=3.0)
                 except asyncio.TimeoutError:
                     p.kill()
-            except ProcessLookupError:
-                # Если процесса уже нет в системе — просто игнорируем
-                logger.warning(f"Процесс {bot_id} уже не существует.")
             except Exception as e:
                 logger.error(f"Ошибка при остановке {bot_id}: {e}")
             
-            # В любом случае удаляем из списка активных и чистим файл конфига
             self.procs.pop(bot_id, None)
-            cfg_path = f"active_bots/cfg_{bot_id}.json"
-            if os.path.exists(cfg_path):
-                os.remove(cfg_path)
+            
+        # Удаляем конфиг, чтобы не плодить мусор
+        cfg_path = f"active_bots/cfg_{bot_id}.json"
+        if os.path.exists(cfg_path):
+            try: os.remove(cfg_path)
+            except: pass
 
     def get_logs(self, bid: str):
         """Чтение последних строк лога бота."""
