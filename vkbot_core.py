@@ -572,10 +572,10 @@ class BotInstance:
         
         try:
             await self.license_checker_logic() 
-            # В VK не нужно отдельно грузить базу перед пуллингом так жестко, но оставим логику
         except Exception as e:
             logger.error(f"Ошибка Init: {e}")
 
+        # Запускаем фоновые задачи
         asyncio.create_task(self.database_sync_worker())
         asyncio.create_task(self.daily_stats_rotator())
         asyncio.create_task(self.license_checker())
@@ -584,8 +584,10 @@ class BotInstance:
         
         logger.info(f"[*] Бот VK {self.bot_id} готов. AdminID: {self.admin_chat_id}")
         
+        # ИСПРАВЛЕННЫЙ ЗАПУСК:
         try: 
-            # vkbottle запускает свой луп, но нам нужно встроиться в существующий asyncio.run
+            # Используем встроенный метод запуска без попыток закрыть loop
+            await self.bot.api.token_generator.get_token() # Проверка токена
             await self.bot.run_polling()
         except Exception as e:
              logger.error(f"Polling Error: {e}")
