@@ -9,6 +9,15 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Any, Union
 
+# --- ДОБАВЛЕНО: Загрузка переменных из .env ---
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # Если библиотека не установлена, бот просто продолжит работу, 
+    # надеясь на системные переменные
+    pass
+
 # Импорты vkbottle
 from vkbottle import BaseMiddleware, Bot, CtxStorage
 from vkbottle.bot import Message
@@ -43,7 +52,6 @@ def format_admin_header(user: dict, settings: dict, is_first: bool = False, btn_
             name = user.get('first_name', "Пользователь")
             info_parts.append(f"{name}")
         
-        # Username в ВК редко используется как ID, но добавим, если есть domain
         if settings.get('showHeaderUsername', True) and user.get('domain'):
              info_parts.append(f"(@{user['domain']})")
             
@@ -64,23 +72,16 @@ def format_admin_header(user: dict, settings: dict, is_first: bool = False, btn_
     else:
         status_line = settings.get('commonMessageHeader', "📩 СООБЩЕНИЕ:")
 
-    # Убираем HTML теги, так как ВК их специфично понимает, оставим чистый текст
-    # или минимальную разметку, если нужно.
     return f"{status_line}\n{user_info}\n⬇️⬇️⬇️"
 
 # --- MIDDLEWARE ---
 class LicenseMiddleware(BaseMiddleware[Message]):
     async def pre(self):
-        # Доступ к инстансу через ctx_storage или атрибут бота,
-        # но проще передать инстанс при инициализации, если vkbottle это позволяет.
-        # Здесь мы используем глобальный доступ к инстансу через self.event.ctx_storage,
-        # но надежнее будет проверить атрибут у самого объекта (хак).
-        
         bot_instance = getattr(self.event.ctx_api, "bot_instance_ref", None)
         
         if bot_instance and getattr(bot_instance, 'license_expired', False):
             await self.event.answer("❌ Лицензия этого бота истекла.\nПожалуйста, продлите её в панели управления.")
-            self.stop("License expired") # Останавливаем обработку
+            self.stop("License expired")
 
     async def post(self):
         pass
@@ -93,24 +94,31 @@ class BotInstance:
         
         self.license_expired = False 
         
+        # --- ИСПРАВЛЕНО: Теперь ключи подтягиваются корректно ---
         self.sb_url = os.getenv("SUPABASE_URL")
+        self.sb_key = os.getenv("SUPABASE_KEY")
+
         if not self.sb_url:
-            # Если в .env пусто, берем из конфига JSON или ставим заглушку, чтобы не падало
+            # Фолбек на конфиг, если в .env пусто
             self.sb_url = config_data.get("config", {}).get("api_url", "http://localhost:8000")
+        
+        if not self.sb_key:
+            logger.warning(f"⚠️ [{self.bot_id}] SUPABASE_KEY не найден в окружении!")
+            self.sb_key = "" # Чтобы не падал конкатенатор заголовков
 
         self.sb_url = self.sb_url.rstrip('/')
-        self.sb_key = os.getenv("SUPABASE_KEY", "")
         
         # Инициализация бота VK
         self.bot = Bot(token=self.token)
-        # Сохраняем ссылку на себя внутри API объекта, чтобы достать в Middleware
+        # Сохраняем ссылку на себя внутри API объекта
         self.bot.api.bot_instance_ref = self
         
-        self.msg_map = {} # map: admin_msg_id -> user_id
+        self.msg_map = {} 
         self.flood_cache = {}
         self.is_running = True
         self.sync_queue = asyncio.Queue()
         
+        # Применяем стартовый конфиг
         self.apply_config(config_data)
 
     async def license_checker_logic(self):
