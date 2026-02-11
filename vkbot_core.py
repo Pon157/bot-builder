@@ -122,49 +122,62 @@ class BotInstance:
         self.apply_config(config_data)
 
     async def register_event(self, is_incoming: bool = True):
-    """Обновляет статистику в памяти и отправляет в Supabase"""
-    try:
-        today = datetime.now().strftime("%d.%m")
-        # Инициализируем структуру, если её нет
-        if "stats" not in self.config or not isinstance(self.config["stats"], dict):
-            self.config["stats"] = {"history": [], "totalMessages": 0}
-        
-        st = self.config["stats"]
-        st["totalMessages"] = st.get("totalMessages", 0) + 1
-        
-        if is_incoming:
-            st["incomingToday"] = st.get("incomingToday", 0) + 1
-        else:
-            st["outgoingToday"] = st.get("outgoingToday", 0) + 1
+        """Обновляет статистику в памяти и отправляет в Supabase"""
+        try:
+            today = datetime.now().strftime("%d.%m")
+            
+            # 1. Проверяем наличие stats в конфиге
+            if not isinstance(self.config.get("stats"), dict):
+                self.config["stats"] = {"history": [], "totalMessages": 0}
+            
+            st = self.config["stats"]
+            
+            # 2. Обновляем счетчики (гарантируем наличие ключей через get)
+            st["totalMessages"] = st.get("totalMessages", 0) + 1
+            
+            if is_incoming:
+                st["incomingToday"] = st.get("incomingToday", 0) + 1
+                # Если ключа outgoingToday нет, инициализируем его нулем
+                if "outgoingToday" not in st: st["outgoingToday"] = 0
+            else:
+                st["outgoingToday"] = st.get("outgoingToday", 0) + 1
+                if "incomingToday" not in st: st["incomingToday"] = 0
 
-        # Обновляем историю для графиков
-        history = st.get("history", [])
-        day_entry = next((item for item in history if item["date"] == today), None)
+            # 3. Работа с историей
+            history = st.get("history", [])
+            if not isinstance(history, list): history = []
+            
+            day_entry = next((item for item in history if item.get("date") == today), None)
 
-        if day_entry:
-            if is_incoming: day_entry["incoming"] += 1
-            else: day_entry["outgoing"] += 1
-        else:
-            history.append({
-                "date": today, 
-                "incoming": 1 if is_incoming else 0, 
-                "outgoing": 0 if is_incoming else 1,
-                "totalUsers": len(self.config.get("connectedUsers", [])),
-                "activeUsers": 1
-            })
+            if day_entry:
+                if is_incoming:
+                    day_entry["incoming"] = day_entry.get("incoming", 0) + 1
+                else:
+                    day_entry["outgoing"] = day_entry.get("outgoing", 0) + 1
+            else:
+                history.append({
+                    "date": today, 
+                    "incoming": 1 if is_incoming else 0, 
+                    "outgoing": 0 if is_incoming else 1,
+                    "totalUsers": len(self.config.get("connectedUsers", [])),
+                    "activeUsers": 1
+                })
 
-        st["history"] = history[-14:] # Храним только 2 недели
-        
-        # ОТПРАВКА В БАЗУ
-        async with httpx.AsyncClient() as client:
-            await client.patch(
-                f"{self.supabase_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                headers=self.headers,
-                json={"stats": st}
-            )
-    except Exception as e:
-        logger.error(f"❌ Ошибка обновления статистики: {e}")
+            st["history"] = history[-14:] # Только последние 14 дней
+            self.config["stats"] = st # Сохраняем обратно в объект
 
+            # 4. Отправка в БД
+            async with httpx.AsyncClient() as client:
+                resp = await client.patch(
+                    f"{self.supabase_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                    headers=self.headers,
+                    json={"stats": st}
+                )
+                if resp.status_code not in [200, 201, 204]:
+                    logger.error(f"⚠️ Ошибка записи статы в БД: {resp.text}")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка обновления статистики: {e}", exc_info=True)
     async def update_stats(self, is_incoming: bool = True):
     try:
         today = datetime.now().strftime("%d.%m")
