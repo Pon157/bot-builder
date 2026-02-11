@@ -413,67 +413,53 @@ async def save_bot(b: dict):
         if not bid:
             raise HTTPException(400, "Missing bot ID")
 
-        # 1. Получаем текущее состояние бота из БД
+        # 1. Получаем текущее состояние из БД
         old_r = await db.get("bots", params={"id": f"eq.{bid}"})
         old_data = old_r.json()
         curr = old_data[0] if isinstance(old_data, list) and len(old_data) > 0 else {}
 
-        # 2. Работаем с токеном
+        # 2. Обработка токена
         raw_token = b.get('token', '')
         if raw_token:
-            # Шифруем только если это новый чистый токен
             final_token = encrypt_val(raw_token) if not raw_token.startswith('gAAAA') else raw_token
         else:
             final_token = curr.get('token', '')
 
-        # 3. Формируем настройки (то что пойдет в колонку config)
-        # Сохраняем все, что не является системными полями таблицы
-        sys_table_columns = ['id', 'owner_id', 'name', 'token', 'status', 'license_expires_at', 'config']
-        
-        # Выделяем настройки (settings, buttons, triggers и т.д.)
-        ui_config = {}
-        for k, v in b.items():
-            if k not in sys_table_columns:
-                ui_config[k] = v
-        
-        # Если прилетел явный объект settings (как в твоем BotEditor), сохраняем и его содержимое
-        if 'settings' in b and isinstance(b['settings'], dict):
-            ui_config.update(b['settings'])
+        # 3. Формируем конфиг (кнопки, триггеры)
+        ui_config = {
+            "buttons": b.get("buttons", curr.get("config", {}).get("buttons", [])),
+            "triggers": b.get("triggers", curr.get("config", {}).get("triggers", [])),
+            "settings": b.get("settings", curr.get("config", {}).get("settings", {}))
+        }
 
-        # 4. Формируем объект именно для БД (согласно структуре таблицы)
+        # 4. Собираем объект для БД (теперь с платформой!)
         db_payload = {
             "id": bid,
             "owner_id": b.get('owner_id') or curr.get('owner_id'),
             "name": b.get("name") or curr.get("name", "Unnamed Bot"),
             "token": final_token,
-            "status": curr.get("status") or b.get("status") or "IDLE",
+            "platform": b.get('platform') or curr.get('platform', 'telegram'), # <-- КРИТИЧНО
+            "status": curr.get("status", "IDLE"),
             "license_expires_at": b.get("license_expires_at") or curr.get("license_expires_at", 0),
-            "config": ui_config # Все кнопки и триггеры улетают в JSON колонку
+            "config": ui_config 
         }
 
-        # 5. Сохранение
-        if curr:
-            res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
-        else:
-            res = await db.post("bots", json=db_payload)
+        # 5. Обновляем в Supabase
+        res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
 
         if res.status_code not in [200, 201, 204]:
-            logger.error(f"DB Error: {res.text}")
             raise HTTPException(res.status_code, f"Database error: {res.text}")
 
-        # --- КРИТИЧЕСКИ ВАЖНЫЙ МОМЕНТ ДЛЯ ФРОНТЕНДА ---
-        # Мы должны вернуть объект в "плоском" виде, как его ждет BotEditor
-        # Чтобы localBot.buttons не стал undefined
-        response_data = {
+        # 6. Возвращаем плоский объект фронтенду
+        return {
             **db_payload,
-            **ui_config  # Разворачиваем конфиг обратно в корень объекта
+            "platform": db_payload["platform"],
+            "buttons": ui_config["buttons"],
+            "triggers": ui_config["triggers"],
+            "settings": ui_config["settings"]
         }
-        # Убираем зашифрованный токен из ответа для безопасности (или оставляем как есть)
-        
-        return response_data
-
     except Exception as e:
-        logger.error(f"🚨 Save Bot Error: {e}")
+        logger.error(f"🚨 Save Error: {e}")
         raise HTTPException(500, str(e))
 
 @app.post("/api/bots/start")
@@ -861,64 +847,7 @@ async def get_bot_for_admin(bot_id: str, x_admin_token: str = Header(None)):
     # Токен отдаем как есть (зашифрованным), Editor его не показывает, но использует для save
     return full_bot
 
-@app.post("/api/bots/save")
-async def save_bot(b: dict):
-    try:
-        bid = b.get('id')
-        if not bid:
-            raise HTTPException(400, "Missing bot ID")
 
-        # 1. Получаем текущее состояние из БД, чтобы не затереть то, что не прислал фронт
-        old_r = await db.get("bots", params={"id": f"eq.{bid}"})
-        old_data = old_r.json()
-        curr = old_data[0] if isinstance(old_data, list) and len(old_data) > 0 else {}
-
-        # 2. Обработка токена (Шифруем, только если это новый чистый токен)
-        raw_token = b.get('token', '')
-        if raw_token:
-            # Если токен не начинается на gAAAA (признак шифрования Fernet), шифруем его
-            final_token = encrypt_val(raw_token) if not raw_token.startswith('gAAAA') else raw_token
-        else:
-            final_token = curr.get('token', '')
-
-        # 3. Формируем конфиг (JSON-колонку в БД)
-        ui_config = {
-            "buttons": b.get("buttons", curr.get("config", {}).get("buttons", [])),
-            "triggers": b.get("triggers", curr.get("config", {}).get("triggers", [])),
-            "settings": b.get("settings", curr.get("config", {}).get("settings", {}))
-        }
-
-        # 4. Собираем объект именно под структуру твоей таблицы в Supabase
-        db_payload = {
-            "id": bid,
-            "owner_id": b.get('owner_id') or curr.get('owner_id'),
-            "name": b.get("name") or curr.get("name", "Unnamed Bot"),
-            "token": final_token,
-            "platform": b.get('platform') or curr.get('platform', 'telegram'), # <--- ТЕПЕРЬ ПЛАТФОРМА СОХРАНЯЕТСЯ
-            "status": curr.get("status", "IDLE"),
-            "license_expires_at": b.get("license_expires_at") or curr.get("license_expires_at", 0),
-            "config": ui_config
-        }
-
-        # 5. Сохраняем в базу (PATCH обновляет только указанного бота)
-        res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
-
-        if res.status_code not in [200, 201, 204]:
-            logger.error(f"🚨 DB Error on save: {res.text}")
-            raise HTTPException(res.status_code, f"Database error: {res.text}")
-
-        # 6. ВАЖНО: Возвращаем фронтенду "плоский" объект
-        return {
-            **db_payload,
-            "platform": db_payload["platform"], # Возвращаем платформу для UI
-            "buttons": ui_config["buttons"],
-            "triggers": ui_config["triggers"],
-            "settings": ui_config["settings"]
-        }
-
-    except Exception as e:
-        logger.error(f"🚨 Critical Save Error: {e}")
-        raise HTTPException(500, str(e))
         
 @app.post("/api/admin/verify_access_key")
 async def verify_access_key(data: dict):
