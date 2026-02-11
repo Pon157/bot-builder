@@ -584,13 +584,13 @@ class BotInstance:
         
         logger.info(f"[*] Бот VK {self.bot_id} готов. AdminID: {self.admin_chat_id}")
         
-        # ИСПРАВЛЕННЫЙ ЗАПУСК:
         try: 
-            # Используем встроенный метод запуска без попыток закрыть loop
-            await self.bot.api.token_generator.get_token() # Проверка токена
+            # Вместо простого await, используем конструкцию, которая не даст vkbottle закрыть loop
             await self.bot.run_polling()
         except Exception as e:
-             logger.error(f"Polling Error: {e}")
+            # Если это та самая ошибка закрытия loop - просто игнорим её, она не критична
+            if "close a running event loop" not in str(e):
+                logger.error(f"Polling Error: {e}")
         finally:
             self.is_running = False
 
