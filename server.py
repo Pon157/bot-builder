@@ -446,41 +446,55 @@ async def get_user_bots(user_id: str):
 @app.post("/api/bots/save")
 async def save_bot(b: dict):
     try:
+        # 1. ЛОГИРУЕМ ВСЁ, ЧТО ПРИШЛО (чтобы видеть структуру)
+        logger.info(f"📥 INCOMING JSON: {json.dumps(b, ensure_ascii=False)}")
+
         bid = b.get('id')
         if not bid:
             raise HTTPException(400, "Missing bot ID")
 
-        # 1. Загружаем текущие данные
+        # 2. Загружаем текущие данные из базы
         old_r = await db.get("bots", params={"id": f"eq.{bid}"})
         curr = old_r.json()[0] if old_r.json() else {}
         old_config = curr.get("config", {})
+        if not isinstance(old_config, dict): old_config = {}
 
-        # 2. Обработка токена
+        # 3. Достаем входящий конфиг (если он есть внутри)
+        incoming_config = b.get("config", {})
+
+        # 4. ИЩЕМ ID ВЕЗДЕ (В корне, в CamelCase, внутри config, внутри config CamelCase)
+        # Для ВК
+        vk_id = (
+            b.get("vk_group_id") or b.get("vkGroupId") or 
+            incoming_config.get("vk_group_id") or incoming_config.get("vkGroupId")
+        )
+        
+        # Для Админа
+        adm_id = (
+            b.get("admin_chat_id") or b.get("adminChatId") or
+            incoming_config.get("admin_chat_id") or incoming_config.get("adminChatId")
+        )
+
+        # 5. Обработка токена
         raw_token = b.get('token')
         if raw_token:
             final_token = encrypt_val(raw_token) if not str(raw_token).startswith('gAAAA') else raw_token
         else:
             final_token = curr.get('token', '')
 
-        # 3. Собираем конфиг (ЖЕСТКАЯ ПРОВЕРКА)
-        # Проверяем и snake_case, и camelCase, которые часто путает фронт
-        vk_id = b.get("vk_group_id") if b.get("vk_group_id") is not None else b.get("vkGroupId")
-        adm_id = b.get("admin_chat_id") if b.get("admin_chat_id") is not None else b.get("adminChatId")
-
+        # 6. Собираем финальный конфиг
         ui_config = {
             "buttons": b.get("buttons") if b.get("buttons") is not None else old_config.get("buttons", []),
             "triggers": b.get("triggers") if b.get("triggers") is not None else old_config.get("triggers", []),
-            "settings": {
-                **old_config.get("settings", {}),
-                **b.get("settings", {})
-            },
-            # Если в инпуте что-то есть — берем это, если инпут вообще не пришел — берем из базы
+            "settings": {**old_config.get("settings", {}), **b.get("settings", {})},
+            
+            # Если нашли новое значение - берем его. Если нет - оставляем старое из базы
             "vk_group_id": vk_id if vk_id is not None else old_config.get("vk_group_id"),
             "admin_chat_id": adm_id if adm_id is not None else old_config.get("admin_chat_id")
         }
 
-        # ЛОГ ДЛЯ ТЕБЯ (посмотри в консоль после нажатия сохранить)
-        logger.info(f"DEBUG: Saving bot {bid}. VK_ID: {ui_config['vk_group_id']}")
+        # Лог проверки перед записью
+        logger.info(f"🔒 SAVING -> VK: {ui_config['vk_group_id']} | ADMIN: {ui_config['admin_chat_id']}")
 
         db_payload = {
             "name": b.get("name") or curr.get("name"),
@@ -494,7 +508,6 @@ async def save_bot(b: dict):
         if res.status_code not in [200, 201, 204]:
             raise HTTPException(res.status_code, f"DB Error: {res.text}")
 
-        # Возвращаем распакованный объект, чтобы фронт обновил стейт
         return {
             **curr,
             **db_payload,
