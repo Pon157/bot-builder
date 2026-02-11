@@ -975,71 +975,68 @@ async def verify_access_key(data: dict):
 #VK CREATION
 import json # Не забудь импортировать в начале файла
 
-@app.post("/api/bots/save")
-async def save_bot(b: dict):
+@app.post("/api/bots/create")
+async def create_bot_endpoint(d: dict):
     try:
-        bid = b.get('id')
-        if not bid: raise HTTPException(400, "ID бота отсутствует")
+        owner_id = d.get('owner_id')
+        name = d.get('name', 'Новый бот')
+        token = d.get('token', '')
+        platform = d.get('platform', 'vk') # или tg
 
-        # 1. Получаем текущее состояние из базы
-        old_r = await db.get("bots", params={"id": f"eq.{bid}"})
-        if old_r.status_code != 200 or not old_r.json():
-            raise HTTPException(404, "Бот не найден")
-        
-        curr = old_r.json()[0]
-        old_config = curr.get("config", {})
+        if not owner_id or not token:
+            raise HTTPException(400, "Owner ID и Token обязательны")
 
-        # 2. Обработка BIGINT полей (admin_chat_id, vk_group_id)
-        # Если пришла строка или пусто, превращаем в int или None
-        def to_bigint(val):
-            if val is None or str(val).strip() == "": return None
-            try: return int(val)
-            except: return None
+        # 1. Генерируем ID
+        bot_id = f"bot_{secrets.token_hex(4)}" 
+        encrypted_token = encrypt_val(token)
 
-        admin_id = to_bigint(b.get("admin_chat_id") or b.get("adminChatId"))
-        vk_id = to_bigint(b.get("vk_group_id") or b.get("vkGroupId"))
-
-        # 3. Собираем конфиг (JSONB часть)
-        # Берем только то, что должно лежать в JSONB
-        new_config = {
-            "buttons": b.get("buttons") if b.get("buttons") is not None else old_config.get("buttons", []),
-            "triggers": b.get("triggers") if b.get("triggers") is not None else old_config.get("triggers", []),
-            "welcomeMessage": b.get("welcomeMessage") or old_config.get("welcomeMessage", "Привет!"),
-            "settings": {**old_config.get("settings", {}), **(b.get("settings") or {})}
+        # 2. Формируем конфиг (JSONB)
+        config_payload = {
+            "buttons": [],
+            "triggers": [],
+            "welcomeMessage": "Привет! Напиши мне что-нибудь.",
+            "settings": {
+                "forwardToAdmin": True,
+                "antiSpam": False,
+                "showHeaderId": True
+            }
         }
 
-        # 4. Формируем финальный пакет для Supabase (по твоей структуре таблицы)
-        db_payload = {
-            "name": b.get("name") or curr.get("name"),
-            "status": b.get("status") or curr.get("status"),
-            "platform": b.get("platform") or curr.get("platform"),
-            "admin_chat_id": admin_id, # Улетает как bigint или null
-            "vk_group_id": vk_id,      # Улетает как bigint или null
-            "config": new_config       # Улетает как jsonb
+        # 3. Объект для вставки (СТРОГО по колонкам твоей таблицы)
+        new_bot = {
+            "id": bot_id,
+            "owner_id": owner_id,
+            "name": name,
+            "token": encrypted_token,
+            "platform": platform,
+            "status": "IDLE",
+            "config": config_payload,
+            "stats": {},
+            "license_expires_at": int(time.time() * 1000) + (30 * 24 * 3600 * 1000),
+            "created_at": int(time.time() * 1000),
+            "admin_chat_id": None, # BigInt требует null или число
+            "vk_group_id": None    # BigInt требует null или число
         }
 
-        # 5. Обработка токена (шифруем только если он новый/сырой)
-        raw_token = b.get('token')
-        if raw_token and not str(raw_token).startswith('gAAAA'):
-            db_payload["token"] = encrypt_val(raw_token)
-
-        # 6. Отправка в БД
-        res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
+        # 4. Вставка в Supabase
+        res = await db.post("bots", json=new_bot)
         
         if res.status_code not in [200, 201, 204]:
-            logger.error(f"❌ Database Error: {res.text}")
-            raise HTTPException(res.status_code, f"DB Error: {res.text}")
+            # ВАЖНО: логируем точную ошибку базы (например, нарушение FK)
+            logger.error(f"❌ Ошибка БД при создании: {res.text}")
+            raise HTTPException(res.status_code, f"Ошибка БД: {res.text}")
 
-        # 7. Возвращаем плоский объект для фронтенда
+        logger.info(f"✅ Бот {bot_id} успешно создан для {owner_id}")
+
+        # Возвращаем "развернутый" объект для фронтенда
         return {
-            **curr,
-            **db_payload,
-            **new_config,
-            "id": bid
+            **new_bot,
+            **config_payload,
+            "token": token # Возвращаем чистый токен для UI
         }
 
     except Exception as e:
-        logger.error(f"🚨 Save Bot 500 Error: {e}", exc_info=True)
+        logger.error(f"🚨 Ошибка создания: {e}", exc_info=True)
         raise HTTPException(500, str(e))
     
 # ==========================================
