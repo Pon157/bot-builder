@@ -513,34 +513,42 @@ async def save_bot(b: dict):
                 "vk_group_id": None
             }
             ins = await db.post("bots", json=upsert_payload)
-            if ins.status_code not in [200, 201, 204]:
-                raise HTTPException(500, f"Ошибка создания: {ins.text}")
             return {**upsert_payload, "id": bid}
 
         curr = bots[0]
         old_config = curr.get("config", {}) or {}
+        inc_cfg = b.get("config", {}) if isinstance(b.get("config"), dict) else {}
 
-        # 2. Очистка BIGINT (важно для сохранения ID чатов)
+        # 2. Улучшенная функция очистки
         def clean_int(val):
             if val is None or str(val).strip() in ["", "null", "None"]: 
                 return None
-            try: 
-                return int(float(str(val).strip()))
-            except: 
-                return None
+            try: return int(float(str(val).strip()))
+            except: return None
 
-        # Приоритет: Корень запроса -> Вложенный config -> База данных
-        inc_cfg = b.get("config", {}) if isinstance(b.get("config"), dict) else {}
+        # 3. ЛОГИКА СОХРАНЕНИЯ ID (Исправлено)
+        # Мы проверяем наличие ключа в запросе. Если ключ ПРИШЕЛ — берем его. 
+        # Если ключа ВООБЩЕ НЕТ в JSON — оставляем то, что было в базе.
+        
+        # Для Telegram
+        if "adminChatId" in b: admin_val = b.get("adminChatId")
+        elif "admin_chat_id" in b: admin_val = b.get("admin_chat_id")
+        elif "adminChatId" in inc_cfg: admin_val = inc_cfg.get("adminChatId")
+        elif "admin_chat_id" in inc_cfg: admin_val = inc_cfg.get("admin_chat_id")
+        else: admin_val = curr.get("admin_chat_id") # Только если полей нет, берем старое
+        
+        new_admin_id = clean_int(admin_val)
 
-        new_admin_id = clean_int(b.get("admin_chat_id") or b.get("adminChatId") or inc_cfg.get("admin_chat_id") or inc_cfg.get("adminChatId"))
-        if new_admin_id is None: 
-            new_admin_id = clean_int(curr.get("admin_chat_id"))
+        # Для VK
+        if "vkGroupId" in b: vk_val = b.get("vkGroupId")
+        elif "vk_group_id" in b: vk_val = b.get("vk_group_id")
+        elif "vkGroupId" in inc_cfg: vk_val = inc_cfg.get("vkGroupId")
+        elif "vk_group_id" in inc_cfg: vk_val = inc_cfg.get("vk_group_id")
+        else: vk_val = curr.get("vk_group_id")
+        
+        new_vk_id = clean_int(vk_val)
 
-        new_vk_id = clean_int(b.get("vk_group_id") or b.get("vkGroupId") or inc_cfg.get("vk_group_id") or inc_cfg.get("vkGroupId"))
-        if new_vk_id is None: 
-            new_vk_id = clean_int(curr.get("vk_group_id"))
-
-        # 3. Собираем конфиг (JSONB), чтобы не затирать инпуты
+        # 4. Собираем конфиг (JSONB)
         def get_val(key, default=None):
             val = b.get(key)
             if val is None: val = inc_cfg.get(key)
@@ -556,34 +564,37 @@ async def save_bot(b: dict):
             "connectedUsers": old_config.get("connectedUsers", [])
         }
 
-        # 4. Токен
+        # 5. Токен
         raw_token = b.get('token')
         final_token = curr.get('token')
         if raw_token and not str(raw_token).startswith('gAAAA') and len(str(raw_token)) > 5:
             final_token = encrypt_val(raw_token)
 
-        # 5. Пакет для PATCH (колонки БД)
+        # 6. Пакет для PATCH (Колонки строго как в БД)
         db_payload = {
             "name": b.get("name") or curr.get("name"),
             "token": final_token,
             "platform": b.get('platform') or curr.get('platform'),
             "config": ui_config,
-            "admin_chat_id": new_admin_id,
-            "vk_group_id": new_vk_id
+            "admin_chat_id": new_admin_id, # Пишем в колонку bigint
+            "vk_group_id": new_vk_id      # Пишем в колонку bigint
         }
 
-        # 6. Сохранение
+        # 7. Отправка
+        logger.info(f"💾 Сохраняем бота {bid}. Payload: {db_payload}")
         res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
+        
         if res.status_code not in [200, 201, 204]:
-            raise HTTPException(res.status_code, f"Ошибка сохранения: {res.text}")
+            logger.error(f"❌ Ошибка PATCH: {res.text}")
+            raise HTTPException(res.status_code, f"Ошибка БД: {res.text}")
 
-        # 7. ВОЗВРАТ (Дублируем ключи camelCase, чтобы фронт не сбрасывал инпуты)
+        # 8. ВОЗВРАТ (Чтобы фронтенд сразу увидел результат)
         return {
             **curr,
             **db_payload,
             **ui_config,
-            "adminChatId": new_admin_id, # Для фронтенда
-            "vkGroupId": new_vk_id,       # Для фронтенда
+            "adminChatId": new_admin_id, # Возвращаем camelCase для React
+            "vkGroupId": new_vk_id,       # Возвращаем camelCase для React
             "id": bid
         }
 
