@@ -1,7 +1,3 @@
-
-Dashboard 1 · TSX
-Copy
-
 import React, { useState } from 'react';
 import { BotConfig } from '../types';
 
