@@ -413,76 +413,67 @@ async def save_bot(b: dict):
         if not bid:
             raise HTTPException(400, "Missing bot ID")
 
-        # 1. Получаем текущее состояние из базы
+        # 1. Загружаем то, что СЕЙЧАС лежит в базе
         old_r = await db.get("bots", params={"id": f"eq.{bid}"})
         old_data = old_r.json()
         curr = old_data[0] if isinstance(old_data, list) and len(old_data) > 0 else {}
         
-        # Извлекаем старый конфиг (из колонки jsonb)
-        # Если там пусто, создаем структуру по умолчанию
+        # Получаем текущий конфиг из JSONB колонки
         old_config = curr.get("config", {})
         if not isinstance(old_config, dict):
             old_config = {}
 
-        # 2. Обработка токена (шифруем, если это не зашифрованная строка)
+        # 2. Обработка токена
         raw_token = b.get('token', '')
         if raw_token:
             final_token = encrypt_val(raw_token) if not raw_token.startswith('gAAAA') else raw_token
         else:
             final_token = curr.get('token', '')
 
-        # 3. ФОРМИРУЕМ JSONB ОБЪЕКТ (Умный мерж)
-        # Здесь мы сохраняем ВСЕ настройки в одно поле "config"
-        updated_config = {
-            # Если поле пришло с фронта (not None), берем его. Если нет — оставляем старое.
+        # 3. Собираем конфиг (Учитываем плоскую структуру от фронтенда)
+        # Если фронтенд прислал поле в корне (b.get), берем его. 
+        # Если нет — ищем его внутри старого конфига.
+        ui_config = {
             "buttons": b.get("buttons") if b.get("buttons") is not None else old_config.get("buttons", []),
             "triggers": b.get("triggers") if b.get("triggers") is not None else old_config.get("triggers", []),
-            
-            # Настройки мержим (чтобы не затереть существующие ключи)
             "settings": {
-                **old_config.get("settings", {}), 
+                **old_config.get("settings", {}),
                 **b.get("settings", {})
             },
-            
-            # Сохраняем ВК и Админ ID прямо внутри этого JSON
-            "vk_group_id": b.get("vk_group_id") if b.get("vk_group_id") is not None else old_config.get("vk_group_id"),
-            "admin_chat_id": b.get("admin_chat_id") if b.get("admin_chat_id") is not None else old_config.get("admin_chat_id")
+            # Важные поля ID (пробуем взять отовсюду)
+            "vk_group_id": b.get("vk_group_id") or b.get("vkGroupId") or old_config.get("vk_group_id"),
+            "admin_chat_id": b.get("admin_chat_id") or b.get("adminChatId") or old_config.get("admin_chat_id")
         }
 
-        # 4. Собираем payload для Supabase (только существующие колонки!)
+        # 4. Payload для Supabase
         db_payload = {
             "id": bid,
             "owner_id": b.get('owner_id') or curr.get('owner_id'),
-            "name": b.get("name") or curr.get("name", "Unnamed Bot"),
+            "name": b.get("name") or curr.get("name"),
             "token": final_token,
             "platform": b.get('platform') or curr.get('platform', 'telegram'),
-            "status": curr.get("status", "IDLE"),
-            "license_expires_at": b.get("license_expires_at") or curr.get("license_expires_at", 0),
-            # ВСЕ данные теперь тут:
-            "config": updated_config 
+            "config": ui_config 
         }
 
-        # 5. Сохраняем в Supabase
-        # Мы НЕ отправляем admin_chat_id как отдельный ключ, 
-        # поэтому ошибка "Could not find column" больше не появится.
+        # 5. Сохраняем
         res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
-
+        
         if res.status_code not in [200, 201, 204]:
-            logger.error(f"DB Error: {res.text}")
-            raise HTTPException(res.status_code, f"Database error: {res.text}")
+            raise HTTPException(res.status_code, f"DB Error: {res.text}")
 
-        # 6. Возвращаем фронтенду результат (распаковываем для удобства UI)
+        # 6. ВАЖНО: Возвращаем "плоскую" структуру для фронтенда!
+        # Чтобы React/Vue сразу увидел изменения в инпутах
         return {
             **db_payload,
-            "vk_group_id": updated_config["vk_group_id"],
-            "admin_chat_id": updated_config["admin_chat_id"],
-            "buttons": updated_config["buttons"],
-            "triggers": updated_config["triggers"],
-            "settings": updated_config["settings"]
+            "vk_group_id": ui_config["vk_group_id"],
+            "admin_chat_id": ui_config["admin_chat_id"],
+            "buttons": ui_config["buttons"],
+            "triggers": ui_config["triggers"],
+            "settings": ui_config["settings"]
         }
 
     except Exception as e:
-        logger.error(f"🚨 Save Error: {e}")
+        logging.error(f"🚨 Save error: {e}")
         raise HTTPException(500, str(e))
         
 @app.post("/api/bots/start")
