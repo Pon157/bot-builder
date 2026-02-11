@@ -450,24 +450,23 @@ async def save_bot(b: dict):
         if not bid:
             raise HTTPException(400, "Missing bot ID")
 
-        # 1. Загружаем текущие данные из базы (чтобы не потерять то, что не прислал фронт)
+        # 1. Загружаем текущие данные
         old_r = await db.get("bots", params={"id": f"eq.{bid}"})
-        old_data = old_r.json()
-        curr = old_data[0] if isinstance(old_data, list) and len(old_data) > 0 else {}
-        
+        curr = old_r.json()[0] if old_r.json() else {}
         old_config = curr.get("config", {})
-        if not isinstance(old_config, dict):
-            old_config = {}
 
-        # 2. Токен: шифруем только если он новый и не зашифрован
+        # 2. Обработка токена
         raw_token = b.get('token')
         if raw_token:
             final_token = encrypt_val(raw_token) if not str(raw_token).startswith('gAAAA') else raw_token
         else:
             final_token = curr.get('token', '')
 
-        # 3. Собираем конфиг (УМНЫЙ МЕРЖ)
-        # Используем проверку "is not None", чтобы пустые строки или 0 не игнорировались
+        # 3. Собираем конфиг (ЖЕСТКАЯ ПРОВЕРКА)
+        # Проверяем и snake_case, и camelCase, которые часто путает фронт
+        vk_id = b.get("vk_group_id") if b.get("vk_group_id") is not None else b.get("vkGroupId")
+        adm_id = b.get("admin_chat_id") if b.get("admin_chat_id") is not None else b.get("adminChatId")
+
         ui_config = {
             "buttons": b.get("buttons") if b.get("buttons") is not None else old_config.get("buttons", []),
             "triggers": b.get("triggers") if b.get("triggers") is not None else old_config.get("triggers", []),
@@ -475,35 +474,29 @@ async def save_bot(b: dict):
                 **old_config.get("settings", {}),
                 **b.get("settings", {})
             },
-            # Явная проверка для ID
-            "vk_group_id": b.get("vk_group_id") if b.get("vk_group_id") is not None else \
-                           b.get("vkGroupId") if b.get("vkGroupId") is not None else \
-                           old_config.get("vk_group_id"),
-            
-            "admin_chat_id": b.get("admin_chat_id") if b.get("admin_chat_id") is not None else \
-                             b.get("adminChatId") if b.get("adminChatId") is not None else \
-                             old_config.get("admin_chat_id")
+            # Если в инпуте что-то есть — берем это, если инпут вообще не пришел — берем из базы
+            "vk_group_id": vk_id if vk_id is not None else old_config.get("vk_group_id"),
+            "admin_chat_id": adm_id if adm_id is not None else old_config.get("admin_chat_id")
         }
 
-        # 4. Формируем Payload для Supabase
+        # ЛОГ ДЛЯ ТЕБЯ (посмотри в консоль после нажатия сохранить)
+        logger.info(f"DEBUG: Saving bot {bid}. VK_ID: {ui_config['vk_group_id']}")
+
         db_payload = {
-            "id": bid,
-            "owner_id": b.get('owner_id') or curr.get('owner_id'),
-            "name": b.get("name") if b.get("name") is not None else curr.get("name"),
+            "name": b.get("name") or curr.get("name"),
             "token": final_token,
-            "platform": b.get('platform') or curr.get('platform', 'telegram'),
+            "platform": b.get('platform') or curr.get('platform'),
             "config": ui_config 
         }
 
-        # 5. Отправляем в БД
         res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
         
         if res.status_code not in [200, 201, 204]:
-            logger.error(f"DB Error: {res.text}")
-            raise HTTPException(res.status_code, f"Database error: {res.text}")
+            raise HTTPException(res.status_code, f"DB Error: {res.text}")
 
-        # 6. Возвращаем плоскую структуру (распаковываем config обратно)
+        # Возвращаем распакованный объект, чтобы фронт обновил стейт
         return {
+            **curr,
             **db_payload,
             "vk_group_id": ui_config["vk_group_id"],
             "admin_chat_id": ui_config["admin_chat_id"],
@@ -513,7 +506,7 @@ async def save_bot(b: dict):
         }
 
     except Exception as e:
-        logging.error(f"🚨 Save error: {e}")
+        logger.error(f"🚨 Save error: {e}")
         raise HTTPException(500, str(e))
         
 @app.post("/api/bots/start")
@@ -950,29 +943,30 @@ async def create_bot_endpoint(d: dict):
         owner_id = d.get('owner_id')
         name = d.get('name', 'New Bot')
         token = d.get('token', '')
-        platform = d.get('platform', 'telegram') # По умолчанию TG
+        platform = d.get('platform', 'telegram')
 
         if not owner_id or not token:
             raise HTTPException(400, "Owner ID and Token are required")
 
-        # Генерируем новый ID для бота (например, b_ + 8 символов)
         bot_id = f"b_{secrets.token_hex(4)}"
-        
-        # Шифруем токен перед сохранением
         encrypted_token = encrypt_val(token)
 
+        # Формируем объект ПРАВИЛЬНО с самого начала
         new_bot_payload = {
             "id": bot_id,
             "owner_id": owner_id,
             "name": name,
             "token": encrypted_token,
-            "platform": platform, # <--- Сохраняем платформу!
+            "platform": platform,
             "status": "IDLE",
             "created_at": int(time.time() * 1000),
-            "license_expires_at": int(time.time() * 1000) + (24 * 3600 * 1000), # +1 день пробный
+            "license_expires_at": int(time.time() * 1000) + (24 * 3600 * 1000),
             "config": {
                 "buttons": [],
                 "triggers": [],
+                # Инициализируем поля ВК/Админа, чтобы они существовали в JSONB
+                "vk_group_id": None, 
+                "admin_chat_id": None,
                 "settings": {
                     "forwardToAdmin": True,
                     "antiSpam": False,
@@ -988,7 +982,16 @@ async def create_bot_endpoint(d: dict):
             logger.error(f"DB Error on create: {res.text}")
             raise HTTPException(res.status_code, f"Database error: {res.text}")
 
-        return new_bot_payload
+        # ВАЖНО: Распаковываем поля для фронтенда перед возвратом
+        # Чтобы фронтенд сразу записал их в стейт и инпуты не были undefined
+        return {
+            **new_bot_payload,
+            "vk_group_id": None,
+            "admin_chat_id": None,
+            "buttons": [],
+            "triggers": [],
+            "settings": new_bot_payload["config"]["settings"]
+        }
 
     except Exception as e:
         logger.error(f"🚨 Create Bot Error: {e}")
