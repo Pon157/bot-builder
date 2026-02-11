@@ -179,48 +179,54 @@ class BotInstance:
         except Exception as e:
             logger.error(f"❌ Ошибка обновления статистики: {e}", exc_info=True)
     async def update_stats(self, is_incoming: bool = True):
-    try:
-        today = datetime.now().strftime("%d.%m")
-        # Берем текущую статику из памяти (которую мы синхронизировали)
-        stats = self.config.get("stats", {})
-        if not isinstance(stats, dict): stats = {}
-        
-        # Общие счетчики
-        stats["totalMessages"] = stats.get("totalMessages", 0) + 1
-        if is_incoming:
-            stats["incomingToday"] = stats.get("incomingToday", 0) + 1
-        else:
-            stats["outgoingToday"] = stats.get("outgoingToday", 0) + 1
+        """Обновляет статистику в памяти и отправляет в Supabase"""
+        try:
+            today = datetime.now().strftime("%d.%m")
+            # Берем текущую статику из памяти (которую мы синхронизировали)
+            stats = self.config.get("stats", {})
+            if not isinstance(stats, dict): 
+                stats = {}
+            
+            # Общие счетчики
+            stats["totalMessages"] = stats.get("totalMessages", 0) + 1
+            if is_incoming:
+                stats["incomingToday"] = stats.get("incomingToday", 0) + 1
+            else:
+                stats["outgoingToday"] = stats.get("outgoingToday", 0) + 1
 
-        # Работа с историей для графиков
-        history = stats.get("history", [])
-        day_entry = next((item for item in history if item["date"] == today), None)
+            # Работа с историей для графиков
+            history = stats.get("history", [])
+            if not isinstance(history, list):
+                history = []
+                
+            day_entry = next((item for item in history if item.get("date") == today), None)
 
-        if day_entry:
-            if is_incoming: day_entry["incoming"] += 1
-            else: day_entry["outgoing"] += 1
-        else:
-            history.append({
-                "date": today,
-                "incoming": 1 if is_incoming else 0,
-                "outgoing": 0 if is_incoming else 1,
-                "totalUsers": len(self.config.get("connectedUsers", [])),
-                "activeUsers": 1
-            })
-        
-        stats["history"] = history[-14:] # Храним только 2 недели
-        self.config["stats"] = stats
+            if day_entry:
+                if is_incoming: 
+                    day_entry["incoming"] = day_entry.get("incoming", 0) + 1
+                else: 
+                    day_entry["outgoing"] = day_entry.get("outgoing", 0) + 1
+            else:
+                history.append({
+                    "date": today,
+                    "incoming": 1 if is_incoming else 0,
+                    "outgoing": 0 if is_incoming else 1,
+                    "totalUsers": len(self.config.get("connectedUsers", [])),
+                    "activeUsers": 1
+                })
+            
+            stats["history"] = history[-14:] # Храним только 2 недели
+            self.config["stats"] = stats
 
-        # Сохраняем в базу (Supabase)
-        async with httpx.AsyncClient() as client:
-            await client.patch(
-                f"{self.supabase_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                headers=self.headers,
-                json={"stats": stats}
-            )
-    except Exception as e:
-        logger.error(f"Error updating stats: {e}")
-
+            # Сохраняем в базу (Supabase)
+            async with httpx.AsyncClient() as client:
+                await client.patch(
+                    f"{self.supabase_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                    headers=self.headers,
+                    json={"stats": stats}
+                )
+        except Exception as e:
+            logger.error(f"Error updating stats: {e}", exc_info=True)
     async def license_checker_logic(self):
         try:
             curr_time = int(time.time() * 1000)
