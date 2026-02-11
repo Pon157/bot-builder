@@ -405,24 +405,42 @@ async def get_user_data(user_id: str):
 @app.get("/api/bots/stats/{bot_id}")
 async def get_bot_stats_api(bot_id: str):
     """
-    Отдает статистику конкретного бота. 
-    Структура должна быть {"stats": {...}}, иначе фронт упадет.
+    Отдает детальную статистику бота из колонки stats.
     """
     try:
-        # Пока отдаем заглушку, чтобы оживить интерфейс
-        # Позже здесь можно сделать реальный запрос к БД
+        # 1. Запрашиваем данные бота из Supabase
+        res = await db.get("bots", params={"id": f"eq.{bot_id}"})
+        
+        if res.status_code != 200 or not res.json():
+            logger.warning(f"⚠️ Статистика не найдена для бота {bot_id}")
+            return {"stats": {"history": [], "totalMessages": 0}}
+
+        bot_data = res.json()[0]
+        
+        # 2. Извлекаем поле stats. Если оно пустое, отдаем структуру по умолчанию
+        raw_stats = bot_data.get("stats") or {}
+        
+        # Если в базе данные лежат в поле 'stats', возвращаем их обернутыми в ключ 'stats'
+        # чтобы соответствовать формату фронтенда
         return {
             "stats": {
-                "total_messages": 0,
-                "active_users": 0,
-                "new_users_today": 0,
-                "commands_executed": 0
+                "history": raw_stats.get("history", []),
+                "bannedCount": raw_stats.get("bannedCount", 0),
+                "incomingToday": raw_stats.get("incomingToday", 0),
+                "outgoingToday": raw_stats.get("outgoingToday", 0),
+                "totalMessages": raw_stats.get("totalMessages", 0),
+                "activeUsers24h": raw_stats.get("activeUsers24h", 0)
             }
         }
     except Exception as e:
-        logger.error(f"Error in get_bot_stats: {e}")
-        return {"stats": {"total_messages": 0, "active_users": 0}}
-
+        logger.error(f"🚨 Ошибка получения статистики бота {bot_id}: {e}")
+        return {
+            "stats": {
+                "history": [],
+                "totalMessages": 0,
+                "error": str(e)
+            }
+        }
 @app.get("/api/bots/{user_id}")
 async def get_user_bots(user_id: str):
     try:
