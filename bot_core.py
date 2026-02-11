@@ -113,7 +113,7 @@ class BotInstance:
         self.apply_config(config_data)
 
     async def register_event(self, is_incoming: bool = True):
-    """Обновляет статистику в памяти и отправляет в Supabase"""
+    #Обновляет статистику в памяти и отправляет в Supabase
     try:
         today = datetime.now().strftime("%d.%m")
         # Инициализируем структуру, если её нет
@@ -201,7 +201,7 @@ class BotInstance:
         logger.error(f"Error updating stats: {e}")
 
     async def license_checker_logic(self):
-        """Вынесли логику в отдельный метод, чтобы вызывать её при старте"""
+        #Вынесли логику в отдельный метод, чтобы вызывать её при старте
         try:
             curr_time = int(time.time() * 1000)
             if self.license_expires_at and self.license_expires_at < curr_time:
