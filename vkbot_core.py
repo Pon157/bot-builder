@@ -238,7 +238,7 @@ class BotInstance:
                 await asyncio.sleep(60)
 
     async def database_sync_worker(self):
-        """Воркер синхронизации для VK (с сохранением vk_group_id)"""
+        """Воркер синхронизации для ВК: защищает кнопки и настройки от затирания"""
         async with httpx.AsyncClient(timeout=10.0) as client:
             headers = {
                 "apikey": self.sb_key,
@@ -248,53 +248,57 @@ class BotInstance:
             }
             while self.is_running:
                 try:
-                    # Ожидание задачи из очереди
+                    # Ждем задачу из очереди
                     item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
-                    
-                    if not isinstance(item, tuple): 
+                    if not isinstance(item, tuple):
                         self.sync_queue.task_done()
                         continue
-                    
+
                     action, payload = item
-                    
+
                     if action == "log_message":
-                        # Логирование сообщений в БД
                         await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
-                    
+
                     elif action == "sync_state":
-                        # ФОРМИРУЕМ PAYLOAD (Важно: ВК бот должен возвращать свой ID группы)
-                        update_payload = {
-                            "config": {
-                                "connectedUsers": self.users_list,
-                                "stats": self.stats_data,
-                                "settings": self.settings,
-                                "buttons": self.buttons,
-                                "triggers": self.triggers,
-                                "welcomeMessage": self.welcome_text,
-                                
-                                # ПРИНЦИПИАЛЬНО ДЛЯ ВК:
+                        # 1. СНАЧАЛА ПОЛУЧАЕМ актуальный конфиг из базы
+                        # Это критично, чтобы ВК-бот не удалил кнопки, измененные в админке
+                        res = await client.get(
+                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                            headers=headers
+                        )
+
+                        if res.status_code == 200 and res.json():
+                            remote_data = res.json()[0]
+                            remote_config = remote_data.get("config", {})
+
+                            # 2. ОБЪЕДИНЯЕМ ДАННЫЕ
+                            # Мы сохраняем кнопки, триггеры и приветствие из БАЗЫ (remote_config)
+                            # Но добавляем/обновляем статистику и ID группы из ПАМЯТИ бота
+                            new_config = {
+                                **remote_config, # Берем всё, что сейчас в базе
+                                "stats": self.stats_data, # Обновляем статистику
+                                "connectedUsers": self.users_list, # Обновляем список юзеров
                                 "vk_group_id": getattr(self, 'vk_group_id', None),
-                                
-                                # Для совместимости с админкой
                                 "admin_chat_id": self.admin_chat_id,
                                 "adminChatId": self.admin_chat_id
                             }
-                        }
-                        
-                        res = await client.patch(
-                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", 
-                            json=update_payload, 
-                            headers=headers
-                        )
-                        
-                        if res.status_code not in [200, 201, 204]:
-                            logger.error(f"VK Sync DB Error: {res.status_code} {res.text}")
-                    
+
+                            # 3. ПАТЧИМ БАЗУ
+                            await client.patch(
+                                f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                                json={"config": new_config},
+                                headers=headers
+                            )
+
+                            # 4. ОБНОВЛЯЕМ ПАМЯТЬ БОТА
+                            # Чтобы бот сразу "увидел" новые кнопки без рестарта
+                            self.apply_config({"config": remote_config})
+
                     self.sync_queue.task_done()
                 except asyncio.TimeoutError:
                     continue
                 except Exception as e:
-                    logger.error(f"Sync Worker Error (VK): {e}")
+                    logger.error(f"VK Sync Worker Error: {e}")
                     try: self.sync_queue.task_done()
                     except: pass
 
