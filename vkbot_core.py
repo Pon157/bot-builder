@@ -245,12 +245,19 @@ class BotInstance:
     async def database_sync_worker(self):
         """Воркер синхронизации для ВК: защищает кнопки и настройки от затирания"""
         async with httpx.AsyncClient(timeout=10.0) as client:
+            # Предварительная проверка URL для избежания ошибок протокола
+            if not self.sb_url or not self.sb_url.startswith("http"):
+                logger.warning(f"⚠️ SUPABASE_URL некорректен ('{self.sb_url}'). Попытка восстановить из конфига...")
+                # Пытаемся взять api_url из конфига как запасной вариант
+                self.sb_url = os.getenv("SERVER_URL", "http://localhost:8000").rstrip('/')
+
             headers = {
                 "apikey": self.sb_key,
                 "Authorization": f"Bearer {self.sb_key}",
                 "Content-Type": "application/json",
                 "Prefer": "return=minimal"
             }
+            
             while self.is_running:
                 try:
                     # Ждем задачу из очереди
@@ -261,54 +268,64 @@ class BotInstance:
 
                     action, payload = item
 
+                    # 1. Логирование сообщений
                     if action == "log_message":
-                        await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
+                        if self.sb_url.startswith("http"):
+                            await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
+                        else:
+                            logger.error("❌ Невозможно логировать: отсутствует базовый URL")
 
+                    # 2. Синхронизация состояния (основная логика)
                     elif action == "sync_state":
                         if not self.sb_url or not self.sb_url.startswith("http"):
-                            logger.error(f"❌ ОШИБКА: Некорректный SUPABASE_URL: '{self.sb_url}'")
+                            logger.error(f"❌ ОШИБКА: Некорректный URL для синхронизации: '{self.sb_url}'")
                             self.sync_queue.task_done()
                             continue
         
-                        res = await client.get(...)
+                        # Получаем актуальный конфиг из базы
+                        res = await client.get(
+                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                            headers=headers
+                        )
+
                         if res.status_code == 200 and res.json():
                             remote_data = res.json()[0]
                             remote_config = remote_data.get("config", {})
 
-                            # 2. ОБЪЕДИНЯЕМ ДАННЫЕ
-                            # Мы сохраняем кнопки, триггеры и приветствие из БАЗЫ (remote_config)
-                            # Но добавляем/обновляем статистику и ID группы из ПАМЯТИ бота
+                            # Объединяем локальные данные со свежими из БД
                             new_config = {
-                                **remote_config, # Берем всё, что сейчас в базе
-                                "stats": self.stats_data, # Обновляем статистику
-                                "connectedUsers": self.users_list, # Обновляем список юзеров
+                                **remote_config,            # Конфиг из БД (кнопки, триггеры) приоритетнее
+                                "stats": self.stats_data,    # Но статы берем локальные (текущие)
+                                "connectedUsers": self.users_list,
                                 "vk_group_id": getattr(self, 'vk_group_id', None),
                                 "admin_chat_id": self.admin_chat_id,
                                 "adminChatId": self.admin_chat_id
                             }
 
-                            # 3. ПАТЧИМ БАЗУ
+                            # Патчим базу объединенным конфигом
                             await client.patch(
                                 f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
                                 json={"config": new_config},
                                 headers=headers
                             )
 
-                            # 4. ОБНОВЛЯЕМ ПАМЯТЬ БОТА
-                            # Передаём полный merged-конфиг, чтобы не потерять admin_chat_id и vk_group_id
+                            # Обновляем память бота, чтобы он сразу видел изменения из админки
                             self.apply_config({
-                                **remote_data,          # корневые поля (admin_chat_id, vk_group_id, token...)
-                                "config": remote_config # вложенный конфиг (buttons, triggers, settings...)
+                                **remote_data,
+                                "config": remote_config
                             })
 
                     self.sync_queue.task_done()
+                    
                 except asyncio.TimeoutError:
                     continue
                 except Exception as e:
-                    logger.error(f"VK Sync Worker Error: {e}")
-                    try: self.sync_queue.task_done()
-                    except: pass
-
+                    logger.error(f"🚨 VK Sync Worker Error: {e}")
+                    try:
+                        self.sync_queue.task_done()
+                    except:
+                        pass
+                        
     async def check_antispam(self, user_id: int) -> bool:
         if self.rate_limit <= 0: return False
         now = time.time()
