@@ -405,39 +405,36 @@ async def get_user_data(user_id: str):
 @app.get("/api/bots/stats/{bot_id}")
 async def get_bot_stats_api(bot_id: str):
     try:
-        # 1. Запрашиваем данные бота из таблицы
         res = await db.get("bots", params={"id": f"eq.{bot_id}"})
-        
         if res.status_code != 200 or not res.json():
-            logger.warning(f"⚠️ Статистика не найдена для бота {bot_id}")
             return {"stats": {"history": [], "totalMessages": 0}}
 
         bot_data = res.json()[0]
         
-        # 2. Достаем поле stats (оно должно быть JSONB в Supabase)
+        # 1. Пробуем достать из колонки 'stats'
         s = bot_data.get("stats") or {}
-        
-        # Если вдруг в базе лежит строка вместо объекта, парсим её
         if isinstance(s, str):
-            try:
-                import json
-                s = json.loads(s)
-            except:
-                s = {}
+            try: s = json.loads(s)
+            except: s = {}
 
-        # 3. Отдаем структуру, которую ждет твой фронтенд для графиков
-        return {
-            "stats": {
-                "history": s.get("history", []),
-                "bannedCount": s.get("bannedCount", 0),
-                "incomingToday": s.get("incomingToday", 0),
-                "outgoingToday": s.get("outgoingToday", 0),
-                "totalMessages": s.get("totalMessages", 0),
-                "activeUsers24h": s.get("activeUsers24h", 0)
-            }
+        # 2. Если в 'stats' пусто, возможно данные лежат в корне (как в твоем примере)
+        # Собираем финальный объект статистики
+        history = s.get("history") or bot_data.get("history") or []
+        
+        stats_payload = {
+            "history": history,
+            "bannedCount": s.get("bannedCount") or bot_data.get("bannedCount") or 0,
+            "incomingToday": s.get("incomingToday") or bot_data.get("incomingToday") or 0,
+            "outgoingToday": s.get("outgoingToday") or bot_data.get("outgoingToday") or 0,
+            "totalMessages": s.get("totalMessages") or bot_data.get("totalMessages") or 0,
+            "activeUsers24h": s.get("activeUsers24h") or bot_data.get("activeUsers24h") or 0
         }
+        
+        # ВАЖНО: Если история есть, но графики молчат - проверь формат даты (должен быть "ДД.ММ")
+        return {"stats": stats_payload}
+
     except Exception as e:
-        logger.error(f"🚨 Ошибка API статистики: {e}")
+        logger.error(f"🚨 Ошибка отрисовки статистики: {e}")
         return {"stats": {"history": [], "totalMessages": 0}}
         
 @app.get("/api/bots/{user_id}")
