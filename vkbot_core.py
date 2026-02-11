@@ -578,30 +578,31 @@ class BotInstance:
         logger.info(f"[*] Бот VK {self.bot_id} запускается...")
         
         try:
-            # Важно: если лицензия не прошла, лучше не запускать бота дальше
             await self.license_checker_logic() 
         except Exception as e:
-            logger.error(f"Ошибка Init (License): {e}")
-            # Если лицензия — критичный момент, можно тут сделать return
+            logger.error(f"Ошибка лицензии: {e}")
 
-        # Сначала регистрируем хендлеры
         await self.core_handlers_setup()
-
         logger.info(f"[*] Бот VK {self.bot_id} готов. AdminID: {self.admin_chat_id}")
 
-        # Фоновые задачи
-        # asyncio.create_task можно вызывать напрямую без loop.get_event_loop()
+        # Запускаем задачи
         asyncio.create_task(self.database_sync_worker())
         asyncio.create_task(self.daily_stats_rotator())
         asyncio.create_task(self.license_checker())
 
+        self.is_running = True
         try:
-            # Вот тут vkbottle может "выскочить", если токен неверный или сеть упала
-            await self.bot.run_polling()
+            # Вместо run_polling используем конструкцию, которая точно не даст выйти
+            logger.info("Starting Polling loop...")
+            await self.bot.run_polling() 
+            
+            # Если код дошел сюда — значит поллинг ПОЧЕМУ-ТО завершился сам.
+            # Не даем ему выйти просто так:
+            while self.is_running:
+                await asyncio.sleep(1)
+                
         except Exception as e:
-            # Исключаем ошибку закрытия цикла, чтобы не спамить в логи
-            if "close a running event loop" not in str(e):
-                logger.error(f"🚨 Polling Error: {e}", exc_info=True)
+            logger.error(f"🚨 Ошибка в работе: {e}")
         finally:
             self.is_running = False
             logger.warning(f"⚠️ Поллинг бота {self.bot_id} остановлен.")
