@@ -349,5 +349,38 @@ adminLogin: async (login: string, pass: string) => {
       body: JSON.stringify(bot)
     });
     return response.ok ? await response.json() : null;
+  },
+
+  // --- VK SPECIFIC ---
+  
+  // Получение информации о сообществе ВК (чтобы в админке видеть название и аватарку группы)
+  getVkGroupInfo: async (token: string, groupId: string) => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/vk/group-info`, {
+        method: 'POST',
+        body: JSON.stringify({ token, group_id: groupId })
+      });
+      return response.ok ? await response.json() : null;
+    } catch (e) { return null; }
+  },
+
+  // Проверка Callback API / Long Poll (правильно ли настроены ключи в ВК)
+  testVkConnection: async (botId: string) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/bots/vk-test/${botId}`, { method: 'GET' });
+    return response.ok ? await response.json() : { status: 'error' };
+  },
+
+  // Ответ пользователю из админ-панели (если ты делаешь чат внутри сайта)
+  sendVkMessage: async (botId: string, peerId: number, message: string, replyTo?: number) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/bots/vk-send`, {
+      method: 'POST',
+      body: JSON.stringify({ 
+        bot_id: botId, 
+        peer_id: peerId, 
+        message,
+        reply_to: replyTo // Тот самый реплай, о котором мы говорили
+      })
+    });
+    return response.ok;
   }
 };
