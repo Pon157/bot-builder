@@ -575,37 +575,20 @@ class BotInstance:
             await self.log_and_update(user['id'], user['first_name'], m.text or "[Медиа]")
 
     async def run_instance(self):
-        logger.info(f"[*] Бот VK {self.bot_id} запускается...")
-        
-        try:
-            await self.license_checker_logic() 
-        except Exception as e:
-            logger.error(f"Ошибка лицензии: {e}")
+    logger.info(f"[*] Бот VK {self.bot_id} запускается...")
+    
+    await self.license_checker_logic()
+    await self.core_handlers_setup()
 
-        await self.core_handlers_setup()
-        logger.info(f"[*] Бот VK {self.bot_id} готов. AdminID: {self.admin_chat_id}")
+    logger.info(f"[*] Бот VK {self.bot_id} готов. AdminID: {self.admin_chat_id}")
 
-        # Запускаем задачи
-        asyncio.create_task(self.database_sync_worker())
-        asyncio.create_task(self.daily_stats_rotator())
-        asyncio.create_task(self.license_checker())
+    # Запускаем фоновые задачи
+    asyncio.create_task(self.database_sync_worker())
+    asyncio.create_task(self.daily_stats_rotator())
+    asyncio.create_task(self.license_checker())
 
-        self.is_running = True
-        try:
-            # Вместо run_polling используем конструкцию, которая точно не даст выйти
-            logger.info("Starting Polling loop...")
-            await self.bot.run_polling() 
-            
-            # Если код дошел сюда — значит поллинг ПОЧЕМУ-ТО завершился сам.
-            # Не даем ему выйти просто так:
-            while self.is_running:
-                await asyncio.sleep(1)
-                
-        except Exception as e:
-            logger.error(f"🚨 Ошибка в работе: {e}")
-        finally:
-            self.is_running = False
-            logger.warning(f"⚠️ Поллинг бота {self.bot_id} остановлен.")
+    # Просто вызываем поллинг без лишних оберток, которые могут закрыть loop раньше времени
+    await self.bot.run_polling()
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -620,9 +603,17 @@ if __name__ == "__main__":
         logger.error(f"Не удалось прочитать конфиг {cfg_path}: {e}")
         sys.exit(1)
 
-    async def main():
-        instance = BotInstance(config)
+    async def start():
         await instance.run_instance()
+
+    # Попробуй запустить вот так:
+    try:
+        # Это заставит vkbottle взять управление на себя корректно
+        asyncio.get_event_loop().run_until_complete(start())
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен пользователем")
+    except Exception as e:
+        logger.error(f"🚨 Критическая ошибка: {e}")
 
     loop = asyncio.get_event_loop()
     try:
