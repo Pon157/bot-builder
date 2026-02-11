@@ -345,7 +345,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
     </button>
   </div>
 </div>
-                  </div> {/* Конец правой колонки */}
+                {/* Конец правой колонки */}
+                  </div>
                 
                 {/* --- ЗОНА ОПАСНЫХ ДЕЙСТВИЙ (Внутри вкладки Settings) --- */}
                 <div className="lg:col-span-2 mt-4">
@@ -366,7 +367,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                     </button>
                   )}
                 </div>
-              </div> {/* Конец GRID внутри Settings */}
+                {/* Конец GRID внутри Settings */}
+              </div>
             )}
 
             {/* --- ВКЛАДКА: ИНТЕРФЕЙС (КНОПКИ) --- */}
@@ -478,7 +480,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
             {activeTab === 'stats' && <BotStatsView bot={bot} onUpdate={onUpdate} />}
             {activeTab === 'logs' && <BotConsole botId={bot.id} />}
 
-    </div> {/* Конец основного div */}
+    {/* Конец основного div */}
+    </div>
   );
 };
 
