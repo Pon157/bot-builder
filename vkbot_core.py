@@ -578,28 +578,33 @@ class BotInstance:
         logger.info(f"[*] Бот VK {self.bot_id} запускается...")
         
         try:
+            # Важно: если лицензия не прошла, лучше не запускать бота дальше
             await self.license_checker_logic() 
         except Exception as e:
-            logger.error(f"Ошибка Init: {e}")
+            logger.error(f"Ошибка Init (License): {e}")
+            # Если лицензия — критичный момент, можно тут сделать return
 
         # Сначала регистрируем хендлеры
         await self.core_handlers_setup()
 
         logger.info(f"[*] Бот VK {self.bot_id} готов. AdminID: {self.admin_chat_id}")
 
-        # Запускаем фоновые задачи ПОСЛЕ того как event loop уже работает
-        loop = asyncio.get_event_loop()
-        loop.create_task(self.database_sync_worker())
-        loop.create_task(self.daily_stats_rotator())
-        loop.create_task(self.license_checker())
+        # Фоновые задачи
+        # asyncio.create_task можно вызывать напрямую без loop.get_event_loop()
+        asyncio.create_task(self.database_sync_worker())
+        asyncio.create_task(self.daily_stats_rotator())
+        asyncio.create_task(self.license_checker())
 
         try:
+            # Вот тут vkbottle может "выскочить", если токен неверный или сеть упала
             await self.bot.run_polling()
         except Exception as e:
+            # Исключаем ошибку закрытия цикла, чтобы не спамить в логи
             if "close a running event loop" not in str(e):
-                logger.error(f"Polling Error: {e}")
+                logger.error(f"🚨 Polling Error: {e}", exc_info=True)
         finally:
             self.is_running = False
+            logger.warning(f"⚠️ Поллинг бота {self.bot_id} остановлен.")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -618,4 +623,12 @@ if __name__ == "__main__":
         instance = BotInstance(config)
         await instance.run_instance()
 
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен вручную (Ctrl+C)")
+    finally:
+        # Даем фоновым задачам шанс закрыться без Warning
+        loop.stop()
+
