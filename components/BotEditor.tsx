@@ -344,50 +344,87 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
   </div>
 </div>
                 
-                {/* --- ЗОНА ОПАСНЫХ ДЕЙСТВИЙ --- */}
-                {isAdminMode ? (
-                  <div className="mt-8 p-6 border border-zinc-800 bg-zinc-900/40 rounded-[2rem] flex items-center gap-4 opacity-50 pointer-events-none">
-                     <div className="p-3 bg-zinc-800 rounded-xl"><Lock size={20} /></div>
-                     <div>
-                       <h4 className="text-[10px] font-black uppercase text-zinc-400 tracking-widest">Admin Protection</h4>
-                       <p className="text-[9px] text-zinc-600 uppercase">Deletion disabled in Support Mode</p>
-                     </div>
-                  </div>
-                ) : (
-                  <button onClick={() => window.confirm("Вы точно хотите удалить этот инстанс?") && onDelete()} className="w-full p-5 text-[10px] font-black uppercase text-rose-500 bg-rose-500/5 rounded-3xl border border-rose-500/10 hover:bg-rose-500/10 transition-all flex items-center justify-center gap-2">
-                      <Trash2 className="w-4 h-4" /> Удалить навсегда
-                  </button>
-                )}
+{/* --- ЗОНА ОПАСНЫХ ДЕЙСТВИЙ (Внутри вкладки Settings) --- */}
+        <div className="lg:col-span-2 mt-4">
+          {isAdminMode ? (
+            <div className="p-6 border border-zinc-800 bg-zinc-900/40 rounded-[2rem] flex items-center gap-4 opacity-50 pointer-events-none">
+              <div className="p-3 bg-zinc-800 rounded-xl"><Lock size={20} className="text-zinc-500" /></div>
+              <div>
+                <h4 className="text-[10px] font-black uppercase text-zinc-400 tracking-widest">Admin Protection</h4>
+                <p className="text-[9px] text-zinc-600 uppercase">Deletion disabled in Support Mode</p>
+              </div>
             </div>
-          </div>
-        )}
-        
-        {activeTab === 'interface' && (
-          <div className="space-y-6">
-             <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-black text-white uppercase tracking-tight">Конструктор Кнопок</h2>
-                <button onClick={() => handleLocalUpdate({...bot, buttons: [...(bot.buttons || []), {text: '', response: '', type: 'message'}]})} className="bg-blue-600 px-8 py-4 rounded-2xl text-[11px] font-black text-white uppercase flex items-center gap-2 shadow-lg shadow-blue-600/20">
-                    <Plus className="w-4 h-4" /> Новая кнопка
-                </button>
-             </div>
-             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-               {(bot.buttons || []).map((btn, i) => (
-                 <div key={i} className="bg-[#0d0d0d] border border-zinc-800 rounded-[2.5rem] p-8 space-y-6 relative group border-t-4 border-t-blue-500/20 shadow-xl">
-                    <button onClick={() => handleLocalUpdate({...bot, buttons: bot.buttons.filter((_, idx) => idx !== i)})} className="absolute top-6 right-6 text-zinc-600 hover:text-rose-500 transition-colors"><X className="w-5 h-5" /></button>
-                    <div className="space-y-5">
-                        <label className="block"><span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Текст на кнопке</span><input className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-blue-500" value={btn.text} onChange={e => { const nb = [...bot.buttons]; nb[i].text = e.target.value; handleLocalUpdate({...bot, buttons: nb}); }} /></label>
-                        <label className="block"><span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Ответ системы</span><textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm min-h-[120px] outline-none focus:border-blue-500 resize-none" value={btn.response} onChange={e => { const nb = [...bot.buttons]; nb[i].response = e.target.value; handleLocalUpdate({...bot, buttons: nb}); }} /></label>
-                        <div className="flex bg-black p-1 rounded-xl border border-zinc-800">
-                          {['message', 'request'].map(type => (
-                            <button key={type} onClick={() => { const nb = [...bot.buttons]; nb[i].type = type as any; handleLocalUpdate({...bot, buttons: nb}); }} className={`flex-1 py-2.5 rounded-lg text-[9px] font-black uppercase transition-all ${btn.type === type ? 'bg-blue-600 text-white' : 'text-zinc-600'}`}>{type === 'message' ? 'Обычный ответ' : '🆘 Заявка (Тикет)'}</button>
-                          ))}
-                        </div>
-                    </div>
-                 </div>
-               ))}
-             </div>
-          </div>
-        )}
+          ) : (
+            <button 
+              onClick={() => window.confirm("Вы точно хотите удалить этот инстанс?") && onDelete()} 
+              className="w-full p-5 text-[10px] font-black uppercase text-rose-500 bg-rose-500/5 rounded-3xl border border-rose-500/10 hover:bg-rose-500/20 transition-all flex items-center justify-center gap-2"
+            >
+              <Trash2 className="w-4 h-4" /> Удалить навсегда
+            </button>
+          )}
+        </div>
+      </div> // Закрывает GRID
+    )} {/* Закрывает activeTab === 'settings' */}
+
+    {/* --- ВКЛАДКА: ИНТЕРФЕЙС (КНОПКИ) --- */}
+    {activeTab === 'interface' && (
+      <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-2xl font-black text-white uppercase tracking-tight">Конструктор Кнопок</h2>
+          <button 
+            onClick={() => handleLocalUpdate({...bot, buttons: [...(bot.buttons || []), {text: '', response: '', type: 'message'}]})} 
+            className="bg-blue-600 px-8 py-4 rounded-2xl text-[11px] font-black text-white uppercase flex items-center gap-2 shadow-lg shadow-blue-600/20 hover:bg-blue-500 transition-all"
+          >
+            <Plus className="w-4 h-4" /> Новая кнопка
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          {(bot.buttons || []).map((btn, i) => (
+            <div key={i} className="bg-[#0d0d0d] border border-zinc-800 rounded-[2.5rem] p-8 space-y-6 relative group border-t-4 border-t-blue-500/20 shadow-xl">
+              <button 
+                onClick={() => handleLocalUpdate({...bot, buttons: bot.buttons.filter((_, idx) => idx !== i)})} 
+                className="absolute top-6 right-6 text-zinc-600 hover:text-rose-500 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              
+              <div className="space-y-5">
+                <label className="block">
+                  <span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Текст на кнопке</span>
+                  <input 
+                    className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-blue-500 transition-all" 
+                    value={btn.text} 
+                    onChange={e => { const nb = [...bot.buttons]; nb[i].text = e.target.value; handleLocalUpdate({...bot, buttons: nb}); }} 
+                  />
+                </label>
+                
+                <label className="block">
+                  <span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Ответ системы</span>
+                  <textarea 
+                    className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm min-h-[120px] outline-none focus:border-blue-500 resize-none" 
+                    value={btn.response} 
+                    onChange={e => { const nb = [...bot.buttons]; nb[i].response = e.target.value; handleLocalUpdate({...bot, buttons: nb}); }} 
+                  />
+                </label>
+
+                <div className="flex bg-black p-1 rounded-xl border border-zinc-800">
+                  {['message', 'request'].map(type => (
+                    <button 
+                      key={type} 
+                      onClick={() => { const nb = [...bot.buttons]; nb[i].type = type as any; handleLocalUpdate({...bot, buttons: nb}); }} 
+                      className={`flex-1 py-2.5 rounded-lg text-[9px] font-black uppercase transition-all ${btn.type === type ? 'bg-blue-600 text-white shadow-lg' : 'text-zinc-600 hover:text-zinc-400'}`}
+                    >
+                      {type === 'message' ? 'Обычный ответ' : '🆘 Заявка (Тикет)'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
 
         {activeTab === 'logic' && (
           <div className="space-y-6">
