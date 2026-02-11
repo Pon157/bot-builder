@@ -479,19 +479,48 @@ async def save_bot(b: dict):
         if not bid: 
             raise HTTPException(400, "ID бота потерян")
 
-        # 1. Достаем текущие данные из базы
+        # 1. Получаем текущее состояние из БД
         old_r = await db.get("bots", params={"id": f"eq.{bid}"})
         if old_r.status_code != 200:
+            logger.error(f"❌ Supabase error: {old_r.text}")
             raise HTTPException(old_r.status_code, "Ошибка связи с БД")
 
         bots = old_r.json()
+        
+        # --- ЛОГИКА UPSERT (Если бота нет) ---
         if not bots:
-            raise HTTPException(404, "Бот не найден")
+            logger.warning(f"⚠️ Бот {bid} не найден — выполняем upsert")
+            raw_tok = b.get("token", "")
+            enc_tok = encrypt_val(raw_tok) if raw_tok and not str(raw_tok).startswith("gAAAA") else raw_tok
+            upsert_payload = {
+                "id": bid,
+                "owner_id": b.get("owner_id", ""),
+                "name": b.get("name", "Новый бот"),
+                "token": enc_tok,
+                "platform": b.get("platform", "vk"),
+                "status": "IDLE",
+                "license_expires_at": int(time.time() * 1000) + (24 * 3600 * 1000),
+                "created_at": int(time.time() * 1000),
+                "config": {
+                    "buttons": b.get("buttons", []),
+                    "triggers": b.get("triggers", []),
+                    "welcomeMessage": b.get("welcomeMessage", "Привет!"),
+                    "settings": b.get("settings") or {"forwardToAdmin": True},
+                    "connectedUsers": []
+                },
+                "stats": {},
+                "admin_chat_id": None,
+                "vk_group_id": None
+            }
+            ins = await db.post("bots", json=upsert_payload)
+            if ins.status_code not in [200, 201, 204]:
+                raise HTTPException(500, f"Ошибка создания: {ins.text}")
+            return {**upsert_payload, "id": bid}
 
         curr = bots[0]
         old_config = curr.get("config", {}) or {}
 
-        # 2. Функция очистки для BIGINT
+        # 2. Очистка BIGINT (важно для сохранения ID чатов)
         def clean_int(val):
             if val is None or str(val).strip() in ["", "null", "None"]: 
                 return None
@@ -500,44 +529,40 @@ async def save_bot(b: dict):
             except: 
                 return None
 
-        # ПРИОРИТЕТ: берем новое только если оно пришло в запросе
-        # Проверяем оба варианта написания: snake_case и camelCase
-        new_admin_id = clean_int(b.get("admin_chat_id") if "admin_chat_id" in b else b.get("adminChatId"))
-        if new_admin_id is None and "admin_chat_id" not in b and "adminChatId" not in b:
+        # Приоритет: Корень запроса -> Вложенный config -> База данных
+        inc_cfg = b.get("config", {}) if isinstance(b.get("config"), dict) else {}
+
+        new_admin_id = clean_int(b.get("admin_chat_id") or b.get("adminChatId") or inc_cfg.get("admin_chat_id") or inc_cfg.get("adminChatId"))
+        if new_admin_id is None: 
             new_admin_id = clean_int(curr.get("admin_chat_id"))
 
-        new_vk_id = clean_int(b.get("vk_group_id") if "vk_group_id" in b else b.get("vkGroupId"))
-        if new_vk_id is None and "vk_group_id" not in b and "vkGroupId" not in b:
+        new_vk_id = clean_int(b.get("vk_group_id") or b.get("vkGroupId") or inc_cfg.get("vk_group_id") or inc_cfg.get("vkGroupId"))
+        if new_vk_id is None: 
             new_vk_id = clean_int(curr.get("vk_group_id"))
 
-        # 3. Собираем конфиг (JSONB) без затирания
-        inc_cfg = b.get("config", {}) if isinstance(b.get("config"), dict) else {}
-        
-        def get_safe(key, default):
-            # Если ключ есть в корне или в пришедшем конфиге — берем его, иначе из базы
-            if key in b: return b[key]
-            if key in inc_cfg: return inc_cfg[key]
-            return old_config.get(key, default)
+        # 3. Собираем конфиг (JSONB), чтобы не затирать инпуты
+        def get_val(key, default=None):
+            val = b.get(key)
+            if val is None: val = inc_cfg.get(key)
+            if val is None: val = old_config.get(key)
+            return val if val is not None else default
 
         ui_config = {
             "stats": old_config.get("stats", {}),
-            "buttons": get_safe("buttons", []),
-            "triggers": get_safe("triggers", []),
-            "welcomeMessage": get_safe("welcomeMessage", "Привет!"),
-            "settings": {
-                **old_config.get("settings", {}), 
-                **(b.get("settings") or inc_cfg.get("settings") or {})
-            },
+            "buttons": get_val("buttons", []),
+            "triggers": get_val("triggers", []),
+            "welcomeMessage": get_val("welcomeMessage", "Привет!"),
+            "settings": {**old_config.get("settings", {}), **(b.get("settings") or inc_cfg.get("settings") or {})},
             "connectedUsers": old_config.get("connectedUsers", [])
         }
 
-        # 4. Обработка токена
+        # 4. Токен
         raw_token = b.get('token')
         final_token = curr.get('token')
         if raw_token and not str(raw_token).startswith('gAAAA') and len(str(raw_token)) > 5:
             final_token = encrypt_val(raw_token)
 
-        # 5. Пакет для базы данных (строго по именам колонок)
+        # 5. Пакет для PATCH (колонки БД)
         db_payload = {
             "name": b.get("name") or curr.get("name"),
             "token": final_token,
@@ -550,16 +575,15 @@ async def save_bot(b: dict):
         # 6. Сохранение
         res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
         if res.status_code not in [200, 201, 204]:
-            logger.error(f"❌ Patch Error: {res.text}")
-            raise HTTPException(res.status_code, "Ошибка сохранения в БД")
+            raise HTTPException(res.status_code, f"Ошибка сохранения: {res.text}")
 
-        # 7. ВОЗВРАТ: Самое важное, чтобы инпуты не очищались
-        # Возвращаем СМЕСЬ всех форматов ключей, чтобы фронтенд "узнал" данные
+        # 7. ВОЗВРАТ (Дублируем ключи camelCase, чтобы фронт не сбрасывал инпуты)
         return {
-            **curr,         # Базовые поля из БД
-            **db_payload,   # Обновленные поля
-            "adminChatId": new_admin_id, # Фронт ждет это для инпута
-            "vkGroupId": new_vk_id,       # Фронт ждет это для инпута
+            **curr,
+            **db_payload,
+            **ui_config,
+            "adminChatId": new_admin_id, # Для фронтенда
+            "vkGroupId": new_vk_id,       # Для фронтенда
             "id": bid
         }
 
