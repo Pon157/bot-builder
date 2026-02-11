@@ -447,60 +447,98 @@ async def get_user_bots(user_id: str):
 async def save_bot(b: dict):
     try:
         bid = b.get('id')
-        if not bid: raise HTTPException(400, "Missing bot ID")
+        if not bid:
+            raise HTTPException(400, "Missing bot ID")
 
-        # 1. Загружаем текущие данные
+        # 1. Загружаем текущие данные из базы
         old_r = await db.get("bots", params={"id": f"eq.{bid}"})
-        curr = old_r.json()[0] if old_r.json() else {}
+        curr = old_r.json()[0] if (old_r.status_code == 200 and old_r.json()) else {}
         old_config = curr.get("config", {})
+        if not isinstance(old_config, dict):
+            old_config = {}
 
-        # 2. Собираем данные из всех возможных мест (корень или объект config)
+        # 2. Извлекаем входящий конфиг (если фронт прислал данные внутри него)
         inc_cfg = b.get("config", {})
-        
-        # Приоритет: то что в корне > то что в config > то что в старой базе
-        vk_id = b.get("vk_group_id") or inc_cfg.get("vk_group_id") or old_config.get("vk_group_id")
-        
-        # Для Admin ID проверяем все варианты написания
-        adm_id = (b.get("admin_chat_id") or b.get("adminChatId") or 
-                  inc_cfg.get("admin_chat_id") or inc_cfg.get("adminChatId") or 
-                  old_config.get("admin_chat_id"))
+        if not isinstance(inc_cfg, dict):
+            inc_cfg = {}
 
-        # ПРИВЯЗКА Welcome Message
-        welcome = b.get("welcomeMessage") or inc_cfg.get("welcomeMessage") or old_config.get("welcomeMessage", "Здравствуйте!")
+        # Функция-помощник: берет первое значение, которое не является None
+        # Это позволяет сохранять пустые строки "", если ты их ввел в инпут
+        def pick(*args):
+            for a in args:
+                if a is not None:
+                    return a
+            return None
 
-        # 3. Формируем финальный конфиг
+        # 3. Собираем переменные с жестким приоритетом: 
+        # Корень запроса > Объект config в запросе > Старая база
+        vk_id = pick(b.get("vk_group_id"), inc_cfg.get("vk_group_id"), old_config.get("vk_group_id"))
+        
+        adm_id = pick(
+            b.get("admin_chat_id"), 
+            b.get("adminChatId"), 
+            inc_cfg.get("admin_chat_id"), 
+            inc_cfg.get("adminChatId"), 
+            old_config.get("admin_chat_id")
+        )
+
+        welcome = pick(
+            b.get("welcomeMessage"), 
+            inc_cfg.get("welcomeMessage"), 
+            old_config.get("welcomeMessage")
+        )
+
+        # 4. Формируем финальный объект config (JSONB)
         ui_config = {
-            "buttons": b.get("buttons") if b.get("buttons") is not None else old_config.get("buttons", []),
-            "triggers": b.get("triggers") if b.get("triggers") is not None else old_config.get("triggers", []),
-            "welcomeMessage": welcome,
+            "buttons": pick(b.get("buttons"), inc_cfg.get("buttons"), old_config.get("buttons"), []),
+            "triggers": pick(b.get("triggers"), inc_cfg.get("triggers"), old_config.get("triggers"), []),
+            "welcomeMessage": welcome if welcome is not None else "Здравствуйте!",
             "vk_group_id": vk_id,
             "admin_chat_id": adm_id,
-            "adminChatId": adm_id, # Дублируем для совместимости
+            "adminChatId": adm_id, # Дублируем для совместимости со старым кодом ботов
             "settings": {
                 **old_config.get("settings", {}),
-                **b.get("settings", {}),
-                **inc_cfg.get("settings", {})
+                **inc_cfg.get("settings", {}),
+                **b.get("settings", {})
             }
         }
 
-        logger.info(f"🔒 FINAL SAVE -> VK: {vk_id} | ADMIN: {adm_id} | WELCOME: {welcome[:10]}...")
+        # Логируем результат перед отправкой в базу
+        logger.info(f"🔒 FINAL SAVE -> VK: {vk_id} | ADMIN: {adm_id} | WELCOME: {str(welcome)[:15] if welcome else 'None'}...")
 
+        # Обработка токена (шифруем только если это не зашифрованная строка gAAAA...)
+        raw_token = b.get('token')
+        if raw_token:
+            final_token = encrypt_val(raw_token) if not str(raw_token).startswith('gAAAA') else raw_token
+        else:
+            final_token = curr.get('token', '')
+
+        # 5. Подготовка данных для Supabase
         db_payload = {
             "name": b.get("name") or curr.get("name"),
-            "token": b.get('token') or curr.get('token'), # Предполагаем, что токен уже зашифрован фронтом или не менялся
+            "token": final_token,
             "platform": b.get('platform') or curr.get('platform'),
             "config": ui_config 
         }
 
+        # Отправляем PATCH запрос
         res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
         
         if res.status_code not in [200, 201, 204]:
+            logger.error(f"❌ Supabase Error: {res.text}")
             raise HTTPException(res.status_code, f"DB Error: {res.text}")
 
-        return { **curr, **db_payload, **ui_config }
+        # Возвращаем объединенный объект, чтобы фронтенд сразу обновил интерфейс
+        return {
+            **curr,
+            **db_payload,
+            "vk_group_id": vk_id,
+            "admin_chat_id": adm_id,
+            "welcomeMessage": welcome
+        }
 
     except Exception as e:
-        logger.error(f"🚨 Save error: {e}")
+        logger.error(f"🚨 Save error: {e}", exc_info=True)
         raise HTTPException(500, str(e))
         
 @app.post("/api/bots/start")
