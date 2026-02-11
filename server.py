@@ -487,7 +487,7 @@ async def save_bot(b: dict):
 
         bots = old_r.json()
         
-        # --- ЛОГИКА UPSERT (Если бота нет) ---
+        # --- ЛОГИКА UPSERT (Если бота нет в базе) ---
         if not bots:
             logger.warning(f"⚠️ Бот {bid} не найден — выполняем upsert")
             raw_tok = b.get("token", "")
@@ -512,41 +512,43 @@ async def save_bot(b: dict):
                 "admin_chat_id": None,
                 "vk_group_id": None
             }
-            ins = await db.post("bots", json=upsert_payload)
+            await db.post("bots", json=upsert_payload)
             return {**upsert_payload, "id": bid}
 
         curr = bots[0]
         old_config = curr.get("config", {}) or {}
         inc_cfg = b.get("config", {}) if isinstance(b.get("config"), dict) else {}
+        
+        # Определяем платформу (из запроса или из базы)
+        platform = b.get('platform') or curr.get('platform') or 'vk'
 
-        # 2. Улучшенная функция очистки
+        # 2. Функция очистки BIGINT
         def clean_int(val):
             if val is None or str(val).strip() in ["", "null", "None"]: 
                 return None
             try: return int(float(str(val).strip()))
             except: return None
 
-        # 3. ЛОГИКА СОХРАНЕНИЯ ID (Исправлено)
-        # Мы проверяем наличие ключа в запросе. Если ключ ПРИШЕЛ — берем его. 
-        # Если ключа ВООБЩЕ НЕТ в JSON — оставляем то, что было в базе.
-        
-        # Для Telegram
-        if "adminChatId" in b: admin_val = b.get("adminChatId")
-        elif "admin_chat_id" in b: admin_val = b.get("admin_chat_id")
-        elif "adminChatId" in inc_cfg: admin_val = inc_cfg.get("adminChatId")
-        elif "admin_chat_id" in inc_cfg: admin_val = inc_cfg.get("admin_chat_id")
-        else: admin_val = curr.get("admin_chat_id") # Только если полей нет, берем старое
-        
-        new_admin_id = clean_int(admin_val)
+        # 3. РАЗДЕЛЬНАЯ ЛОГИКА СОХРАНЕНИЯ ПО ПЛАТФОРМАМ (Исправлено)
+        # Инициализируем текущими значениями из базы
+        new_admin_id = curr.get("admin_chat_id")
+        new_vk_id = curr.get("vk_group_id")
 
-        # Для VK
-        if "vkGroupId" in b: vk_val = b.get("vkGroupId")
-        elif "vk_group_id" in b: vk_val = b.get("vk_group_id")
-        elif "vkGroupId" in inc_cfg: vk_val = inc_cfg.get("vkGroupId")
-        elif "vk_group_id" in inc_cfg: vk_val = inc_cfg.get("vk_group_id")
-        else: vk_val = curr.get("vk_group_id")
-        
-        new_vk_id = clean_int(vk_val)
+        if platform == 'tg':
+            # Если бот ТГ — ищем только ключи для ТГ
+            tg_raw = b.get("adminChatId") or b.get("admin_chat_id") or inc_cfg.get("adminChatId") or inc_cfg.get("admin_chat_id")
+            if tg_raw is not None or "adminChatId" in b or "admin_chat_id" in b:
+                new_admin_id = clean_int(tg_raw)
+            # Для ТГ бота колонка ВК должна быть пустой (или не меняться)
+            new_vk_id = None 
+
+        elif platform == 'vk':
+            # Если бот ВК — ищем только ключи для ВК
+            vk_raw = b.get("vkGroupId") or b.get("vk_group_id") or inc_cfg.get("vkGroupId") or inc_cfg.get("vk_group_id")
+            if vk_raw is not None or "vkGroupId" in b or "vk_group_id" in b:
+                new_vk_id = clean_int(vk_raw)
+            # Для ВК бота колонка ТГ должна быть пустой
+            new_admin_id = None
 
         # 4. Собираем конфиг (JSONB)
         def get_val(key, default=None):
@@ -570,31 +572,31 @@ async def save_bot(b: dict):
         if raw_token and not str(raw_token).startswith('gAAAA') and len(str(raw_token)) > 5:
             final_token = encrypt_val(raw_token)
 
-        # 6. Пакет для PATCH (Колонки строго как в БД)
+        # 6. Пакет для PATCH (Колонки строго распределены)
         db_payload = {
             "name": b.get("name") or curr.get("name"),
             "token": final_token,
-            "platform": b.get('platform') or curr.get('platform'),
+            "platform": platform,
             "config": ui_config,
-            "admin_chat_id": new_admin_id, # Пишем в колонку bigint
-            "vk_group_id": new_vk_id      # Пишем в колонку bigint
+            "admin_chat_id": new_admin_id, # Сюда попадет только если platform == 'tg'
+            "vk_group_id": new_vk_id       # Сюда попадет только если platform == 'vk'
         }
 
-        # 7. Отправка
-        logger.info(f"💾 Сохраняем бота {bid}. Payload: {db_payload}")
+        # 7. Отправка в БД
+        logger.info(f"💾 Saving bot {bid} ({platform}). TG Column: {new_admin_id}, VK Column: {new_vk_id}")
         res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
         
         if res.status_code not in [200, 201, 204]:
-            logger.error(f"❌ Ошибка PATCH: {res.text}")
+            logger.error(f"❌ Patch error: {res.text}")
             raise HTTPException(res.status_code, f"Ошибка БД: {res.text}")
 
-        # 8. ВОЗВРАТ (Чтобы фронтенд сразу увидел результат)
+        # 8. Возврат для фронтенда (с поддержкой обоих форматов)
         return {
             **curr,
             **db_payload,
             **ui_config,
-            "adminChatId": new_admin_id, # Возвращаем camelCase для React
-            "vkGroupId": new_vk_id,       # Возвращаем camelCase для React
+            "adminChatId": new_admin_id,
+            "vkGroupId": new_vk_id,
             "id": bid
         }
 
