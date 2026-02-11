@@ -626,7 +626,7 @@ class BotInstance:
                 logger.error(f"🚨 Ошибка во время поллинга: {e}")
         finally:
             self.is_running = False
-            logger.warning(f"⚠️ Поллинг бота {self.bot_id} завершен.")bot_id} завершен.")
+            logger.warning(f"⚠️ Поллинг бота {self.bot_id} завершен.")
 
 # ==========================================================
 # БЛОК ЗАПУСКА СКРИПТА
