@@ -540,8 +540,8 @@ class BotInstance:
             if m.text:
                 clean_text = m.text.lower().strip()
                 
-                # Обработка START
-                if clean_text == "start" or clean_text == "/start":
+                # Обработка START (включая стандартную кнопку VK "Начать")
+                if clean_text in ["start", "/start", "начать"]:
                     await m.answer(self.welcome_text, keyboard=self.get_main_keyboard())
                     await self.log_and_update(user['id'], user['first_name'], "/start")
                     return
