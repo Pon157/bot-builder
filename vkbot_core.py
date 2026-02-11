@@ -600,3 +600,36 @@ class BotInstance:
 
         logger.info("🚀 Запуск Long Poll поллинга...")
         await self.bot.run_polling()
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python3 vkbot_core.py <config_path>")
+        sys.exit(1)
+
+    cfg_path = sys.argv[1]
+    try:
+        with open(cfg_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except Exception as e:
+        logger.error(f"Не удалось прочитать конфиг {cfg_path}: {e}")
+        sys.exit(1)
+
+    # 1. Создаем объект бота ПЕРЕД запуском цикла
+    # Убедись, что имя класса совпадает (BotInstance или BotCoreEngineVK)
+    instance = BotInstance(config) 
+
+    async def main():
+        await instance.run_instance()
+
+    # 2. Единая точка входа в цикл событий
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен пользователем (Ctrl+C)")
+    except Exception as e:
+        logger.error(f"🚨 Критическая ошибка при работе: {e}", exc_info=True)
+    finally:
+        # Корректно закрываем цикл, если он еще не закрыт
+        if not loop.is_closed():
+            loop.close()
