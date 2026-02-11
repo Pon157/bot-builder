@@ -93,7 +93,12 @@ class BotInstance:
         
         self.license_expired = False 
         
-        self.sb_url = os.getenv("SUPABASE_URL", "").rstrip('/')
+        self.sb_url = os.getenv("SUPABASE_URL")
+        if not self.sb_url:
+            # Если в .env пусто, берем из конфига JSON или ставим заглушку, чтобы не падало
+            self.sb_url = config_data.get("config", {}).get("api_url", "http://localhost:8000")
+
+        self.sb_url = self.sb_url.rstrip('/')
         self.sb_key = os.getenv("SUPABASE_KEY", "")
         
         # Инициализация бота VK
@@ -260,13 +265,12 @@ class BotInstance:
                         await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
 
                     elif action == "sync_state":
-                        # 1. СНАЧАЛА ПОЛУЧАЕМ актуальный конфиг из базы
-                        # Это критично, чтобы ВК-бот не удалил кнопки, измененные в админке
-                        res = await client.get(
-                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                            headers=headers
-                        )
-
+                        if not self.sb_url or not self.sb_url.startswith("http"):
+                            logger.error(f"❌ ОШИБКА: Некорректный SUPABASE_URL: '{self.sb_url}'")
+                            self.sync_queue.task_done()
+                            continue
+        
+                        res = await client.get(...)
                         if res.status_code == 200 and res.json():
                             remote_data = res.json()[0]
                             remote_config = remote_data.get("config", {})
