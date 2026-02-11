@@ -981,12 +981,12 @@ async def create_bot_endpoint(d: dict):
         owner_id = d.get('owner_id')
         name = d.get('name', 'Новый бот')
         token = d.get('token', '')
-        platform = d.get('platform', 'vk') # или tg
+        platform = d.get('platform', 'vk')
 
         if not owner_id or not token:
             raise HTTPException(400, "Owner ID и Token обязательны")
 
-        # 1. Генерируем ID
+        # 1. Генерируем уникальный ID
         bot_id = f"bot_{secrets.token_hex(4)}" 
         encrypted_token = encrypt_val(token)
 
@@ -994,7 +994,7 @@ async def create_bot_endpoint(d: dict):
         config_payload = {
             "buttons": [],
             "triggers": [],
-            "welcomeMessage": "Привет! Напиши мне что-нибудь.",
+            "welcomeMessage": "Привет! Я твой новый бот.",
             "settings": {
                 "forwardToAdmin": True,
                 "antiSpam": False,
@@ -1002,8 +1002,8 @@ async def create_bot_endpoint(d: dict):
             }
         }
 
-        # 3. Объект для вставки (СТРОГО по колонкам твоей таблицы)
-        new_bot = {
+        # 3. Объект строго по твоим колонкам (ID, Owner, Name, Token, Stats, Config, etc.)
+        new_bot_data = {
             "id": bot_id,
             "owner_id": owner_id,
             "name": name,
@@ -1011,32 +1011,31 @@ async def create_bot_endpoint(d: dict):
             "platform": platform,
             "status": "IDLE",
             "config": config_payload,
-            "stats": {},
+            "stats": {}, # Оставляем пустым объектом
             "license_expires_at": int(time.time() * 1000) + (30 * 24 * 3600 * 1000),
             "created_at": int(time.time() * 1000),
-            "admin_chat_id": None, # BigInt требует null или число
-            "vk_group_id": None    # BigInt требует null или число
+            "admin_chat_id": None, # Важно: NULL для bigint, не ""
+            "vk_group_id": None    # Важно: NULL для bigint, не ""
         }
 
-        # 4. Вставка в Supabase
-        res = await db.post("bots", json=new_bot)
+        # 4. Вставка в базу
+        res = await db.post("bots", json=new_bot_data)
         
         if res.status_code not in [200, 201, 204]:
-            # ВАЖНО: логируем точную ошибку базы (например, нарушение FK)
-            logger.error(f"❌ Ошибка БД при создании: {res.text}")
-            raise HTTPException(res.status_code, f"Ошибка БД: {res.text}")
+            logger.error(f"❌ Ошибка вставки в БД: {res.text}")
+            raise HTTPException(res.status_code, f"Database error: {res.text}")
 
-        logger.info(f"✅ Бот {bot_id} успешно создан для {owner_id}")
+        logger.info(f"✅ Бот {bot_id} создан в базе данных для юзера {owner_id}")
 
-        # Возвращаем "развернутый" объект для фронтенда
+        # Возвращаем данные, развернув конфиг для фронтенда
         return {
-            **new_bot,
+            **new_bot_data,
             **config_payload,
             "token": token # Возвращаем чистый токен для UI
         }
 
     except Exception as e:
-        logger.error(f"🚨 Ошибка создания: {e}", exc_info=True)
+        logger.error(f"🚨 Ошибка в методе create: {e}", exc_info=True)
         raise HTTPException(500, str(e))
     
 # ==========================================
