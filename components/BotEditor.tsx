@@ -161,63 +161,58 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
         ))}
       </div>
 
-<section>
-  <h2 className="text-sm font-black text-white uppercase flex items-center gap-2 mb-6">
-    <Sliders className="w-4 h-4 text-blue-500" /> Системная конфигурация
-  </h2>
-  
-  <div className="space-y-5">
-    {/* ПОЛЕ ТОКЕНА */}
-    <label className="block">
-      <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
-        {/* Если платформа vk — пишем "ВКонтакте...", иначе "Telegram..." */}
-        {isVK ? 'ВКонтакте Access Token' : 'Telegram Bot Token'}
-      </span>
-      <input 
-        type="password" 
-        // Меняем подсказку в зависимости от платформы
-        placeholder={isVK ? "Введите токен доступа группы" : "Токен от @BotFather"} 
-        className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white font-mono outline-none focus:border-blue-500 transition-all" 
-        value={bot.token} 
-        onChange={e => handleLocalUpdate({...bot, token: e.target.value})} 
-      />
-    </label>
+{/* ЛЕВАЯ КОЛОНКА: СИСТЕМА И КОНСТРУКТОР ШАПКИ */}
+            <div className="space-y-8">
+              <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
+                <h2 className="text-sm font-black text-white uppercase flex items-center gap-2 mb-6">
+                  <Sliders className="w-4 h-4 text-blue-500" /> Системная конфигурация
+                </h2>
+                
+                <div className="space-y-5">
+                  <label className="block">
+                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
+                      {isVK ? 'ВКонтакте Access Token' : 'Telegram Bot Token'}
+                    </span>
+                    <input 
+                      type="password" 
+                      placeholder={isVK ? "Введите токен доступа группы" : "Токен от @BotFather"} 
+                      className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white font-mono outline-none focus:border-blue-500 transition-all" 
+                      value={bot.token} 
+                      onChange={e => handleLocalUpdate({...bot, token: e.target.value})} 
+                    />
+                  </label>
 
-    {/* ПОЛЕ ID ГРУППЫ / СООБЩЕСТВА */}
-    <label className="block">
-      <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
-        {isVK ? 'ID Сообщества (цифры)' : 'ID Группы Админов (Forum)'}
-      </span>
-      <input 
-        type="text" 
-        placeholder={isVK ? "Например: 12345678" : "-100..."} 
-        className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-blue-500 transition-all" 
-        value={bot.adminChatId} 
-        onChange={e => handleLocalUpdate({...bot, adminChatId: e.target.value})} 
-      />
-    </label>
+                  <label className="block">
+                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
+                      {isVK ? 'ID Сообщества (цифры)' : 'ID Группы Админов (Forum)'}
+                    </span>
+                    <input 
+                      type="text" 
+                      placeholder={isVK ? "Например: 12345678" : "-100..."} 
+                      className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-blue-500 transition-all" 
+                      value={bot.adminChatId} 
+                      onChange={e => handleLocalUpdate({...bot, adminChatId: e.target.value})} 
+                    />
+                  </label>
 
-    {/* ПОЛЕ ПРИВЕТСТВИЯ */}
-    <label className="block">
-      <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
-        {isVK ? 'Текст приветствия' : 'Приветствие (/start)'}
-      </span>
-      <textarea 
-        placeholder={isVK ? "Придет пользователю при первом сообщении" : "Текст для команды /start"}
-        className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] outline-none text-xs focus:border-blue-500 transition-all resize-none" 
-        value={bot.welcomeMessage || ""} 
-        onChange={e => handleLocalUpdate({...bot, welcomeMessage: e.target.value})} 
-      />
-    </label>
-    
-    {/* Напоминание про .env (согласно твоим правилам) */}
-    <p className="text-[8px] text-zinc-600 mt-2 ml-2 uppercase font-black tracking-widest opacity-50">
-      * Данные синхронизируются с системным .env
-    </p>
-  </div>
-</section>
+                  <label className="block">
+                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
+                      {isVK ? 'Текст приветствия' : 'Приветствие (/start)'}
+                    </span>
+                    <textarea 
+                      placeholder={isVK ? "Придет пользователю при первом сообщении" : "Текст для команды /start"}
+                      className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] outline-none text-xs focus:border-blue-500 transition-all resize-none" 
+                      value={bot.welcomeMessage || ""} 
+                      onChange={e => handleLocalUpdate({...bot, welcomeMessage: e.target.value})} 
+                    />
+                  </label>
+                  <p className="text-[8px] text-zinc-600 mt-2 ml-2 uppercase font-black tracking-widest opacity-50">
+                    * Данные синхронизируются (согласно .env)
+                  </p>
+                </div>
+              </section>
 
-              <section className="space-y-6">
+              <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
                 <h2 className="text-sm font-black text-white uppercase flex items-center gap-2 mb-6">
                   <Layout className="w-4 h-4 text-emerald-500" /> Конструктор шапки сообщений
                 </h2>
@@ -240,7 +235,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                       onChange={e => updateSetting('ticketMessageHeader', e.target.value)}
                       placeholder="🆘 <b>ЗАЯВКА [{btn}]:</b>"
                     />
-                    <p className="text-[8px] text-zinc-600 mt-1 px-2 uppercase font-bold tracking-tighter">* Используйте {'{btn}'} для подстановки названия кнопки</p>
                   </div>
                   <div>
                     <span className="text-[9px] font-bold text-zinc-500 uppercase ml-2">Обычное сообщение</span>
@@ -264,23 +258,42 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                 </div>
               </section>
             </div>
-            
+
+            {/* ПРАВАЯ КОЛОНКА: БЕЗОПАСНОСТЬ И АНТИ-ФЛУД */}
             <div className="space-y-8">
-                <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
-                  <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
-                    <Lock className="w-4 h-4 text-rose-500" /> Безопасность и Анти-Флуд
-                  </h3>
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between p-5 rounded-2xl bg-black border border-zinc-800">
-                      <div><p className="text-xs font-bold text-white">Интервал анти-спама</p><p className="text-[9px] text-zinc-500 uppercase">Сек. между сообщениями</p></div>
-                      <input type="number" step="0.5" className="w-16 bg-zinc-900 border border-zinc-800 p-2 rounded-lg text-center text-xs text-white" value={safeSettings.rateLimit} onChange={e => updateSetting('rateLimit', parseFloat(e.target.value))} />
+              <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
+                <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
+                  <Lock className="w-4 h-4 text-rose-500" /> Безопасность и Анти-Флуд
+                </h3>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between p-5 rounded-2xl bg-black border border-zinc-800">
+                    <div>
+                      <p className="text-xs font-bold text-white">Интервал анти-спама</p>
+                      <p className="text-[9px] text-zinc-500 uppercase">Сек. между сообщениями</p>
                     </div>
-                    <div className="flex items-center justify-between p-5 rounded-2xl bg-black border border-zinc-800">
-                      <div><p className="text-xs font-bold text-white">Лимит Предупреждений</p><p className="text-[9px] text-zinc-500 uppercase">Варнов до авто-бана</p></div>
-                      <input type="number" className="w-16 bg-zinc-900 border border-zinc-800 p-2 rounded-lg text-center text-xs text-white" value={safeSettings.autoBanThreshold} onChange={e => updateSetting('autoBanThreshold', parseInt(e.target.value))} />
+                    <input 
+                      type="number" 
+                      step="0.5" 
+                      className="w-16 bg-zinc-900 border border-zinc-800 p-2 rounded-lg text-center text-xs text-white" 
+                      value={safeSettings.rateLimit} 
+                      onChange={e => updateSetting('rateLimit', parseFloat(e.target.value))} 
+                    />
+                  </div>
+                  <div className="flex items-center justify-between p-5 rounded-2xl bg-black border border-zinc-800">
+                    <div>
+                      <p className="text-xs font-bold text-white">Лимит Предупреждений</p>
+                      <p className="text-[9px] text-zinc-500 uppercase">Варнов до авто-бана</p>
                     </div>
+                    <input 
+                      type="number" 
+                      className="w-16 bg-zinc-900 border border-zinc-800 p-2 rounded-lg text-center text-xs text-white" 
+                      value={safeSettings.autoBanThreshold} 
+                      onChange={e => updateSetting('autoBanThreshold', parseInt(e.target.value))} 
+                    />
                   </div>
                 </div>
+              </div>
+            </div>
 
 <div className={`bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6 transition-all ${isVK ? 'opacity-40 select-none' : ''}`}>
   <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
