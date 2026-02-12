@@ -86,6 +86,13 @@ class LicenseMiddleware(BaseMiddleware[Message]):
     async def post(self):
         pass
 
+@bot.on.message(text="/id")
+async def chat_id_handler(message: Message):
+    peer_id = message.peer_id
+   
+    await message.answer(f"🆔 ID этой беседы (Peer ID): {peer_id}")
+    print(f"ID чата: {peer_id}")
+
 # --- ОСНОВНОЙ КЛАСС БОТА ---
 class BotInstance:
     def __init__(self, config_data: dict):
