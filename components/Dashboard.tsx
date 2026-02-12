@@ -133,7 +133,7 @@ const Dashboard: React.FC<DashboardProps> = ({ bots, onSelectBot, onAddBot }) =>
               </div>
               <div className="flex items-center gap-4">
                 <a 
-                  href="/FAQ_Document.pdf" 
+                  href="/FAQwithVK.pdf" 
                   download 
                   className="hidden md:flex items-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-white px-5 py-2.5 rounded-2xl text-xs font-bold transition-all"
                 >
