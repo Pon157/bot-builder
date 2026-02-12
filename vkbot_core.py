@@ -86,7 +86,6 @@ class LicenseMiddleware(BaseMiddleware[Message]):
     async def post(self):
         pass
 
-
 # --- ОСНОВНОЙ КЛАСС БОТА ---
 class BotInstance:
     def __init__(self, config_data: dict):
@@ -119,60 +118,63 @@ class BotInstance:
         self.is_running = True
         self.sync_queue = asyncio.Queue()
         
-        # Применяем стартовый конфиг
-        self.apply_config(config_data)
+        # Применяем стартовый конфиг (is_initial=True загружает stats из БД)
+        self.apply_config(config_data, is_initial=True)
 
     async def update_stats(self, is_incoming: bool = True):
-        """Обновляет статистику в памяти и отправляет в Supabase"""
+        """Обновляет статистику в self.stats_data (оперативная память) и сразу пишет в БД.
+        
+        Используем ТОЛЬКО self.stats_data — он никогда не перезаписывается из БД (в отличие
+        от self.config, который sync_worker может затереть). История накапливается корректно.
+        """
         try:
             today = datetime.now().strftime("%d.%m")
-            # Берем текущую статику из памяти (которую мы синхронизировали)
-            stats = self.config.get("stats", {})
-            if not isinstance(stats, dict): 
-                stats = {}
-            
-            # Общие счетчики
-            stats["totalMessages"] = stats.get("totalMessages", 0) + 1
-            if is_incoming:
-                stats["incomingToday"] = stats.get("incomingToday", 0) + 1
-            else:
-                stats["outgoingToday"] = stats.get("outgoingToday", 0) + 1
+            st = self.stats_data  # Ссылка на dict в памяти — изменения применяются inplace
 
-            # Работа с историей для графиков
-            history = stats.get("history", [])
+            # Счётчики
+            st["totalMessages"] = st.get("totalMessages", 0) + 1
+            if is_incoming:
+                st["incomingToday"] = st.get("incomingToday", 0) + 1
+            else:
+                st["outgoingToday"] = st.get("outgoingToday", 0) + 1
+
+            # История по дням — ищем запись для сегодня
+            history = st.get("history", [])
             if not isinstance(history, list):
                 history = []
-                
-            day_entry = next((item for item in history if item.get("date") == today), None)
 
+            day_entry = next((item for item in history if item.get("date") == today), None)
             if day_entry:
-                if is_incoming: 
+                if is_incoming:
                     day_entry["incoming"] = day_entry.get("incoming", 0) + 1
-                else: 
+                else:
                     day_entry["outgoing"] = day_entry.get("outgoing", 0) + 1
             else:
+                # Новый день — добавляем точку
                 history.append({
                     "date": today,
                     "incoming": 1 if is_incoming else 0,
                     "outgoing": 0 if is_incoming else 1,
-                    "totalUsers": len(self.config.get("connectedUsers", [])),
+                    "totalUsers": len(self.users_list),
                     "activeUsers": 1
                 })
-            
-            stats["history"] = history[-14:] # Храним только 2 недели
-            self.config["stats"] = stats
 
-            # Сохраняем в базу (Supabase) — пишем в отдельную колонку stats
+            st["history"] = history[-30:]  # Храним 30 дней
+            # Дублируем в config, чтобы sync_worker отправил корректные данные
+            self.config["stats"] = st
+
+            # Немедленно пишем актуальную статистику в БД (не ждём sync_worker)
             headers = {
                 "apikey": self.sb_key,
                 "Authorization": f"Bearer {self.sb_key}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal"
             }
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=5.0) as client:
                 await client.patch(
                     f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
                     headers=headers,
-                    json={"stats": stats}
+                    json={"stats": st}
                 )
         except Exception as e:
             logger.error(f"Error updating stats: {e}", exc_info=True)
@@ -202,21 +204,19 @@ class BotInstance:
             await self.license_checker_logic()
             await asyncio.sleep(120)
 
-    def apply_config(self, data: dict):
-        """Парсинг конфигурации для VK-бота.
+    def apply_config(self, data: dict, is_initial: bool = False):
+        """Парсинг конфигурации.
         
-        В ВК admin_chat_id — это peer_id беседы/диалога, куда пересылаются сообщения.
-        vk_group_id — беседа сообщества (peer_id > 2000000000), имеет приоритет.
-        Оба в итоге кладутся в self.admin_chat_id как единый peer_id назначения.
+        is_initial=True  → первый запуск, загружаем stats_data из БД.
+        is_initial=False → hot-reload из sync_worker, обновляем только кнопки/настройки,
+                           stats_data НЕ трогаем (чтобы не затереть накопленные счётчики).
         """
         raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
         full_cfg = {**data, **raw_cfg}
-        
-        # Сохраняем полный конфиг для sync_worker
         self.config = full_cfg
 
-        # 1. Читаем peer_id для пересылки сообщений.
-        # Приоритет: vk_group_id (беседа сообщества) > admin_chat_id (личный диалог)
+        # --- peer_id для пересылки сообщений ---
+        # Приоритет: vk_group_id (беседа) > admin_chat_id (личный диалог)
         vk_peer_raw = (
             full_cfg.get('vk_group_id') or full_cfg.get('vkGroupId') or
             full_cfg.get('admin_chat_id') or full_cfg.get('adminChatId')
@@ -226,50 +226,46 @@ class BotInstance:
         except (ValueError, AttributeError):
             self.admin_chat_id = None
 
-        # Сохраняем vk_group_id отдельно для метаданных
         try:
             vg_raw = full_cfg.get('vk_group_id') or full_cfg.get('vkGroupId')
             self.vk_group_id = int(str(vg_raw).strip()) if vg_raw else self.admin_chat_id
         except (ValueError, AttributeError):
             self.vk_group_id = self.admin_chat_id
 
-        # 3. Основные настройки
-        self.buttons = full_cfg.get('buttons', [])
-        self.triggers = full_cfg.get('triggers', [])
-        self.welcome_text = full_cfg.get('welcomeMessage', 'Здравствуйте!')
-        self.settings = full_cfg.get('settings', {})
-        
-        # Настройки лимитов
-        self.rate_limit = float(self.settings.get('rateLimit', 1.0))
-        self.auto_ban_limit = int(self.settings.get('autoBanThreshold', 3))
-        self.users_list = full_cfg.get('connectedUsers', [])
+        # --- Настройки (обновляются всегда, даже при hot-reload) ---
+        self.buttons       = full_cfg.get('buttons', [])
+        self.triggers      = full_cfg.get('triggers', [])
+        self.welcome_text  = full_cfg.get('welcomeMessage', 'Здравствуйте!')
+        self.settings      = full_cfg.get('settings', {})
+        self.rate_limit    = float(self.settings.get('rateLimit', 1.0))
+        self.auto_ban_limit= int(self.settings.get('autoBanThreshold', 3))
+        self.users_list    = full_cfg.get('connectedUsers', [])
         self.license_expires_at = full_cfg.get('license_expires_at', 0)
-        
-        # 4. Обработка статистики
-        incoming_stats = full_cfg.get('stats')
-        if isinstance(incoming_stats, dict):
-            self.stats_data = {
-                "totalMessages": incoming_stats.get("totalMessages", 0),
-                "incomingToday": incoming_stats.get("incomingToday", 0),
-                "outgoingToday": incoming_stats.get("outgoingToday", 0),
-                "bannedCount": incoming_stats.get("bannedCount", 0),
-                "activeUsers24h": incoming_stats.get("activeUsers24h", 0),
-                "history": incoming_stats.get("history", [])
-            }
-        else:
-            self.stats_data = {
-                "totalMessages": 0, "incomingToday": 0, "outgoingToday": 0,
-                "bannedCount": 0, "history": [], "activeUsers24h": 0
-            }
 
-        # 5. Инициализация истории, если она пуста
-        now = datetime.now()
-        current_date = now.strftime("%d.%m")
-        if not self.stats_data["history"]:
-            self.stats_data["history"] = [{
-                "date": current_date, "incoming": 0, "outgoing": 0,
-                "totalUsers": len(self.users_list), "activeUsers": 0
-            }]
+        # --- Статистика — ТОЛЬКО при первом запуске ---
+        if is_initial:
+            incoming_stats = full_cfg.get('stats')
+            if isinstance(incoming_stats, dict) and incoming_stats:
+                self.stats_data = {
+                    "totalMessages": incoming_stats.get("totalMessages", 0),
+                    "incomingToday": incoming_stats.get("incomingToday", 0),
+                    "outgoingToday": incoming_stats.get("outgoingToday", 0),
+                    "bannedCount":   incoming_stats.get("bannedCount", 0),
+                    "activeUsers24h":incoming_stats.get("activeUsers24h", 0),
+                    "history":       incoming_stats.get("history", [])
+                }
+            else:
+                self.stats_data = {
+                    "totalMessages": 0, "incomingToday": 0, "outgoingToday": 0,
+                    "bannedCount": 0, "history": [], "activeUsers24h": 0
+                }
+            # Если история пуста — создаём первую точку
+            if not self.stats_data["history"]:
+                today = datetime.now().strftime("%d.%m")
+                self.stats_data["history"] = [{
+                    "date": today, "incoming": 0, "outgoing": 0,
+                    "totalUsers": len(self.users_list), "activeUsers": 0
+                }]
 
     async def daily_stats_rotator(self):
         while self.is_running:
@@ -370,26 +366,27 @@ class BotInstance:
                             remote_data = res.json()[0]
                             remote_config = remote_data.get("config", {}) or {}
 
-                            # Объединяем: берем кнопки/триггеры/настройки из БД (приоритет),
-                            # локальные данные — только stats и connectedUsers
+                            # Обновляем кнопки/триггеры/настройки из БД (hot-reload),
+                            # но stats_data НЕ трогаем — он живёт в памяти и пишется напрямую
+                            self.apply_config({**remote_data, "config": remote_config}, is_initial=False)
+
+                            # Собираем config для записи: берём всё из БД кроме connectedUsers
                             new_config = {
-                                **remote_config,              # кнопки, триггеры, настройки из БД
-                                "stats": self.stats_data,     # актуальная статистика из памяти
+                                **remote_config,
                                 "connectedUsers": self.users_list,
+                                # ID для пересылки дублируем в конфиг, чтобы при рестарте бот их нашёл
+                                "admin_chat_id": self.admin_chat_id,
+                                "adminChatId": self.admin_chat_id,
+                                "vk_group_id": self.vk_group_id,
+                                "vkGroupId": self.vk_group_id,
                             }
 
-                            # Патчим: обновляем и config (JSONB) и отдельную колонку stats
+                            # Пишем config (с юзерами) и stats (колонка) раздельно
                             await client.patch(
                                 f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
                                 json={"config": new_config, "stats": self.stats_data},
                                 headers=headers
                             )
-
-                            # Обновляем память бота, чтобы он сразу видел изменения из админки
-                            self.apply_config({
-                                **remote_data,
-                                "config": new_config
-                            })
 
                     self.sync_queue.task_done()
                     
@@ -411,6 +408,8 @@ class BotInstance:
         return False
 
     async def log_and_update(self, uid: int, name: str, text: str, is_admin: bool = False):
+        """Логирует сообщение в bot_messages и обновляет статистику напрямую в БД."""
+        # 1. Логируем сообщение в таблицу bot_messages
         await self.sync_queue.put(("log_message", {
             "bot_id": self.bot_id, 
             "user_id": uid, 
@@ -419,10 +418,7 @@ class BotInstance:
             "is_from_admin": is_admin
         }))
         
-        self.stats_data["totalMessages"] = self.stats_data.get("totalMessages", 0) + 1
-        stat_key = "outgoingToday" if is_admin else "incomingToday"
-        self.stats_data[stat_key] = self.stats_data.get(stat_key, 0) + 1
-        
+        # 2. Обновляем last_seen у пользователя
         if not is_admin:
             for u in self.users_list:
                 if u['id'] == uid:
@@ -430,6 +426,10 @@ class BotInstance:
                     u['first_name'] = name 
                     break
         
+        # 3. Обновляем статистику (пишет напрямую в БД колонку stats)
+        await self.update_stats(is_incoming=not is_admin)
+        
+        # 4. Синхронизируем connectedUsers в конфиг
         await self.sync_queue.put(("sync_state", None))
 
     async def get_user_state(self, m: Message):
@@ -578,9 +578,95 @@ class BotInstance:
             
         return kb.get_json()
 
+    async def bind_peer_id(self, peer_id: int, invited_by: int = None):
+        """Привязывает peer_id беседы к боту и сохраняет в БД.
+        
+        Логика автоматической привязки:
+        - Если admin_chat_id не задан — привязываем первую беседу безусловно.
+        - Если admin_chat_id уже задан, но invited_by совпадает с тем, кто приглашал
+          бота первый раз (хранится в config.vk_invite_owner_id) — переносим привязку.
+        - Записываем в config JSONB (vk_group_id + vkGroupId) и в колонку vk_group_id.
+        """
+        if peer_id == self.admin_chat_id:
+            return  # Уже привязан к этой беседе
+
+        cfg = self.config or {}
+        invite_owner = cfg.get("vk_invite_owner_id")
+
+        should_bind = False
+        if not self.admin_chat_id:
+            # Первая беседа — привязываем всегда
+            should_bind = True
+        elif invited_by and invite_owner and invited_by == invite_owner:
+            # Тот же владелец добавил в новую беседу — переносим
+            should_bind = True
+
+        if not should_bind:
+            return
+
+        self.admin_chat_id = peer_id
+        self.vk_group_id = peer_id
+        logger.info(f"🔗 [{self.bot_id}] Auto-bind: admin_chat_id привязан к peer_id={peer_id} (invited_by={invited_by})")
+
+        # Обновляем конфиг в памяти
+        cfg["vk_group_id"]  = peer_id
+        cfg["vkGroupId"]    = peer_id
+        cfg["admin_chat_id"]= peer_id
+        cfg["adminChatId"]  = peer_id
+        if invited_by:
+            cfg["vk_invite_owner_id"] = invited_by
+        self.config = cfg
+
+        # Пишем в БД
+        headers = {
+            "apikey": self.sb_key,
+            "Authorization": f"Bearer {self.sb_key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal"
+        }
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.patch(
+                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                    headers=headers,
+                    json={
+                        "vk_group_id": peer_id,
+                        "admin_chat_id": None,  # VK-бот использует vk_group_id
+                        "config": cfg
+                    }
+                )
+            logger.info(f"✅ [{self.bot_id}] peer_id={peer_id} сохранён в БД")
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения peer_id: {e}")
+
     async def core_handlers_setup(self):
         self.bot.labeler.message_view.register_middleware(LicenseMiddleware)
-        
+
+        # ── Обработка добавления бота в беседу (GroupJoin / chat invite) ──
+        # В vkbottle событие добавления бота — это сообщение с action.type == "chat_invite_user_by_link"
+        # или action.type == "chat_invite_user" где member_id < 0 (это группа/бот)
+        @self.bot.on.message(func=lambda m: (
+            m.action is not None and
+            m.action.type is not None and
+            "invite" in str(m.action.type).lower()
+        ))
+        async def handle_chat_invite(m: Message):
+            """Срабатывает когда бота приглашают в беседу."""
+            # m.peer_id > 2000000000 — это peer_id беседы
+            if m.peer_id and m.peer_id > 2000000000:
+                inviter_id = m.from_id  # Кто пригласил
+                await self.bind_peer_id(m.peer_id, invited_by=inviter_id)
+                # Отправляем приветствие в беседу
+                try:
+                    msg = f"✅ Бот подключён! Сообщения пользователей будут пересылаться сюда.\nID беседы: {m.peer_id}"
+                    await self.bot.api.messages.send(
+                        peer_id=m.peer_id,
+                        message=msg,
+                        random_id=0
+                    )
+                except Exception as e:
+                    logger.warning(f"Не удалось отправить приветствие в беседу: {e}")
+
         # Обработка команд админа
         @self.bot.on.message(text=["/ban <item>", "/unban <item>", "/warn <item>", "/unwarn <item>", "!ban", "!unban", "!warn", "!unwarn"])
         async def admin_cmd_handler(m: Message, item: Optional[str] = None):
@@ -641,8 +727,13 @@ class BotInstance:
         # Обработка сообщений пользователя
         @self.bot.on.message()
         async def handle_user_input(m: Message):
-            if self.admin_chat_id and m.from_id == self.admin_chat_id:
-                # Если админ пишет просто текст без реплая - игнорируем или считаем заметкой
+            # Если сообщение пришло из беседы (peer_id > 2000000000) и admin_chat_id не задан —
+            # автоматически привязываем эту беседу как канал для пересылок
+            if not self.admin_chat_id and m.peer_id and m.peer_id > 2000000000:
+                await self.bind_peer_id(m.peer_id, invited_by=m.from_id)
+
+            if self.admin_chat_id and m.peer_id == self.admin_chat_id:
+                # Сообщение пришло из привязанной беседы — это сообщение от админа, не юзера
                 return
             
             user, is_new = await self.get_user_state(m)
