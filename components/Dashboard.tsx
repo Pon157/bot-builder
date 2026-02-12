@@ -152,7 +152,7 @@ const Dashboard: React.FC<DashboardProps> = ({ bots, onSelectBot, onAddBot }) =>
             {/* Контент с PDF */}
             <div className="flex-1 bg-[#050505] relative">
               <iframe 
-                src="/FAQ_Document.pdf#toolbar=0&navpanes=0" 
+                src="/FAQwithVK.pdf#toolbar=0&navpanes=0" 
                 className="w-full h-full border-none"
                 title="FAQ Documentation"
               />
