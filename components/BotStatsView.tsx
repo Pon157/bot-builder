@@ -1,6 +1,6 @@
-
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { BotConfig, TelegramUser } from '../types';
+import { api } from '../services/apiService';
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, 
   ResponsiveContainer, LineChart, Line, Legend 
@@ -8,30 +8,62 @@ import {
 import { 
   Users, UserMinus, UserCheck, Activity, AlertTriangle, 
   TrendingUp, Search, ShieldAlert, MessageSquare, 
-  Clock, Calendar, Zap, ArrowUpRight, ArrowDownRight
+  Clock, Calendar, Zap, ArrowUpRight, ArrowDownRight, RefreshCw
 } from 'lucide-react';
+
+const POLL_INTERVAL_MS = 3000; // Обновление каждые 3 секунды
 
 interface BotStatsViewProps {
   bot: BotConfig;
   onUpdate: (bot: BotConfig) => void;
 }
 
-const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
+const BotStatsView: React.FC<BotStatsViewProps> = ({ bot, onUpdate }) => {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'active' | 'banned' | 'unsubscribed'>('all');
+  const [liveStats, setLiveStats] = useState<any>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [isPolling, setIsPolling] = useState(true);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Извлекаем статистику с дефолтными значениями.
-  // Источники (по приоритету):
-  // 1. bot.stats — колонка stats в БД (туда пишет бот в реальном времени)
-  // 2. bot.config?.stats — устаревший путь (раньше статистика хранилась внутри config)
-  const rawStats = (bot.stats && Object.keys(bot.stats).length > 0)
-    ? bot.stats
-    : (bot.config?.stats || null);
+  // Live-polling статистики из БД
+  useEffect(() => {
+    const fetchStats = async () => {
+      try {
+        const data = await api.getBotStats(bot.id);
+        if (data?.stats) {
+          setLiveStats(data.stats);
+          setLastUpdated(new Date());
+          // Обновляем bot объект если статистика изменилась
+          if (onUpdate && JSON.stringify(data.stats) !== JSON.stringify(bot.stats)) {
+            onUpdate({ ...bot, stats: data.stats });
+          }
+        }
+      } catch {
+        // Тихая ошибка — покажем последние данные
+      }
+    };
 
-  const stats = rawStats || { 
-    totalMessages: 0, incomingToday: 0, outgoingToday: 0, 
-    bannedCount: 0, history: [], activeUsers24h: 0 
-  };
+    fetchStats(); // Сразу при монтировании
+    if (isPolling) {
+      pollRef.current = setInterval(fetchStats, POLL_INTERVAL_MS);
+    }
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [bot.id, isPolling]);
+
+  // Итоговый объект статистики: live данные > bot.stats > config.stats > дефолт
+  const stats = useMemo(() => {
+    const src = liveStats
+      || (bot.stats && Object.keys(bot.stats).length > 0 ? bot.stats : null)
+      || bot.config?.stats
+      || null;
+    return src || {
+      totalMessages: 0, incomingToday: 0, outgoingToday: 0,
+      bannedCount: 0, history: [], activeUsers24h: 0
+    };
+  }, [liveStats, bot.stats, bot.config?.stats]);
 
   const users = (bot.config?.connectedUsers || []) as TelegramUser[];
 
@@ -84,6 +116,35 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
   return (
     <div className="space-y-6 pb-10 animate-in fade-in duration-700">
       
+      {/* Live indicator */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsPolling(p => !p)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all ${
+              isPolling 
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
+                : 'bg-zinc-900 border-zinc-800 text-zinc-500'
+            }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${isPolling ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-600'}`}></span>
+            {isPolling ? 'Live' : 'Пауза'}
+          </button>
+          {lastUpdated && (
+            <span className="text-[9px] text-zinc-600 font-mono">
+              Обновлено: {lastUpdated.toLocaleTimeString()}
+            </span>
+          )}
+        </div>
+        <button
+          onClick={() => { setLiveStats(null); setIsPolling(true); }}
+          className="p-2 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-500 hover:text-white transition-all"
+          title="Обновить сейчас"
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
       {/* Главные карточки (Metrics Grid) */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard 
