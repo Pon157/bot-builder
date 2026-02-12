@@ -121,63 +121,6 @@ class BotInstance:
         # Применяем стартовый конфиг
         self.apply_config(config_data)
 
-    async def register_event(self, is_incoming: bool = True):
-        """Обновляет статистику в памяти и отправляет в Supabase"""
-        try:
-            today = datetime.now().strftime("%d.%m")
-            
-            # 1. Проверяем наличие stats в конфиге
-            if not isinstance(self.config.get("stats"), dict):
-                self.config["stats"] = {"history": [], "totalMessages": 0}
-            
-            st = self.config["stats"]
-            
-            # 2. Обновляем счетчики (гарантируем наличие ключей через get)
-            st["totalMessages"] = st.get("totalMessages", 0) + 1
-            
-            if is_incoming:
-                st["incomingToday"] = st.get("incomingToday", 0) + 1
-                # Если ключа outgoingToday нет, инициализируем его нулем
-                if "outgoingToday" not in st: st["outgoingToday"] = 0
-            else:
-                st["outgoingToday"] = st.get("outgoingToday", 0) + 1
-                if "incomingToday" not in st: st["incomingToday"] = 0
-
-            # 3. Работа с историей
-            history = st.get("history", [])
-            if not isinstance(history, list): history = []
-            
-            day_entry = next((item for item in history if item.get("date") == today), None)
-
-            if day_entry:
-                if is_incoming:
-                    day_entry["incoming"] = day_entry.get("incoming", 0) + 1
-                else:
-                    day_entry["outgoing"] = day_entry.get("outgoing", 0) + 1
-            else:
-                history.append({
-                    "date": today, 
-                    "incoming": 1 if is_incoming else 0, 
-                    "outgoing": 0 if is_incoming else 1,
-                    "totalUsers": len(self.config.get("connectedUsers", [])),
-                    "activeUsers": 1
-                })
-
-            st["history"] = history[-14:] # Только последние 14 дней
-            self.config["stats"] = st # Сохраняем обратно в объект
-
-            # 4. Отправка в БД
-            async with httpx.AsyncClient() as client:
-                resp = await client.patch(
-                    f"{self.supabase_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                    headers=self.headers,
-                    json={"stats": st}
-                )
-                if resp.status_code not in [200, 201, 204]:
-                    logger.error(f"⚠️ Ошибка записи статы в БД: {resp.text}")
-
-        except Exception as e:
-            logger.error(f"❌ Ошибка обновления статистики: {e}", exc_info=True)
     async def update_stats(self, is_incoming: bool = True):
         """Обновляет статистику в памяти и отправляет в Supabase"""
         try:
@@ -218,11 +161,16 @@ class BotInstance:
             stats["history"] = history[-14:] # Храним только 2 недели
             self.config["stats"] = stats
 
-            # Сохраняем в базу (Supabase)
+            # Сохраняем в базу (Supabase) — пишем в отдельную колонку stats
+            headers = {
+                "apikey": self.sb_key,
+                "Authorization": f"Bearer {self.sb_key}",
+                "Content-Type": "application/json"
+            }
             async with httpx.AsyncClient() as client:
                 await client.patch(
-                    f"{self.supabase_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                    headers=self.headers,
+                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                    headers=headers,
                     json={"stats": stats}
                 )
         except Exception as e:
@@ -254,20 +202,35 @@ class BotInstance:
             await asyncio.sleep(120)
 
     def apply_config(self, data: dict):
-        """Парсинг конфигурации для VK-бота (с поддержкой vk_group_id)"""
-        raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
-        full_cfg = {**data, **raw_cfg} 
+        """Парсинг конфигурации для VK-бота.
         
-        # 1. Читаем VK Group ID (пытаемся найти во всех вариантах написания)
-        self.vk_group_id = full_cfg.get('vk_group_id') or full_cfg.get('vkGroupId')
+        В ВК admin_chat_id — это peer_id беседы/диалога, куда пересылаются сообщения.
+        vk_group_id — беседа сообщества (peer_id > 2000000000), имеет приоритет.
+        Оба в итоге кладутся в self.admin_chat_id как единый peer_id назначения.
+        """
+        raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
+        full_cfg = {**data, **raw_cfg}
+        
+        # Сохраняем полный конфиг для sync_worker
+        self.config = full_cfg
 
-        # 2. Читаем Admin Chat ID
+        # 1. Читаем peer_id для пересылки сообщений.
+        # Приоритет: vk_group_id (беседа сообщества) > admin_chat_id (личный диалог)
+        vk_peer_raw = (
+            full_cfg.get('vk_group_id') or full_cfg.get('vkGroupId') or
+            full_cfg.get('admin_chat_id') or full_cfg.get('adminChatId')
+        )
         try:
-            # Ищем и новый формат (admin_chat_id), и старый (adminChatId)
-            admin_id_raw = full_cfg.get('admin_chat_id') or full_cfg.get('adminChatId')
-            self.admin_chat_id = int(str(admin_id_raw).strip()) if admin_id_raw else None
-        except ValueError:
+            self.admin_chat_id = int(str(vk_peer_raw).strip()) if vk_peer_raw else None
+        except (ValueError, AttributeError):
             self.admin_chat_id = None
+
+        # Сохраняем vk_group_id отдельно для метаданных
+        try:
+            vg_raw = full_cfg.get('vk_group_id') or full_cfg.get('vkGroupId')
+            self.vk_group_id = int(str(vg_raw).strip()) if vg_raw else self.admin_chat_id
+        except (ValueError, AttributeError):
+            self.vk_group_id = self.admin_chat_id
 
         # 3. Основные настройки
         self.buttons = full_cfg.get('buttons', [])
@@ -404,29 +367,27 @@ class BotInstance:
 
                         if res.status_code == 200 and res.json():
                             remote_data = res.json()[0]
-                            remote_config = remote_data.get("config", {})
+                            remote_config = remote_data.get("config", {}) or {}
 
-                            # Объединяем локальные данные со свежими из БД
+                            # Объединяем: берем кнопки/триггеры/настройки из БД (приоритет),
+                            # локальные данные — только stats и connectedUsers
                             new_config = {
-                                **remote_config,            # Конфиг из БД (кнопки, триггеры) приоритетнее
-                                "stats": self.stats_data,    # Но статы берем локальные (текущие)
+                                **remote_config,              # кнопки, триггеры, настройки из БД
+                                "stats": self.stats_data,     # актуальная статистика из памяти
                                 "connectedUsers": self.users_list,
-                                "vk_group_id": getattr(self, 'vk_group_id', None),
-                                "admin_chat_id": self.admin_chat_id,
-                                "adminChatId": self.admin_chat_id
                             }
 
-                            # Патчим базу объединенным конфигом
+                            # Патчим: обновляем и config (JSONB) и отдельную колонку stats
                             await client.patch(
                                 f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                                json={"config": new_config},
+                                json={"config": new_config, "stats": self.stats_data},
                                 headers=headers
                             )
 
                             # Обновляем память бота, чтобы он сразу видел изменения из админки
                             self.apply_config({
                                 **remote_data,
-                                "config": remote_config
+                                "config": new_config
                             })
 
                     self.sync_queue.task_done()
@@ -503,21 +464,28 @@ class BotInstance:
         return user, is_first_time
 
     async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = ""):
+        """Пересылает сообщение пользователя в беседу/диалог администратора.
+        
+        В ВК нельзя переслать сообщение из лички в беседу напрямую через forward_messages
+        (они работают только в рамках одного peer_id). 
+        Поэтому шлём текст шапки + цитируем исходное сообщение в параметре forward.
+        """
         if not self.admin_chat_id: return
         header_text = format_admin_header(user, self.settings, is_first, btn_text)
         
         try:
-            # В ВК пересылка сообщений между чатами требует указания peer_id источника.
-            # forward_messages работает только внутри одного диалога.
-            # Используем forward с указанием peer_id исходного чата (от кого пришло).
+            import json as _json
+            # forward передаётся как JSON-строка в VK API
+            forward_payload = _json.dumps({
+                "peer_id": m.peer_id,
+                "message_ids": [m.id],
+                "is_reply": True  # True = показывается как reply/цитата
+            })
+            
             sent_msg_id = await self.bot.api.messages.send(
                 peer_id=self.admin_chat_id,
                 message=header_text,
-                forward={
-                    "peer_id": m.peer_id,
-                    "message_ids": [m.id],
-                    "is_reply": False
-                },
+                forward=forward_payload,
                 random_id=0
             )
 
@@ -525,7 +493,7 @@ class BotInstance:
             self.msg_map[sent_msg_id] = user['id']
 
         except Exception as e:
-            logger.error(f"Forwarding Error: {e}")
+            logger.error(f"Forwarding Error: {e}", exc_info=True)
 
     async def admin_control_logic(self, m: Message):
         # Проверяем, является ли сообщение командой
@@ -694,14 +662,16 @@ class BotInstance:
                         if btn.get('type') == 'request': 
                             await self.forward_to_admin(m, user, btn_text=btn['text'])
                         if btn.get('response'): 
-                            await m.answer(btn['response'])
+                            # Возвращаем клавиатуру вместе с ответом
+                            await m.answer(btn['response'], keyboard=self.get_main_keyboard())
                         await self.log_and_update(user['id'], user['first_name'], f"КНОПКА: {btn['text']}")
                         return
                 
                 # ТРИГГЕРЫ
                 for trig in self.triggers:
                     if trig.get('keyword') and trig['keyword'].lower() in clean_text:
-                        await m.answer(trig['response'])
+                        # Возвращаем клавиатуру вместе с ответом
+                        await m.answer(trig['response'], keyboard=self.get_main_keyboard())
                         await self.log_and_update(user['id'], user['first_name'], f"ТРИГГЕР: {trig['keyword']}")
                         return
             
