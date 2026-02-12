@@ -1,5 +1,3 @@
-Botstatsview · TSX
-Copy
 
 import React, { useState, useMemo } from 'react';
 import { BotConfig, TelegramUser } from '../types';
