@@ -633,7 +633,7 @@ class BotInstance:
             await self.forward_to_admin(m, user, is_first=is_new)
             await self.log_and_update(user['id'], user['first_name'], m.text or "[Медиа]")
 
-    aasync def run_instance(self):
+    async def run_instance(self):
         logger.info(f"[*] Бот VK {self.bot_id} запускается...")
         
         try:
