@@ -404,48 +404,83 @@ async def get_user_data(user_id: str):
 
 @app.get("/api/bots/stats/{bot_id}")
 async def get_bot_stats_api(bot_id: str):
+    """Возвращает актуальную статистику бота напрямую из БД.
+    
+    Мержит данные из двух источников:
+    - Колонка `stats` (JSONB) — основная, бот пишет сюда в реальном времени
+    - Поле `config.stats` (JSONB внутри config) — резервный источник для старых ботов
+    
+    История объединяется по дате: для каждой даты берётся максимальное значение
+    (чтобы не обнулить накопленные данные при мерже).
+    """
     try:
-        # 1. Запрашиваем данные бота
         res = await db.get("bots", params={"id": f"eq.{bot_id}"})
         
         if res.status_code != 200 or not res.json():
-            logger.warning(f"⚠️ Бот {bot_id} не найден")
             return {"stats": {"history": [], "totalMessages": 0}}
 
         bot_data = res.json()[0]
         
-        # 2. Собираем данные из всех возможных мест (stats или config)
-        # Иногда статистика может случайно упасть в config при сохранении
-        db_stats = bot_data.get("stats") or {}
-        db_config = bot_data.get("config") or {}
-        
-        # Если это строки — парсим в словари
-        if isinstance(db_stats, str):
-            try: db_stats = json.loads(db_stats)
-            except: db_stats = {}
-        if isinstance(db_config, str):
-            try: db_config = json.loads(db_config)
-            except: db_config = {}
+        def safe_dict(val):
+            if isinstance(val, dict): return val
+            if isinstance(val, str):
+                try: return json.loads(val)
+                except: pass
+            return {}
 
-        # 3. Пытаемся найти историю (сначала в stats, потом в config, потом в корне)
-        history = db_stats.get("history") or db_config.get("history") or bot_data.get("history") or []
-        
-        # 4. Формируем итоговый объект
-        # Вытягиваем значения, отдавая приоритет объекту stats
+        db_stats  = safe_dict(bot_data.get("stats"))
+        db_config = safe_dict(bot_data.get("config"))
+        cfg_stats = safe_dict(db_config.get("stats"))
+
+        # Объединяем числовые счётчики (берём максимум, чтобы не потерять данные)
+        def max_val(key):
+            return max(
+                db_stats.get(key) or 0,
+                cfg_stats.get(key) or 0
+            )
+
+        # Объединяем историю по датам
+        history_map: dict = {}
+        for src in [cfg_stats.get("history") or [], db_stats.get("history") or []]:
+            for pt in src:
+                date = pt.get("date", "??")
+                if date not in history_map:
+                    history_map[date] = {**pt}
+                else:
+                    # Берём максимальные значения для каждой даты
+                    existing = history_map[date]
+                    history_map[date] = {
+                        "date": date,
+                        "incoming":    max(existing.get("incoming", 0),    pt.get("incoming", 0)),
+                        "outgoing":    max(existing.get("outgoing", 0),    pt.get("outgoing", 0)),
+                        "totalUsers":  max(existing.get("totalUsers", 0),  pt.get("totalUsers", 0)),
+                        "activeUsers": max(existing.get("activeUsers", 0), pt.get("activeUsers", 0)),
+                    }
+
+        # Сортируем по дате (формат DD.MM)
+        def sort_key(item):
+            try:
+                d, m = item["date"].split(".")
+                return (int(m), int(d))
+            except:
+                return (0, 0)
+
+        merged_history = sorted(history_map.values(), key=sort_key)
+
         payload = {
-            "history": history,
-            "bannedCount": db_stats.get("bannedCount") or bot_data.get("bannedCount") or 0,
-            "incomingToday": db_stats.get("incomingToday") or bot_data.get("incomingToday") or 0,
-            "outgoingToday": db_stats.get("outgoingToday") or bot_data.get("outgoingToday") or 0,
-            "totalMessages": db_stats.get("totalMessages") or bot_data.get("totalMessages") or 0,
-            "activeUsers24h": db_stats.get("activeUsers24h") or bot_data.get("activeUsers24h") or 0
+            "history":       merged_history,
+            "bannedCount":   max_val("bannedCount"),
+            "incomingToday": max_val("incomingToday"),
+            "outgoingToday": max_val("outgoingToday"),
+            "totalMessages": max_val("totalMessages"),
+            "activeUsers24h":max_val("activeUsers24h"),
         }
 
-        logger.info(f"📊 Отправка статистики для {bot_id}: {len(history)} записей в истории")
+        logger.info(f"📊 Stats [{bot_id}]: {len(merged_history)} дней, {payload['totalMessages']} сообщений")
         return {"stats": payload}
 
     except Exception as e:
-        logger.error(f"🚨 Критическая ошибка API статистики: {e}", exc_info=True)
+        logger.error(f"🚨 Stats API error: {e}", exc_info=True)
         return {"stats": {"history": [], "totalMessages": 0}}
         
 @app.get("/api/bots/{user_id}")
@@ -1156,7 +1191,98 @@ async def create_bot_endpoint(d: dict):
         raise HTTPException(500, str(e))
     
 # ==========================================
-# 8. СИСТЕМНЫЕ
+# 8. VK BIND (Привязка беседы)
+# ==========================================
+
+@app.post("/api/bots/vk-bind")
+async def vk_bind_peer(d: dict):
+    """Привязывает peer_id беседы к боту.
+    
+    Вызывается двумя способами:
+    1. Автоматически из vkbot_core при добавлении в беседу.
+    2. Вручную — пользователь вводит ID беседы в BotEditor.
+    
+    Формат запроса: { "bot_id": "bot_xxx", "peer_id": 2000000010, "owner_id": "u_xxx" }
+    """
+    try:
+        bot_id  = d.get("bot_id")
+        peer_id = d.get("peer_id")
+        owner_id= d.get("owner_id")  # Для проверки владельца
+
+        if not bot_id or not peer_id:
+            raise HTTPException(400, "bot_id и peer_id обязательны")
+
+        peer_id = int(peer_id)
+
+        # Проверяем, что бот принадлежит этому пользователю
+        res = await db.get("bots", params={"id": f"eq.{bot_id}"})
+        if not res.json():
+            raise HTTPException(404, "Бот не найден")
+        
+        bot_data = res.json()[0]
+        if owner_id and bot_data.get("owner_id") != owner_id:
+            raise HTTPException(403, "Нет доступа к этому боту")
+
+        # Получаем текущий конфиг и обновляем peer_id
+        cfg = bot_data.get("config") or {}
+        if isinstance(cfg, str):
+            try: cfg = json.loads(cfg)
+            except: cfg = {}
+
+        cfg["vk_group_id"]   = peer_id
+        cfg["vkGroupId"]     = peer_id
+        cfg["admin_chat_id"] = peer_id
+        cfg["adminChatId"]   = peer_id
+
+        # Записываем и в колонку vk_group_id, и внутрь config
+        patch_res = await db.patch(
+            "bots",
+            params={"id": f"eq.{bot_id}"},
+            json={
+                "vk_group_id": peer_id,
+                "admin_chat_id": None,
+                "config": cfg
+            }
+        )
+
+        if patch_res.status_code not in [200, 201, 204]:
+            raise HTTPException(500, f"Ошибка БД: {patch_res.text}")
+
+        logger.info(f"🔗 Бот {bot_id} привязан к VK peer_id={peer_id}")
+        return {"status": "ok", "bot_id": bot_id, "peer_id": peer_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"vk-bind error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/bots/vk-peer-info/{peer_id}")
+async def vk_get_peer_info(peer_id: int):
+    """Возвращает человекочитаемое описание VK peer_id.
+    
+    peer_id < 2000000000  → личная переписка (ID пользователя ВК)  
+    peer_id > 2000000000  → беседа/конференция (ID = peer_id - 2000000000)
+    """
+    if peer_id > 2000000000:
+        conv_id = peer_id - 2000000000
+        return {
+            "type": "conversation",
+            "peer_id": peer_id,
+            "conversation_id": conv_id,
+            "description": f"Беседа #{conv_id} (ID сообщества/чата)"
+        }
+    else:
+        return {
+            "type": "user",
+            "peer_id": peer_id,
+            "description": f"Личный диалог с пользователем VK ID={peer_id}"
+        }
+
+
+# ==========================================
+# 9. СИСТЕМНЫЕ
 # ==========================================
 
 @app.get("/api/ping")
