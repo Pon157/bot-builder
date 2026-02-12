@@ -466,35 +466,55 @@ class BotInstance:
 
     async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = ""):
         """Пересылает сообщение пользователя в беседу/диалог администратора.
-        
-        В ВК нельзя переслать сообщение из лички в беседу напрямую через forward_messages
-        (они работают только в рамках одного peer_id). 
-        Поэтому шлём текст шапки + цитируем исходное сообщение в параметре forward.
+
+        ВАЖНО про ВК API:
+        - forward_messages работает ТОЛЬКО в рамках одного peer_id (нельзя из лички в беседу).
+        - Параметр forward (JSON) тоже не переносит сообщения между разными peer_id.
+        - Поэтому: шлём в беседу шапку + текст/медиа пользователя одним сообщением.
+        - msg_map[sent_id] = user_id — чтобы reply в беседе шёл обратно юзеру.
         """
-        if not self.admin_chat_id: return
-        header_text = format_admin_header(user, self.settings, is_first, btn_text)
+        if not self.admin_chat_id:
+            return
         
+        header = format_admin_header(user, self.settings, is_first, btn_text)
+        
+        # Собираем текст сообщения: шапка + содержимое
+        user_text = m.text or ""
+        full_text = (f"{header}\n{user_text}".strip()) if user_text else header
+
         try:
-            import json as _json
-            # forward передаётся как JSON-строка в VK API
-            forward_payload = _json.dumps({
-                "peer_id": m.peer_id,
-                "message_ids": [m.id],
-                "is_reply": True  # True = показывается как reply/цитата
-            })
-            
+            # Определяем вложения если есть
+            attachment_str = None
+            if m.attachments:
+                parts = []
+                for att in m.attachments:
+                    try:
+                        # att.type — тип вложения (photo, doc, audio_message, etc.)
+                        att_type = str(att.type.value) if hasattr(att.type, 'value') else str(att.type)
+                        att_obj = getattr(att, att_type, None)
+                        if att_obj:
+                            owner = getattr(att_obj, 'owner_id', None)
+                            aid   = getattr(att_obj, 'id', None)
+                            if owner and aid:
+                                parts.append(f"{att_type}{owner}_{aid}")
+                    except Exception:
+                        pass
+                if parts:
+                    attachment_str = ",".join(parts)
+
             sent_msg_id = await self.bot.api.messages.send(
                 peer_id=self.admin_chat_id,
-                message=header_text,
-                forward=forward_payload,
+                message=full_text,
+                attachment=attachment_str,
                 random_id=0
             )
 
-            # Сохраняем маппинг: ID сообщения у админа -> ID пользователя
+            # Сохраняем маппинг: ID отправленного сообщения в беседе -> ID пользователя в личке
             self.msg_map[sent_msg_id] = user['id']
+            logger.debug(f"[msg_map] {sent_msg_id} -> {user['id']}")
 
         except Exception as e:
-            logger.error(f"Forwarding Error: {e}", exc_info=True)
+            logger.error(f"forward_to_admin error: {e}", exc_info=True)
 
     async def admin_control_logic(self, m: Message):
         # Проверяем, является ли сообщение командой
@@ -667,73 +687,116 @@ class BotInstance:
                 except Exception as e:
                     logger.warning(f"Не удалось отправить приветствие в беседу: {e}")
 
-        # Обработка команд админа
-        @self.bot.on.message(text=["/ban <item>", "/unban <item>", "/warn <item>", "/unwarn <item>", "!ban", "!unban", "!warn", "!unwarn"])
-        async def admin_cmd_handler(m: Message, item: Optional[str] = None):
-             if m.from_id == self.admin_chat_id:
-                 await self.admin_control_logic(m)
-
-        # Обработка ответов админа (Reply)
-        @self.bot.on.message(func=lambda m: m.from_id == self.admin_chat_id and m.reply_message is not None)
-        async def handle_admin_reply(m: Message):
-            # Проверяем команды еще раз, чтобы не дублировать логику
+        # Обработка ответов и команд из беседы администратора
+        # ВАЖНО: m.peer_id == admin_chat_id (ID беседы), НЕ m.from_id
+        @self.bot.on.message(func=lambda m: (
+            self.admin_chat_id is not None and
+            m.peer_id == self.admin_chat_id
+        ))
+        async def handle_admin_message(m: Message):
+            # 1. Команды (/ban, /unban, /warn, !ban и т.д.)
             if m.text and (m.text.startswith("/") or m.text.startswith("!")):
-                res = await self.admin_control_logic(m)
-                if res: return
+                handled = await self.admin_control_logic(m)
+                if handled:
+                    return
 
-            target_id = self.msg_map.get(m.reply_message.id)
-            if not target_id and m.reply_message.fwd_messages:
-                 # Пытаемся достать ID из пересланного, если msg_map очистился (после перезагрузки)
-                 target_id = m.reply_message.fwd_messages[0].from_id
+            # 2. Reply на сообщение бота — пересылаем ответ юзеру
+            if m.reply_message is not None:
+                # Ищем юзера по msg_map (ID сообщения которое бот отправил в беседу)
+                target_id = self.msg_map.get(m.reply_message.id)
 
-            if target_id:
-                try:
-                    # В ВК нет метода "copy_message" 1-в-1, проще всего отправить текст
-                    # или переслать сообщение админа юзеру.
-                    # Перешлем сообщение админа юзеру, чтобы он видел контекст.
-                    # Либо просто отправим текст/медиа.
-                    
-                    if m.text:
-                        await self.bot.api.messages.send(peer_id=target_id, message=m.text, random_id=0)
-                    elif m.attachments:
-                        # Если есть вложения, лучше переслать сообщение целиком,
-                        # так как загрузка медиа по новой - сложный процесс.
+                if not target_id:
+                    # msg_map мог очиститься после рестарта — ищем в тексте шапки
+                    # Формат шапки: "...ID: 123456789..."
+                    reply_text = m.reply_message.text or ""
+                    import re as _re
+                    id_match = _re.search(r'ID:\s*(\d+)', reply_text)
+                    if id_match:
+                        try:
+                            target_id = int(id_match.group(1))
+                        except ValueError:
+                            pass
+
+                if target_id:
+                    try:
+                        # Собираем вложения из ответа
+                        attachment_str = None
+                        if m.attachments:
+                            parts = []
+                            for att in m.attachments:
+                                try:
+                                    att_type = str(att.type.value) if hasattr(att.type, 'value') else str(att.type)
+                                    att_obj = getattr(att, att_type, None)
+                                    if att_obj:
+                                        owner = getattr(att_obj, 'owner_id', None)
+                                        aid   = getattr(att_obj, 'id', None)
+                                        if owner and aid:
+                                            parts.append(f"{att_type}{owner}_{aid}")
+                                except Exception:
+                                    pass
+                            if parts:
+                                attachment_str = ",".join(parts)
+
+                        reply_text = m.text or ""
+                        if reply_text or attachment_str:
+                            await self.bot.api.messages.send(
+                                peer_id=target_id,
+                                message=reply_text,
+                                attachment=attachment_str,
+                                random_id=0
+                            )
+                            await self.log_and_update(target_id, "Admin", reply_text or "[Медиа]", is_admin=True)
+                        else:
+                            await self.bot.api.messages.send(
+                                peer_id=target_id,
+                                message="✉️",
+                                random_id=0
+                            )
+
+                    except VKAPIError[901]:
                         await self.bot.api.messages.send(
-                            peer_id=target_id, 
-                            message="✉️ Ответ поддержки:",
-                            forward_messages=[m.id],
+                            peer_id=self.admin_chat_id,
+                            message="❌ Пользователь запретил сообщения от бота.",
                             random_id=0
                         )
-                    else:
-                        await self.bot.api.messages.send(
-                            peer_id=target_id, 
-                            message="✉️",
-                            forward_messages=[m.id],
-                            random_id=0
-                        )
-                    
-                    await self.log_and_update(target_id, "Admin", m.text or "[Медиа]", is_admin=True)
-                except VKAPIError[901]: # Cant write to user
-                    await m.answer("❌ Ошибка: Пользователь запретил сообщения.")
-                    user = next((u for u in self.users_list if u['id'] == target_id), None)
-                    if user:
-                        user["is_active"] = False
-                        await self.sync_queue.put(("sync_state", None))
-                except Exception as e:
-                    await m.answer(f"❌ Ошибка: {e}")
-            else:
-                await m.answer("⚠️ Не удалось определить получателя (возможно, старое сообщение).")
+                        user = next((u for u in self.users_list if u['id'] == target_id), None)
+                        if user:
+                            user["is_active"] = False
+                            await self.sync_queue.put(("sync_state", None))
+                    except Exception as e:
+                        logger.error(f"handle_admin_message reply error: {e}", exc_info=True)
+                        try:
+                            await self.bot.api.messages.send(
+                                peer_id=self.admin_chat_id,
+                                message=f"❌ Ошибка отправки: {e}",
+                                random_id=0
+                            )
+                        except Exception:
+                            pass
+                else:
+                    await self.bot.api.messages.send(
+                        peer_id=self.admin_chat_id,
+                        message="⚠️ Не могу найти получателя. Попробуй ответить на более свежее сообщение.",
+                        random_id=0
+                    )
+            # Если не reply и не команда — игнорируем (обычный чат в беседе)
 
-        # Обработка сообщений пользователя
+        # Обработка сообщений пользователя (только личные переписки, не беседы)
         @self.bot.on.message()
         async def handle_user_input(m: Message):
-            # Если сообщение пришло из беседы (peer_id > 2000000000) и admin_chat_id не задан —
-            # автоматически привязываем эту беседу как канал для пересылок
+            # Авто-привязка: если бот получил сообщение из беседы, а admin_chat_id не задан
             if not self.admin_chat_id and m.peer_id and m.peer_id > 2000000000:
                 await self.bind_peer_id(m.peer_id, invited_by=m.from_id)
+                return  # Не обрабатываем как юзерское сообщение
 
+            # Игнорируем любые сообщения из привязанной беседы
+            # (они обрабатываются handle_admin_message выше)
             if self.admin_chat_id and m.peer_id == self.admin_chat_id:
-                # Сообщение пришло из привязанной беседы — это сообщение от админа, не юзера
+                return
+            
+            # Также игнорируем любые сообщения из ЛЮБОЙ беседы (peer_id > 2000000000)
+            # если они не из привязанной — чтобы бот не реагировал в чужих беседах
+            if m.peer_id and m.peer_id > 2000000000:
                 return
             
             user, is_new = await self.get_user_state(m)
