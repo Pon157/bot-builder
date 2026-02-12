@@ -170,33 +170,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                       <h2 className="text-sm font-black text-white uppercase flex items-center gap-2 mb-6">
                         <Sliders className="w-4 h-4 text-blue-500" /> Системная конфигурация
                       </h2>
-{/* ПЕРЕКЛЮЧАТЕЛЬ ПЛАТФОРМЫ */}
-<div className="space-y-2 mb-6">
-  <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">Тип платформы</span>
-  <div className="grid grid-cols-2 gap-2 bg-black p-1 rounded-2xl border border-zinc-800">
-    <button
-      onClick={() => handleLocalUpdate({ ...bot, platform: 'telegram' })}
-      className={`py-3 rounded-xl text-[10px] font-black uppercase transition-all ${
-        bot.platform === 'telegram' || !bot.platform 
-        ? 'bg-blue-600 text-white shadow-lg' 
-        : 'text-zinc-600 hover:bg-zinc-900'
-      }`}
-    >
-      Telegram
-    </button>
-    <button
-      onClick={() => handleLocalUpdate({ ...bot, platform: 'vk' })}
-      className={`py-3 rounded-xl text-[10px] font-black uppercase transition-all ${
-        bot.platform === 'vk' 
-        ? 'bg-blue-600 text-white shadow-lg' 
-        : 'text-zinc-600 hover:bg-zinc-900'
-      }`}
-    >
-      ВКонтакте
-    </button>
-  </div>
-</div>
-                  
                   <div className="space-y-5">
                     <div className="mb-6 p-1 bg-black/40 border border-zinc-800 rounded-2xl flex gap-1">
                       {['telegram', 'vk'].map((p) => (
@@ -228,15 +201,23 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
 
                     <label className="block">
                       <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
-                        {isVK ? 'ID Сообщества (цифры)' : 'ID Группы Админов (Forum)'}
+                        {isVK ? 'ID беседы для пересылок (peer_id)' : 'ID Группы Админов (Forum)'}
                       </span>
                       <input 
                         type="text" 
-                        placeholder={isVK ? "Например: 12345678" : "-100..."} 
+                        placeholder={isVK ? "2000000010 или ID личного диалога" : "-100..."} 
                         className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-blue-500 transition-all" 
-                        value={bot.adminChatId} 
-                        onChange={e => handleLocalUpdate({...bot, adminChatId: e.target.value})} 
+                        value={isVK ? (bot.vkGroupId ?? bot.vk_group_id ?? '') : (bot.adminChatId ?? '')} 
+                        onChange={e => isVK 
+                          ? handleLocalUpdate({...bot, vkGroupId: e.target.value, vk_group_id: e.target.value})
+                          : handleLocalUpdate({...bot, adminChatId: e.target.value})
+                        } 
                       />
+                      {isVK && (
+                        <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold tracking-wider">
+                          Беседа сообщества: peer_id &gt; 2000000000. Для личного диалога с админом — числовой ID ВКонтакте.
+                        </p>
+                      )}
                     </label>
 
                     <label className="block">
