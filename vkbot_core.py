@@ -633,58 +633,42 @@ class BotInstance:
             await self.forward_to_admin(m, user, is_first=is_new)
             await self.log_and_update(user['id'], user['first_name'], m.text or "[Медиа]")
 
-    async def run_instance(self):
+    aasync def run_instance(self):
         logger.info(f"[*] Бот VK {self.bot_id} запускается...")
         
         try:
-            # Получаем информацию о группе
-            group_info = (await self.bot.api.groups.get_by_id())[0]
+            # Исправленный блок получения инфо о группе
+            group_info_list = await self.bot.api.groups.get_by_id()
+            
+            # Проверяем: если это список, берем первый элемент. 
+            # Если это уже объект (модель), используем его напрямую.
+            if isinstance(group_info_list, list):
+                group_info = group_info_list[0]
+            else:
+                group_info = group_info_list
+
             self.group_id = group_info.id
             group_name = group_info.name
             logger.info(f"✅ Работаем от имени группы: {group_name} (ID: {self.group_id})")
 
-            # --- ОПРЕДЕЛЯЕМ ВЛАДЕЛЬЦА СООБЩЕСТВА ---
+            # ОПРЕДЕЛЯЕМ ВЛАДЕЛЬЦА
             try:
-                # Получаем список руководителей
                 managers = await self.bot.api.groups.get_members(
                     group_id=self.group_id, 
                     filter='managers'
                 )
-                # Ищем создателя (role == 'creator')
-                creator = next((m for m in managers.items if m.role == 'creator'), None)
+                # В vkbottle managers — это объект, у которого есть поле items (список)
+                creator = next((m for m in managers.items if m.role.value == 'creator'), None)
                 
                 if creator:
                     self.owner_id = creator.id
                     logger.info(f"👑 Владелец сообщества определен: {self.owner_id}")
-                else:
-                    logger.warning("⚠️ Не удалось определить создателя группы (возможно, скрыт).")
             except Exception as e:
-                logger.warning(f"⚠️ Ошибка получения владельца: {e}. Привязка чата будет доступна первому добавившему.")
+                logger.warning(f"⚠️ Ошибка получения владельца: {e}")
 
         except Exception as e:
             logger.error(f"❌ ОШИБКА АВТОРИЗАЦИИ: {e}")
-            return 
-
-        await self.license_checker_logic()
-        await self.core_handlers_setup()
-
-        logger.info(f"[*] Бот готов. Текущий AdminChatID: {self.admin_chat_id}")
-
-        self.is_running = True
-        asyncio.create_task(self.database_sync_worker())
-        asyncio.create_task(self.daily_stats_rotator())
-        asyncio.create_task(self.license_checker())
-
-        logger.info("🚀 Запуск Long Poll...")
-        try:
-            asyncio.create_task(self.bot.run_polling())
-            while self.is_running:
-                await asyncio.sleep(1)
-        except Exception as e:
-            if "close a running event loop" not in str(e):
-                logger.error(f"🚨 Ошибка: {e}")
-        finally:
-            self.is_running = False
+            return
 
 if __name__ == "__main__":
     import sys
