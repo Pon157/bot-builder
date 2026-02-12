@@ -1,3 +1,6 @@
+Botstatsview · TSX
+Copy
+
 import React, { useState, useMemo } from 'react';
 import { BotConfig, TelegramUser } from '../types';
 import { 
@@ -19,8 +22,15 @@ const BotStatsView: React.FC<BotStatsViewProps> = ({ bot }) => {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'active' | 'banned' | 'unsubscribed'>('all');
 
-  // Извлекаем статистику с дефолтными значениями
-  const stats = bot.stats || { 
+  // Извлекаем статистику с дефолтными значениями.
+  // Источники (по приоритету):
+  // 1. bot.stats — колонка stats в БД (туда пишет бот в реальном времени)
+  // 2. bot.config?.stats — устаревший путь (раньше статистика хранилась внутри config)
+  const rawStats = (bot.stats && Object.keys(bot.stats).length > 0)
+    ? bot.stats
+    : (bot.config?.stats || null);
+
+  const stats = rawStats || { 
     totalMessages: 0, incomingToday: 0, outgoingToday: 0, 
     bannedCount: 0, history: [], activeUsers24h: 0 
   };
