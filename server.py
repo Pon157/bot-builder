@@ -809,33 +809,88 @@ async def activate_lic(req: dict):
 
 @app.post("/api/bots/broadcast")
 async def broadcast_msg(d: dict):
-    bot_ids = d.get('botIds', [])
-    text = d.get('message', '')
-    if not text: return {"error": "Пустое сообщение"}
-
-    results = {"success": 0, "failed": 0}
+    """Массовая рассылка сообщений всем пользователям бота.
     
+    Поддерживает Telegram и VK ботов.
+    Для VK использует httpx + VK API messages.send напрямую.
+    """
+    bot_ids = d.get('botIds', [])
+    text    = d.get('message', '')
+    if not text:
+        return {"error": "Пустое сообщение"}
+
+    results = {"success": 0, "failed": 0, "details": []}
+
     for bid in bot_ids:
         r = await db.get("bots", params={"id": f"eq.{bid}"})
-        if not r.json(): continue
-        
-        b_data = r.json()[0]
-        # Расшифровка для работы Bot API
-        token = decrypt_val(b_data['token'])
-        users = (b_data.get('config') or {}).get('connectedUsers', [])
-        
-        async with Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML)) as bot:
-            for u in users:
-                try:
-                    # u может быть словарем или просто ID
+        if not r.json():
+            continue
+
+        b_data   = r.json()[0]
+        platform = (b_data.get('platform') or 'telegram').lower()
+        token    = decrypt_val(b_data['token'])
+        cfg      = b_data.get('config') or {}
+        if isinstance(cfg, str):
+            try: cfg = json.loads(cfg)
+            except: cfg = {}
+        users = cfg.get('connectedUsers', [])
+
+        if platform == 'vk':
+            # ── VK рассылка через httpx ──
+            vk_api = "https://api.vk.com/method/messages.send"
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                for u in users:
                     user_id = u['id'] if isinstance(u, dict) else u
-                    await bot.send_message(user_id, text)
-                    results["success"] += 1
-                except Exception as e:
-                    logger.warning(f"Ошибка рассылки юзеру {u}: {e}")
-                    results["failed"] += 1
-                await asyncio.sleep(0.05) # Защита от флуд-контроля
-                
+                    # Пропускаем забаненных и неактивных
+                    if isinstance(u, dict) and (u.get('is_banned') or u.get('is_active') is False):
+                        continue
+                    try:
+                        resp = await client.post(vk_api, data={
+                            "user_id": user_id,
+                            "message": text,
+                            "random_id": int(time.time() * 1000) % 2147483647,
+                            "access_token": token,
+                            "v": "5.199"
+                        })
+                        rj = resp.json()
+                        if "error" in rj:
+                            err_code = rj["error"].get("error_code", 0)
+                            if err_code in (7, 900, 901, 902):
+                                # Пользователь заблокировал бота — помечаем неактивным
+                                if isinstance(u, dict):
+                                    u["is_active"] = False
+                            logger.warning(f"VK broadcast {bid}->{user_id}: {rj['error']}")
+                            results["failed"] += 1
+                        else:
+                            results["success"] += 1
+                    except Exception as e:
+                        logger.warning(f"VK broadcast error {bid}->{user_id}: {e}")
+                        results["failed"] += 1
+                    await asyncio.sleep(0.05)  # ~20 msg/sec, VK лимит 20/сек
+
+        else:
+            # ── Telegram рассылка через aiogram ──
+            try:
+                async with Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML)) as bot:
+                    for u in users:
+                        user_id = u['id'] if isinstance(u, dict) else u
+                        if isinstance(u, dict) and (u.get('is_banned') or u.get('is_active') is False):
+                            continue
+                        try:
+                            await bot.send_message(user_id, text)
+                            results["success"] += 1
+                        except TelegramForbiddenError:
+                            if isinstance(u, dict):
+                                u["is_active"] = False
+                            results["failed"] += 1
+                        except Exception as e:
+                            logger.warning(f"TG broadcast {bid}->{user_id}: {e}")
+                            results["failed"] += 1
+                        await asyncio.sleep(0.05)
+            except Exception as e:
+                logger.error(f"TG broadcast bot init error {bid}: {e}")
+                results["failed"] += len(users)
+
     return results
 
 # ==========================================
