@@ -496,6 +496,22 @@ async def get_user_bots(user_id: str):
                 "showHeaderId": True,
                 "useTopics": False
             }
+
+            # --- КРИТИЧНО ДЛЯ АНАЛИТИКИ ---
+            # Статистика может быть в колонке stats ИЛИ внутри config.stats.
+            # Объединяем оба источника и кладём в bot.stats, чтобы фронтенд видел данные.
+            db_stats = bot.get("stats")
+            if isinstance(db_stats, str):
+                try: db_stats = json.loads(db_stats)
+                except: db_stats = {}
+            if not isinstance(db_stats, dict): db_stats = {}
+            
+            cfg_stats = cfg.get("stats")
+            if not isinstance(cfg_stats, dict): cfg_stats = {}
+            
+            # Мержим: приоритет у колонки stats (туда пишет бот), фолбек — cfg.stats
+            merged_stats = {**cfg_stats, **db_stats} if db_stats else cfg_stats
+            bot["stats"] = merged_stats
             
         return bots
     except Exception as e:
@@ -563,26 +579,36 @@ async def save_bot(b: dict):
             except: return None
 
         # 3. УМНОЕ РАСПРЕДЕЛЕНИЕ ID ПО ПЛАТФОРМАМ
-        # Ищем входящий ID: сначала в корне, потом в конфиге
-        raw_incoming_id = (
-            b.get("adminChatId") or b.get("admin_chat_id") or 
+        # Для Telegram: adminChatId -> admin_chat_id колонка
+        # Для VK: adminChatId (из фронтенда) -> vk_group_id колонка (это peer_id беседы/диалога)
+        
+        # Ищем ID из фронтенда для TG (adminChatId / admin_chat_id)
+        tg_id_raw = (
+            b.get("adminChatId") or b.get("admin_chat_id") or
+            inc_cfg.get("adminChatId") or inc_cfg.get("admin_chat_id")
+        )
+        
+        # Ищем VK peer_id (может прийти как vkGroupId или vk_group_id)
+        vk_id_raw = (
             b.get("vkGroupId") or b.get("vk_group_id") or
-            inc_cfg.get("adminChatId") or inc_cfg.get("admin_chat_id") or
             inc_cfg.get("vkGroupId") or inc_cfg.get("vk_group_id")
         )
 
+        # Стартовые значения — берём из текущей записи в БД
         new_admin_id = curr.get("admin_chat_id")
         new_vk_id = curr.get("vk_group_id")
 
-        # Если пришло новое значение — распределяем его строго по платформе
-        if raw_incoming_id is not None:
-            val = clean_int(raw_incoming_id)
-            if platform == 'vk':
-                new_vk_id = val
-                new_admin_id = None # Очищаем ТГ колонку для бота ВК
-            else: # tg
-                new_admin_id = val
-                new_vk_id = None    # Очищаем ВК колонку для бота ТГ
+        if platform == 'vk':
+            # Для VK: adminChatId из фронтенда идёт в vk_group_id колонку
+            # (это и есть peer_id беседы/диалога для пересылки)
+            incoming_vk = vk_id_raw or tg_id_raw  # фронтенд может слать в любом поле
+            if incoming_vk is not None:
+                new_vk_id = clean_int(incoming_vk)
+            new_admin_id = None  # TG поле для VK-ботов не используется
+        else:  # telegram
+            if tg_id_raw is not None:
+                new_admin_id = clean_int(tg_id_raw)
+            new_vk_id = None  # VK поле для TG-ботов не используется
 
         # 4. СОБИРАЕМ КОНФИГ (JSONB)
         def get_val(key, default=None):
@@ -601,7 +627,12 @@ async def save_bot(b: dict):
             "triggers": get_val("triggers", []),
             "welcomeMessage": get_val("welcomeMessage", "Привет!"),
             "settings": {**old_config.get("settings", {}), **(b.get("settings") or inc_cfg.get("settings") or {})},
-            "connectedUsers": old_config.get("connectedUsers", [])
+            "connectedUsers": old_config.get("connectedUsers", []),
+            # Дублируем ID в конфиг, чтобы bot_core мог найти их при старте
+            "admin_chat_id": new_admin_id,
+            "adminChatId": new_admin_id,
+            "vk_group_id": new_vk_id,
+            "vkGroupId": new_vk_id,
         }
 
         # 5. ТОКЕН (Берем новый или оставляем старый зашифрованный)
@@ -634,7 +665,11 @@ async def save_bot(b: dict):
             **db_payload,
             **ui_config,
             "adminChatId": new_admin_id,
+            "admin_chat_id": new_admin_id,
             "vkGroupId": new_vk_id,
+            "vk_group_id": new_vk_id,
+            # Возвращаем stats из БД (не затираем нулями)
+            "stats": curr.get("stats") or old_config.get("stats") or {},
             "id": bid
         }
 
