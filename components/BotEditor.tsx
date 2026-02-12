@@ -215,10 +215,32 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                       />
                       {isVK && (
                         <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold tracking-wider">
-                          Беседа сообщества: peer_id &gt; 2000000000. Для личного диалога с админом — числовой ID ВКонтакте.
+                          Беседа сообщества: peer_id &gt; 2000000000 (например: 2000000010). Для личного диалога — обычный ID ВКонтакте.
                         </p>
                       )}
                     </label>
+
+                    {/* VK Auto-bind подсказка */}
+                    {isVK && (
+                      <div className="bg-blue-500/5 border border-blue-500/20 rounded-2xl p-5 space-y-3">
+                        <p className="text-[10px] font-black text-blue-400 uppercase tracking-widest flex items-center gap-2">
+                          <Globe className="w-3.5 h-3.5" /> Авто-привязка беседы ВК
+                        </p>
+                        <div className="space-y-2 text-[9px] text-zinc-500 leading-relaxed">
+                          <p>
+                            <span className="text-zinc-300 font-bold">Способ 1 — Автоматически:</span> Добавьте бота в беседу ВКонтакте. 
+                            Бот сам запомнит peer_id и привяжется (сохраняется в БД).
+                          </p>
+                          <p>
+                            <span className="text-zinc-300 font-bold">Способ 2 — Вручную:</span> Введите peer_id беседы в поле выше.
+                            Узнать peer_id: откройте беседу ВК, в URL будет <code className="text-blue-400 font-mono">im?sel=XXXXXXXXX</code> — это и есть peer_id.
+                          </p>
+                          <p>
+                            <span className="text-zinc-300 font-bold">Смена беседы:</span> Если тот же владелец добавит бота в другую беседу — пересылки переедут туда автоматически.
+                          </p>
+                        </div>
+                      </div>
+                    )}
 
                     <label className="block">
                       <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
