@@ -578,23 +578,31 @@ class BotInstance:
             logger.error(f"Forwarding Error: {e}")
 
     async def admin_control_logic(self, m: Message):
-        # --- 0. ЗАЩИТА: Проверяем, что пишет именно АДМИНИСТРАТОР ---
-        # Сравниваем ID отправителя с ID админа из .env
-        if m.from_user.id != self.admin_chat_id:
+        # --- 0. ЗАЩИТА ---
+        # Принудительно приводим оба ID к int для корректного сравнения
+        try:
+            current_user_id = int(m.from_user.id)
+            admin_id = int(self.admin_chat_id)
+        except (ValueError, TypeError):
+            # Если ID админа не задан или кривой — блокируем доступ
             return False
 
-        # Базовая проверка на наличие текста команды
+        if current_user_id != admin_id:
+            return False
+
+        # Проверка на наличие текста команды
         if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): 
             return False
         
+        # Парсим команду
         cmd_parts = m.text.split()
         command = cmd_parts[0][1:].lower()
         
         # --- 1. ГЛОБАЛЬНЫЕ КОМАНДЫ (Broadcast по реплаю) ---
         if command == "broadcast":
-            # Проверяем, есть ли реплей
+            # Проверяем наличие реплая
             if not m.reply_to_message:
-                await m.reply("❌ <b>Ошибка:</b> Используйте эту команду в ответ (реплей) на сообщение, которое хотите разослать.")
+                await m.reply("❌ <b>Ошибка:</b> Используйте команду в ответ на сообщение для рассылки.")
                 return True
             
             # Сообщение, которое рассылаем
@@ -603,19 +611,25 @@ class BotInstance:
             
             status_msg = await m.reply("🚀 <b>Рассылка запущена...</b>")
             
-            for user in self.users_list:
-                # Не шлем сами себе (админу)
-                if user['id'] == self.admin_chat_id: continue
-                
+            # Копируем список, чтобы избежать ошибок итерации при изменении
+            users_to_send = list(self.users_list)
+            
+            for user in users_to_send:
                 try:
-                    # Копируем сообщение (текст, фото, видео и т.д.)
+                    target_id = int(user['id'])
+                    # Пропускаем самого админа
+                    if target_id == admin_id:
+                        continue
+                        
+                    # Копируем сообщение
                     await self.bot.copy_message(
-                        chat_id=user['id'],
+                        chat_id=target_id,
                         from_chat_id=m.chat.id,
                         message_id=target_msg_id
                     )
                     sent_count += 1
-                    await asyncio.sleep(0.05) # Защита от Flood Limit
+                    # Пауза для обхода лимитов Telegram (30 сообщений в секунду)
+                    await asyncio.sleep(0.05) 
                 except Exception:
                     err_count += 1
                     user["is_active"] = False
@@ -625,18 +639,21 @@ class BotInstance:
                 f"👤 Успешно: {sent_count}\n"
                 f"🚫 Ошибки (блок): {err_count}"
             )
+            # Сохраняем состояние активности юзеров
             await self.sync_queue.put(("sync_state", None))
             return True
 
         # --- 2. ПОИСК ЦЕЛЕВОГО ПОЛЬЗОВАТЕЛЯ (для бан/варн) ---
         target_user = None
+        # Если команда в топике
         if m.message_thread_id:
             target_user = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
         
+        # Если команда через реплей (но не broadcast)
         if not target_user and m.reply_to_message:
             uid = self.msg_map.get(m.reply_to_message.message_id)
             if uid:
-                target_user = next((u for u in self.users_list if u['id'] == uid), None)
+                target_user = next((u for u in self.users_list if int(u['id']) == int(uid)), None)
         
         if not target_user: 
             return False
