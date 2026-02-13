@@ -567,22 +567,66 @@ class BotInstance:
             logger.error(f"Forwarding Error: {e}")
 
     async def admin_control_logic(self, m: Message):
-        if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): return False
+        if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): 
+            return False
         
-        cmd_parts = m.text.lower().split()
-        command = cmd_parts[0][1:]
+        cmd_parts = m.text.split()
+        command = cmd_parts[0][1:].lower()
+        
+        # --- 1. ГЛОБАЛЬНЫЕ КОМАНДЫ (не требуют target_user) ---
+        if command == "broadcast":
+            # Берем всё, что идет после /broadcast
+            broadcast_text = m.text[len(cmd_parts[0]):].strip()
+            
+            if not broadcast_text:
+                await m.reply("❌ <b>Ошибка:</b> Введите текст рассылки.\nПример: <code>/broadcast Привет всем!</code>")
+                return True
+
+            sent_count = 0
+            blocked_count = 0
+            status_msg = await m.reply(f"🚀 Запуск рассылки на {len(self.users_list)} контактов...")
+
+            for user in self.users_list:
+                # Пропускаем самого админа, если он есть в списке
+                if user['id'] == self.admin_chat_id: 
+                    continue
+                
+                try:
+                    await self.bot.send_message(user['id'], broadcast_text)
+                    sent_count += 1
+                    # Анти-спам задержка
+                    await asyncio.sleep(0.05) 
+                except TelegramForbiddenError:
+                    blocked_count += 1
+                    user["is_active"] = False
+                except Exception as e:
+                    logger.error(f"Ошибка рассылки для {user['id']}: {e}")
+
+            await status_msg.edit_text(
+                f"✅ <b>Рассылка завершена!</b>\n\n"
+                f"👤 Получили: {sent_count}\n"
+                f"🚫 Заблокировали бота: {blocked_count}"
+            )
+            await self.sync_queue.put(("sync_state", None))
+            return True
+
+        # --- 2. ПОИСК ЦЕЛЕВОГО ПОЛЬЗОВАТЕЛЯ (для бан/варн) ---
         target_user = None
-        
         if m.message_thread_id:
             target_user = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
+        
         if not target_user and m.reply_to_message:
             uid = self.msg_map.get(m.reply_to_message.message_id)
             if uid:
                 target_user = next((u for u in self.users_list if u['id'] == uid), None)
         
-        if not target_user: return False
+        # Если команда требует юзера, но мы его не нашли
+        if not target_user: 
+            return False
 
         uid = target_user['id']
+        
+        # --- 3. КОМАНДЫ ДЛЯ КОНКРЕТНОГО ЮЗЕРА ---
         if command == "ban":
             target_user["is_banned"] = True
             self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
@@ -591,6 +635,7 @@ class BotInstance:
             except: pass
             await m.reply(f"✅ Пользователь {uid} заблокирован.")
             return True
+            
         elif command == "unban":
             target_user["is_banned"] = False
             self.stats_data["bannedCount"] = max(0, self.stats_data.get("bannedCount", 1) - 1)
@@ -599,6 +644,7 @@ class BotInstance:
             except: pass
             await m.reply(f"✅ Пользователь {uid} разблокирован.")
             return True
+            
         elif command == "warn":
             target_user["warns"] = target_user.get("warns", 0) + 1
             await self.sync_queue.put(("sync_state", None))
@@ -614,11 +660,13 @@ class BotInstance:
                 except: pass
                 await m.reply(f"⚠️ Варн выдан. Всего: {target_user['warns']}/{self.auto_ban_limit}")
             return True
+            
         elif command == "unwarn":
             target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
             await self.sync_queue.put(("sync_state", None))
             await m.reply(f"✅ Предупреждение снято. Текущее: {target_user['warns']}")
             return True
+            
         return False
 
     async def core_handlers_setup(self):
