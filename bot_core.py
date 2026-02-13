@@ -88,7 +88,9 @@ def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_
 
     return f"{status_line}\n{user_info}\n\n"
 
-def __init__(self, config_data: dict):
+# --- ОСНОВНОЙ КЛАСС БОТА ---
+class BotInstance:
+    def __init__(self, config_data: dict):
         self.bot_id = config_data.get('id')
         self.token = config_data.get('token')
         
@@ -98,7 +100,14 @@ def __init__(self, config_data: dict):
         self.sb_url = os.getenv("SUPABASE_URL", "").rstrip('/')
         self.sb_key = os.getenv("SUPABASE_KEY", "")
         
-        # Берем токен из .env (согласно твоим правилам)
+        # Авторизационные заголовки для БД
+        self.headers = {
+            "apikey": self.sb_key,
+            "Authorization": f"Bearer {self.sb_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # Берем токен из конфига/окружения
         self.bot = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
         self.dp = Dispatcher()
         self.router = Router()
@@ -107,13 +116,14 @@ def __init__(self, config_data: dict):
         self.flood_cache = {}
         self.is_running = True
         self.sync_queue = asyncio.Queue()
-
-        # --- ДОБАВЬ ЭТУ СТРОКУ ДЛЯ РАССЫЛКИ ---
         self.broadcast_cache = {} 
         
-        # Сначала парсим конфиг, чтобы подгрузить license_expires_at
+        # Сохраняем ссылку на конфиг для работы register_event
+        self.config = config_data 
+        
+        # Сначала парсим конфиг, чтобы подгрузить настройки
         self.apply_config(config_data)
-    
+
     async def register_event(self, is_incoming: bool = True):
         """Обновляет статистику в памяти и отправляет в Supabase"""
         try:
