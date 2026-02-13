@@ -64,7 +64,7 @@ MY_OWNER_ID = 5883703466
 # ==========================================
 
 # 1 Telegram Star ~ 1.6 - 2.0 RUB (курс плавающий, задаем фиксированный для бота)
-STARS_RATE = 1.79 # Значит 1 рубль = 1 / 2.5 звезд (или наоборот, настроим ниже в CURRENCIES)
+STARS_RATE = 0.6 # Значит 1 рубль = 1 / 2.5 звезд (или наоборот, настроим ниже в CURRENCIES)
 
 PARTNERS_CONFIG = {
     "NOVASTUDIO": { 
@@ -97,7 +97,7 @@ CURRENCIES = {
     "BYN": {"symbol": "BYN", "rate": 0.035},
     "UAH": {"symbol": "₴", "rate": 0.43},
     "KZT": {"symbol": "₸", "rate": 5.20}
-    "XTR": {"symbol": "⭐️", "rate": 1.79} 
+    "XTR": {"symbol": "⭐️", "rate": 0.6} 
 }
 
 PERIODS = {
