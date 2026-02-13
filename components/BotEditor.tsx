@@ -18,10 +18,22 @@ interface BotEditorProps {
 
 const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminMode }) => {
   const [activeTab, setActiveTab] = useState<'settings' | 'logic' | 'interface' | 'logs' | 'stats' | 'chat'>('settings');
+
+  // Для постера и рандомайзера сбрасываем вкладку если она недоступна
+  React.useEffect(() => {
+    const platform = bot.platform;
+    if ((platform === 'poster' || platform === 'randomizer') && 
+        ['logic', 'interface', 'chat'].includes(activeTab)) {
+      setActiveTab('settings');
+    }
+  }, [bot.platform]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
-  const isVK = bot.platform === 'vk';
+  const isVK         = bot.platform === 'vk';
+  const isPoster     = bot.platform === 'poster';
+  const isRandomizer = bot.platform === 'randomizer';
+  const isSupportBot = !isPoster && !isRandomizer; // обычный бот поддержки (tg/vk)
 
   const defaultSettings: BotConfig['settings'] = {
     useTopics: false,
@@ -242,22 +254,110 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                       </div>
                     )}
 
+
+                    {/* Admin ID для broadcast команды */}
                     <label className="block">
-                      <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
-                        {isVK ? 'Текст приветствия' : 'Приветствие (/start)'}
+                      <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-2">
+                        <User className="w-3 h-3 text-amber-500" /> 
+                        ID администратора бота
                       </span>
-                      <textarea 
-                        placeholder={isVK ? "Придет пользователю при первом сообщении" : "Текст для команды /start"}
-                        className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] outline-none text-xs focus:border-blue-500 transition-all resize-none" 
-                        value={bot.welcomeMessage || ""} 
-                        onChange={e => handleLocalUpdate({...bot, welcomeMessage: e.target.value})} 
+                      <input 
+                        type="text" 
+                        placeholder="Числовой Telegram ID владельца" 
+                        className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-amber-500 transition-all" 
+                        value={bot.adminId ?? ''} 
+                        onChange={e => handleLocalUpdate({...bot, adminId: e.target.value})} 
                       />
+                      <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold tracking-wider">
+                        Этот пользователь может делать рассылку через /broadcast прямо в боте
+                      </p>
                     </label>
+
+                    {/* Канал для постера / рандомайзера */}
+                    {(isPoster || isRandomizer) && (
+                      <label className="block">
+                        <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-2">
+                          {isPoster ? '📡 Канал для публикации' : '🎲 Канал розыгрышей'}
+                        </span>
+                        <input 
+                          type="text" 
+                          placeholder="@mychannel или -100..." 
+                          className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-blue-500 transition-all" 
+                          value={bot.channelId ?? bot.lotChannel ?? ''} 
+                          onChange={e => handleLocalUpdate(
+                            isPoster 
+                              ? {...bot, channelId: e.target.value}
+                              : {...bot, lotChannel: e.target.value}
+                          )} 
+                        />
+                        <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold tracking-wider">
+                          {isPoster 
+                            ? 'Бот должен быть администратором этого канала'
+                            : 'В этот канал публикуются розыгрыши. Бот должен быть администратором.'}
+                        </p>
+                      </label>
+                    )}
+
+                    {/* Приветствие — только для рандомайзера и ботов поддержки */}
+                    {!isPoster && (
+                      <label className="block">
+                        <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
+                          {isVK ? 'Текст приветствия' : isRandomizer ? 'Приветствие (/start)' : 'Приветствие (/start)'}
+                        </span>
+                        <textarea 
+                          placeholder="Текст для команды /start"
+                          className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] outline-none text-xs focus:border-blue-500 transition-all resize-none" 
+                          value={bot.welcomeMessage || ""} 
+                          onChange={e => handleLocalUpdate({...bot, welcomeMessage: e.target.value})} 
+                        />
+                      </label>
+                    )}
+
                     <p className="text-[8px] text-zinc-600 mt-2 ml-2 uppercase font-black tracking-widest opacity-50">
                       * Данные синхронизируются (согласно .env)
                     </p>
                   </div>
                 </section>
+
+                {/* Постер и рандомайзер: показываем инфо-плашку вместо сложных настроек */}
+                {isPoster && (
+                  <section className="bg-blue-500/5 border border-blue-500/20 p-8 rounded-[2.5rem] space-y-4">
+                    <h2 className="text-sm font-black text-blue-400 uppercase flex items-center gap-2">
+                      📡 Бот постинга — настройка минимальна
+                    </h2>
+                    <div className="text-[10px] text-zinc-400 space-y-2 leading-relaxed">
+                      <p>✅ Укажи <b>канал</b> и <b>adminIds</b> выше — больше ничего не нужно.</p>
+                      <p>✅ Запусти бота и используй команды в чате:</p>
+                      <p className="font-mono bg-black rounded-xl p-3 text-zinc-300">
+                        /start → главное меню<br/>
+                        → Создать пост (wizard: контент + кнопки + расписание)<br/>
+                        → Предпросмотр → Опубликовать<br/>
+                        /stats → статистика постов
+                      </p>
+                      <p>Поддерживается: текст HTML, фото, видео, GIF, документы, аудио, стикеры, инлайн-кнопки, отложенная публикация.</p>
+                    </div>
+                  </section>
+                )}
+
+                {isRandomizer && (
+                  <section className="bg-purple-500/5 border border-purple-500/20 p-8 rounded-[2.5rem] space-y-4">
+                    <h2 className="text-sm font-black text-purple-400 uppercase flex items-center gap-2">
+                      🎲 Бот рандомайзер — настройка минимальна
+                    </h2>
+                    <div className="text-[10px] text-zinc-400 space-y-2 leading-relaxed">
+                      <p>✅ Укажи <b>канал розыгрышей</b>, <b>adminIds</b> и <b>приветствие</b> выше.</p>
+                      <p>✅ Управление из интерфейса панели администратора бота:</p>
+                      <p className="font-mono bg-black rounded-xl p-3 text-zinc-300">
+                        /start → меню<br/>
+                        🛠 Панель → Создать розыгрыш (wizard)<br/>
+                        → текст/фото + кол-во победителей + каналы + условие финиша<br/>
+                        → публикуется в канале с кнопкой «Участвовать»
+                      </p>
+                      <p>Участники регистрируются через deep-link. Рандомайзер выбирает победителей честно.</p>
+                      <p>/broadcast — рассылка по всем участникам (только для adminId)</p>
+                    </div>
+                  </section>
+                )}
 
                 <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
                   <h2 className="text-sm font-black text-white uppercase flex items-center gap-2 mb-6">
