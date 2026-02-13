@@ -51,13 +51,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger("PosterCore")
 
-TOKEN  = os.getenv("BOT_TOKEN")
-BOT_ID = os.getenv("BOT_ID")
-SB_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
-SB_KEY = os.getenv("SUPABASE_KEY") or ""
+# ── Читаем параметры: или из cfg_path (argv[1]) или из env ──
+_CFG_PATH = sys.argv[1] if len(sys.argv) > 1 else None
+_CFG_FILE: dict = {}
+if _CFG_PATH and os.path.exists(_CFG_PATH):
+    try:
+        with open(_CFG_PATH, encoding="utf-8") as _f:
+            _CFG_FILE = json.load(_f)
+    except Exception as _e:
+        logger.warning(f"Не удалось прочитать cfg-файл: {_e}")
+
+def _env_or_cfg(key: str, default: str = "") -> str:
+    return os.getenv(key) or str(_CFG_FILE.get(key, default))
+
+TOKEN  = _env_or_cfg("BOT_TOKEN") or _CFG_FILE.get("token", "")
+BOT_ID = _env_or_cfg("BOT_ID")    or _CFG_FILE.get("id", "")
+SB_URL = (_env_or_cfg("SUPABASE_URL") or "").rstrip("/")
+SB_KEY = _env_or_cfg("SUPABASE_KEY") or ""
 
 if not TOKEN:
-    logger.critical("❌ BOT_TOKEN не задан!")
+    logger.critical("❌ BOT_TOKEN не задан (ни env, ни cfg_file)!")
+    sys.exit(1)
+if not BOT_ID:
+    logger.critical("❌ BOT_ID не задан!")
     sys.exit(1)
 
 bot = Bot(token=TOKEN)
@@ -78,11 +94,27 @@ def _sb_headers():
 
 async def load_config():
     global _config
-    async with httpx.AsyncClient(timeout=10) as c:
-        r = await c.get(f"{SB_URL}/rest/v1/bots?id=eq.{BOT_ID}", headers=_sb_headers())
-        if r.status_code == 200 and r.json():
-            raw = r.json()[0].get("config") or {}
-            _config = raw if isinstance(raw, dict) else json.loads(raw)
+    # Предзаполняем из cfg_file если он есть (включает channelId, adminIds и т.д.)
+    if _CFG_FILE:
+        pre_cfg = _CFG_FILE.get("config", {})
+        if isinstance(pre_cfg, str):
+            try: pre_cfg = json.loads(pre_cfg)
+            except: pre_cfg = {}
+        _config.update(pre_cfg)
+        # Если в корне cfg_file есть channelId/adminIds — тоже берём
+        for k in ("channelId", "adminIds", "botLink"):
+            if k in _CFG_FILE and k not in _config:
+                _config[k] = _CFG_FILE[k]
+    if SB_URL and BOT_ID:
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(f"{SB_URL}/rest/v1/bots?id=eq.{BOT_ID}", headers=_sb_headers())
+                if r.status_code == 200 and r.json():
+                    raw = r.json()[0].get("config") or {}
+                    db_cfg = raw if isinstance(raw, dict) else json.loads(raw)
+                    _config.update(db_cfg)   # DB перезаписывает cfg_file (актуально)
+        except Exception as _le:
+            logger.warning(f"load_config DB error: {_le}")
     return _config
 
 async def save_config():
