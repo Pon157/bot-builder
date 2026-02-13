@@ -585,22 +585,51 @@ class BotInstance:
         cmd_parts = m.text.split()
         command = cmd_parts[0][1:].lower()
         
-        # --- 1. ГЛОБАЛЬНЫЕ КОМАНДЫ (Broadcast) ---
+        # --- 1. ГЛОБАЛЬНЫЕ КОМАНДЫ (Broadcast по реплаю) ---
         if command == "broadcast":
-            # Просто активируем режим ожидания сообщения для рассылки
-            self.broadcast_cache[m.from_user.id] = "WAITING"
-            await m.reply(
-                "📢 <b>Режим рассылки активирован.</b>\n\n"
-                "Пришлите следующим сообщением то, что нужно разослать (текст, фото, видео или файл).\n"
-                "Я покажу предпросмотр и попрошу подтверждения."
+            # Проверяем, есть ли реплей
+            if not m.reply_to_message:
+                await m.reply("❌ <b>Ошибка:</b> Используйте эту команду в ответ (реплей) на сообщение, которое хотите разослать.")
+                return True
+            
+            # Сообщение, которое рассылаем
+            target_msg_id = m.reply_to_message.message_id
+            sent_count, err_count = 0, 0
+            
+            status_msg = await m.reply("🚀 <b>Рассылка запущена...</b>")
+            
+            for user in self.users_list:
+                # Не шлем сами себе (админу)
+                if user['id'] == self.admin_chat_id: continue
+                
+                try:
+                    # Копируем сообщение (текст, фото, видео и т.д.)
+                    await self.bot.copy_message(
+                        chat_id=user['id'],
+                        from_chat_id=m.chat.id,
+                        message_id=target_msg_id
+                    )
+                    sent_count += 1
+                    await asyncio.sleep(0.05) # Защита от Flood Limit
+                except Exception:
+                    err_count += 1
+                    user["is_active"] = False
+
+            await status_msg.edit_text(
+                f"✅ <b>Рассылка завершена!</b>\n\n"
+                f"👤 Успешно: {sent_count}\n"
+                f"🚫 Ошибки (блок): {err_count}"
             )
+            await self.sync_queue.put(("sync_state", None))
             return True
 
         # --- 2. ПОИСК ЦЕЛЕВОГО ПОЛЬЗОВАТЕЛЯ (для бан/варн) ---
         target_user = None
+        # Сначала проверяем по топику
         if m.message_thread_id:
             target_user = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
         
+        # Если не топик, проверяем реплей (для бан/варн)
         if not target_user and m.reply_to_message:
             uid = self.msg_map.get(m.reply_to_message.message_id)
             if uid:
@@ -611,7 +640,7 @@ class BotInstance:
 
         uid = target_user['id']
         
-        # --- 3. КОМАНДЫ МОДЕРАЦИИ (ban, unban, warn, unwarn) ---
+        # --- 3. КОМАНДЫ МОДЕРАЦИИ ---
         if command == "ban":
             target_user["is_banned"] = True
             self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
@@ -675,50 +704,7 @@ class BotInstance:
                         pass
             logger.info(f"[!] Пользователь {user_id} заблокировал бота.")
 
-        # 2. ОБРАБОТЧИКИ КНОПОК РАССЫЛКИ (Callback Queries)
-        @self.router.callback_query(F.data == "confirm_br")
-        async def confirm_broadcast_handler(cb: CallbackQuery):
-            msg_id = self.broadcast_cache.get(cb.from_user.id)
-            if not msg_id or msg_id == "WAITING":
-                return await cb.answer("❌ Ошибка: сообщение не найдено.", show_alert=True)
-
-            await cb.message.edit_text("🚀 <b>Рассылка запущена...</b>")
-            
-            sent_count, err_count = 0, 0
-            # Создаем список для рассылки, исключая админа
-            targets = [u for u in self.users_list if u['id'] != self.admin_chat_id]
-            
-            for user in targets:
-                try:
-                    # Копируем сообщение (фото, видео, текст и т.д.)
-                    await self.bot.copy_message(
-                        chat_id=user['id'],
-                        from_chat_id=cb.message.chat.id,
-                        message_id=msg_id
-                    )
-                    sent_count += 1
-                    await asyncio.sleep(0.05) # Защита от Flood Limit
-                except Exception:
-                    err_count += 1
-                    user["is_active"] = False
-
-            await cb.message.edit_text(
-                f"✅ <b>Рассылка завершена!</b>\n\n"
-                f"👤 Успешно получено: {sent_count}\n"
-                f"🚫 Ошибки (блок): {err_count}"
-            )
-            # Очищаем кэш и синхронизируем базу
-            self.broadcast_cache.pop(cb.from_user.id, None)
-            await self.sync_queue.put(("sync_state", None))
-            await cb.answer()
-
-        @self.router.callback_query(F.data == "cancel_br")
-        async def cancel_broadcast_handler(cb: CallbackQuery):
-            self.broadcast_cache.pop(cb.from_user.id, None)
-            await cb.message.edit_text("❌ Рассылка отменена администратором.")
-            await cb.answer()
-
-        # 3. Команда /start
+        # 2. Команда /start
         @self.router.message(CommandStart())
         async def handle_start_msg(m: Message):
             user, is_new = await self.get_user_state(m)
@@ -727,27 +713,16 @@ class BotInstance:
             await m.answer(self.welcome_text, reply_markup=self.get_main_keyboard())
             await self.log_and_update(user['id'], m.from_user.full_name, "/start")
 
-        # 4. Ввод от админа (Команды и Рассылка)
+        # 3. Ввод от админа (Команды и Ответы)
         @self.router.message(F.chat.id == self.admin_chat_id)
         async def admin_input_router(m: Message):
-            # А) РЕЖИМ РАССЫЛКИ (Если ждем контент)
-            if self.broadcast_cache.get(m.from_user.id) == "WAITING":
-                # Если это НЕ команда (просто сообщение с текстом или медиа)
-                if not (m.text and m.text.startswith(("/", "!"))):
-                    self.broadcast_cache[m.from_user.id] = m.message_id
-                    kb = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="✅ Отправить всем", callback_query_data="confirm_br")],
-                        [InlineKeyboardButton(text="❌ Отмена", callback_query_data="cancel_br")]
-                    ])
-                    await m.reply("👆 <b>Предпросмотр сообщения выше.</b>\nРазослать его всем пользователям?", reply_markup=kb)
-                    return
-
-            # Б) ОБРАБОТКА КОМАНД (/broadcast, /ban, /warn и т.д.)
+            # А) Обработка команд (/broadcast, /ban и т.д.)
+            # Если ты ответил командой /broadcast на сообщение, логика сработает внутри admin_control_logic
             if m.text and (m.text.startswith("/") or m.text.startswith("!")):
                 if await self.admin_control_logic(m):
                     return
 
-            # В) ОТВЕТ ПОЛЬЗОВАТЕЛЮ (В топик или реплаем)
+            # Б) Ответ пользователю (в топик или реплаем)
             target_id = None
             if m.message_thread_id:
                 u = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
@@ -763,9 +738,9 @@ class BotInstance:
                 except TelegramForbiddenError:
                     await m.reply("❌ <b>Ошибка:</b> Пользователь заблокировал бота.")
                 except Exception as e:
-                    await m.reply(f"❌ <b>Ошибка при отправке:</b> {e}")
+                    await m.reply(f"❌ <b>Ошибка:</b> {e}")
 
-        # 5. Сообщения от обычных пользователей
+        # 4. Сообщения от обычных пользователей
         @self.router.message()
         async def user_input_router(m: Message):
             if self.admin_chat_id and m.chat.id == self.admin_chat_id: 
@@ -777,7 +752,6 @@ class BotInstance:
             
             if m.text:
                 clean_text = m.text.lower().strip()
-                # Кнопки меню
                 for btn in self.buttons:
                     if btn.get('text') and btn['text'].lower() == clean_text:
                         if btn.get('type') == 'request': 
@@ -787,14 +761,12 @@ class BotInstance:
                         await self.log_and_update(user['id'], m.from_user.full_name, f"КНОПКА: {btn['text']}")
                         return
                 
-                # Текстовые триггеры
                 for trig in self.triggers:
                     if trig.get('keyword') and trig['keyword'].lower() in clean_text:
                         await m.answer(trig['response'])
                         await self.log_and_update(user['id'], m.from_user.full_name, f"ТРИГГЕР: {trig['keyword']}")
                         return
             
-            # Пересылка сообщения админу
             await self.forward_to_admin(m, user, is_first=is_new)
             await self.log_and_update(user['id'], m.from_user.full_name, m.text or "[Медиа]")
 
