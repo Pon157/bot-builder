@@ -197,7 +197,7 @@ async def send_menu_interface(m: Union[Message, CallbackQuery], user_id: int, mo
     # Кнопки покупки
     for m_count, info in PERIODS.items():
         kb.row(InlineKeyboardButton(
-            text=f"🔑 {info['label']} — {format_price(m_count, current_currency)}", 
+            text=f"{info['label']} — {format_price(m_count, current_currency)}", 
             callback_data=f"buy_{prefix}_{m_count}"
         ))
     
@@ -210,9 +210,9 @@ async def send_menu_interface(m: Union[Message, CallbackQuery], user_id: int, mo
         kb.row(InlineKeyboardButton(text="🏠 В основное меню", callback_data="switch_to_std"))
     elif saved_promo:
         p_name = PARTNERS_CONFIG.get(saved_promo, {}).get("name", "Партнерка")
-        kb.row(InlineKeyboardButton(text=f"🌟 {p_name}", callback_data="switch_to_prt"))
+        kb.row(InlineKeyboardButton(text=f"{p_name}", callback_data="switch_to_prt"))
     else:
-        kb.row(InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="ui_enter_promo"))
+        kb.row(InlineKeyboardButton(text="Ввести промокод", callback_data="ui_enter_promo"))
 
     if isinstance(m, CallbackQuery):
         await m.message.edit_text(menu_title, reply_markup=kb.as_markup(), parse_mode="HTML")
@@ -246,10 +246,10 @@ async def cmd_broadcast_text(m: Message):
     if m.from_user.id != MY_OWNER_ID: return
     text = m.text.replace("/broadcast", "").strip()
     if not text:
-        return await m.answer("⚠️ Введите текст после команды!")
+        return await m.answer("Введите текст после команды!")
     
     users = db_get_all_users()
-    progress = await m.answer(f"⏳ Рассылка на {len(users)} пользователей...")
+    progress = await m.answer(f"Рассылка на {len(users)} пользователей...")
     done, fail = 0, 0
     
     for uid in users:
@@ -295,7 +295,7 @@ async def cb_sw_std(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "ui_enter_promo")
 async def cb_enter_promo(cb: CallbackQuery, state: FSMContext):
-    await cb.message.edit_text("✍️ <b>Введите промокод партнера:</b>", parse_mode="HTML")
+    await cb.message.edit_text("<b>Введите промокод партнера:</b>", parse_mode="HTML")
     await state.set_state(PromoState.waiting_for_code)
 
 @dp.message(PromoState.waiting_for_code)
@@ -304,10 +304,10 @@ async def process_promo_code(m: Message, state: FSMContext):
     if code in PARTNERS_CONFIG:
         db_upsert_user(m.from_user.id, promo_group=code)
         await state.clear()
-        await m.answer(f"✅ Код {code} активирован!")
+        await m.answer(f"Код {code} активирован!")
         await send_menu_interface(m, m.from_user.id, mode="partner")
     else:
-        await m.answer("❌ Неверный код. Попробуйте снова или /start")
+        await m.answer("Неверный код. Попробуйте снова или /start")
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def cb_buy_start(cb: CallbackQuery):
@@ -342,10 +342,10 @@ async def cb_buy_start(cb: CallbackQuery):
         back_cb = "switch_to_std"
 
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="💳 Оплатить", url=pay_url))
-    kb.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"verify_{mode_code}_{months}"))
-    kb.row(InlineKeyboardButton(text="📜 Правила возврата", url=faq_url))
-    kb.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb))
+    kb.row(InlineKeyboardButton(text="Оплатить", url=pay_url))
+    kb.row(InlineKeyboardButton(text="Я оплатил", callback_data=f"verify_{mode_code}_{months}"))
+    kb.row(InlineKeyboardButton(text="Правила возврата", url=faq_url))
+    kb.row(InlineKeyboardButton(text="Назад", callback_data=back_cb))
     
     await cb.message.edit_text(info_text, reply_markup=kb.as_markup(), parse_mode="HTML")
 
