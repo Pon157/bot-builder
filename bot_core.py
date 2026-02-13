@@ -578,12 +578,10 @@ class BotInstance:
             logger.error(f"Forwarding Error: {e}")
 
     async def admin_control_logic(self, m: Message):
-        # --- 0. ЗАЩИТА: Проверка прав по adminIds из БД ---
-        # Твой ID: 5883703466, он в списке adminIds в конфиге.
-        # self.admin_chat_id: -1003101136129 (это группа).
+        # --- 0. ЗАЩИТА: Проверка прав по списку из БД ---
         admin_ids = self.config.get("adminIds", [])
         
-        # Проверяем, есть ли отправитель в списке админов или это сам админ-чат
+        # Проверяем личный ID и ID чата управления
         is_admin = (
             m.from_user.id in admin_ids or 
             str(m.from_user.id) in map(str, admin_ids) or
@@ -600,52 +598,63 @@ class BotInstance:
         cmd_parts = m.text.split()
         command = cmd_parts[0][1:].lower()
         
-        # --- 1. ГЛОБАЛЬНЫЕ КОМАНДЫ (Broadcast по реплаю) ---
+        # --- 1. ГЛОБАЛЬНЫЕ КОМАНДЫ (Broadcast) ---
         if command == "broadcast":
-            if not m.reply_to_message:
-                await m.reply("❌ <b>Ошибка:</b> Используйте команду в ответ на сообщение для рассылки.")
-                return True
-            
-            target_msg_id = m.reply_to_message.message_id
-            sent_count, err_count = 0, 0
-            status_msg = await m.reply("🚀 <b>Рассылка запущена...</b>")
-            
-            # Берем список пользователей из connectedUsers твоего JSON
-            all_users = self.config.get("connectedUsers", [])
-            
-            for user in all_users:
-                try:
-                    u_id = int(user['id'])
-                    # Не шлем самому себе (админу), чтобы не спамить в чат управления
-                    if u_id == m.from_user.id or u_id == self.admin_chat_id:
-                        continue
-                        
-                    await self.bot.copy_message(
-                        chat_id=u_id,
-                        from_chat_id=m.chat.id,
-                        message_id=target_msg_id
-                    )
-                    sent_count += 1
-                    await asyncio.sleep(0.05) # Защита от Flood Limit
-                except Exception:
-                    err_count += 1
-                    user["is_active"] = False
+            # Вариант А: Мгновенная рассылка по реплаю
+            if m.reply_to_message:
+                target_msg_id = m.reply_to_message.message_id
+                sent_count, err_count = 0, 0
+                status_msg = await m.reply("🚀 <b>Мгновенная рассылка запущена...</b>")
+                
+                # Список пользователей из БД
+                all_users = self.config.get("connectedUsers", [])
+                
+                for user in all_users:
+                    try:
+                        u_id = int(user['id'])
+                        # Пропускаем админа и чат управления
+                        if u_id == m.from_user.id or u_id == self.admin_chat_id:
+                            continue
+                            
+                        await self.bot.copy_message(
+                            chat_id=u_id,
+                            from_chat_id=m.chat.id,
+                            message_id=target_msg_id
+                        )
+                        sent_count += 1
+                        await asyncio.sleep(0.05) 
+                    except Exception:
+                        err_count += 1
+                        user["is_active"] = False
 
-            await status_msg.edit_text(
-                f"✅ <b>Рассылка завершена!</b>\n\n"
-                f"👤 Успешно: {sent_count}\n"
-                f"🚫 Ошибки (блок): {err_count}"
-            )
-            await self.sync_queue.put(("sync_state", None))
-            return True
+                await status_msg.edit_text(
+                    f"✅ <b>Рассылка завершена!</b>\n\n"
+                    f"👤 Успешно: {sent_count}\n"
+                    f"🚫 Ошибки: {err_count}"
+                )
+                await self.sync_queue.put(("sync_state", None))
+                return True
+
+            # Вариант Б: Включение режима ожидания (если нет реплая)
+            else:
+                # Устанавливаем статус ожидания сообщения для этого админа
+                self.broadcast_cache[m.from_user.id] = "WAITING"
+                await m.reply(
+                    "📢 <b>Режим рассылки активирован.</b>\n\n"
+                    "Пришлите сообщение (текст, фото, видео), которое нужно разослать.\n"
+                    "<i>Бот покажет предпросмотр перед отправкой.</i>"
+                )
+                return True
 
         # --- 2. ПОИСК ПОЛЬЗОВАТЕЛЯ (для бан/варн) ---
         target_user = None
         users_list = self.config.get("connectedUsers", [])
         
+        # Поиск по топику
         if m.message_thread_id:
             target_user = next((u for u in users_list if u.get("last_topic_id") == m.message_thread_id), None)
         
+        # Поиск по реплаю на пересланное сообщение
         if not target_user and m.reply_to_message:
             uid = self.msg_map.get(m.reply_to_message.message_id)
             if uid:
@@ -657,7 +666,6 @@ class BotInstance:
         uid = target_user['id']
         
         # --- 3. КОМАНДЫ МОДЕРАЦИИ ---
-        # Лимит варнов берем из настроек в JSON (autoBanThreshold)
         ban_limit = self.config.get("settings", {}).get("autoBanThreshold", 3)
 
         if command == "ban":
@@ -687,14 +695,14 @@ class BotInstance:
                 self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
                 try: await self.bot.send_message(uid, f"🚫 <b>Авто-бан:</b> Лимит варнов ({target_user['warns']}) исчерпан.")
                 except: pass
-                await m.reply(f"🚨 АВТО-БАН! Юзер {uid} (Варнов: {target_user['warns']}).")
+                await m.reply(f"🚨 АВТО-БАН! Юзер {uid} (Варнов: {target_user['warns']}/{ban_limit}).")
             else:
                 try: await self.bot.send_message(uid, f"⚠️ <b>Предупреждение!</b> ({target_user['warns']}/{ban_limit})")
                 except: pass
                 await m.reply(f"⚠️ Варн выдан. Всего: {target_user['warns']}/{ban_limit}")
             return True
             
-        elif command == "unwarn":
+        elif command == "unw": # Сократил для удобства
             target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
             await self.sync_queue.put(("sync_state", None))
             await m.reply(f"✅ Предупреждение снято. Текущее: {target_user['warns']}")
