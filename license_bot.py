@@ -111,7 +111,7 @@ PERIODS = {
 PARTNERS_CONFIG = {
     "NOVASTUDIO": { 
         "name": "NOVA CREATIVE STUDIO",
-        "payment_url": "https://t.me/G_78_8_4_5_89254826783g", 
+        "payment_url": "https://t.me/Kotickr", 
         "admin_chat_id": -1003784801472, 
         "menu_title": "<b>Оплата через Telegram Stars</b> NOVA CREATIVE STUDIO!",
         "force_currency": "XTR"
