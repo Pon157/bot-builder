@@ -233,7 +233,7 @@ async def cb_sw_std(cb: CallbackQuery):
 # --- ПРОМОКОДЫ ---
 @dp.callback_query(F.data == "ui_enter_promo")
 async def cb_enter_promo(cb: CallbackQuery, state: FSMContext):
-    await cb.message.edit_text("✍️ <b>Введите промокод:</b>")
+    await cb.message.edit_text("✍️ Введите промокод:")
     await state.set_state(PromoState.waiting_for_code)
 
 @dp.message(PromoState.waiting_for_code)
@@ -242,7 +242,7 @@ async def process_promo_code(m: Message, state: FSMContext):
     if code in PARTNERS_CONFIG:
         db_upsert_user(m.from_user.id, promo_group=code)
         await state.clear()
-        await m.answer(f"✅ Код <b>{code}</b> активирован!")
+        await m.answer(f"✅ Код {code} активирован!")
         # Сразу перекидываем в партнерское меню
         await send_menu_interface(m, m.from_user.id, mode="partner")
     else:
