@@ -216,11 +216,48 @@ async def send_menu_interface(m: Union[Message, CallbackQuery], user_id: int, mo
 @dp.message(Command("start"))
 async def cmd_start(m: Message):
     if m.from_user.id == MY_OWNER_ID:
-        await bot.set_my_commands([BotCommand(command="start", description="🏠 Меню"), BotCommand(command="broadcast", description="📢 Рассылка")], scope=BotCommandScopeChat(chat_id=m.from_user.id))
+        await bot.set_my_commands([BotCommand(command="start", description="🏠 Меню"), scope=BotCommandScopeChat(chat_id=m.from_user.id))
     db_upsert_user(m.from_user.id, username=m.from_user.username)
     # По умолчанию открываем стандартное, юзер сам перейдет если захочет
     await send_menu_interface(m, m.from_user.id, mode="standard")
 
+@dp.message(Command("broadcast"))
+async def cmd_broadcast_text(m: Message):
+    """Рассылка только текста (через /broadcast Текст)"""
+    if m.from_user.id != MY_OWNER_ID: return
+    text = m.text.replace("/broadcast", "").strip()
+    if not text:
+        return await m.answer("⚠️ <b>Введите текст после команды!</b>", parse_mode="HTML")
+    
+    users = db_get_all_users()
+    progress = await m.answer(f"⏳ Рассылка текста на {len(users)} чел...")
+    done, fail = 0, 0
+    for uid in users:
+        try:
+            await bot.send_message(uid, text, parse_mode="HTML")
+            done += 1
+            await asyncio.sleep(0.05)
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+            await bot.send_message(uid, text, parse_mode="HTML"); done += 1
+        except Exception: fail += 1
+    await progress.edit_text(f"📢 <b>Рассылка завершена!</b>\n\n✅ Доставлено: {done}\n❌ Ошибок: {fail}", parse_mode="HTML")
+
+@dp.message(F.photo, lambda m: m.from_user.id == MY_OWNER_ID and m.caption and m.caption.startswith("/broadcast"))
+async def cmd_broadcast_photo(m: Message):
+    """Рассылка фото с описанием (команда должна быть в подписи к фото)"""
+    text = m.caption.replace("/broadcast", "").strip()
+    users = db_get_all_users()
+    progress = await m.answer(f"⏳ Рассылка медиа на {len(users)} чел...")
+    done = 0
+    for uid in users:
+        try:
+            await bot.send_photo(uid, m.photo[-1].file_id, caption=text, parse_mode="HTML")
+            done += 1
+            await asyncio.sleep(0.05)
+        except: continue
+    await progress.edit_text(f"✅ Фото разослано! Доставлено: {done}")
+    
 # --- ПЕРЕКЛЮЧЕНИЕ РЕЖИМОВ ---
 @dp.callback_query(F.data == "switch_to_prt")
 async def cb_sw_prt(cb: CallbackQuery):
@@ -279,20 +316,24 @@ async def cb_buy_start(cb: CallbackQuery):
         currency = user_info.get("currency", "RUB")
         price_str = format_price(months, currency)
         pay_url = "https://www.donationalerts.com/r/dialoge_engine"
+        faq_url= "https://telegra.ph/Politika-vozvrata-i-licenzirovaniya-Refund-Policy-02-06"
         
         info_text = (
-            f"🛒 <b>Заказ лицензии (Standard)</b>\n"
+            f"🛒 <b>Заказ лицензии </b>\n"
             f"Период: {months} мес.\n"
             f"Сумма: <b>{price_str}</b>\n\n"
             f"1. Переведите сумму по ссылке.\n"
-            f"2. Подтвердите оплату."
+            f"2. Посмотрите информацию о ключах и возвратах.\n"
+            f"3. Подтвердите оплату.\n"
+            
         )
         is_partner_sale = False
 
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="💳 Оплатить", url=pay_url))
+    kb.row(InlineKeyboardButton(text="Оплатить", url=pay_url))
     # В кнопку проверки зашиваем режим (std/prt), чтобы знать, кому слать заявку
-    kb.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"verify_{mode_code}_{months}"))
+    kb.row(InlineKeyboardButton(text="Я оплатил", callback_data=f"verify_{mode_code}_{months}"))
+    kb.row(InlineKeyboardButton(text="Правила возврата и лицензирования", url=faq_url))
     
     # Кнопка назад должна вести в правильное меню
     back_cb = "switch_to_prt" if is_partner_sale else "switch_to_std"
@@ -310,7 +351,7 @@ async def cb_verify_pay(cb: CallbackQuery):
     promo = user_info.get("promo_group")
     
     target_chat = ADM_CHAT
-    log_title = "BotEngine Standard"
+    log_title = "BotEngine"
     
     # Вычисляем цену снова для отображения админу
     if mode_code == "prt" and promo in PARTNERS_CONFIG:
