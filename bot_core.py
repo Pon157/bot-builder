@@ -88,7 +88,6 @@ def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_
 
     return f"{status_line}\n{user_info}\n\n"
 
-# --- ОСНОВНОЙ КЛАСС БОТА ---
 def __init__(self, config_data: dict):
         self.bot_id = config_data.get('id')
         self.token = config_data.get('token')
@@ -126,12 +125,11 @@ def __init__(self, config_data: dict):
             
             st = self.config["stats"]
             
-            # 2. Обновляем счетчики (гарантируем наличие ключей через get)
+            # 2. Обновляем счетчики
             st["totalMessages"] = st.get("totalMessages", 0) + 1
             
             if is_incoming:
                 st["incomingToday"] = st.get("incomingToday", 0) + 1
-                # Если ключа outgoingToday нет, инициализируем его нулем
                 if "outgoingToday" not in st: st["outgoingToday"] = 0
             else:
                 st["outgoingToday"] = st.get("outgoingToday", 0) + 1
@@ -157,13 +155,13 @@ def __init__(self, config_data: dict):
                     "activeUsers": 1
                 })
 
-            st["history"] = history[-14:] # Только последние 14 дней
-            self.config["stats"] = st # Сохраняем обратно в объект
+            st["history"] = history[-14:] 
+            self.config["stats"] = st 
 
             # 4. Отправка в БД
             async with httpx.AsyncClient() as client:
                 resp = await client.patch(
-                    f"{self.supabase_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
                     headers=self.headers,
                     json={"stats": st}
                 )
