@@ -62,7 +62,7 @@ ADM_CHAT = CONFIG.get("ADMIN_CHAT_ID")
 ADM_SECRET = CONFIG.get("ADMIN_SECRET", "MRAKOTIK")
 SRV_URL = CONFIG.get("SERVER_URL", "http://localhost:8000")
 
-# Твой ID для полных прав и рассылки
+# ID для полных прав и рассылки
 MY_OWNER_ID = 5883703466
 
 if not all([BOT_TOKEN, SB_URL, SB_KEY]):
