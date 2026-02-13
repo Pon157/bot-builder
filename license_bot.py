@@ -216,10 +216,14 @@ async def send_menu_interface(m: Union[Message, CallbackQuery], user_id: int, mo
 @dp.message(Command("start"))
 async def cmd_start(m: Message):
     if m.from_user.id == MY_OWNER_ID:
-        await bot.set_my_commands([BotCommand(command="start", description="🏠 Меню"), scope=BotCommandScopeChat(chat_id=m.from_user.id))
-    db_upsert_user(m.from_user.id, username=m.from_user.username)
-    # По умолчанию открываем стандартное, юзер сам перейдет если захочет
-    await send_menu_interface(m, m.from_user.id, mode="standard")
+        await bot.set_my_commands(
+            [BotCommand(command="start", description="🏠 Меню"), 
+             BotCommand(command="broadcast", description="📢 Рассылка")],
+            scope=BotCommandScopeChat(chat_id=m.from_user.id)
+        )
+    curr = await db_get_currency(m.from_user.id)
+    db_upsert_user(m.from_user.id, curr, m.from_user.username)
+    await send_main_menu(m, m.from_user.id)
 
 @dp.message(Command("broadcast"))
 async def cmd_broadcast_text(m: Message):
