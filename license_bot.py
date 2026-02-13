@@ -71,7 +71,7 @@ PARTNERS_CONFIG = {
         "name": "NOVA CREATIVE STUDIO",
         "payment_url": "https://t.me/G_78_8_4_5_89254826783g", # Ссылка на оплату звездами (или инструкция)
         "admin_chat_id": -1003784801472, 
-        "menu_title": "🌟 <b>Оплата через Telegram Stars</b> NOVA CREATIVE STUDIO!",
+        "menu_title": "<b>Оплата через Telegram Stars</b> NOVA CREATIVE STUDIO!",
         "force_currency": "XTR" # Принудительно включаем звезды в этом меню
     }
 }
@@ -188,20 +188,20 @@ async def send_menu_interface(m: Union[Message, CallbackQuery], user_id: int, mo
     
     # Управление валютой (только в стандартном режиме)
     if not is_partner_active:
-        kb.row(InlineKeyboardButton(text=f"🌍 Валюта: {current_currency}", callback_data="ui_set_currency"))
+        kb.row(InlineKeyboardButton(text=f"Валюта: {current_currency}", callback_data="ui_set_currency"))
     
     # === КНОПКИ ПЕРЕКЛЮЧЕНИЯ ===
     if is_partner_active:
         # Мы в партнерке -> Кнопка "Домой"
-        kb.row(InlineKeyboardButton(text="🏠 В основное меню", callback_data="switch_to_std"))
+        kb.row(InlineKeyboardButton(text="В основное меню", callback_data="switch_to_std"))
     elif saved_promo:
         # Мы дома, но есть промокод -> Кнопка "В партнерку"
         # Получаем имя партнера для кнопки
         p_name = PARTNERS_CONFIG.get(saved_promo, {}).get("name", "Партнер")
-        kb.row(InlineKeyboardButton(text=f"🌟 {p_name}", callback_data="switch_to_prt"))
+        kb.row(InlineKeyboardButton(text=f"{p_name}", callback_data="switch_to_prt"))
     else:
         # Мы дома, промокода нет -> Кнопка ввода
-        kb.row(InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="ui_enter_promo"))
+        kb.row(InlineKeyboardButton(text="Ввести промокод", callback_data="ui_enter_promo"))
 
     if isinstance(m, CallbackQuery):
         # Чтобы не мигало, если текст тот же, можно проверить, но edit_text надежнее
