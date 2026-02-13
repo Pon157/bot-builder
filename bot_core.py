@@ -587,7 +587,7 @@ class BotInstance:
         
         # --- 1. ГЛОБАЛЬНЫЕ КОМАНДЫ (Broadcast) ---
         if command == "broadcast":
-            # Просто ставим метку, что следующее сообщение от админа — это рассылка
+            # Просто активируем режим ожидания сообщения для рассылки
             self.broadcast_cache[m.from_user.id] = "WAITING"
             await m.reply(
                 "📢 <b>Режим рассылки активирован.</b>\n\n"
@@ -611,7 +611,7 @@ class BotInstance:
 
         uid = target_user['id']
         
-        # --- 3. КОМАНДЫ МОДЕРАЦИИ ---
+        # --- 3. КОМАНДЫ МОДЕРАЦИИ (ban, unban, warn, unwarn) ---
         if command == "ban":
             target_user["is_banned"] = True
             self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
@@ -669,8 +669,10 @@ class BotInstance:
                 if self.admin_chat_id:
                     thread_id = user.get("last_topic_id")
                     text = f"🔴 <b>Внимание!</b>\nПользователь <b>{event.from_user.full_name}</b> (@{event.from_user.username or '---'}) заблокировал бота."
-                    try: await self.bot.send_message(self.admin_chat_id, text, message_thread_id=thread_id)
-                    except: pass
+                    try: 
+                        await self.bot.send_message(self.admin_chat_id, text, message_thread_id=thread_id)
+                    except: 
+                        pass
             logger.info(f"[!] Пользователь {user_id} заблокировал бота.")
 
         # 2. ОБРАБОТЧИКИ КНОПОК РАССЫЛКИ (Callback Queries)
@@ -684,16 +686,17 @@ class BotInstance:
             
             sent_count, err_count = 0, 0
             for user in self.users_list:
-                if user['id'] == self.admin_chat_id: continue
+                if user['id'] == self.admin_chat_id: 
+                    continue
                 try:
-                    # Используем copy_message, чтобы медиа улетало один в один
+                    # Копируем сообщение, чтобы сохранились медиа и подписи
                     await self.bot.copy_message(
                         chat_id=user['id'],
                         from_chat_id=cb.message.chat.id,
                         message_id=msg_id
                     )
                     sent_count += 1
-                    await asyncio.sleep(0.05) # Защита от Flood Limit (20 сообщений в сек)
+                    await asyncio.sleep(0.05) # Лимит 20 сообщений в секунду
                 except Exception:
                     err_count += 1
                     user["is_active"] = False
@@ -703,7 +706,7 @@ class BotInstance:
                 f"👤 Успешно получено: {sent_count}\n"
                 f"🚫 Ошибки (блок): {err_count}"
             )
-            # Очищаем кэш и сохраняем состояние базы
+            # Очищаем кэш и синхронизируем базу (статусы пользователей)
             self.broadcast_cache.pop(cb.from_user.id, None)
             await self.sync_queue.put(("sync_state", None))
             await cb.answer()
@@ -718,33 +721,42 @@ class BotInstance:
         @self.router.message(CommandStart())
         async def handle_start_msg(m: Message):
             user, is_new = await self.get_user_state(m)
-            if user.get("is_banned"): return
+            if user.get("is_banned"): 
+                return
             await m.answer(self.welcome_text, reply_markup=self.get_main_keyboard())
             await self.log_and_update(user['id'], m.from_user.full_name, "/start")
 
         # 4. Ввод от админа (команды, подтверждение рассылки, ответы в топики)
         @self.router.message(F.chat.id == self.admin_chat_id)
         async def admin_input_router(m: Message):
-            # А) Сначала проверяем, не подтверждает ли админ рассылку
+            # А) Проверяем состояние WAITING (ждем контент для рассылки)
             if self.broadcast_cache.get(m.from_user.id) == "WAITING":
-                self.broadcast_cache[m.from_user.id] = m.message_id
-                kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="✅ Отправить всем", callback_query_data="confirm_br")],
-                    [InlineKeyboardButton(text="❌ Отмена", callback_query_data="cancel_br")]
-                ])
-                await m.reply("👆 <b>Предпросмотр сообщения выше.</b>\nРазослать его всем пользователям?", reply_markup=kb)
-                return
+                # Если админ ввел команду вместо контента - даем ей пройти в Б
+                if m.text and (m.text.startswith("/") or m.text.startswith("!")):
+                    pass 
+                else:
+                    self.broadcast_cache[m.from_user.id] = m.message_id
+                    kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="✅ Отправить всем", callback_query_data="confirm_br")],
+                        [InlineKeyboardButton(text="❌ Отмена", callback_query_data="cancel_br")]
+                    ])
+                    await m.reply("👆 <b>Предпросмотр сообщения выше.</b>\nРазослать его всем пользователям?", reply_markup=kb)
+                    return
 
-            # Б) Если это команда (/broadcast, /ban и т.д.)
+            # Б) Обработка команд (/broadcast, /ban и т.д.)
             if m.text and (m.text.startswith("/") or m.text.startswith("!")):
                 if await self.admin_control_logic(m):
                     return
 
-            # В) Обычный ответ пользователю в топик/реплаем
+            # В) Ответ пользователю в топик или реплаем
             target_id = None
+            # Если сообщение в топике - ищем владельца топика
             if m.message_thread_id:
                 u = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
-                if u: target_id = u["id"]
+                if u: 
+                    target_id = u["id"]
+            
+            # Если не топик, но реплай - берем ID из карты сообщений
             if not target_id and m.reply_to_message:
                 target_id = self.msg_map.get(m.reply_to_message.message_id)
             
@@ -760,16 +772,20 @@ class BotInstance:
         # 5. Сообщения от обычных пользователей
         @self.router.message()
         async def user_input_router(m: Message):
-            # Проверка, чтобы не обрабатывать сообщения админа здесь
-            if self.admin_chat_id and m.chat.id == self.admin_chat_id: return
+            # Игнорируем админа, чтобы не зацикливалось
+            if self.admin_chat_id and m.chat.id == self.admin_chat_id: 
+                return
             
             user, is_new = await self.get_user_state(m)
-            if user.get("is_banned") or await self.check_antispam(user['id']): return
+            
+            # Проверка бана и антиспама
+            if user.get("is_banned") or await self.check_antispam(user['id']): 
+                return
             
             # Обработка кнопок и триггеров
             if m.text:
                 clean_text = m.text.lower().strip()
-                # Кнопки основного меню
+                # Кнопки меню
                 for btn in self.buttons:
                     if btn.get('text') and btn['text'].lower() == clean_text:
                         if btn.get('type') == 'request': 
@@ -778,14 +794,15 @@ class BotInstance:
                             await m.answer(btn['response'])
                         await self.log_and_update(user['id'], m.from_user.full_name, f"КНОПКА: {btn['text']}")
                         return
-                # Текстовые триггеры
+                
+                # Текстовые триггеры (автоответы)
                 for trig in self.triggers:
                     if trig.get('keyword') and trig['keyword'].lower() in clean_text:
                         await m.answer(trig['response'])
                         await self.log_and_update(user['id'], m.from_user.full_name, f"ТРИГГЕР: {trig['keyword']}")
                         return
             
-            # Если не кнопка и не триггер — просто пересылаем админу
+            # Если просто сообщение — пересылаем админу
             await self.forward_to_admin(m, user, is_first=is_new)
             await self.log_and_update(user['id'], m.from_user.full_name, m.text or "[Медиа]")
 
