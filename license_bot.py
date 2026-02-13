@@ -162,7 +162,7 @@ async def send_menu_interface(m: Union[Message, CallbackQuery], user_id: int, mo
     
     # Настройки по умолчанию (Standard)
     current_currency = user_info.get("currency", "RUB")
-    menu_title = "🚀 <b>BotEngine Pro: Магазин</b>\n\nВыберите тариф:"
+    menu_title = "<b>Dialoge Engine: Магазин</b>\n\nВыберите тариф:"
     is_partner_active = False
 
     # Если запрошен режим ПАРТНЕРА и он есть у юзера
@@ -182,7 +182,7 @@ async def send_menu_interface(m: Union[Message, CallbackQuery], user_id: int, mo
     
     for m_count, info in PERIODS.items():
         kb.row(InlineKeyboardButton(
-            text=f"🔑 {info['label']} — {format_price(m_count, current_currency)}", 
+            text=f"{info['label']} — {format_price(m_count, current_currency)}", 
             callback_data=f"buy_{prefix}_{m_count}"
         ))
     
