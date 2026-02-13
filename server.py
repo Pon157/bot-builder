@@ -114,14 +114,15 @@ class BotManager:
         
         self.log_paths[bid] = log_path
         platform = config.get('platform', 'telegram').lower()
-        bot_file = "vkbot_core.py" if platform == 'vk' else "bot_core.py"
+        _CORE = {'vk': 'vkbot_core.py', 'poster': 'poster_core.py', 'randomizer': 'randomizer_core.py'}
+        bot_file = _CORE.get(platform, 'bot_core.py')
         
         try:
             # 1. Подготовка окружения
             env = os.environ.copy()
             # ПРИНУДИТЕЛЬНО отключаем буферизацию Python, чтобы логи писались мгновенно
             env["PYTHONUNBUFFERED"] = "1" 
-            env.update({"SUPABASE_URL": S_URL, "SUPABASE_KEY": S_KEY})
+            env.update({"SUPABASE_URL": S_URL, "SUPABASE_KEY": S_KEY, "BOT_ID": str(bid), "BOT_TOKEN": config.get("token", "")})
             
             # 2. Запуск через PIPE, чтобы сервер мог перехватывать поток
             p = await asyncio.create_subprocess_exec(
@@ -521,9 +522,15 @@ async def get_user_bots(user_id: str):
 
             # Остальные поля
             bot["welcomeMessage"] = cfg.get("welcomeMessage") or ""
-            bot["buttons"] = cfg.get("buttons") if cfg.get("buttons") is not None else []
+            bot["buttons"]  = cfg.get("buttons")  if cfg.get("buttons")  is not None else []
             bot["triggers"] = cfg.get("triggers") if cfg.get("triggers") is not None else []
-            
+
+            # Поля для poster / randomizer / /broadcast
+            bot["adminIds"]   = cfg.get("adminIds",   [])
+            bot["channelId"]  = cfg.get("channelId",  "")
+            bot["lotChannel"] = cfg.get("lotChannel", "")
+            bot["botLink"]    = cfg.get("botLink",    "")
+
             # Настройки
             bot["settings"] = cfg.get("settings") if isinstance(cfg.get("settings"), dict) else {
                 "forwardToAdmin": True,
@@ -574,12 +581,13 @@ async def save_bot(b: dict):
             raw_tok = b.get("token", "")
             enc_tok = encrypt_val(raw_tok) if raw_tok and not str(raw_tok).startswith("gAAAA") else raw_tok
             
+            _ai = [int(x) for x in (b.get("adminIds") or []) if str(x).strip().lstrip("-").isdigit()]
             upsert_payload = {
                 "id": bid,
                 "owner_id": b.get("owner_id", ""),
                 "name": b.get("name", "Новый бот"),
                 "token": enc_tok,
-                "platform": b.get("platform", "vk"),
+                "platform": b.get("platform", "telegram"),
                 "status": "IDLE",
                 "license_expires_at": int(time.time() * 1000) + (24 * 3600 * 1000),
                 "created_at": int(time.time() * 1000),
@@ -588,7 +596,13 @@ async def save_bot(b: dict):
                     "triggers": b.get("triggers", []),
                     "welcomeMessage": b.get("welcomeMessage", "Привет!"),
                     "settings": b.get("settings") or {"forwardToAdmin": True},
-                    "connectedUsers": []
+                    "connectedUsers": [],
+                    "adminIds":   _ai,
+                    "channelId":  b.get("channelId",  ""),
+                    "lotChannel": b.get("lotChannel", ""),
+                    "botLink":    b.get("botLink",    ""),
+                    "lotteries":  [],
+                    "users":      [],
                 },
                 "stats": {},
                 "admin_chat_id": None,
@@ -634,16 +648,18 @@ async def save_bot(b: dict):
         new_vk_id = curr.get("vk_group_id")
 
         if platform == 'vk':
-            # Для VK: adminChatId из фронтенда идёт в vk_group_id колонку
-            # (это и есть peer_id беседы/диалога для пересылки)
-            incoming_vk = vk_id_raw or tg_id_raw  # фронтенд может слать в любом поле
+            incoming_vk = vk_id_raw or tg_id_raw
             if incoming_vk is not None:
                 new_vk_id = clean_int(incoming_vk)
-            new_admin_id = None  # TG поле для VK-ботов не используется
+            new_admin_id = None
+        elif platform in ('poster', 'randomizer'):
+            # Poster/randomizer не используют колонки admin_chat_id/vk_group_id
+            new_admin_id = None
+            new_vk_id    = None
         else:  # telegram
             if tg_id_raw is not None:
                 new_admin_id = clean_int(tg_id_raw)
-            new_vk_id = None  # VK поле для TG-ботов не используется
+            new_vk_id = None
 
         # 4. СОБИРАЕМ КОНФИГ (JSONB)
         def get_val(key, default=None):
@@ -656,6 +672,16 @@ async def save_bot(b: dict):
         btns = get_val("buttons", [])
         if not isinstance(btns, list): btns = []
 
+        # adminIds — список числовых ID администраторов для /broadcast
+        raw_ai = (b.get("adminIds") or inc_cfg.get("adminIds") or old_config.get("adminIds") or [])
+        if isinstance(raw_ai, str):
+            raw_ai = [int(x.strip()) for x in raw_ai.split(",") if x.strip().lstrip("-").isdigit()]
+        admin_ids_list = [int(x) for x in raw_ai if str(x).strip().lstrip("-").isdigit()] if raw_ai else []
+
+        channel_id_val  = get_val("channelId",  old_config.get("channelId",  "")) or ""
+        lot_channel_val = get_val("lotChannel", old_config.get("lotChannel", "")) or ""
+        bot_link_val    = get_val("botLink",    old_config.get("botLink",    "")) or ""
+
         ui_config = {
             "stats": old_config.get("stats", {}),
             "buttons": btns,
@@ -663,11 +689,19 @@ async def save_bot(b: dict):
             "welcomeMessage": get_val("welcomeMessage", "Привет!"),
             "settings": {**old_config.get("settings", {}), **(b.get("settings") or inc_cfg.get("settings") or {})},
             "connectedUsers": old_config.get("connectedUsers", []),
-            # Дублируем ID в конфиг, чтобы bot_core мог найти их при старте
+            # Дублируем ID в конфиг для bot_core
             "admin_chat_id": new_admin_id,
-            "adminChatId": new_admin_id,
-            "vk_group_id": new_vk_id,
-            "vkGroupId": new_vk_id,
+            "adminChatId":   new_admin_id,
+            "vk_group_id":   new_vk_id,
+            "vkGroupId":     new_vk_id,
+            # Поля для poster / randomizer / /broadcast
+            "adminIds":   admin_ids_list,
+            "channelId":  channel_id_val,
+            "lotChannel": lot_channel_val,
+            "botLink":    bot_link_val,
+            # Сохраняем данные рандомайзера (не затираем при сохранении настроек)
+            "lotteries":  old_config.get("lotteries", []),
+            "users":      old_config.get("users",     []),
         }
 
         # 5. ТОКЕН (Берем новый или оставляем старый зашифрованный)
@@ -699,11 +733,14 @@ async def save_bot(b: dict):
             **curr,
             **db_payload,
             **ui_config,
-            "adminChatId": new_admin_id,
+            "adminChatId":  new_admin_id,
             "admin_chat_id": new_admin_id,
-            "vkGroupId": new_vk_id,
-            "vk_group_id": new_vk_id,
-            # Возвращаем stats из БД (не затираем нулями)
+            "vkGroupId":    new_vk_id,
+            "vk_group_id":  new_vk_id,
+            "adminIds":     admin_ids_list,
+            "channelId":    channel_id_val,
+            "lotChannel":   lot_channel_val,
+            "botLink":      bot_link_val,
             "stats": curr.get("stats") or old_config.get("stats") or {},
             "id": bid
         }
@@ -1211,25 +1248,53 @@ async def create_bot_endpoint(d: dict):
 
         bot_id = f"bot_{secrets.token_hex(4)}"
         
+        _plat = d.get('platform', 'telegram')
+        _ai_raw = d.get('adminIds', [])
+        if isinstance(_ai_raw, str):
+            _ai_raw = [int(x.strip()) for x in _ai_raw.split(",") if x.strip().lstrip("-").isdigit()]
+        _ai = [int(x) for x in _ai_raw if str(x).strip().lstrip("-").isdigit()]
+
+        if _plat == 'poster':
+            _cfg = {
+                "channelId":  d.get('channelId',  ''),
+                "adminIds":   _ai,
+                "botLink":    d.get('botLink',    ''),
+                "stats":      {"totalPosts": 0, "history": []},
+            }
+        elif _plat == 'randomizer':
+            _cfg = {
+                "lotChannel":    d.get('lotChannel', ''),
+                "adminIds":      _ai,
+                "botLink":       d.get('botLink',    ''),
+                "welcomeMessage": "👋 Привет! Я бот для розыгрышей.",
+                "lotteries":     [],
+                "users":         [],
+                "stats":         {"totalUsers": 0, "blockedCount": 0, "totalLotteries": 0, "history": []},
+            }
+        else:
+            _cfg = {
+                "buttons":        [],
+                "triggers":       [],
+                "welcomeMessage": "Привет!",
+                "settings":       {"forwardToAdmin": True},
+                "connectedUsers": [],
+                "adminIds":       _ai,
+            }
+
         # Данные строго под твою структуру SQL
         payload = {
             "id": bot_id,
             "owner_id": owner_id,
             "name": d.get('name', 'Новый бот'),
             "token": encrypt_val(token),
-            "platform": d.get('platform', 'vk'),
+            "platform": _plat,
             "status": "IDLE",
             "license_expires_at": int(time.time() * 1000) + (30 * 24 * 3600 * 1000),
             "created_at": int(time.time() * 1000),
-            "config": {
-                "buttons": [],
-                "triggers": [],
-                "welcomeMessage": "Привет!",
-                "settings": {"forwardToAdmin": True}
-            },
+            "config": _cfg,
             "stats": {},
-            "admin_chat_id": None, # Для BIGINT колонки
-            "vk_group_id": None    # Для BIGINT колонки
+            "admin_chat_id": None,
+            "vk_group_id": None
         }
 
         res = await db.post("bots", json=payload)
@@ -1238,8 +1303,8 @@ async def create_bot_endpoint(d: dict):
             logger.error(f"❌ Ошибка Supabase: {res.text}")
             raise HTTPException(res.status_code, f"DB Error: {res.text}")
 
-        logger.info(f"✅ Бот {bot_id} успешно создан!")
-        return {**payload, "token": token} # Возвращаем чистый токен для фронта
+        logger.info(f"✅ Бот {bot_id} успешно создан ({_plat})")
+        return {**payload, "token": token, "adminIds": _ai, "channelId": d.get("channelId",""), "lotChannel": d.get("lotChannel",""), "botLink": d.get("botLink","")}
 
     except Exception as e:
         logger.error(f"🚨 Ошибка создания: {e}")
