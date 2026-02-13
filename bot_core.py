@@ -587,62 +587,16 @@ class BotInstance:
         
         # --- 1. ГЛОБАЛЬНЫЕ КОМАНДЫ (Broadcast) ---
         if command == "broadcast":
-            # Проверяем: это ответ на сообщение (Reply) или просто текст после команды?
-            target_msg = m.reply_to_message
-            broadcast_text = m.text[len(cmd_parts[0]):].strip()
-            
-            if not target_msg and not broadcast_text:
-                await m.reply(
-                    "❌ <b>Ошибка: нечего рассылать!</b>\n\n"
-                    "• Чтобы рассылать <b>медиа</b>: ответьте командой <code>/broadcast</code> на фото/видео.\n"
-                    "• Чтобы рассылать <b>текст</b>: напишите <code>/broadcast ваш текст</code>."
-                )
-                return True
-
-            sent_count = 0
-            blocked_count = 0
-            # Информируем админа о начале процесса
-            status_msg = await m.reply(f"🚀 Запуск рассылки на {len(self.users_list)} пользователей...")
-
-            for user in self.users_list:
-                # Не отправляем рассылку самому админу
-                if user['id'] == self.admin_chat_id: 
-                    continue
-                
-                try:
-                    if target_msg:
-                        # КОПИРУЕМ сообщение (фото, видео, стикер, документ и т.д.)
-                        await self.bot.copy_message(
-                            chat_id=user['id'],
-                            from_chat_id=m.chat.id,
-                            message_id=target_msg.message_id
-                        )
-                    else:
-                        # Отправляем обычный ТЕКСТ
-                        await self.bot.send_message(user['id'], broadcast_text)
-                    
-                    sent_count += 1
-                    # Задержка 0.05 сек для предотвращения Flood Limit (20 сообщений в сек)
-                    await asyncio.sleep(0.05) 
-                    
-                except (TelegramForbiddenError, TelegramBadRequest):
-                    blocked_count += 1
-                    user["is_active"] = False # Помечаем пользователя как неактивного
-                except Exception as e:
-                    logger.error(f"Ошибка трансляции для {user['id']}: {e}")
-
-            # Финальный отчет
-            await status_msg.edit_text(
-                f"✅ <b>Рассылка завершена!</b>\n\n"
-                f"👤 Успешно получено: {sent_count}\n"
-                f"🚫 Заблокировали бота: {blocked_count}"
+            # Просто ставим метку, что следующее сообщение от админа — это рассылка
+            self.broadcast_cache[m.from_user.id] = "WAITING"
+            await m.reply(
+                "📢 <b>Режим рассылки активирован.</b>\n\n"
+                "Пришлите следующим сообщением то, что нужно разослать (текст, фото, видео или файл).\n"
+                "Я покажу предпросмотр и попрошу подтверждения."
             )
-            # Сохраняем обновленные статусы (is_active) в базу
-            await self.sync_queue.put(("sync_state", None))
             return True
 
         # --- 2. ПОИСК ЦЕЛЕВОГО ПОЛЬЗОВАТЕЛЯ (для бан/варн) ---
-        # Эта часть остается без изменений, но идет ПОСЛЕ рассылки
         target_user = None
         if m.message_thread_id:
             target_user = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
@@ -657,7 +611,7 @@ class BotInstance:
 
         uid = target_user['id']
         
-        # --- 3. КОМАНДЫ МОДЕРАЦИИ (ban, unban, warn, unwarn) ---
+        # --- 3. КОМАНДЫ МОДЕРАЦИИ ---
         if command == "ban":
             target_user["is_banned"] = True
             self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
@@ -699,7 +653,7 @@ class BotInstance:
             return True
             
         return False
-
+        
     async def core_handlers_setup(self):
         # 0. Мидлварь для проверки лицензии
         self.router.message.middleware(LicenseMiddleware(self))
