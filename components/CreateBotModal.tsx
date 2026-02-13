@@ -1,17 +1,17 @@
 import React, { useState } from 'react';
-import { Smartphone, Globe, X } from 'lucide-react'; // Убедись, что lucide-react установлен
+import { Smartphone, Globe, X, Send, Shuffle } from 'lucide-react'; // Убедись, что lucide-react установлен
 
 interface CreateBotModalProps {
   isOpen: boolean;
   onClose: () => void;
   // Добавили platform в onSubmit
-  onSubmit: (name: string, token: string, platform: 'telegram' | 'vk') => void;
+  onSubmit: (name: string, token: string, platform: 'telegram' | 'vk' | 'poster' | 'randomizer') => void;
 }
 
 const CreateBotModal: React.FC<CreateBotModalProps> = ({ isOpen, onClose, onSubmit }) => {
   const [name, setName] = useState('');
   const [token, setToken] = useState('');
-  const [platform, setPlatform] = useState<'telegram' | 'vk'>('telegram');
+  const [platform, setPlatform] = useState<'telegram' | 'vk' | 'poster' | 'randomizer'>('telegram');
 
   if (!isOpen) return null;
 
@@ -51,30 +51,30 @@ const CreateBotModal: React.FC<CreateBotModalProps> = ({ isOpen, onClose, onSubm
             <div>
               <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-widest mb-3 ml-1">Платформа</label>
               <div className="grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setPlatform('telegram')}
-                  className={`flex items-center justify-center gap-2 p-3 rounded-2xl border transition-all ${
-                    platform === 'telegram' 
-                    ? 'bg-blue-600/10 border-blue-500 text-blue-400 shadow-[0_0_20px_rgba(37,99,235,0.1)]' 
-                    : 'bg-[#0a0a0a] border-zinc-800 text-zinc-500 hover:border-zinc-700'
-                  }`}
-                >
-                  <Smartphone className="w-4 h-4" />
-                  <span className="text-xs font-black uppercase">Telegram</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPlatform('vk')}
-                  className={`flex items-center justify-center gap-2 p-3 rounded-2xl border transition-all ${
-                    platform === 'vk' 
-                    ? 'bg-blue-500/10 border-blue-400 text-blue-300 shadow-[0_0_20px_rgba(59,130,246,0.1)]' 
-                    : 'bg-[#0a0a0a] border-zinc-800 text-zinc-500 hover:border-zinc-700'
-                  }`}
-                >
-                  <Globe className="w-4 h-4" />
-                  <span className="text-xs font-black uppercase">ВКонтакте</span>
-                </button>
+                {([
+                  { id: 'telegram',   icon: <Smartphone className="w-4 h-4" />, label: 'TG Поддержка', color: 'blue' },
+                  { id: 'vk',         icon: <Globe className="w-4 h-4" />,       label: 'VK Поддержка', color: 'blue' },
+                  { id: 'poster',     icon: <Send className="w-4 h-4" />,         label: 'TG Постинг',   color: 'emerald' },
+                  { id: 'randomizer', icon: <Shuffle className="w-4 h-4" />,      label: 'Рандомайзер',  color: 'purple' },
+                ] as const).map(p => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setPlatform(p.id as any)}
+                    className={`flex items-center justify-center gap-2 p-3 rounded-2xl border transition-all ${
+                      platform === p.id
+                        ? p.color === 'emerald'
+                          ? 'bg-emerald-600/10 border-emerald-500 text-emerald-400'
+                          : p.color === 'purple'
+                            ? 'bg-purple-600/10 border-purple-500 text-purple-400'
+                            : 'bg-blue-600/10 border-blue-500 text-blue-400'
+                        : 'bg-[#0a0a0a] border-zinc-800 text-zinc-500 hover:border-zinc-700'
+                    }`}
+                  >
+                    {p.icon}
+                    <span className="text-xs font-black uppercase">{p.label}</span>
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -101,7 +101,7 @@ const CreateBotModal: React.FC<CreateBotModalProps> = ({ isOpen, onClose, onSubm
                 type="password"
                 required
                 className="w-full bg-[#0a0a0a] border border-zinc-800 rounded-2xl p-4 text-sm text-white font-mono focus:border-blue-500 focus:outline-none transition-all"
-                placeholder={platform === 'vk' ? "vk1.a.xxxx..." : "123456:ABC-DEF..."}
+                placeholder={platform === 'vk' ? "vk1.a.xxxx..." : "123456789:AAF..."}
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
               />
