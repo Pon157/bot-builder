@@ -96,7 +96,7 @@ CURRENCIES = {
     "EUR": {"symbol": "€", "rate": 0.010},
     "BYN": {"symbol": "BYN", "rate": 0.035},
     "UAH": {"symbol": "₴", "rate": 0.43},
-    "KZT": {"symbol": "₸", "rate": 5.20}
+    "KZT": {"symbol": "₸", "rate": 5.20},
     "XTR": {"symbol": "⭐️", "rate": 0.6} 
 }
 
