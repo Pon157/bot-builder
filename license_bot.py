@@ -71,7 +71,7 @@ PARTNERS_CONFIG = {
         "name": "NOVA CREATIVE STUDIO",
         "payment_url": "https://t.me/G_78_8_4_5_89254826783g", # Ссылка на оплату звездами (или инструкция)
         "admin_chat_id": -1003784801472, 
-        "menu_title": "🌟 <b>Оплата через Telegram Stars</b>\NOVA CREATIVE STUDIO!",
+        "menu_title": "🌟 <b>Оплата через Telegram Stars</b> NOVA CREATIVE STUDIO!",
         "force_currency": "XTR" # Принудительно включаем звезды в этом меню
     }
 }
