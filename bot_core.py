@@ -567,7 +567,7 @@ class BotInstance:
             logger.error(f"Forwarding Error: {e}")
 
     async def admin_control_logic(self, m: Message):
-        # Проверяем, является ли сообщение командой
+        # Базовая проверка на команду
         if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): 
             return False
         
@@ -576,60 +576,62 @@ class BotInstance:
         
         # --- 1. ГЛОБАЛЬНЫЕ КОМАНДЫ (Broadcast) ---
         if command == "broadcast":
-            # 1. Проверяем, есть ли сообщение для пересылки (через Reply)
-            # 2. Если нет, берем текст после команды
+            # Проверяем: это ответ на сообщение (Reply) или просто текст после команды?
             target_msg = m.reply_to_message
             broadcast_text = m.text[len(cmd_parts[0]):].strip()
             
             if not target_msg and not broadcast_text:
                 await m.reply(
                     "❌ <b>Ошибка: нечего рассылать!</b>\n\n"
-                    "• Чтобы разослать <b>медиа</b>: ответьте командой <code>/broadcast</code> на фото/видео.\n"
-                    "• Чтобы разослать <b>текст</b>: напишите <code>/broadcast привет всем</code>."
+                    "• Чтобы рассылать <b>медиа</b>: ответьте командой <code>/broadcast</code> на фото/видео.\n"
+                    "• Чтобы рассылать <b>текст</b>: напишите <code>/broadcast ваш текст</code>."
                 )
                 return True
 
             sent_count = 0
             blocked_count = 0
+            # Информируем админа о начале процесса
             status_msg = await m.reply(f"🚀 Запуск рассылки на {len(self.users_list)} пользователей...")
 
             for user in self.users_list:
-                # Не шлем самому себе (админу)
+                # Не отправляем рассылку самому админу
                 if user['id'] == self.admin_chat_id: 
                     continue
                 
                 try:
                     if target_msg:
-                        # Копируем сообщение целиком (любой тип контента)
+                        # КОПИРУЕМ сообщение (фото, видео, стикер, документ и т.д.)
                         await self.bot.copy_message(
                             chat_id=user['id'],
                             from_chat_id=m.chat.id,
                             message_id=target_msg.message_id
                         )
                     else:
-                        # Отправляем только текст
+                        # Отправляем обычный ТЕКСТ
                         await self.bot.send_message(user['id'], broadcast_text)
                     
                     sent_count += 1
-                    # Задержка для обхода лимитов Telegram (Flood limit)
+                    # Задержка 0.05 сек для предотвращения Flood Limit (20 сообщений в сек)
                     await asyncio.sleep(0.05) 
                     
                 except (TelegramForbiddenError, TelegramBadRequest):
                     blocked_count += 1
-                    user["is_active"] = False # Помечаем как неактивного
+                    user["is_active"] = False # Помечаем пользователя как неактивного
                 except Exception as e:
-                    logger.error(f"Broadcast error for {user['id']}: {e}")
+                    logger.error(f"Ошибка трансляции для {user['id']}: {e}")
 
+            # Финальный отчет
             await status_msg.edit_text(
                 f"✅ <b>Рассылка завершена!</b>\n\n"
-                f"👤 Успешно: {sent_count}\n"
+                f"👤 Успешно получено: {sent_count}\n"
                 f"🚫 Заблокировали бота: {blocked_count}"
             )
-            # Синхронизируем состояние (сохраняем is_active = False)
+            # Сохраняем обновленные статусы (is_active) в базу
             await self.sync_queue.put(("sync_state", None))
             return True
 
         # --- 2. ПОИСК ЦЕЛЕВОГО ПОЛЬЗОВАТЕЛЯ (для бан/варн) ---
+        # Эта часть остается без изменений, но идет ПОСЛЕ рассылки
         target_user = None
         if m.message_thread_id:
             target_user = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
@@ -639,13 +641,12 @@ class BotInstance:
             if uid:
                 target_user = next((u for u in self.users_list if u['id'] == uid), None)
         
-        # Если юзер не найден, а команда введена — игнорируем (даем провалиться в обычную пересылку)
         if not target_user: 
             return False
 
         uid = target_user['id']
         
-        # --- 3. КОМАНДЫ ДЛЯ КОНКРЕТНОГО ЮЗЕРА ---
+        # --- 3. КОМАНДЫ МОДЕРАЦИИ (ban, unban, warn, unwarn) ---
         if command == "ban":
             target_user["is_banned"] = True
             self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
@@ -654,7 +655,7 @@ class BotInstance:
             except: pass
             await m.reply(f"✅ Пользователь {uid} заблокирован.")
             return True
-            
+        
         elif command == "unban":
             target_user["is_banned"] = False
             self.stats_data["bannedCount"] = max(0, self.stats_data.get("bannedCount", 1) - 1)
@@ -663,7 +664,7 @@ class BotInstance:
             except: pass
             await m.reply(f"✅ Пользователь {uid} разблокирован.")
             return True
-            
+
         elif command == "warn":
             target_user["warns"] = target_user.get("warns", 0) + 1
             await self.sync_queue.put(("sync_state", None))
