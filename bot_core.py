@@ -578,58 +578,55 @@ class BotInstance:
             logger.error(f"Forwarding Error: {e}")
 
     async def admin_control_logic(self, m: Message):
-        # --- 0. ЗАЩИТА ---
-        # Принудительно приводим оба ID к int для корректного сравнения
-        try:
-            current_user_id = int(m.from_user.id)
-            admin_id = int(self.admin_chat_id)
-        except (ValueError, TypeError):
-            # Если ID админа не задан или кривой — блокируем доступ
+        # --- 0. ЗАЩИТА: Проверка прав по adminIds из БД ---
+        # Твой ID: 5883703466, он в списке adminIds в конфиге.
+        # self.admin_chat_id: -1003101136129 (это группа).
+        admin_ids = self.config.get("adminIds", [])
+        
+        # Проверяем, есть ли отправитель в списке админов или это сам админ-чат
+        is_admin = (
+            m.from_user.id in admin_ids or 
+            str(m.from_user.id) in map(str, admin_ids) or
+            m.from_user.id == self.admin_chat_id
+        )
+
+        if not is_admin:
             return False
 
-        if current_user_id != admin_id:
-            return False
-
-        # Проверка на наличие текста команды
+        # Проверка на наличие текста команды (/ или !)
         if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): 
             return False
         
-        # Парсим команду
         cmd_parts = m.text.split()
         command = cmd_parts[0][1:].lower()
         
         # --- 1. ГЛОБАЛЬНЫЕ КОМАНДЫ (Broadcast по реплаю) ---
         if command == "broadcast":
-            # Проверяем наличие реплая
             if not m.reply_to_message:
                 await m.reply("❌ <b>Ошибка:</b> Используйте команду в ответ на сообщение для рассылки.")
                 return True
             
-            # Сообщение, которое рассылаем
             target_msg_id = m.reply_to_message.message_id
             sent_count, err_count = 0, 0
-            
             status_msg = await m.reply("🚀 <b>Рассылка запущена...</b>")
             
-            # Копируем список, чтобы избежать ошибок итерации при изменении
-            users_to_send = list(self.users_list)
+            # Берем список пользователей из connectedUsers твоего JSON
+            all_users = self.config.get("connectedUsers", [])
             
-            for user in users_to_send:
+            for user in all_users:
                 try:
-                    target_id = int(user['id'])
-                    # Пропускаем самого админа
-                    if target_id == admin_id:
+                    u_id = int(user['id'])
+                    # Не шлем самому себе (админу), чтобы не спамить в чат управления
+                    if u_id == m.from_user.id or u_id == self.admin_chat_id:
                         continue
                         
-                    # Копируем сообщение
                     await self.bot.copy_message(
-                        chat_id=target_id,
+                        chat_id=u_id,
                         from_chat_id=m.chat.id,
                         message_id=target_msg_id
                     )
                     sent_count += 1
-                    # Пауза для обхода лимитов Telegram (30 сообщений в секунду)
-                    await asyncio.sleep(0.05) 
+                    await asyncio.sleep(0.05) # Защита от Flood Limit
                 except Exception:
                     err_count += 1
                     user["is_active"] = False
@@ -639,21 +636,20 @@ class BotInstance:
                 f"👤 Успешно: {sent_count}\n"
                 f"🚫 Ошибки (блок): {err_count}"
             )
-            # Сохраняем состояние активности юзеров
             await self.sync_queue.put(("sync_state", None))
             return True
 
-        # --- 2. ПОИСК ЦЕЛЕВОГО ПОЛЬЗОВАТЕЛЯ (для бан/варн) ---
+        # --- 2. ПОИСК ПОЛЬЗОВАТЕЛЯ (для бан/варн) ---
         target_user = None
-        # Если команда в топике
-        if m.message_thread_id:
-            target_user = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
+        users_list = self.config.get("connectedUsers", [])
         
-        # Если команда через реплей (но не broadcast)
+        if m.message_thread_id:
+            target_user = next((u for u in users_list if u.get("last_topic_id") == m.message_thread_id), None)
+        
         if not target_user and m.reply_to_message:
             uid = self.msg_map.get(m.reply_to_message.message_id)
             if uid:
-                target_user = next((u for u in self.users_list if int(u['id']) == int(uid)), None)
+                target_user = next((u for u in users_list if int(u['id']) == int(uid)), None)
         
         if not target_user: 
             return False
@@ -661,6 +657,9 @@ class BotInstance:
         uid = target_user['id']
         
         # --- 3. КОМАНДЫ МОДЕРАЦИИ ---
+        # Лимит варнов берем из настроек в JSON (autoBanThreshold)
+        ban_limit = self.config.get("settings", {}).get("autoBanThreshold", 3)
+
         if command == "ban":
             target_user["is_banned"] = True
             self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
@@ -682,17 +681,17 @@ class BotInstance:
         elif command == "warn":
             target_user["warns"] = target_user.get("warns", 0) + 1
             await self.sync_queue.put(("sync_state", None))
-            if self.auto_ban_limit > 0 and target_user["warns"] >= self.auto_ban_limit:
+            
+            if target_user["warns"] >= ban_limit:
                 target_user["is_banned"] = True
                 self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
-                await self.sync_queue.put(("sync_state", None))
                 try: await self.bot.send_message(uid, f"🚫 <b>Авто-бан:</b> Лимит варнов ({target_user['warns']}) исчерпан.")
                 except: pass
                 await m.reply(f"🚨 АВТО-БАН! Юзер {uid} (Варнов: {target_user['warns']}).")
             else:
-                try: await self.bot.send_message(uid, f"⚠️ <b>Предупреждение!</b> ({target_user['warns']}/{self.auto_ban_limit})")
+                try: await self.bot.send_message(uid, f"⚠️ <b>Предупреждение!</b> ({target_user['warns']}/{ban_limit})")
                 except: pass
-                await m.reply(f"⚠️ Варн выдан. Всего: {target_user['warns']}/{self.auto_ban_limit}")
+                await m.reply(f"⚠️ Варн выдан. Всего: {target_user['warns']}/{ban_limit}")
             return True
             
         elif command == "unwarn":
