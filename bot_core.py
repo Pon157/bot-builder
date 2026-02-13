@@ -567,46 +567,65 @@ class BotInstance:
             logger.error(f"Forwarding Error: {e}")
 
     async def admin_control_logic(self, m: Message):
+        # Проверяем, является ли сообщение командой
         if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): 
             return False
         
         cmd_parts = m.text.split()
         command = cmd_parts[0][1:].lower()
         
-        # --- 1. ГЛОБАЛЬНЫЕ КОМАНДЫ (не требуют target_user) ---
+        # --- 1. ГЛОБАЛЬНЫЕ КОМАНДЫ (Broadcast) ---
         if command == "broadcast":
-            # Берем всё, что идет после /broadcast
+            # 1. Проверяем, есть ли сообщение для пересылки (через Reply)
+            # 2. Если нет, берем текст после команды
+            target_msg = m.reply_to_message
             broadcast_text = m.text[len(cmd_parts[0]):].strip()
             
-            if not broadcast_text:
-                await m.reply("❌ <b>Ошибка:</b> Введите текст рассылки.\nПример: <code>/broadcast Привет всем!</code>")
+            if not target_msg and not broadcast_text:
+                await m.reply(
+                    "❌ <b>Ошибка: нечего рассылать!</b>\n\n"
+                    "• Чтобы разослать <b>медиа</b>: ответьте командой <code>/broadcast</code> на фото/видео.\n"
+                    "• Чтобы разослать <b>текст</b>: напишите <code>/broadcast привет всем</code>."
+                )
                 return True
 
             sent_count = 0
             blocked_count = 0
-            status_msg = await m.reply(f"🚀 Запуск рассылки на {len(self.users_list)} контактов...")
+            status_msg = await m.reply(f"🚀 Запуск рассылки на {len(self.users_list)} пользователей...")
 
             for user in self.users_list:
-                # Пропускаем самого админа, если он есть в списке
+                # Не шлем самому себе (админу)
                 if user['id'] == self.admin_chat_id: 
                     continue
                 
                 try:
-                    await self.bot.send_message(user['id'], broadcast_text)
+                    if target_msg:
+                        # Копируем сообщение целиком (любой тип контента)
+                        await self.bot.copy_message(
+                            chat_id=user['id'],
+                            from_chat_id=m.chat.id,
+                            message_id=target_msg.message_id
+                        )
+                    else:
+                        # Отправляем только текст
+                        await self.bot.send_message(user['id'], broadcast_text)
+                    
                     sent_count += 1
-                    # Анти-спам задержка
+                    # Задержка для обхода лимитов Telegram (Flood limit)
                     await asyncio.sleep(0.05) 
-                except TelegramForbiddenError:
+                    
+                except (TelegramForbiddenError, TelegramBadRequest):
                     blocked_count += 1
-                    user["is_active"] = False
+                    user["is_active"] = False # Помечаем как неактивного
                 except Exception as e:
-                    logger.error(f"Ошибка рассылки для {user['id']}: {e}")
+                    logger.error(f"Broadcast error for {user['id']}: {e}")
 
             await status_msg.edit_text(
                 f"✅ <b>Рассылка завершена!</b>\n\n"
-                f"👤 Получили: {sent_count}\n"
+                f"👤 Успешно: {sent_count}\n"
                 f"🚫 Заблокировали бота: {blocked_count}"
             )
+            # Синхронизируем состояние (сохраняем is_active = False)
             await self.sync_queue.put(("sync_state", None))
             return True
 
@@ -620,7 +639,7 @@ class BotInstance:
             if uid:
                 target_user = next((u for u in self.users_list if u['id'] == uid), None)
         
-        # Если команда требует юзера, но мы его не нашли
+        # Если юзер не найден, а команда введена — игнорируем (даем провалиться в обычную пересылку)
         if not target_user: 
             return False
 
