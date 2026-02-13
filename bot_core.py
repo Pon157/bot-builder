@@ -578,7 +578,12 @@ class BotInstance:
             logger.error(f"Forwarding Error: {e}")
 
     async def admin_control_logic(self, m: Message):
-        # Базовая проверка на команду
+        # --- 0. ЗАЩИТА: Проверяем, что пишет именно АДМИНИСТРАТОР ---
+        # Сравниваем ID отправителя с ID админа из .env
+        if m.from_user.id != self.admin_chat_id:
+            return False
+
+        # Базовая проверка на наличие текста команды
         if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): 
             return False
         
@@ -625,11 +630,9 @@ class BotInstance:
 
         # --- 2. ПОИСК ЦЕЛЕВОГО ПОЛЬЗОВАТЕЛЯ (для бан/варн) ---
         target_user = None
-        # Сначала проверяем по топику
         if m.message_thread_id:
             target_user = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
         
-        # Если не топик, проверяем реплей (для бан/варн)
         if not target_user and m.reply_to_message:
             uid = self.msg_map.get(m.reply_to_message.message_id)
             if uid:
