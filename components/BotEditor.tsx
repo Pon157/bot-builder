@@ -7,7 +7,7 @@ import {
   Settings, Cpu, BarChart3, Terminal, X, Save, Power,
   Ticket, Plus, MessageSquare, User, CheckSquare,
   Square, Zap, Layout, ShieldAlert, Lock, Trash2, AlertCircle, Globe,
-  Send, Shuffle, Hash, Users, Link
+  Send, Shuffle, Hash, Users, Link, Smartphone, ChevronDown
 } from 'lucide-react';
 
 interface BotEditorProps {
@@ -172,6 +172,35 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
       {activeTab === 'settings' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
 
+          {/* ══ ТИП БОТА — всегда видно, col-span-2 ══ */}
+          <div className="lg:col-span-2">
+            <div className="bg-[#111] border border-zinc-800 p-6 rounded-[2.5rem]">
+              <h2 className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                <ChevronDown className="w-3 h-3" /> Тип бота
+              </h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                {([
+                  { id: 'telegram',   label: 'TG Поддержка', sub: 'Чат с пользователями',  Icon: Smartphone, active: 'bg-blue-600/10 border-blue-500 text-blue-400'    },
+                  { id: 'vk',         label: 'VK Поддержка', sub: 'Беседа ВКонтакте',       Icon: Globe,      active: 'bg-sky-600/10 border-sky-500 text-sky-400'        },
+                  { id: 'poster',     label: 'TG Постинг',   sub: 'Публикация в канал',     Icon: Send,       active: 'bg-emerald-600/10 border-emerald-500 text-emerald-400' },
+                  { id: 'randomizer', label: 'Рандомайзер',  sub: 'Розыгрыши и конкурсы',  Icon: Shuffle,    active: 'bg-purple-600/10 border-purple-500 text-purple-400' },
+                ] as const).map(({ id, label, sub, Icon, active }) => (
+                  <button key={id} type="button"
+                    onClick={() => handleLocalUpdate({ ...bot, platform: id as any })}
+                    className={`flex items-center gap-3 p-4 rounded-2xl border text-left transition-all ${
+                      bot.platform === id ? active : 'bg-black border-zinc-800 text-zinc-500 hover:border-zinc-700'
+                    }`}>
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <div>
+                      <div className="text-[10px] font-black uppercase">{label}</div>
+                      <div className="text-[8px] opacity-60 font-medium">{sub}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
           {/* Левая колонка */}
           <div className="space-y-8">
             <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
@@ -179,19 +208,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                 <Settings className="w-4 h-4 text-blue-500" /> Основные настройки
               </h2>
               <div className="space-y-5">
-
-                {/* Платформа — показываем только для support-ботов */}
-                {isSupportBot && (
-                  <div className="flex bg-black p-1 rounded-2xl border border-zinc-800">
-                    {['telegram', 'vk'].map(p => (
-                      <button key={p} type="button"
-                        onClick={() => handleLocalUpdate({ ...bot, platform: p as any })}
-                        className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${bot.platform === p ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'text-zinc-500 hover:text-zinc-300'}`}>
-                        {p === 'telegram' ? 'Telegram Bot' : 'VK Community'}
-                      </button>
-                    ))}
-                  </div>
-                )}
 
                 {/* Токен */}
                 <label className="block">
