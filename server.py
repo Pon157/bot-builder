@@ -539,6 +539,13 @@ async def get_user_bots(user_id: str):
                 "useTopics": False
             }
 
+            # Данные рандомайзера — прямо в корень для BotStatsView
+            bot["lotteries"] = cfg.get("lotteries", [])
+            bot["users"]     = cfg.get("users",     [])
+
+            # config как чистый dict (для bot.config?.stats и т.д.)
+            bot["config"] = cfg
+
             # --- КРИТИЧНО ДЛЯ АНАЛИТИКИ ---
             # Статистика может быть в колонке stats ИЛИ внутри config.stats.
             # Объединяем оба источника и кладём в bot.stats, чтобы фронтенд видел данные.
