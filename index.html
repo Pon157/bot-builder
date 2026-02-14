@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,54 +5,32 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dialoge Engine Beta</title>
     
-    <!-- ИКОНКА ВКЛАДКИ (ФАВИКОН) -->
-    <!-- Замените href на прямую ссылку на вашу картинку -->
     <link rel="icon" id="dynamic-favicon" type="image/png" href="https://i.yapx.ru/c2jC0.jpg">
 
     <script async src="https://timeweb.cloud/api/v1/cloud-ai/agents/b33d9503-ab80-4663-980a-e075e31585c0/embed.js?collapsed=true"></script>
     
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
+        /* Базовые стили для предотвращения мерцания при загрузке */
         body {
-            font-family: 'Inter', sans-serif;
             background-color: #0a0a0a;
             color: #ededed;
-        }
-        .mono {
-            font-family: 'JetBrains Mono', monospace;
+            margin: 0;
         }
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
     </style>
     
     <script type="module">
-      // Скрипт для динамической смены иконки (если нужно)
+      // Скрипт для динамической смены иконки
       window.setFavicon = (url) => {
         const link = document.getElementById('dynamic-favicon');
         if (link) link.href = url;
       };
     </script>
-
-<script type="importmap">
-{
-  "imports": {
-    "react": "https://esm.sh/react@19.0.0",
-    "react-dom": "https://esm.sh/react-dom@19.0.0",
-    "react-dom/client": "https://esm.sh/react-dom@19.0.0/client",
-    "recharts": "https://esm.sh/recharts@2.15.0?external=react,react-dom",
-    "lucide-react": "https://esm.sh/lucide-react@0.474.0?external=react,react-dom",
-    "@google/genai": "https://esm.sh/@google/genai@1.38.0",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
-    "react/": "https://esm.sh/react@^19.2.4/",
-    "vite": "https://esm.sh/vite@^7.3.1",
-    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.3"
-  }
-}
-</script>
 </head>
 <body>
     <div id="root"></div>
+    
     <script type="module" src="/index.tsx"></script>
 </body>
 </html>
