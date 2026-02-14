@@ -1,8 +1,4 @@
-@import "tailwindcss"; /* Это заменяет base, components и utilities в v4 */
-
-/* Шрифты оставляем как были */
-@import "@fontsource/inter/variable.css";
-@import "@fontsource/jetbrains-mono";
+@import "tailwindcss";
 
 body {
     font-family: 'Inter', sans-serif;
