@@ -102,7 +102,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
     { id: 'logic',    label: 'Триггеры',     icon: Zap,       always: false },
     { id: 'stats',    label: 'Аналитика',    icon: BarChart3, always: true  },
     { id: 'logs',     label: 'Терминал',     icon: Terminal,  always: true  },
-    { id: 'chat',     label: 'CRM',          icon: MessageSquare, always: false },
   ].filter(t => t.always || isSupportBot);
 
   // ── Иконка заголовка ──
