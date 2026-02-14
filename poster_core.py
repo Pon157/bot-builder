@@ -115,14 +115,26 @@ async def load_config():
                     _config.update(db_cfg)   # DB перезаписывает cfg_file (актуально)
         except Exception as _le:
             logger.warning(f"load_config DB error: {_le}")
+    # Инициализируем обязательные поля если их нет
+    if "stats" not in _config:
+        _config["stats"] = {"totalPosts": 0, "history": []}
+    if "channelId" not in _config:
+        _config["channelId"] = ""
+    if "adminIds" not in _config:
+        _config["adminIds"] = []
     return _config
 
 async def save_config():
+    """Сохраняет конфиг в БД. stats сохраняем в ОБОИХ местах:
+    - в config.stats (для poster_core при перезапуске)
+    - в колонку stats (для фронтенда через getBotStats API)
+    """
+    stats_val = _config.get("stats", {})
     async with httpx.AsyncClient(timeout=10) as c:
         await c.patch(
             f"{SB_URL}/rest/v1/bots?id=eq.{BOT_ID}",
             headers=_sb_headers(),
-            json={"config": _config, "stats": _config.get("stats", {})}
+            json={"config": _config, "stats": stats_val}
         )
 
 def cfg() -> dict:
