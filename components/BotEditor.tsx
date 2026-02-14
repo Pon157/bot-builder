@@ -7,7 +7,7 @@ import {
   Settings, Cpu, BarChart3, Terminal, X, Save, Power,
   Ticket, Plus, MessageSquare, User, CheckSquare,
   Square, Zap, Layout, ShieldAlert, Lock, Trash2, AlertCircle, Globe,
-  Send, Shuffle, Hash, Users, Link
+  Send, Shuffle, Hash, Users, Link, Smartphone, ChevronDown
 } from 'lucide-react';
 
 interface BotEditorProps {
@@ -172,6 +172,35 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
       {activeTab === 'settings' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
 
+          {/* ══ ТИП БОТА — всегда col-span-2 ══ */}
+          <div className="lg:col-span-2">
+            <div className="bg-[#111] border border-zinc-800 p-6 rounded-[2.5rem]">
+              <h2 className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                <ChevronDown className="w-3 h-3" /> Тип бота
+              </h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                {([
+                  { id: 'telegram',   label: 'TG Поддержка', sub: 'Чат с пользователями',  Icon: Smartphone, active: 'bg-blue-600/10 border-blue-500 text-blue-400'    },
+                  { id: 'vk',         label: 'VK Поддержка', sub: 'Беседа ВКонтакте',       Icon: Globe,      active: 'bg-sky-600/10 border-sky-500 text-sky-400'        },
+                  { id: 'poster',     label: 'TG Постинг',   sub: 'Публикация в канал',     Icon: Send,       active: 'bg-emerald-600/10 border-emerald-500 text-emerald-400' },
+                  { id: 'randomizer', label: 'Рандомайзер',  sub: 'Розыгрыши и конкурсы',  Icon: Shuffle,    active: 'bg-purple-600/10 border-purple-500 text-purple-400' },
+                ] as const).map(({ id, label, sub, Icon, active }) => (
+                  <button key={id} type="button"
+                    onClick={() => handleLocalUpdate({ ...bot, platform: id as any })}
+                    className={`flex items-center gap-3 p-4 rounded-2xl border text-left transition-all ${
+                      bot.platform === id ? active : 'bg-black border-zinc-800 text-zinc-500 hover:border-zinc-700'
+                    }`}>
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <div>
+                      <div className="text-[10px] font-black uppercase">{label}</div>
+                      <div className="text-[8px] opacity-60 font-medium">{sub}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
           {/* Левая колонка */}
           <div className="space-y-8">
             <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
@@ -328,11 +357,13 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                   <Send className="w-4 h-4" />Бот постинга — возможности
                 </h3>
                 <div className="text-[10px] text-zinc-400 leading-relaxed space-y-1.5">
-                  <p>✅ <b>Контент:</b> текст HTML, фото, видео, GIF, аудио, документ, стикер</p>
-                  <p>✅ <b>Инлайн-кнопки:</b> формат <code className="text-emerald-400">Текст | https://url</code></p>
-                  <p>✅ <b>Расписание:</b> через N минут или конкретная дата</p>
-                  <p>✅ <b>Предпросмотр</b> перед публикацией</p>
-                  <p className="text-zinc-600 mt-2">Управление: /start → Создать пост (wizard)</p>
+                  <p>✅ <b>Контент:</b> текст, фото, видео, GIF, аудио, документ, стикер</p>
+                  <p>✅ <b>Форматирование:</b> выделяй текст прямо в Telegram — жирный, курсив, код</p>
+                  <p>✅ <b>Несколько каналов:</b> публикация в один или все сразу</p>
+                  <p>✅ <b>Кнопки:</b> <code className="text-emerald-400">Текст | https://url</code> · столбцом или строчкой</p>
+                  <p>✅ <b>Расписание:</b> через N минут / часов или точная дата</p>
+                  <p>✅ <b>Очередь постов:</b> список запланированных + отмена</p>
+                  <p className="text-zinc-600 mt-2">Управление: /start → wizard</p>
                 </div>
               </div>
             )}
@@ -343,10 +374,10 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                   <Shuffle className="w-4 h-4" />Рандомайзер — возможности
                 </h3>
                 <div className="text-[10px] text-zinc-400 leading-relaxed space-y-1.5">
-                  <p>✅ <b>Создание розыгрышей</b> из панели администратора</p>
-                  <p>✅ <b>Публикация поста</b> в канал с кнопкой «Участвовать»</p>
-                  <p>✅ <b>Проверка подписок</b> перед регистрацией</p>
+                  <p>✅ <b>Розыгрыши</b> с публикацией в канал + кнопкой «Участвовать»</p>
+                  <p>✅ <b>Проверка подписки</b> на канал перед участием</p>
                   <p>✅ <b>Финиш</b>: по времени или по числу участников</p>
+                  <p>✅ <b>Авто-выбор победителей</b> и уведомление</p>
                   <p>✅ <b>/broadcast</b> — рассылка по всем участникам</p>
                   <p className="text-zinc-600 mt-2">Управление: /start → 🛠 Панель → Создать розыгрыш</p>
                 </div>
@@ -441,7 +472,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
           )}
 
           {/* Зона опасных действий */}
-          <div className={isSupportBot ? 'lg:col-span-2 mt-4' : 'mt-4'}>
+          <div className="lg:col-span-2 mt-4">
             {isAdminMode ? (
               <div className="p-6 border border-zinc-800 bg-zinc-900/40 rounded-[2rem] flex items-center gap-4 opacity-50 pointer-events-none">
                 <div className="p-3 bg-zinc-800 rounded-xl"><Lock size={20} className="text-zinc-500" /></div>
