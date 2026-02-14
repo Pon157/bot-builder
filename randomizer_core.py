@@ -116,15 +116,33 @@ async def load_config() -> dict:
                     _config.update(db_cfg)
         except Exception as _le:
             logger.warning(f"load_config DB error: {_le}")
+    # Инициализируем обязательные поля
+    if "stats" not in _config:
+        _config["stats"] = {"totalUsers": 0, "blockedCount": 0, "totalLotteries": 0, "history": []}
+    if "lotChannel" not in _config:
+        _config["lotChannel"] = ""
+    if "adminIds" not in _config:
+        _config["adminIds"] = []
+    if "lotteries" not in _config:
+        _config["lotteries"] = []
+    if "users" not in _config:
+        _config["users"] = []
+    if "welcomeMessage" not in _config:
+        _config["welcomeMessage"] = "👋 Привет! Я бот для розыгрышей."
     return _config
 
 async def save_config():
-    """Сохраняет _config + stats в БД"""
+    """Сохраняет _config + stats в БД.
+    stats пишем в обоих местах: config.stats и колонку stats.
+    """
+    stats_val = _config.get("stats", {
+        "totalUsers": 0, "blockedCount": 0, "totalLotteries": 0, "history": []
+    })
     async with httpx.AsyncClient(timeout=10) as c:
         await c.patch(
             f"{SB_URL}/rest/v1/bots?id=eq.{BOT_ID}",
             headers=_sb_headers(),
-            json={"config": _config, "stats": _config.get("stats", {})}
+            json={"config": _config, "stats": stats_val}
         )
 
 def cfg() -> dict:
@@ -182,9 +200,18 @@ def upsert_user(msg: Message):
         users().append(u)
         st = get_stats()
         st["totalUsers"] = len(users())
+        # Обновляем историю
+        today = datetime.now().strftime("%d.%m")
+        hist = st.setdefault("history", [])
+        day = next((d for d in hist if d.get("date") == today), None)
+        if not day:
+            hist.append({"date": today, "totalUsers": len(users())})
+        else:
+            day["totalUsers"] = len(users())
+        st["history"] = hist[-30:]
     else:
-        u["name"]     = name
-        u["username"] = uname
+        u["name"]       = name
+        u["username"]   = uname
         u["is_blocked"] = False
     return u
 
@@ -234,6 +261,9 @@ async def finalize_lot(lot_id: int):
     if not lot or lot["status"] != "active":
         return
     lot["status"] = "closed"
+    # Обновляем счётчик завершённых лотерей в stats
+    st = get_stats()
+    st["totalLotteries"] = len([l for l in lotteries() if l["status"] == "closed"])
     participants = lot.get("participants", [])
 
     if not participants:
@@ -724,6 +754,9 @@ async def bc_confirm(c: CallbackQuery, state: FSMContext):
         except Exception:
             bad += 1
         await asyncio.sleep(0.05)
+    # Обновляем blockedCount в stats
+    st = get_stats()
+    st["blockedCount"] = len([u for u in users() if u.get("is_blocked")])
     await save_config()
     await c.message.answer(f"🏁 Рассылка завершена.\n✅ Доставлено: {ok}\n❌ Ошибок/блок: {bad}")
 
