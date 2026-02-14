@@ -1,9 +1,6 @@
-/* Подключаем Tailwind */
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss"; /* Это заменяет base, components и utilities в v4 */
 
-/* Подключаем шрифты, которые ты установил через npm */
+/* Шрифты оставляем как были */
 @import "@fontsource/inter/variable.css";
 @import "@fontsource/jetbrains-mono";
 
