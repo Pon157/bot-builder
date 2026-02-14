@@ -1,0 +1,22 @@
+/* Подключаем Tailwind */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Подключаем шрифты, которые ты установил через npm */
+@import "@fontsource/inter/variable.css";
+@import "@fontsource/jetbrains-mono";
+
+body {
+    font-family: 'Inter', sans-serif;
+    background-color: #0a0a0a;
+    color: #ededed;
+    margin: 0;
+}
+
+.mono {
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
