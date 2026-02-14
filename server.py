@@ -469,12 +469,18 @@ async def get_bot_stats_api(bot_id: str):
         merged_history = sorted(history_map.values(), key=sort_key)
 
         payload = {
-            "history":       merged_history,
-            "bannedCount":   max_val("bannedCount"),
-            "incomingToday": max_val("incomingToday"),
-            "outgoingToday": max_val("outgoingToday"),
-            "totalMessages": max_val("totalMessages"),
-            "activeUsers24h":max_val("activeUsers24h"),
+            "history":        merged_history,
+            "bannedCount":    max_val("bannedCount"),
+            "incomingToday":  max_val("incomingToday"),
+            "outgoingToday":  max_val("outgoingToday"),
+            "totalMessages":  max_val("totalMessages"),
+            "activeUsers24h": max_val("activeUsers24h"),
+            # Poster stats
+            "totalPosts":     max_val("totalPosts"),
+            # Randomizer stats
+            "totalUsers":     max_val("totalUsers"),
+            "blockedCount":   max_val("blockedCount"),
+            "totalLotteries": max_val("totalLotteries"),
         }
 
         logger.info(f"📊 Stats [{bot_id}]: {len(merged_history)} дней, {payload['totalMessages']} сообщений")
@@ -539,11 +545,11 @@ async def get_user_bots(user_id: str):
                 "useTopics": False
             }
 
-            # Данные рандомайзера — прямо в корень для BotStatsView
+            # Данные рандомайзера и постера — прямо в корень для фронтенда
             bot["lotteries"] = cfg.get("lotteries", [])
             bot["users"]     = cfg.get("users",     [])
 
-            # config как чистый dict (для bot.config?.stats и т.д.)
+            # config как чистый dict для bot.config?.* на фронтенде
             bot["config"] = cfg
 
             # --- КРИТИЧНО ДЛЯ АНАЛИТИКИ ---
@@ -693,7 +699,7 @@ async def save_bot(b: dict):
             "stats": old_config.get("stats", {}),
             "buttons": btns,
             "triggers": get_val("triggers", []),
-            "welcomeMessage": get_val("welcomeMessage", "Привет!"),
+            "welcomeMessage": get_val("welcomeMessage", old_config.get("welcomeMessage", "Привет!")),
             "settings": {**old_config.get("settings", {}), **(b.get("settings") or inc_cfg.get("settings") or {})},
             "connectedUsers": old_config.get("connectedUsers", []),
             # Дублируем ID в конфиг для bot_core
@@ -706,7 +712,7 @@ async def save_bot(b: dict):
             "channelId":  channel_id_val,
             "lotChannel": lot_channel_val,
             "botLink":    bot_link_val,
-            # Сохраняем данные рандомайзера (не затираем при сохранении настроек)
+            # КРИТИЧНО: не затираем данные рандомайзера и постера при сохранении настроек
             "lotteries":  old_config.get("lotteries", []),
             "users":      old_config.get("users",     []),
         }
@@ -779,9 +785,15 @@ async def start_handler(req: dict):
             logger.warning(f"🚫 Отказ в запуске: Владелец бота {bid} заблокирован.")
             raise HTTPException(403, "Ваш аккаунт заблокирован. Запуск ботов невозможен.")
 
-    # 3. Мержим config (JSONB) с корневыми полями — vkbot_core ждёт platform, admin_chat_id и т.д. на верхнем уровне
+    # 3. Мержим config (JSONB) с корневыми полями
+    # ВАЖНО: корневые поля (platform, token) перезаписывают config, а не наоборот
     inner_cfg = bot_data.get("config") or {}
+    if not isinstance(inner_cfg, dict):
+        try: inner_cfg = json.loads(inner_cfg)
+        except: inner_cfg = {}
     merged = {**inner_cfg, **bot_data}
+    # Явно прокидываем platform в cfg — poster_core и randomizer_core читают его
+    merged["platform"] = bot_data.get("platform", inner_cfg.get("platform", "telegram"))
     if await pm.start_bot(bid, merged) is True:
         await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "RUNNING"})
         logger.info(f"🚀 Бот {bid} успешно запущен")
@@ -1263,10 +1275,11 @@ async def create_bot_endpoint(d: dict):
 
         if _plat == 'poster':
             _cfg = {
-                "channelId":  d.get('channelId',  ''),
-                "adminIds":   _ai,
-                "botLink":    d.get('botLink',    ''),
-                "stats":      {"totalPosts": 0, "history": []},
+                "channelId":     d.get('channelId',  ''),
+                "adminIds":      _ai,
+                "botLink":       d.get('botLink',    ''),
+                "welcomeMessage": "",
+                "stats":         {"totalPosts": 0, "history": []},
             }
         elif _plat == 'randomizer':
             _cfg = {
@@ -1282,13 +1295,30 @@ async def create_bot_endpoint(d: dict):
             _cfg = {
                 "buttons":        [],
                 "triggers":       [],
-                "welcomeMessage": "Привет!",
-                "settings":       {"forwardToAdmin": True},
+                "welcomeMessage": d.get('welcomeMessage', 'Привет!'),
+                "settings":       {"forwardToAdmin": True, "antiSpam": True,
+                                   "showHeaderId": True, "showHeaderName": True,
+                                   "showHeaderUsername": True, "useTopics": False},
                 "connectedUsers": [],
                 "adminIds":       _ai,
+                "admin_chat_id":  None,
+                "adminChatId":    None,
             }
 
         # Данные строго под твою структуру SQL
+        _admin_chat_id = None
+        _vk_group_id   = None
+        if _plat == 'telegram':
+            _admin_chat_id = d.get('adminChatId') or d.get('admin_chat_id')
+            if _admin_chat_id:
+                try: _admin_chat_id = int(float(str(_admin_chat_id)))
+                except: _admin_chat_id = None
+        elif _plat == 'vk':
+            _vk_group_id = d.get('vkGroupId') or d.get('vk_group_id')
+            if _vk_group_id:
+                try: _vk_group_id = int(float(str(_vk_group_id)))
+                except: _vk_group_id = None
+
         payload = {
             "id": bot_id,
             "owner_id": owner_id,
@@ -1300,8 +1330,8 @@ async def create_bot_endpoint(d: dict):
             "created_at": int(time.time() * 1000),
             "config": _cfg,
             "stats": {},
-            "admin_chat_id": None,
-            "vk_group_id": None
+            "admin_chat_id": _admin_chat_id,
+            "vk_group_id":   _vk_group_id,
         }
 
         res = await db.post("bots", json=payload)
