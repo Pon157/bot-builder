@@ -4,10 +4,10 @@ import { api } from '../services/apiService';
 import BotConsole from './BotConsole';
 import BotStatsView from './BotStatsView';
 import {
-  Settings, BarChart3, Terminal, Save, Power,
-  Plus, MessageSquare, CheckSquare, Square, Zap,
-  Layout, Lock, Trash2, AlertCircle, Globe,
-  Send, Shuffle, Hash, Users, Link, X, ChevronRight
+  Settings, Cpu, BarChart3, Terminal, X, Save, Power,
+  Ticket, Plus, MessageSquare, User, CheckSquare,
+  Square, Zap, Layout, ShieldAlert, Lock, Trash2, AlertCircle, Globe,
+  Send, Shuffle, Hash, Users, Link
 } from 'lucide-react';
 
 interface BotEditorProps {
@@ -17,76 +17,25 @@ interface BotEditorProps {
   isAdminMode?: boolean;
 }
 
-// ══════════════════════════════════════════════════════════════
-// Маленькие хелперы
-// ══════════════════════════════════════════════════════════════
-
-const Field: React.FC<{
-  label: string;
-  hint?: string;
-  accent?: string;
-  children: React.ReactNode;
-}> = ({ label, hint, accent = 'focus:border-blue-500', children }) => (
-  <div>
-    <span className="block text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-2 ml-1">
-      {label}
-    </span>
-    {children}
-    {hint && <p className="mt-1.5 text-[9px] text-zinc-600 ml-1 uppercase font-bold">{hint}</p>}
-  </div>
-);
-
-const inputCls = (accent = 'focus:border-blue-500', extra = '') =>
-  `w-full bg-black border border-zinc-800 p-4 rounded-2xl text-white outline-none transition-all text-sm ${accent} ${extra}`;
-
-const Toggle: React.FC<{
-  on: boolean;
-  onClick: () => void;
-  label: string;
-  sub?: string;
-  color?: string;
-}> = ({ on, onClick, label, sub, color = 'blue' }) => {
-  const cls = on
-    ? color === 'emerald' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-    : color === 'purple'  ? 'bg-purple-500/10 border-purple-500/30 text-purple-400'
-    : 'bg-blue-500/10 border-blue-500/30 text-blue-400'
-    : 'bg-black border-zinc-800 text-zinc-600';
-  return (
-    <button onClick={onClick}
-      className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all ${cls}`}>
-      <div className="text-left">
-        <p className="text-xs font-bold">{label}</p>
-        {sub && <p className="text-[9px] uppercase opacity-50">{sub}</p>}
-      </div>
-      {on ? <CheckSquare className="w-4 h-4 shrink-0" /> : <Square className="w-4 h-4 shrink-0" />}
-    </button>
-  );
-};
-
-// ══════════════════════════════════════════════════════════════
-// MAIN COMPONENT
-// ══════════════════════════════════════════════════════════════
-
 const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminMode }) => {
-  const [activeTab, setActiveTab] = useState('settings');
+  const [activeTab, setActiveTab] = useState<'settings' | 'logic' | 'interface' | 'logs' | 'stats' | 'chat'>('settings');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [dirty, setDirty] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
 
+  // ── Типы платформ ──
+  const isVK         = bot.platform === 'vk';
   const isPoster     = bot.platform === 'poster';
   const isRandomizer = bot.platform === 'randomizer';
-  const isVK         = bot.platform === 'vk';
   const isSupportBot = !isPoster && !isRandomizer;
 
-  // Сброс вкладки если она недоступна для типа
+  // Сбрасываем вкладку сразу при маунте и при смене бота/платформы
   useEffect(() => {
-    const allowed = isSupportBot
-      ? ['settings', 'interface', 'logic', 'stats', 'logs', 'chat']
-      : isRandomizer
-      ? ['settings', 'stats', 'logs']
-      : ['settings', 'stats', 'logs'];
-    if (!allowed.includes(activeTab)) setActiveTab('settings');
-  }, [bot.platform]);
+    const supportOnlyTabs = ['logic', 'interface', 'chat'];
+    if ((isPoster || isRandomizer) && supportOnlyTabs.includes(activeTab)) {
+      setActiveTab('settings');
+    }
+  }, [bot.id, bot.platform, isPoster, isRandomizer]);
 
   useEffect(() => {
     if (activeTab === 'chat') {
@@ -94,34 +43,44 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
     }
   }, [activeTab, bot.id]);
 
-  // helpers
-  const upd = (patch: Partial<BotConfig>) => { setDirty(true); onUpdate({ ...bot, ...patch }); };
-  const updSet = (key: string, val: any) => {
-    setDirty(true);
-    onUpdate({ ...bot, settings: { ...(bot.settings || {} as any), [key]: val } });
+  const defaultSettings: BotConfig['settings'] = {
+    useTopics: false, topicPerRequest: false, anonymousTopics: false,
+    forwardToAdmin: true, antiSpam: true, showUserInfo: true, showUsername: true,
+    autoApproveJoin: false, rateLimit: 1, autoBanThreshold: 3,
+    showHeaderId: true, showHeaderName: true, showHeaderUsername: true,
+    notifyOnStart: true, notifyOnBlock: true,
+    firstMessageHeader: "🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ:</b>",
+    ticketMessageHeader: "🆘 <b>ЗАЯВКА [{btn}]:</b>",
+    commonMessageHeader: "📩 <b>СООБЩЕНИЕ:</b>"
   };
-  const adminIdsStr = (bot.adminIds || []).join(', ');
-  const parseAdminIds = (str: string) =>
-    str.split(',').map(s => s.trim()).filter(s => /^\d+$/.test(s)).map(Number);
+  const safeSettings = { ...defaultSettings, ...(bot.settings || {}) };
 
-  const save = async () => {
+  // ── Helpers ──
+  const handleLocalUpdate = (upd: BotConfig) => { setHasUnsavedChanges(true); onUpdate(upd); };
+  const updateSetting = (key: keyof typeof defaultSettings, val: any) => {
+    setHasUnsavedChanges(true);
+    onUpdate({ ...bot, settings: { ...safeSettings, [key]: val } });
+  };
+  const syncState = async () => {
     setIsProcessing(true);
     try {
-      const r = await api.saveBot(bot.owner_id, bot);
-      if (r) { onUpdate(r); setDirty(false); }
-    } catch { alert('Ошибка сохранения'); }
+      const updated = await api.saveBot(bot.owner_id, bot);
+      if (updated) onUpdate(updated);
+      setHasUnsavedChanges(false);
+      alert('Конфигурация сохранена!');
+    } catch { alert('Ошибка при сохранении'); }
     finally { setIsProcessing(false); }
   };
-
-  const toggleServer = async () => {
+  const handleToggleServer = async () => {
     setIsProcessing(true);
     try {
       if (bot.status === BotStatus.RUNNING) {
         await api.stopBotOnServer(bot.id);
         onUpdate({ ...bot, status: BotStatus.IDLE });
       } else {
-        const r = await api.saveBot(bot.owner_id, bot);
-        if (r) { onUpdate(r); setDirty(false); }
+        const updated = await api.saveBot(bot.owner_id, bot);
+        if (updated) onUpdate(updated);
+        setHasUnsavedChanges(false);
         const res = await api.startBotOnServer(bot);
         if (res === true) onUpdate({ ...bot, status: BotStatus.RUNNING });
         else alert(`Ошибка запуска: ${res}`);
@@ -129,576 +88,389 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
     } finally { setIsProcessing(false); }
   };
 
-  // — Цвета / иконки по типу ———————————————————————————
-  const [accent, accentBg, accentBorder] = isPoster
-    ? ['text-emerald-400', 'bg-emerald-500/10', 'border-emerald-500/30']
-    : isRandomizer
-    ? ['text-purple-400', 'bg-purple-500/10', 'border-purple-500/30']
-    : isVK
-    ? ['text-sky-400', 'bg-sky-500/10', 'border-sky-500/30']
-    : ['text-blue-400', 'bg-blue-500/10', 'border-blue-500/30'];
+  // ── adminIds helper ──
+  const adminIdsStr = (bot.adminIds || []).join(', ');
+  const updateAdminIds = (str: string) => {
+    const ids = str.split(',').map(s => s.trim()).filter(s => /^\d+$/.test(s)).map(Number);
+    handleLocalUpdate({ ...bot, adminIds: ids });
+  };
 
-  const inputAccent = isPoster ? 'focus:border-emerald-500'
-    : isRandomizer ? 'focus:border-purple-500'
-    : 'focus:border-blue-500';
-
-  const badgeLabel = isPoster ? 'TG Постинг' : isRandomizer ? 'Рандомайзер' : isVK ? 'VK' : 'Telegram';
-  const PlatIcon = isPoster ? Send : isRandomizer ? Shuffle : isVK ? Globe : Settings;
-
+  // ── Вкладки по типу бота ──
   const tabs = [
-    { id: 'settings',  label: 'Настройки', icon: Settings },
-    ...(isSupportBot ? [
-      { id: 'interface', label: 'Кнопки',    icon: MessageSquare },
-      { id: 'logic',     label: 'Триггеры',  icon: Zap },
-      { id: 'chat',      label: 'CRM',       icon: MessageSquare },
-    ] : []),
-    { id: 'stats',     label: 'Аналитика', icon: BarChart3 },
-    { id: 'logs',      label: 'Терминал',  icon: Terminal },
-  ];
+    { id: 'settings', label: 'Основные',     icon: Settings,  always: true },
+    { id: 'interface',label: 'Кнопки',       icon: Ticket,    always: false },
+    { id: 'logic',    label: 'Триггеры',     icon: Zap,       always: false },
+    { id: 'stats',    label: 'Аналитика',    icon: BarChart3, always: true  },
+    { id: 'logs',     label: 'Терминал',     icon: Terminal,  always: true  },
+    { id: 'chat',     label: 'CRM',          icon: MessageSquare, always: false },
+  ].filter(t => t.always || isSupportBot);
 
-  const safeSettings: any = { ...(bot.settings || {}) };
+  // ── Иконка заголовка ──
+  const HeaderIcon = isPoster ? Send : isRandomizer ? Shuffle : (isVK ? Globe : Cpu);
+  const platformColor = isPoster ? 'text-emerald-500' : isRandomizer ? 'text-purple-500' : isVK ? 'text-sky-500' : 'text-blue-500';
+  const platformBadge = isPoster ? 'Постинг' : isRandomizer ? 'Рандомайзер' : isVK ? 'VK' : 'Telegram';
+  const badgeStyle    = isPoster ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' :
+                        isRandomizer ? 'bg-purple-500/10 border-purple-500/20 text-purple-400' :
+                        isVK ? 'bg-sky-500/10 border-sky-500/20 text-sky-400' :
+                        'bg-blue-500/10 border-blue-500/20 text-blue-400';
 
-  // ─────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-6 pb-24 animate-in fade-in duration-300">
+    <div className="space-y-8 animate-in fade-in duration-500 pb-20">
 
-      {/* ── Несохранённые изменения ── */}
-      {dirty && (
-        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-4 bg-zinc-900 border border-zinc-700 px-6 py-3 rounded-2xl shadow-2xl shadow-black/60 animate-in slide-in-from-bottom-4 duration-300">
-          <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
-          <span className="text-xs font-black uppercase tracking-widest text-white">Несохранённые изменения</span>
-          <button onClick={save} disabled={isProcessing}
-            className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-all">
+      {/* Баннер несохранённых изменений */}
+      {hasUnsavedChanges && (
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[100] bg-blue-600 text-white px-8 py-4 rounded-2xl shadow-2xl flex items-center gap-4 animate-bounce">
+          <AlertCircle className="w-5 h-5" />
+          <span className="text-xs font-black uppercase tracking-widest">Несохранённые изменения!</span>
+          <button onClick={syncState} disabled={isProcessing} className="bg-white text-blue-600 px-4 py-1.5 rounded-xl font-black text-[10px] uppercase">
             Сохранить
           </button>
         </div>
       )}
 
-      {/* ── ШАПКА ── */}
-      <header className={`bg-[#111] border border-zinc-800 p-6 rounded-3xl flex flex-col sm:flex-row justify-between items-center gap-5 shadow-2xl`}>
-        <div className="flex items-center gap-5">
-          <div className={`w-14 h-14 rounded-2xl flex items-center justify-center border-2 transition-all ${
-            bot.status === BotStatus.RUNNING
-              ? `${accentBg} ${accentBorder} ${accent}`
-              : 'bg-zinc-900 border-zinc-800 text-zinc-600'
-          }`}>
-            <PlatIcon className="w-7 h-7" />
+      {/* Шапка */}
+      <header className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] flex flex-col md:flex-row justify-between items-center gap-6 shadow-2xl">
+        <div className="flex items-center gap-6">
+          <div className={`w-16 h-16 rounded-2xl flex items-center justify-center border-2 ${bot.status === BotStatus.RUNNING ? `border-current/30 bg-current/5 ${platformColor}` : 'bg-zinc-900 border-zinc-800 text-zinc-600'}`}>
+            <HeaderIcon className="w-8 h-8" />
           </div>
           <div>
-            <div className="flex items-center flex-wrap gap-2">
-              <h1 className="text-2xl font-black text-white">{bot.name}</h1>
-              <span className={`px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-widest border ${accentBg} ${accentBorder} ${accent}`}>
-                {badgeLabel}
-              </span>
-              {isAdminMode && (
-                <span className="px-2 py-0.5 bg-orange-500/10 border border-orange-500/20 rounded-lg text-orange-400 text-[8px] font-black uppercase">
-                  Support Mode
-                </span>
-              )}
+            <div className="flex items-center gap-3">
+              <h1 className="text-3xl font-black text-white">{bot.name}</h1>
+              <span className={`px-2 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest border ${badgeStyle}`}>{platformBadge}</span>
+              {isAdminMode && <span className="px-2 py-1 bg-orange-500/10 border border-orange-500/20 rounded-lg text-orange-500 text-[8px] font-black uppercase tracking-widest">Support</span>}
             </div>
             <div className="flex items-center gap-2 mt-1">
-              <span className={`w-2 h-2 rounded-full ${bot.status === BotStatus.RUNNING ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-600'}`} />
+              <span className={`w-2 h-2 rounded-full ${bot.status === BotStatus.RUNNING ? 'bg-blue-500 animate-pulse' : 'bg-zinc-600'}`}></span>
               <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">{bot.status}</span>
-              {bot.id && <span className="text-[9px] text-zinc-700 font-mono ml-1">{bot.id}</span>}
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          <button onClick={save} disabled={isProcessing}
-            className={`px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all border ${
-              dirty ? 'bg-blue-600 text-white border-blue-600 shadow-lg shadow-blue-600/20' : 'bg-transparent text-zinc-500 border-zinc-800 hover:border-zinc-700'
-            }`}>
-            <Save className="w-4 h-4" />Сохранить
+        <div className="flex gap-4">
+          <button onClick={syncState} disabled={isProcessing} className={`px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all ${hasUnsavedChanges ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}>
+            <Save className="w-4 h-4" /> Сохранить
           </button>
-          <button onClick={toggleServer} disabled={isProcessing}
-            className={`px-8 py-3 rounded-2xl font-black text-xs uppercase flex items-center gap-2 transition-all ${
-              bot.status === BotStatus.RUNNING
-                ? 'bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20'
-                : 'bg-blue-600 text-white shadow-lg shadow-blue-600/20 hover:bg-blue-500'
-            }`}>
-            <Power className="w-4 h-4" />
-            {isProcessing ? '...' : bot.status === BotStatus.RUNNING ? 'Стоп' : 'Запустить'}
+          <button onClick={handleToggleServer} disabled={isProcessing} className={`px-10 py-4 rounded-2xl font-black text-xs uppercase flex items-center gap-2 shadow-xl transition-all ${bot.status === BotStatus.RUNNING ? 'bg-red-500/10 text-red-500 border border-red-500/20' : 'bg-blue-600 text-white'}`}>
+            <Power className="w-4 h-4" /> {bot.status === BotStatus.RUNNING ? 'Стоп' : 'Запустить'}
           </button>
         </div>
       </header>
 
-      {/* ── ВКЛАДКИ ── */}
-      <div className="flex gap-1 border-b border-zinc-800/60 overflow-x-auto no-scrollbar">
+      {/* Вкладки */}
+      <div className="flex gap-2 border-b border-zinc-800 overflow-x-auto no-scrollbar">
         {tabs.map(t => (
-          <button key={t.id} onClick={() => setActiveTab(t.id)}
-            className={`flex items-center gap-1.5 px-5 py-3.5 text-[10px] font-black uppercase tracking-widest border-b-2 transition-all whitespace-nowrap ${
-              activeTab === t.id
-                ? `border-current ${accent}`
-                : 'border-transparent text-zinc-600 hover:text-zinc-400'
-            }`}>
-            <t.icon className="w-3 h-3" />{t.label}
+          <button key={t.id} onClick={() => setActiveTab(t.id as any)}
+            className={`px-6 py-4 text-[10px] font-black uppercase tracking-widest border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${activeTab === t.id ? 'border-blue-500 text-blue-500' : 'border-transparent text-zinc-500'}`}>
+            <t.icon className="w-3.5 h-3.5" />{t.label}
           </button>
         ))}
       </div>
 
       {/* ════════════════════════════════════════════
-          НАСТРОЙКИ — ПОСТЕР
+          ВКЛАДКА: НАСТРОЙКИ
       ════════════════════════════════════════════ */}
-      {activeTab === 'settings' && isPoster && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in fade-in duration-300">
+      {activeTab === 'settings' && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
 
-          {/* Основные */}
-          <div className="bg-[#111] border border-zinc-800 p-7 rounded-3xl space-y-5">
-            <h2 className="text-xs font-black text-zinc-300 uppercase flex items-center gap-2">
-              <Send className="w-4 h-4 text-emerald-500" />Настройки постинга
-            </h2>
-
-            <Field label="Bot Token (BotFather)">
-              <input type="password" className={inputCls('focus:border-emerald-500', 'font-mono')}
-                placeholder="123456789:AAF..." value={bot.token}
-                onChange={e => upd({ token: e.target.value })} />
-            </Field>
-
-            <Field label="Канал для публикации" hint="Бот должен быть администратором канала">
-              <div className="flex items-center gap-2">
-                <Hash className="w-4 h-4 text-emerald-500 shrink-0" />
-                <input className={inputCls('focus:border-emerald-500')}
-                  placeholder="@mychannel или -1001234567890"
-                  value={bot.channelId || ''}
-                  onChange={e => upd({ channelId: e.target.value })} />
-              </div>
-            </Field>
-
-            <Field label="ID администраторов" hint="Кто может создавать и публиковать посты (через запятую)">
-              <div className="flex items-center gap-2">
-                <Users className="w-4 h-4 text-amber-500 shrink-0" />
-                <input className={inputCls('focus:border-amber-500')}
-                  placeholder="123456789, 987654321"
-                  value={adminIdsStr}
-                  onChange={e => upd({ adminIds: parseAdminIds(e.target.value) })} />
-              </div>
-            </Field>
-          </div>
-
-          {/* Инфо-карточка */}
-          <div className="space-y-5">
-            <div className="bg-emerald-500/5 border border-emerald-500/15 p-7 rounded-3xl space-y-4">
-              <h3 className="text-xs font-black text-emerald-400 uppercase flex items-center gap-2">
-                <Send className="w-4 h-4" />Что умеет этот бот
-              </h3>
-              <div className="space-y-2 text-[11px] text-zinc-400 leading-relaxed">
-                {[
-                  '📝 Текст с HTML-форматированием',
-                  '🖼 Фото, Видео, GIF, Аудио, Документ, Стикер',
-                  '🔘 Инлайн-кнопки: <code>Текст | https://url</code>',
-                  '⏰ Отложенная публикация (через N мин или в дату)',
-                  '👁 Предпросмотр перед публикацией',
-                  '✅ Подтверждение: Опубликовать / Редактировать / Отмена',
-                ].map((t, i) => (
-                  <div key={i} className="flex items-start gap-2">
-                    <ChevronRight className="w-3 h-3 text-emerald-500 shrink-0 mt-0.5" />
-                    <span dangerouslySetInnerHTML={{ __html: t }} />
-                  </div>
-                ))}
-              </div>
-              <div className="pt-3 border-t border-emerald-500/10 text-[9px] text-emerald-500/60 uppercase font-black tracking-widest">
-                Запустить бота → /start → Создать пост
-              </div>
-            </div>
-
-            {/* /broadcast инфо */}
-            <div className="bg-amber-500/5 border border-amber-500/15 p-5 rounded-2xl">
-              <h4 className="text-[10px] font-black text-amber-400 uppercase mb-2 flex items-center gap-1.5">
-                <Users className="w-3 h-3" />Команда /broadcast
-              </h4>
-              <p className="text-[10px] text-zinc-500 leading-relaxed">
-                Администраторы из списка выше могут отправить <code className="text-amber-400">/broadcast</code> прямо боту — бот запросит сообщение, покажет превью и разошлёт по всем пользователям.
-              </p>
-            </div>
-
-            {/* Удаление */}
-            {!isAdminMode && (
-              <button onClick={() => window.confirm('Удалить этот инстанс?') && onDelete()}
-                className="w-full p-4 text-[10px] font-black uppercase text-rose-500 bg-rose-500/5 rounded-2xl border border-rose-500/10 hover:bg-rose-500/15 transition-all flex items-center justify-center gap-2">
-                <Trash2 className="w-4 h-4" />Удалить навсегда
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ════════════════════════════════════════════
-          НАСТРОЙКИ — РАНДОМАЙЗЕР
-      ════════════════════════════════════════════ */}
-      {activeTab === 'settings' && isRandomizer && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in fade-in duration-300">
-
-          {/* Основные */}
-          <div className="bg-[#111] border border-zinc-800 p-7 rounded-3xl space-y-5">
-            <h2 className="text-xs font-black text-zinc-300 uppercase flex items-center gap-2">
-              <Shuffle className="w-4 h-4 text-purple-500" />Настройки рандомайзера
-            </h2>
-
-            <Field label="Bot Token (BotFather)">
-              <input type="password" className={inputCls('focus:border-purple-500', 'font-mono')}
-                placeholder="123456789:AAF..." value={bot.token}
-                onChange={e => upd({ token: e.target.value })} />
-            </Field>
-
-            <Field label="Канал розыгрышей" hint="Бот — администратор этого канала">
-              <div className="flex items-center gap-2">
-                <Hash className="w-4 h-4 text-purple-500 shrink-0" />
-                <input className={inputCls('focus:border-purple-500')}
-                  placeholder="@lotchannel или -1001234567890"
-                  value={bot.lotChannel || ''}
-                  onChange={e => upd({ lotChannel: e.target.value })} />
-              </div>
-            </Field>
-
-            <Field label="ID администраторов" hint="Могут управлять ботом, создавать розыгрыши (через запятую)">
-              <div className="flex items-center gap-2">
-                <Users className="w-4 h-4 text-amber-500 shrink-0" />
-                <input className={inputCls('focus:border-amber-500')}
-                  placeholder="123456789, 987654321"
-                  value={adminIdsStr}
-                  onChange={e => upd({ adminIds: parseAdminIds(e.target.value) })} />
-              </div>
-            </Field>
-
-            <Field label="Username бота" hint="Для deep-link ссылок участия в розыгрышах">
-              <div className="flex items-center gap-2">
-                <Link className="w-4 h-4 text-purple-400 shrink-0" />
-                <input className={inputCls('focus:border-purple-500')}
-                  placeholder="@MyLotteryBot"
-                  value={bot.botLink || ''}
-                  onChange={e => upd({ botLink: e.target.value })} />
-              </div>
-            </Field>
-
-            <Field label="Приветственное сообщение (/start)">
-              <textarea className={inputCls('focus:border-purple-500', 'min-h-[80px] resize-none')}
-                placeholder="👋 Привет! Я бот для розыгрышей."
-                value={bot.welcomeMessage || ''}
-                onChange={e => upd({ welcomeMessage: e.target.value })} />
-            </Field>
-          </div>
-
-          {/* Инфо + удаление */}
-          <div className="space-y-5">
-            <div className="bg-purple-500/5 border border-purple-500/15 p-7 rounded-3xl space-y-4">
-              <h3 className="text-xs font-black text-purple-400 uppercase flex items-center gap-2">
-                <Shuffle className="w-4 h-4" />Что умеет этот бот
-              </h3>
-              <div className="space-y-2 text-[11px] text-zinc-400 leading-relaxed">
-                {[
-                  '🎲 Создание розыгрышей из панели администратора',
-                  '📢 Публикация в канал с кнопкой «Участвовать»',
-                  '🔍 Проверка подписки на каналы перед участием',
-                  '⏱ Финиш по времени или по числу участников',
-                  '🏆 Автоматический выбор победителей',
-                  '📊 Аналитика: пользователи, блоки, розыгрыши',
-                  '📣 /broadcast — рассылка по всем участникам',
-                ].map((t, i) => (
-                  <div key={i} className="flex items-start gap-2">
-                    <ChevronRight className="w-3 h-3 text-purple-500 shrink-0 mt-0.5" />
-                    <span>{t}</span>
-                  </div>
-                ))}
-              </div>
-              <div className="pt-3 border-t border-purple-500/10 text-[9px] text-purple-500/60 uppercase font-black tracking-widest">
-                Запустить бота → /start → 🛠 Панель → Создать розыгрыш
-              </div>
-            </div>
-
-            <div className="bg-amber-500/5 border border-amber-500/15 p-5 rounded-2xl">
-              <h4 className="text-[10px] font-black text-amber-400 uppercase mb-2 flex items-center gap-1.5">
-                <Users className="w-3 h-3" />/broadcast через бота
-              </h4>
-              <p className="text-[10px] text-zinc-500 leading-relaxed">
-                Администраторы из списка выше могут прямо в боте нажать <code className="text-amber-400">/broadcast</code> и разослать сообщение всем зарегистрированным пользователям.
-              </p>
-            </div>
-
-            {!isAdminMode && (
-              <button onClick={() => window.confirm('Удалить этот инстанс?') && onDelete()}
-                className="w-full p-4 text-[10px] font-black uppercase text-rose-500 bg-rose-500/5 rounded-2xl border border-rose-500/10 hover:bg-rose-500/15 transition-all flex items-center justify-center gap-2">
-                <Trash2 className="w-4 h-4" />Удалить навсегда
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ════════════════════════════════════════════
-          НАСТРОЙКИ — SUPPORT BOT (TG + VK)
-      ════════════════════════════════════════════ */}
-      {activeTab === 'settings' && isSupportBot && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in fade-in duration-300">
-
-          <div className="space-y-6">
-            {/* Основные */}
-            <div className="bg-[#111] border border-zinc-800 p-7 rounded-3xl space-y-5">
-              <h2 className="text-xs font-black text-zinc-300 uppercase flex items-center gap-2">
-                <Settings className="w-4 h-4 text-blue-500" />Основные
+          {/* Левая колонка */}
+          <div className="space-y-8">
+            <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
+              <h2 className="text-sm font-black text-white uppercase flex items-center gap-2">
+                <Settings className="w-4 h-4 text-blue-500" /> Основные настройки
               </h2>
+              <div className="space-y-5">
 
-              {/* Переключатель TG / VK */}
-              <div className="flex bg-black p-1 rounded-2xl border border-zinc-800">
-                {(['telegram', 'vk'] as const).map(p => (
-                  <button key={p} type="button"
-                    onClick={() => upd({ platform: p })}
-                    className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${
-                      bot.platform === p ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'text-zinc-500 hover:text-zinc-300'
-                    }`}>
-                    {p === 'telegram' ? 'Telegram Bot' : 'VK Community'}
-                  </button>
-                ))}
-              </div>
-
-              <Field label={isVK ? 'ВКонтакте Access Token' : 'Telegram Bot Token'}>
-                <input type="password" className={inputCls('focus:border-blue-500', 'font-mono')}
-                  placeholder={isVK ? 'vk1.a.xxxx...' : '123456789:AAF...'}
-                  value={bot.token}
-                  onChange={e => upd({ token: e.target.value })} />
-              </Field>
-
-              <Field
-                label={isVK ? 'ID беседы (peer_id)' : 'ID группы-форума'}
-                hint={isVK ? 'peer_id беседы ВКонтакте, напр. 2000000010' : 'ID Telegram-группы с включёнными темами'}>
-                <input className={inputCls('focus:border-blue-500')}
-                  placeholder={isVK ? '2000000010' : '-100...'}
-                  value={isVK ? (bot.vkGroupId ?? '') : (bot.adminChatId ?? '')}
-                  onChange={e => isVK
-                    ? upd({ vkGroupId: e.target.value, vk_group_id: e.target.value })
-                    : upd({ adminChatId: e.target.value })} />
-              </Field>
-
-              <Field label="ID администраторов бота" hint="Могут делать /broadcast прямо в боте">
-                <div className="flex items-center gap-2">
-                  <Users className="w-4 h-4 text-amber-500 shrink-0" />
-                  <input className={inputCls('focus:border-amber-500')}
-                    placeholder="123456789, 987654321"
-                    value={adminIdsStr}
-                    onChange={e => upd({ adminIds: parseAdminIds(e.target.value) })} />
-                </div>
-              </Field>
-
-              <Field label="Приветствие (/start)">
-                <textarea className={inputCls('focus:border-blue-500', 'min-h-[90px] resize-none')}
-                  placeholder="Привет! Чем могу помочь?"
-                  value={bot.welcomeMessage || ''}
-                  onChange={e => upd({ welcomeMessage: e.target.value })} />
-              </Field>
-            </div>
-
-            {/* Конструктор шапки */}
-            {!isVK && (
-              <div className="bg-[#111] border border-zinc-800 p-7 rounded-3xl space-y-4">
-                <h3 className="text-xs font-black text-zinc-300 uppercase flex items-center gap-2">
-                  <Layout className="w-4 h-4 text-emerald-500" />Шапки сообщений
-                </h3>
-                {[
-                  { k: 'firstMessageHeader',  l: 'Первое обращение',  ph: '🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ:</b>' },
-                  { k: 'ticketMessageHeader',  l: 'Заявка (кнопки)',   ph: '🆘 <b>ЗАЯВКА [{btn}]:</b>'  },
-                  { k: 'commonMessageHeader',  l: 'Обычное сообщение', ph: '📩 <b>СООБЩЕНИЕ:</b>'        },
-                ].map(f => (
-                  <div key={f.k}>
-                    <span className="text-[9px] text-zinc-600 uppercase font-bold ml-1">{f.l}</span>
-                    <input className="w-full mt-1 bg-black border border-zinc-800 p-3.5 rounded-xl text-xs text-white outline-none focus:border-emerald-500 transition-all"
-                      value={safeSettings[f.k] || ''} placeholder={f.ph}
-                      onChange={e => updSet(f.k, e.target.value)} />
+                {/* Платформа — показываем только для support-ботов */}
+                {isSupportBot && (
+                  <div className="flex bg-black p-1 rounded-2xl border border-zinc-800">
+                    {['telegram', 'vk'].map(p => (
+                      <button key={p} type="button"
+                        onClick={() => handleLocalUpdate({ ...bot, platform: p as any })}
+                        className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${bot.platform === p ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'text-zinc-500 hover:text-zinc-300'}`}>
+                        {p === 'telegram' ? 'Telegram Bot' : 'VK Community'}
+                      </button>
+                    ))}
                   </div>
-                ))}
-                <div className="grid grid-cols-3 gap-2 pt-1">
-                  {[{k:'showHeaderName',l:'Имя'},{k:'showHeaderUsername',l:'@Юзер'},{k:'showHeaderId',l:'ID'}].map(f => (
-                    <Toggle key={f.k} on={!!safeSettings[f.k]} onClick={() => updSet(f.k, !safeSettings[f.k])} label={f.l} color="emerald" />
+                )}
+
+                {/* Токен */}
+                <label className="block">
+                  <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
+                    {isVK ? 'ВКонтакте Access Token' : 'Telegram Bot Token'}
+                  </span>
+                  <input type="password"
+                    placeholder={isVK ? 'Введите токен доступа группы' : 'Токен от @BotFather'}
+                    className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white font-mono outline-none focus:border-blue-500 transition-all"
+                    value={bot.token}
+                    onChange={e => handleLocalUpdate({ ...bot, token: e.target.value })} />
+                </label>
+
+                {/* Группа/Форум — для support-ботов */}
+                {isSupportBot && (
+                  <label className="block">
+                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
+                      {isVK ? 'ID беседы (peer_id)' : 'ID Группы Админов (Forum)'}
+                    </span>
+                    <input type="text"
+                      placeholder={isVK ? '2000000010' : '-100...'}
+                      className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-blue-500 transition-all"
+                      value={isVK ? (bot.vkGroupId ?? bot.vk_group_id ?? '') : (bot.adminChatId ?? '')}
+                      onChange={e => isVK
+                        ? handleLocalUpdate({ ...bot, vkGroupId: e.target.value, vk_group_id: e.target.value })
+                        : handleLocalUpdate({ ...bot, adminChatId: e.target.value })} />
+                    {isVK && <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold tracking-wider">peer_id беседы ВКонтакте: напр. 2000000010</p>}
+                  </label>
+                )}
+
+                {/* Канал — для постера */}
+                {isPoster && (
+                  <label className="block">
+                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
+                      <Hash className="w-3 h-3 text-emerald-500" />Канал для публикации
+                    </span>
+                    <input type="text"
+                      placeholder="@mychannel или -1001234567890"
+                      className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-emerald-500 transition-all"
+                      value={bot.channelId || ''}
+                      onChange={e => handleLocalUpdate({ ...bot, channelId: e.target.value })} />
+                    <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold">Бот должен быть администратором канала</p>
+                  </label>
+                )}
+
+                {/* Канал + ссылка — для рандомайзера */}
+                {isRandomizer && (<>
+                  <label className="block">
+                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
+                      <Hash className="w-3 h-3 text-purple-500" />Канал розыгрышей
+                    </span>
+                    <input type="text"
+                      placeholder="@lotchannel или -1001234567890"
+                      className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-purple-500 transition-all"
+                      value={bot.lotChannel || ''}
+                      onChange={e => handleLocalUpdate({ ...bot, lotChannel: e.target.value })} />
+                    <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold">Бот — администратор этого канала</p>
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
+                      <Link className="w-3 h-3 text-purple-400" />Username бота
+                    </span>
+                    <input type="text"
+                      placeholder="@MyLotteryBot"
+                      className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-purple-500 transition-all"
+                      value={bot.botLink || ''}
+                      onChange={e => handleLocalUpdate({ ...bot, botLink: e.target.value })} />
+                    <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold">Для генерации deep-link ссылок участия</p>
+                  </label>
+                </>)}
+
+                {/* ID администраторов — для всех типов */}
+                <label className="block">
+                  <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
+                    <Users className="w-3 h-3 text-amber-500" />ID администраторов бота
+                  </span>
+                  <input type="text"
+                    placeholder="123456789, 987654321"
+                    className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-amber-500 transition-all"
+                    value={adminIdsStr}
+                    onChange={e => updateAdminIds(e.target.value)} />
+                  <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold tracking-wider">
+                    {isPoster || isRandomizer ? 'Только эти пользователи могут управлять ботом' : 'Могут делать /broadcast прямо в боте'}
+                  </p>
+                </label>
+
+                {/* Приветствие — не для постера */}
+                {!isPoster && (
+                  <label className="block">
+                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
+                      {isVK ? 'Текст приветствия' : 'Приветствие (/start)'}
+                    </span>
+                    <textarea
+                      placeholder="Текст для команды /start"
+                      className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] outline-none text-xs focus:border-blue-500 transition-all resize-none"
+                      value={bot.welcomeMessage || ''}
+                      onChange={e => handleLocalUpdate({ ...bot, welcomeMessage: e.target.value })} />
+                  </label>
+                )}
+
+                <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest opacity-50 ml-2">* Данные синхронизируются (согласно .env)</p>
+              </div>
+            </section>
+
+            {/* Инфо-плашки для постера/рандомайзера */}
+            {isPoster && (
+              <div className="bg-emerald-500/5 border border-emerald-500/20 p-8 rounded-[2.5rem] space-y-3">
+                <h3 className="text-sm font-black text-emerald-400 uppercase flex items-center gap-2">
+                  <Send className="w-4 h-4" />Бот постинга — возможности
+                </h3>
+                <div className="text-[10px] text-zinc-400 leading-relaxed space-y-1.5">
+                  <p>✅ <b>Контент:</b> текст HTML, фото, видео, GIF, аудио, документ, стикер</p>
+                  <p>✅ <b>Инлайн-кнопки:</b> формат <code className="text-emerald-400">Текст | https://url</code></p>
+                  <p>✅ <b>Расписание:</b> через N минут или конкретная дата</p>
+                  <p>✅ <b>Предпросмотр</b> перед публикацией</p>
+                  <p className="text-zinc-600 mt-2">Управление: /start → Создать пост (wizard)</p>
+                </div>
+              </div>
+            )}
+
+            {isRandomizer && (
+              <div className="bg-purple-500/5 border border-purple-500/20 p-8 rounded-[2.5rem] space-y-3">
+                <h3 className="text-sm font-black text-purple-400 uppercase flex items-center gap-2">
+                  <Shuffle className="w-4 h-4" />Рандомайзер — возможности
+                </h3>
+                <div className="text-[10px] text-zinc-400 leading-relaxed space-y-1.5">
+                  <p>✅ <b>Создание розыгрышей</b> из панели администратора</p>
+                  <p>✅ <b>Публикация поста</b> в канал с кнопкой «Участвовать»</p>
+                  <p>✅ <b>Проверка подписок</b> перед регистрацией</p>
+                  <p>✅ <b>Финиш</b>: по времени или по числу участников</p>
+                  <p>✅ <b>/broadcast</b> — рассылка по всем участникам</p>
+                  <p className="text-zinc-600 mt-2">Управление: /start → 🛠 Панель → Создать розыгрыш</p>
+                </div>
+              </div>
+            )}
+
+            {/* Конструктор шапки — только для support-ботов */}
+            {isSupportBot && (
+              <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
+                <h2 className="text-sm font-black text-white uppercase flex items-center gap-2">
+                  <Layout className="w-4 h-4 text-emerald-500" />Конструктор шапки сообщений
+                </h2>
+                <div className="space-y-4">
+                  {[
+                    { key: 'firstMessageHeader',  label: 'Заголовок первого обращения', ph: '🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ:</b>' },
+                    { key: 'ticketMessageHeader',  label: 'Заголовок заявки (кнопки)',  ph: '🆘 <b>ЗАЯВКА [{btn}]:</b>'  },
+                    { key: 'commonMessageHeader',  label: 'Обычное сообщение',          ph: '📩 <b>СООБЩЕНИЕ:</b>'        },
+                  ].map(f => (
+                    <div key={f.key}>
+                      <span className="text-[9px] font-bold text-zinc-500 uppercase ml-2">{f.label}</span>
+                      <input
+                        className="w-full mt-1.5 bg-black border border-zinc-800 p-4 rounded-xl text-xs text-white outline-none focus:border-emerald-500 transition-all"
+                        value={safeSettings[f.key as keyof typeof safeSettings] as string || ''}
+                        onChange={e => updateSetting(f.key as any, e.target.value)}
+                        placeholder={f.ph} />
+                    </div>
                   ))}
                 </div>
-              </div>
+                <div className="grid grid-cols-3 gap-3 pt-2">
+                  {[{k:'showHeaderName',l:'Имя'},{k:'showHeaderUsername',l:'Юзер'},{k:'showHeaderId',l:'ID'}].map(f => (
+                    <button key={f.k} onClick={() => updateSetting(f.k as any, !safeSettings[f.k as keyof typeof safeSettings])}
+                      className={`flex items-center justify-between p-4 rounded-xl border text-[9px] font-bold uppercase transition-all ${safeSettings[f.k as keyof typeof safeSettings] ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-black border-zinc-800 text-zinc-600'}`}>
+                      {f.l} {safeSettings[f.k as keyof typeof safeSettings] ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
+                    </button>
+                  ))}
+                </div>
+              </section>
             )}
           </div>
 
-          <div className="space-y-6">
-            {/* Безопасность */}
-            <div className="bg-[#111] border border-zinc-800 p-7 rounded-3xl space-y-4">
-              <h3 className="text-xs font-black text-zinc-300 uppercase flex items-center gap-2">
-                <Lock className="w-4 h-4 text-rose-500" />Безопасность и анти-флуд
-              </h3>
-              <div className="space-y-3">
-                <div className="flex items-center justify-between p-4 rounded-2xl bg-black border border-zinc-800">
-                  <div>
-                    <p className="text-xs font-bold text-white">Интервал анти-спама</p>
-                    <p className="text-[9px] text-zinc-500 uppercase">Сек. между сообщениями</p>
-                  </div>
-                  <input type="number" step="0.5" min="0"
-                    className="w-16 bg-zinc-900 border border-zinc-700 p-2 rounded-xl text-center text-xs text-white"
-                    value={safeSettings.rateLimit ?? 1}
-                    onChange={e => updSet('rateLimit', parseFloat(e.target.value))} />
-                </div>
-                <div className="flex items-center justify-between p-4 rounded-2xl bg-black border border-zinc-800">
-                  <div>
-                    <p className="text-xs font-bold text-white">Лимит предупреждений</p>
-                    <p className="text-[9px] text-zinc-500 uppercase">Варнов до авто-бана</p>
-                  </div>
-                  <input type="number" min="1"
-                    className="w-16 bg-zinc-900 border border-zinc-700 p-2 rounded-xl text-center text-xs text-white"
-                    value={safeSettings.autoBanThreshold ?? 3}
-                    onChange={e => updSet('autoBanThreshold', parseInt(e.target.value))} />
-                </div>
-                <Toggle on={!!safeSettings.antiSpam} onClick={() => updSet('antiSpam', !safeSettings.antiSpam)}
-                  label="Включить антиспам" sub="Ограничение частоты сообщений" />
-                <Toggle on={!!safeSettings.forwardToAdmin} onClick={() => updSet('forwardToAdmin', !safeSettings.forwardToAdmin)}
-                  label="Пересылать в группу" sub="Основной режим работы" color="emerald" />
-                <Toggle on={!!safeSettings.notifyOnStart} onClick={() => updSet('notifyOnStart', !safeSettings.notifyOnStart)}
-                  label="Уведомление при старте" sub="Когда новый пользователь /start" />
-                <Toggle on={!!safeSettings.notifyOnBlock} onClick={() => updSet('notifyOnBlock', !safeSettings.notifyOnBlock)}
-                  label="Уведомление о блоке" sub="Когда пользователь заблокировал" />
-              </div>
-            </div>
-
-            {/* Темы (только TG) */}
-            {!isVK && (
-              <div className="bg-[#111] border border-zinc-800 p-7 rounded-3xl space-y-3">
-                <h3 className="text-xs font-black text-zinc-300 uppercase flex items-center gap-2">
-                  <MessageSquare className="w-4 h-4 text-blue-500" />Форум (Темы)
+          {/* Правая колонка — только для support-ботов */}
+          {isSupportBot && (
+            <div className="space-y-8">
+              <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
+                <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
+                  <Lock className="w-4 h-4 text-rose-500" />Безопасность и Анти-Флуд
                 </h3>
-                <Toggle on={!!safeSettings.useTopics} onClick={() => updSet('useTopics', !safeSettings.useTopics)}
-                  label="Использовать темы" sub="Для супергрупп с форумом" color="emerald" />
-                <Toggle on={!!safeSettings.topicPerRequest} onClick={() => updSet('topicPerRequest', !safeSettings.topicPerRequest)}
-                  label="Ветка на каждый тикет" sub="Ticket System Mode" />
-                <Toggle on={!!safeSettings.anonymousTopics} onClick={() => updSet('anonymousTopics', !safeSettings.anonymousTopics)}
-                  label="Анонимные ID" sub="Хешировать данные пользователей" />
-              </div>
-            )}
-
-            {/* Удаление */}
-            {isAdminMode ? (
-              <div className="p-5 border border-zinc-800 bg-zinc-900/30 rounded-2xl flex items-center gap-3 opacity-40">
-                <Lock className="w-5 h-5 text-zinc-500" />
-                <div>
-                  <p className="text-[10px] font-black uppercase text-zinc-400">Admin Protection</p>
-                  <p className="text-[9px] text-zinc-600 uppercase">Deletion disabled in Support Mode</p>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between p-5 rounded-2xl bg-black border border-zinc-800">
+                    <div><p className="text-xs font-bold text-white">Интервал анти-спама</p><p className="text-[9px] text-zinc-500 uppercase">Сек. между сообщениями</p></div>
+                    <input type="number" step="0.5" className="w-16 bg-zinc-900 border border-zinc-800 p-2 rounded-lg text-center text-xs text-white"
+                      value={safeSettings.rateLimit} onChange={e => updateSetting('rateLimit', parseFloat(e.target.value))} />
+                  </div>
+                  <div className="flex items-center justify-between p-5 rounded-2xl bg-black border border-zinc-800">
+                    <div><p className="text-xs font-bold text-white">Лимит Предупреждений</p><p className="text-[9px] text-zinc-500 uppercase">Варнов до авто-бана</p></div>
+                    <input type="number" className="w-16 bg-zinc-900 border border-zinc-800 p-2 rounded-lg text-center text-xs text-white"
+                      value={safeSettings.autoBanThreshold} onChange={e => updateSetting('autoBanThreshold', parseInt(e.target.value))} />
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <button onClick={() => window.confirm('Удалить этот инстанс?') && onDelete()}
-                className="w-full p-4 text-[10px] font-black uppercase text-rose-500 bg-rose-500/5 rounded-2xl border border-rose-500/10 hover:bg-rose-500/15 transition-all flex items-center justify-center gap-2">
-                <Trash2 className="w-4 h-4" />Удалить навсегда
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+              </section>
 
-      {/* ════════════════════════════════════════════
-          КНОПКИ (только support)
-      ════════════════════════════════════════════ */}
-      {activeTab === 'interface' && isSupportBot && (
-        <div className="space-y-6 animate-in fade-in duration-300">
-          <div className="flex justify-between items-center">
-            <h2 className="text-xl font-black text-white uppercase">Кнопки меню</h2>
-            <button onClick={() => upd({ buttons: [...(bot.buttons||[]), {text:'',response:'',type:'message'}] })}
-              className="bg-blue-600 hover:bg-blue-500 px-6 py-3 rounded-2xl text-[10px] font-black text-white uppercase flex items-center gap-2 transition-all">
-              <Plus className="w-4 h-4" />Добавить
-            </button>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {(bot.buttons||[]).map((btn, i) => (
-              <div key={i} className="bg-[#111] border border-zinc-800 rounded-3xl p-7 space-y-4 relative border-t-4 border-t-blue-500/20">
-                <button onClick={() => upd({buttons: bot.buttons!.filter((_,j)=>j!==i)})}
-                  className="absolute top-5 right-5 text-zinc-600 hover:text-rose-400 transition-colors">
-                  <X className="w-5 h-5" />
-                </button>
-                <Field label="Текст кнопки">
-                  <input className={inputCls('focus:border-blue-500', 'font-bold')}
-                    value={btn.text}
-                    onChange={e => { const nb=[...bot.buttons!]; nb[i]={...nb[i],text:e.target.value}; upd({buttons:nb}); }} />
-                </Field>
-                <Field label="Ответ системы">
-                  <textarea className={inputCls('focus:border-blue-500','min-h-[100px] resize-none')}
-                    value={btn.response}
-                    onChange={e => { const nb=[...bot.buttons!]; nb[i]={...nb[i],response:e.target.value}; upd({buttons:nb}); }} />
-                </Field>
-                <div className="flex bg-black p-1 rounded-xl border border-zinc-800">
-                  {(['message','request'] as const).map(t => (
-                    <button key={t} onClick={() => { const nb=[...bot.buttons!]; nb[i]={...nb[i],type:t}; upd({buttons:nb}); }}
-                      className={`flex-1 py-2.5 rounded-lg text-[9px] font-black uppercase transition-all ${btn.type===t?'bg-blue-600 text-white':'text-zinc-600 hover:text-zinc-400'}`}>
-                      {t==='message'?'Обычный ответ':'🆘 Заявка (Тикет)'}
+              <div className={`bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6 transition-all ${isVK ? 'opacity-40 select-none' : ''}`}>
+                <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
+                  <ShieldAlert className={`w-4 h-4 ${isVK ? 'text-zinc-500' : 'text-emerald-500'}`} />Форум (Темы)
+                  {isVK && <span className="text-[9px] bg-rose-500/20 text-rose-500 px-2 py-0.5 rounded-md ml-auto">Только Telegram</span>}
+                </h3>
+                <div className="space-y-3">
+                  {[
+                    {k:'useTopics',       l:'Использовать Темы (Forum)', sub:'Для супергрупп',        c:'emerald'},
+                    {k:'topicPerRequest', l:'Новая ветка на каждый тикет', sub:'Ticket System Mode', c:'blue'},
+                    {k:'anonymousTopics', l:'Анонимные ID (Anon ID)', sub:'Хешировать данные',       c:'zinc'},
+                  ].map(f => (
+                    <button key={f.k} disabled={isVK}
+                      onClick={() => updateSetting(f.k as any, !safeSettings[f.k as keyof typeof safeSettings])}
+                      className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${
+                        !isVK && safeSettings[f.k as keyof typeof safeSettings]
+                          ? f.c === 'emerald' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                          : f.c === 'blue' ? 'bg-blue-500/10 border-blue-500/30 text-blue-400'
+                          : 'bg-zinc-800 text-white'
+                          : 'bg-black border-zinc-800 text-zinc-600'
+                      }`}>
+                      <div className="text-left">
+                        <p className="text-xs font-bold">{f.l}</p>
+                        <p className="text-[9px] uppercase opacity-50">{f.sub}</p>
+                      </div>
+                      {isVK ? <Lock className="w-4 h-4" /> : (safeSettings[f.k as keyof typeof safeSettings] ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />)}
                     </button>
                   ))}
                 </div>
               </div>
-            ))}
-            {(bot.buttons||[]).length === 0 && (
-              <div className="col-span-2 py-20 text-center text-zinc-700 text-xs uppercase font-black tracking-widest opacity-40">
-                Кнопки не добавлены
+            </div>
+          )}
+
+          {/* Зона опасных действий */}
+          <div className={isSupportBot ? 'lg:col-span-2 mt-4' : 'mt-4'}>
+            {isAdminMode ? (
+              <div className="p-6 border border-zinc-800 bg-zinc-900/40 rounded-[2rem] flex items-center gap-4 opacity-50 pointer-events-none">
+                <div className="p-3 bg-zinc-800 rounded-xl"><Lock size={20} className="text-zinc-500" /></div>
+                <div>
+                  <h4 className="text-[10px] font-black uppercase text-zinc-400 tracking-widest">Admin Protection</h4>
+                  <p className="text-[9px] text-zinc-600 uppercase">Deletion disabled in Support Mode</p>
+                </div>
               </div>
+            ) : (
+              <button onClick={() => window.confirm('Вы точно хотите удалить этот инстанс?') && onDelete()}
+                className="w-full p-5 text-[10px] font-black uppercase text-rose-500 bg-rose-500/5 rounded-3xl border border-rose-500/10 hover:bg-rose-500/20 transition-all flex items-center justify-center gap-2">
+                <Trash2 className="w-4 h-4" />Удалить навсегда
+              </button>
             )}
           </div>
         </div>
       )}
 
       {/* ════════════════════════════════════════════
-          ТРИГГЕРЫ (только support)
+          ВКЛАДКА: КНОПКИ (только для support-ботов)
       ════════════════════════════════════════════ */}
-      {activeTab === 'logic' && isSupportBot && (
-        <div className="space-y-6 animate-in fade-in duration-300">
-          <div className="flex justify-between items-center">
-            <h2 className="text-xl font-black text-white uppercase">Триггеры авто-ответа</h2>
-            <button onClick={() => upd({triggers:[...(bot.triggers||[]),{keyword:'',response:''}]})}
-              className="bg-emerald-600 hover:bg-emerald-500 px-6 py-3 rounded-2xl text-[10px] font-black text-white uppercase flex items-center gap-2 transition-all">
-              <Plus className="w-4 h-4" />Добавить
+      {activeTab === 'interface' && isSupportBot && (
+        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-2xl font-black text-white uppercase">Конструктор Кнопок</h2>
+            <button onClick={() => handleLocalUpdate({ ...bot, buttons: [...(bot.buttons||[]), {text:'',response:'',type:'message'}] })}
+              className="bg-blue-600 px-8 py-4 rounded-2xl text-[11px] font-black text-white uppercase flex items-center gap-2 shadow-lg shadow-blue-600/20 hover:bg-blue-500 transition-all">
+              <Plus className="w-4 h-4" />Новая кнопка
             </button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {(bot.triggers||[]).map((trig,i) => (
-              <div key={i} className="bg-[#111] border border-zinc-800 rounded-3xl p-7 space-y-4 relative border-t-4 border-t-emerald-500/20">
-                <button onClick={() => upd({triggers: bot.triggers!.filter((_,j)=>j!==i)})}
-                  className="absolute top-5 right-5 text-zinc-600 hover:text-rose-400 transition-colors">
-                  <X className="w-5 h-5" />
-                </button>
-                <Field label="Ключевое слово">
-                  <input className={inputCls('focus:border-emerald-500', 'font-bold')}
-                    placeholder="ping, привет, помощь..."
-                    value={trig.keyword}
-                    onChange={e => { const nt=[...bot.triggers!]; nt[i]={...nt[i],keyword:e.target.value}; upd({triggers:nt}); }} />
-                </Field>
-                <Field label="Ответ бота">
-                  <textarea className={inputCls('focus:border-emerald-500','min-h-[100px] resize-none')}
-                    placeholder="Что бот ответит на это слово..."
-                    value={trig.response}
-                    onChange={e => { const nt=[...bot.triggers!]; nt[i]={...nt[i],response:e.target.value}; upd({triggers:nt}); }} />
-                </Field>
-              </div>
-            ))}
-            {(bot.triggers||[]).length === 0 && (
-              <div className="col-span-2 py-20 text-center text-zinc-700 text-xs uppercase font-black tracking-widest opacity-40">
-                Триггеры не добавлены
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ════════════════════════════════════════════
-          CRM — история сообщений (только support)
-      ════════════════════════════════════════════ */}
-      {activeTab === 'chat' && isSupportBot && (
-        <div className="bg-[#111] border border-zinc-800 rounded-3xl h-[680px] flex flex-col p-6 animate-in fade-in duration-300">
-          <h2 className="text-xs font-black text-zinc-300 uppercase flex items-center gap-2 mb-5">
-            <MessageSquare className="w-4 h-4 text-blue-500" />История сообщений CRM
-          </h2>
-          <div className="flex-1 overflow-y-auto space-y-4 pr-2">
-            {messages.length === 0 ? (
-              <p className="text-center text-zinc-700 py-32 text-[10px] uppercase font-black tracking-widest opacity-30">
-                История пуста
-              </p>
-            ) : messages.map((m, i) => (
-              <div key={i} className={`flex gap-3 items-end ${m.is_admin ? 'flex-row-reverse' : ''}`}>
-                <div className={`p-4 rounded-2xl max-w-[75%] text-sm shadow-lg ${
-                  m.is_admin
-                    ? 'bg-blue-600 text-white rounded-br-sm'
-                    : 'bg-zinc-900 border border-zinc-800 text-zinc-300 rounded-bl-sm'
-                }`}>
-                  <p className="text-[9px] font-black opacity-40 mb-1 uppercase">
-                    {m.user?.name} · {new Date(m.timestamp).toLocaleTimeString()}
-                  </p>
-                  <div className="whitespace-pre-wrap leading-relaxed">{m.text}</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            {(bot.buttons||[]).map((btn, i) => (
+              <div key={i} className="bg-[#0d0d0d] border border-zinc-800 rounded-[2.5rem] p-8 space-y-6 relative border-t-4 border-t-blue-500/20 shadow-xl">
+                <button onClick={() => handleLocalUpdate({...bot,buttons:bot.buttons.filter((_,idx)=>idx!==i)})}
+                  className="absolute top-6 right-6 text-zinc-600 hover:text-rose-500 transition-colors"><X className="w-5 h-5" /></button>
+                <div className="space-y-5">
+                  <label className="block">
+                    <span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Текст на кнопке</span>
+                    <input className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-blue-500"
+                      value={btn.text} onChange={e => { const nb=[...bot.buttons]; nb[i].text=e.target.value; handleLocalUpdate({...bot,buttons:nb}); }} />
+                  </label>
+                  <label className="block">
+                    <span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Ответ системы</span>
+                    <textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm min-h-[120px] outline-none focus:border-blue-500 resize-none"
+                      value={btn.response} onChange={e => { const nb=[...bot.buttons]; nb[i].response=e.target.value; handleLocalUpdate({...bot,buttons:nb}); }} />
+                  </label>
+                  <div className="flex bg-black p-1 rounded-xl border border-zinc-800">
+                    {['message','request'].map(type => (
+                      <button key={type} onClick={() => { const nb=[...bot.buttons]; nb[i].type=type as any; handleLocalUpdate({...bot,buttons:nb}); }}
+                        className={`flex-1 py-2.5 rounded-lg text-[9px] font-black uppercase transition-all ${btn.type===type?'bg-blue-600 text-white shadow-lg':'text-zinc-600 hover:text-zinc-400'}`}>
+                        {type==='message'?'Обычный ответ':'🆘 Заявка (Тикет)'}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             ))}
@@ -707,18 +479,55 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
       )}
 
       {/* ════════════════════════════════════════════
-          АНАЛИТИКА (все типы — адаптивный компонент)
+          ВКЛАДКА: ТРИГГЕРЫ (только для support-ботов)
       ════════════════════════════════════════════ */}
-      {activeTab === 'stats' && (
-        <BotStatsView bot={bot} onUpdate={onUpdate} />
+      {activeTab === 'logic' && isSupportBot && (
+        <div className="space-y-6 animate-in fade-in duration-500">
+          <div className="flex justify-between items-end mb-6">
+            <h2 className="text-2xl font-black text-white uppercase">Триггеры авто-ответа</h2>
+            <button onClick={() => handleLocalUpdate({...bot,triggers:[...(bot.triggers||[]),{keyword:'',response:''}]})}
+              className="bg-emerald-600 px-8 py-4 rounded-2xl text-[10px] font-black text-white uppercase flex items-center gap-2 transition-all">
+              <Plus className="w-4 h-4" />Новый триггер
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            {(bot.triggers||[]).map((trig,i) => (
+              <div key={i} className="bg-[#0d0d0d] border border-zinc-800 rounded-[2.5rem] p-8 space-y-5 relative border-t-4 border-t-emerald-500/20 shadow-xl">
+                <button onClick={() => handleLocalUpdate({...bot,triggers:bot.triggers.filter((_,idx)=>idx!==i)})} className="absolute top-6 right-6 text-zinc-600 hover:text-rose-500"><X className="w-5 h-5" /></button>
+                <input placeholder="Ключевое слово" className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-emerald-500"
+                  value={trig.keyword} onChange={e => { const nt=[...bot.triggers]; nt[i].keyword=e.target.value; handleLocalUpdate({...bot,triggers:nt}); }} />
+                <textarea placeholder="Что бот должен ответить..." className="w-full bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm outline-none min-h-[120px] focus:border-emerald-500"
+                  value={trig.response} onChange={e => { const nt=[...bot.triggers]; nt[i].response=e.target.value; handleLocalUpdate({...bot,triggers:nt}); }} />
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
-      {/* ════════════════════════════════════════════
-          ТЕРМИНАЛ (все типы)
-      ════════════════════════════════════════════ */}
-      {activeTab === 'logs' && (
-        <BotConsole botId={bot.id} />
+      {/* CRM */}
+      {activeTab === 'chat' && isSupportBot && (
+        <div className="bg-[#111] border border-zinc-800 rounded-[2.5rem] h-[700px] overflow-hidden flex flex-col p-8 shadow-2xl animate-in fade-in duration-500">
+          <h2 className="text-sm font-black text-white uppercase mb-6 flex items-center gap-2">
+            <MessageSquare className="w-4 h-4 text-blue-500" />CRM История сообщений
+          </h2>
+          <div className="flex-1 overflow-y-auto no-scrollbar space-y-6 pr-4">
+            {messages.length === 0 ? (
+              <p className="text-center text-zinc-700 py-32 uppercase text-[10px] font-black tracking-widest opacity-20">История пуста</p>
+            ) : messages.map((m,i) => (
+              <div key={i} className={`flex gap-4 items-start ${m.is_admin?'flex-row-reverse text-right':''} animate-in slide-in-from-bottom-2 duration-300`}>
+                <div className={`p-5 rounded-3xl max-w-[75%] text-sm shadow-lg ${m.is_admin?'bg-blue-600 text-white rounded-tr-none':'bg-black/60 border border-zinc-800 text-zinc-300 rounded-tl-none'}`}>
+                  <p className="text-[9px] font-black uppercase opacity-40 mb-2">{m.user?.name} | {new Date(m.timestamp).toLocaleTimeString()}</p>
+                  <div className="leading-relaxed whitespace-pre-wrap">{m.text}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
+
+      {/* Аналитика и логи */}
+      {activeTab === 'stats' && <BotStatsView bot={bot} onUpdate={onUpdate} />}
+      {activeTab === 'logs'  && <BotConsole botId={bot.id} />}
 
     </div>
   );
