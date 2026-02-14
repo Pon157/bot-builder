@@ -1,6 +1,13 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import './index.css'; // <--- КРИТИЧЕСКИ ВАЖНО: подключаем локальные стили и шрифты
+
+// Импортируем CSS шрифтов напрямую (Vite сам найдет их в node_modules)
+import "@fontsource/inter/index.css";
+import "@fontsource/jetbrains-mono/index.css";
+
+// Импортируем основной CSS (в котором Tailwind)
+import './index.css'; 
+
 import App from './App';
 
 const rootElement = document.getElementById('root');
