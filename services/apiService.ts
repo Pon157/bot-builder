@@ -390,27 +390,20 @@ adminLogin: async (login: string, pass: string) => {
   createBot: async (
     userId: string,
     name: string,
-    token: string,
-    platform: 'telegram' | 'vk' | 'poster' | 'randomizer',
-    extra?: {
-      adminIds?:   number[];
-      channelId?:  string;
-      lotChannel?: string;
-      botLink?:    string;
-    }
+    token: string
   ): Promise<BotConfig | null> => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/bots/create`, {
         method: 'POST',
         body: JSON.stringify({
-          owner_id:   userId,
+          owner_id: userId,
           name,
           token,
-          platform,
-          adminIds:   extra?.adminIds   ?? [],
-          channelId:  extra?.channelId  ?? '',
-          lotChannel: extra?.lotChannel ?? '',
-          botLink:    extra?.botLink    ?? '',
+          platform: 'telegram', // дефолт, пользователь меняет в BotEditor
+          adminIds:   [],
+          channelId:  '',
+          lotChannel: '',
+          botLink:    '',
         })
       });
       return response.ok ? await response.json() : null;
