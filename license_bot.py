@@ -523,8 +523,8 @@ async def cb_verify_ai(cb: CallbackQuery):
 async def cb_admin_approve_ai(cb: CallbackQuery):
     """Администратор выдаёт AI-ключ пользователю."""
     parts = cb.data.split("_")  # adm_ai_ok_USERID_TOKENS
-    uid  = parts[4]
-    tokens = int(parts[5])
+    uid  = parts[3]
+    tokens = int(parts[4])
 
     try:
         r = requests.post(f"{SRV_URL}/api/admin/generate-ai-key",
