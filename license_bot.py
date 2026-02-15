@@ -522,9 +522,30 @@ async def cb_verify_ai(cb: CallbackQuery):
 @dp.callback_query(F.data.startswith("adm_ai_ok_"))
 async def cb_admin_approve_ai(cb: CallbackQuery):
     """Администратор выдаёт AI-ключ пользователю."""
-    parts = cb.data.split("_")  # adm_ai_ok_USERID_TOKENS
-    uid  = parts[3]
-    tokens = int(parts[4])
+    try:
+        parts = cb.data.split("_")  
+        
+        # Проверяем, что в списке реально есть 5 элементов (индексы 0, 1, 2, 3, 4)
+        if len(parts) < 5:
+            logger.error(f"❌ Ошибка: Неверный формат callback_data: {cb.data}")
+            await cb.answer("❌ Ошибка данных в кнопке", show_alert=True)
+            return
+
+        uid = parts[3]
+        tokens = int(parts[4])
+
+        # Твоя логика выдачи ключа в БД (пример):
+        # res = supabase.table("ai_keys").insert({"user_id": uid, "balance": tokens}).execute()
+        
+        await cb.message.edit_text(
+            f"✅ <b>Запрос одобрен!</b>\nПользователю <code>{uid}</code> выдано {tokens:,} токенов.",
+            parse_mode="HTML"
+        )
+        await cb.answer("Готово!")
+
+    except Exception as e:
+        logger.error(f"🔴 Ошибка в cb_admin_approve_ai: {e}")
+        await cb.answer("🔴 Произошла ошибка при обработке", show_alert=True)
 
     try:
         r = requests.post(f"{SRV_URL}/api/admin/generate-ai-key",
