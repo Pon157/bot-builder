@@ -163,7 +163,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
           botId: bot.id,
           message: text,
           systemPrompt: bot.ai?.systemPrompt || 'Ты полезный ИИ-ассистент.',
-          model: bot.ai?.model || 'qwen-turbo',
+          model: bot.ai?.model || 'turbo',
           maxTokens: bot.ai?.maxTokensPerReply || 800,
         })
       });
@@ -198,7 +198,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                 </div>
                 <div>
                   <p className="text-sm font-black text-white">ИИ-ассистент · превью</p>
-                  <p className="text-[9px] text-zinc-500 font-bold">{bot.ai?.model || 'qwen-turbo'} · {bot.ai?.systemPrompt ? 'кастомный промпт' : 'дефолтный промпт'}</p>
+                  <p className="text-[9px] text-zinc-500 font-bold">{bot.ai?.model || 'turbo'} · {bot.ai?.systemPrompt ? 'кастомный промпт' : 'дефолтный промпт'}</p>
                 </div>
               </div>
               <div className="flex items-center gap-3">
@@ -1051,17 +1051,17 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
               {/* Параметры модели */}
               <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-5">
                 <h3 className="text-sm font-black text-white flex items-center gap-2">
-                  <Settings className="w-4 h-4 text-blue-500" /> Параметры Qwen
+                  <Settings className="w-4 h-4 text-blue-500" /> Параметры
                 </h3>
                 <label className="block">
                   <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Модель</span>
                   <select
                     className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-2xl text-sm text-white outline-none focus:border-blue-500 transition-all cursor-pointer"
-                    value={bot.ai?.model || 'qwen-turbo'}
+                    value={bot.ai?.model || 'qturbo'}
                     onChange={e => handleLocalUpdate({ ...bot, ai: { ...(bot.ai || {}), model: e.target.value } })}>
-                    <option value="qwen-turbo">qwen-turbo (быстрый, дешёвый)</option>
-                    <option value="qwen-plus">qwen-plus (умнее)</option>
-                    <option value="qwen-max">qwen-max (самый умный)</option>
+                    <option value="turbo">turbo (быстрый, дешёвый)</option>
+                    <option value="plus">plus (умнее)</option>
+                    <option value="max">max (самый умный)</option>
                   </select>
                 </label>
                 <div className="grid grid-cols-2 gap-4">
