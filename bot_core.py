@@ -273,7 +273,7 @@ class BotInstance:
 
         # Настройки безопасности и тем
         self.settings = full_cfg.get('settings', {})
-        self.use_topics = self.settings.get('useTopics', False) # Исправлено: берем из settings
+        self.use_topics = self.settings.get('useTopics', False)
         self.topic_per_req = self.settings.get('topicPerRequest', False)
         
         # Кнопки и триггеры
@@ -286,7 +286,7 @@ class BotInstance:
         self.users_list = full_cfg.get('connectedUsers', [])
         self.license_expires_at = full_cfg.get('license_expires_at', 0)
 
-        # ── ИИ-конфиг ──
+        # ── ИИ-конфиг (ПОДПРАВЛЕННЫЙ) ──
         ai_cfg = full_cfg.get('ai', {}) or {}
         self.ai_enabled       = ai_cfg.get('enabled', False)
         self.ai_mode          = ai_cfg.get('mode', 'all')      # 'all' | 'button' | 'command' | 'off'
@@ -294,8 +294,19 @@ class BotInstance:
         self.ai_system_prompt = ai_cfg.get('systemPrompt', 'Ты полезный ИИ-ассистент.')
         self.ai_max_tokens    = int(ai_cfg.get('maxTokensPerReply', 800))
         self.ai_context_len   = int(ai_cfg.get('contextMessages', 6))
-        self.ai_model         = ai_cfg.get('model', 'qwen-turbo')
+        
+        # Модель: если в Timeweb настроен GPT-4o, лучше по умолчанию ставить её
+        self.ai_model         = ai_cfg.get('model', 'gpt-4o')
+
+        # Ключ: Берем ТОЛЬКО из .env (игнорируем то, что ввел юзер в панели)
+        # [2025-12-23] Remember to take the token from the .env file.
         self.qwen_api_key     = os.getenv('TIMEWEB_API_KEY') or os.getenv('QWEN_API_KEY')
+
+        # URL Агента: Формируем динамически на основе твоего ID агента
+        # Если в .env нет ID, используем твой текущий как запасной
+        agent_id = os.getenv('TIMEWEB_AGENT_ID', '14ce55f9-dce2-4f2d-ad98-ff2cffe19ca2')
+        self.ai_url = f"https://agent.timeweb.cloud/api/v1/cloud-ai/agents/{agent_id}/v1/chat/completions"
+
         # Контекст диалогов: {user_id: [{"role":..,"content":..}]}
         if not hasattr(self, 'ai_context_cache'):
             self.ai_context_cache: Dict[int, List[dict]] = {}
