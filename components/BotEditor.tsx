@@ -618,7 +618,9 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                 <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest opacity-50 ml-2">* Данные синхронизируются (из файла .env)</p>
               </div>
             </section>
-          )}
+          </div>
+        </div>
+      )}
             {/* Инфо-плашки для постера/рандомайзера */}
             {isPoster && (
               <div className="bg-emerald-500/5 border border-emerald-500/20 p-8 rounded-[2.5rem] space-y-3">
