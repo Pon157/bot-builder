@@ -22,6 +22,9 @@ from aiogram.types import (
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 
+from dotenv import load_dotenv
+load_dotenv()
+
 class LicenseMiddleware(BaseMiddleware):
     def __init__(self, bot_instance):
         self.bot_instance = bot_instance
@@ -334,13 +337,17 @@ class BotInstance:
     # AI / QWEN INTEGRATION
     # ─────────────────────────────────────────────
     async def ai_call(self, user_id: int, user_text: str) -> Optional[str]:
-        """Вызов Qwen API с контекстом диалога. Возвращает ответ или None."""
-        if not self.qwen_api_key:
+        """Вызов Qwen API через прокси Timeweb с контекстом диалога."""
+        # Проверяем наличие ключа и URL
+        if not self.qwen_api_key or not self.ai_url:
+            logger.error("AI Error: Ключ или URL не настроены в .env")
             return None
+
         # Добавляем сообщение в контекст
         ctx = self.ai_context_cache.setdefault(user_id, [])
         ctx.append({"role": "user", "content": user_text})
-        # Обрезаем по длине контекста
+        
+        # Обрезаем контекст
         if len(ctx) > self.ai_context_len * 2:
             ctx = ctx[-(self.ai_context_len * 2):]
             self.ai_context_cache[user_id] = ctx
@@ -349,8 +356,9 @@ class BotInstance:
 
         try:
             async with httpx.AsyncClient(timeout=30) as client:
+                # ИСПОЛЬЗУЕМ self.ai_url вместо жесткой ссылки на aliyuncs
                 resp = await client.post(
-                    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+                    self.ai_url, 
                     headers={
                         "Authorization": f"Bearer {self.qwen_api_key}",
                         "Content-Type": "application/json"
@@ -362,23 +370,24 @@ class BotInstance:
                         "temperature": 0.7
                     }
                 )
+                
                 if resp.status_code == 200:
                     data = resp.json()
                     answer = data["choices"][0]["message"]["content"]
                     usage = data.get("usage", {})
                     total = usage.get("total_tokens", 0)
-                    # Добавляем ответ ИИ в контекст
+                    
                     ctx.append({"role": "assistant", "content": answer})
-                    # Списываем токены через наш API
                     asyncio.create_task(self._deduct_tokens(user_id, usage, total))
                     return answer
                 else:
-                    logger.error(f"API error {resp.status_code}: {resp.text[:200]}")
+                    # Теперь ошибка в логах покажет реальный статус (например, если токен пустой)
+                    logger.error(f"AI API error {resp.status_code}: {resp.text}")
                     return None
         except Exception as e:
             logger.error(f"AI call error: {e}")
             return None
-
+            
     async def _deduct_tokens(self, user_id: int, usage: dict, total: int):
         """Списывает токены с баланса бота в БД."""
         try:
