@@ -19,7 +19,7 @@ interface BotEditorProps {
 }
 
 const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminMode }) => {
-  const [activeTab, setActiveTab] = useState<'settings' | 'logic' | 'interface' | 'ai' | 'logs' | 'stats' | 'chat'>('settings');
+  const [activeTab, setActiveTab] = useState<'settings' | 'logic' | 'interface' | 'ai' | 'logs' | 'stats'>('settings');
   const [isProcessing, setIsProcessing] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
