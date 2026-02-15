@@ -959,8 +959,16 @@ class BotInstance:
         @self.router.callback_query(F.data == "ai_close")
         async def handle_ai_close(call: CallbackQuery):
             user, _ = await self.get_user_state(call.message)
-            user.pop('_ai_session', None)
-            await call.message.answer("Диалог с ИИ завершен.", reply_markup=self.get_main_keyboard())
+            if user:
+                user.pop('_ai_session', None)
+                self.clear_ai_context(user['id'])
+            
+            try:
+                await call.message.delete()
+            except:
+                pass
+            
+            await call.message.answer("✅ Диалог с ИИ завершен.", reply_markup=self.get_main_keyboard())
             await call.answer()
 
         # 3. Ввод от админа (Команды и Ответы)
@@ -1004,205 +1012,106 @@ class BotInstance:
                 clean_lower = clean_text.lower()
                 ai_btn_text = self.config.get('ai_button_text', 'ИИ-ассистент')
 
-                # ── 1. Кнопка "Назад" (универсальный сброс) ──
-                if clean_text == "⬅️ Назад":
+                # ── А) Назад / Сброс ──
+                if clean_text == "⬅️ Назад" or clean_lower == '/reset_ai':
                     user.pop('_ai_session', None)
+                    self.clear_ai_context(uid)
                     await m.answer("Главное меню:", reply_markup=self.get_main_keyboard())
                     return
 
-                # ── 2. Активация ИИ (команды или кнопка) ──
+                # ── Б) Триггеры (ключевые слова) ──
+                for trig in self.triggers:
+                    if trig.get('keyword') and trig['keyword'].lower() in clean_lower:
+                        user.pop('_ai_session', None)
+                        resp_text = trig.get('response', '')
+                        trig_children = trig.get('children', [])
+                        if trig_children:
+                            child_kb = self.build_keyboard_from_buttons(trig_children + [{"text": "⬅️ Назад"}])
+                            await m.answer(resp_text or "Выберите:", reply_markup=child_kb)
+                        else:
+                            await m.answer(resp_text, reply_markup=self.get_main_keyboard())
+                        await self.log_and_update(uid, m.from_user.full_name, f"ТРИГГЕР: {trig['keyword']}")
+                        return
+
+                # ── В) Кнопка ИИ или Команда ИИ ──
                 if clean_lower in ('/ai', '/gpt', '/nn') or clean_text == ai_btn_text:
-                    if self.ai_enabled and self.ai_mode in ('command', 'all', 'button'):
+                    if self.ai_enabled:
                         bal = await self.check_ai_tokens()
                         if bal <= 0:
-                            await m.answer("AI-токены закончились. Обратитесь к администратору.")
+                            await m.answer("⚠️ AI-токены закончились.")
                             return
                         user['_ai_session'] = True
                         close_kb = InlineKeyboardMarkup(inline_keyboard=[[
-                            InlineKeyboardButton(text="Закрыть диалог с ИИ", callback_data="ai_close")
+                            InlineKeyboardButton(text="✖ Закрыть диалог с ИИ", callback_data="ai_close")
                         ]])
-                        await m.answer("ИИ-ассистент активирован. Задайте вопрос.", reply_markup=close_kb)
+                        await m.answer("🤖 ИИ-ассистент активирован. Задайте вопрос:", reply_markup=close_kb)
                     else:
                         await m.answer("ИИ-ассистент не подключён.")
                     return
 
-                # ── 3. Сброс ИИ через команду ──
-                if clean_lower == '/reset_ai':
-                    self.clear_ai_context(uid)
-                    user.pop('_ai_session', None)
-                    await m.answer("Контекст и сессия ИИ сброшены.", reply_markup=self.get_main_keyboard())
-                    return
-
-                # ── 4. Логика кнопок меню (children) ──
+                # ── Г) Логика обычных кнопок меню ──
                 matched_btn = self.get_button_by_text(clean_text)
                 if matched_btn:
-                    user.pop('_ai_session', None) # Выключаем ИИ при нажатии кнопки меню
-                    
+                    user.pop('_ai_session', None)
                     children = matched_btn.get('children', [])
                     if children:
-                        # Подменю + кнопка Назад
                         child_kb = self.build_keyboard_from_buttons(children + [{"text": "⬅️ Назад"}])
-                        await m.answer(matched_btn.get('response') or "Выберите вариант:", reply_markup=child_kb)
+                        await m.answer(matched_btn.get('response') or "Выберите:", reply_markup=child_kb)
                     else:
-                        # Обычная кнопка
                         if matched_btn.get('type') == 'request':
                             await self.forward_to_admin(m, user, btn_text=matched_btn['text'])
-                        
                         resp = matched_btn.get('response', 'Принято!')
                         await m.answer(resp, reply_markup=self.get_main_keyboard())
-                    
                     await self.log_and_update(uid, m.from_user.full_name, f"КНОПКА: {matched_btn['text']}")
                     return
 
-                # ── 5. Обработка ИИ (если сессия активна) ──
+                # ── Д) Если активна сессия ИИ ──
                 if user.get('_ai_session'):
                     bal = await self.check_ai_tokens()
                     if bal <= 0:
                         user.pop('_ai_session', None)
-                        await m.answer("Токены кончились. Режим ИИ выключен.", reply_markup=self.get_main_keyboard())
+                        await m.answer("⚠️ Токены кончились.", reply_markup=self.get_main_keyboard())
                         return
-                    
                     if hasattr(self, 'handle_ai_request'):
                         await self.handle_ai_request(m, user)
                     return
 
-            # ── 6. Если ничего не подошло — шлем админу ──
-            await self.forward_to_admin(m, user)
-
-                # ── ТРИГГЕРЫ ──
-                triggered = False
-                for trig in self.triggers:
-                    if trig.get('keyword') and trig['keyword'].lower() in clean_lower:
-                        resp_text = trig.get('response', '')
-                        # Если у триггера есть children-кнопки
-                        trig_children = trig.get('children', [])
-                        if trig_children:
-                            child_kb = self.build_keyboard_from_buttons(trig_children)
-                            await m.answer(resp_text or "Выберите:", reply_markup=child_kb)
-                        else:
-                            await m.answer(resp_text)
-                        await self.log_and_update(uid, m.from_user.full_name, f"ТРИГГЕР: {trig['keyword']}")
-                        triggered = True
-                        break
-
-                if triggered:
-                    return
-
-                # ── ИИ-АССИСТЕНТ ──
-                if self.ai_enabled and self.ai_mode == 'all':
-                    # Проверяем баланс токенов
-                    bal = await self.check_ai_tokens()
-                    if bal > 0:
-                        thinking = await m.answer("🤖 Думаю...")
-                        answer = await self.ai_call(uid, clean_text)
-                        if answer:
-                            await thinking.delete()
-                            await m.answer(answer)
-                            await self.log_and_update(uid, m.from_user.full_name, f"AI: {clean_text[:50]}")
-                            return
-                        else:
-                            await thinking.delete()
-                    else:
-                        await m.answer("⚠️ Лимит AI-токенов исчерпан. Обратитесь к администратору.")
-                        return
-
-            # ── КНОПКА ИИ — нажали кнопку «ИИ-ассистент» из клавиатуры ──
-            if m.text and m.text.strip() == self.ai_button_name:
-                if self.ai_enabled and self.ai_mode == 'button':
-                    bal = await self.check_ai_tokens()
-                    if bal <= 0:
-                        await m.answer("⚠️ AI-токены закончились. Обратитесь к администратору.")
-                        return
-                    user['_ai_session'] = True
-                    close_kb = InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="✖ Закрыть диалог с ИИ", callback_data="ai_close")
-                    ]])
-                    await m.answer(
-                        "🤖 <b>ИИ-ассистент активирован.</b>\nЗадайте вопрос:",
-                        reply_markup=close_kb
-                    )
-                    return
-
-            # ── АКТИВНАЯ AI-СЕССИЯ — обрабатываем любое сообщение ──
-            if user.get('_ai_session') and self.ai_enabled and m.text:
-                bal = await self.check_ai_tokens()
-                if bal <= 0:
-                    user.pop('_ai_session', None)
-                    await m.answer("⚠️ AI-токены закончились. Сессия закрыта.", reply_markup=self.get_main_keyboard())
-                    return
-                close_kb = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="✖ Закрыть диалог с ИИ", callback_data="ai_close")
-                ]])
-                thinking = await m.answer("🤖 Думаю...")
-                answer_text = await self.ai_call(uid, m.text)
-                await thinking.delete()
-                if answer_text:
-                    await m.answer(answer_text, reply_markup=close_kb)
-                    await self.log_and_update(uid, m.from_user.full_name, f"AI: {m.text[:50]}")
-                else:
-                    await m.answer("⚠️ Ошибка ИИ, попробуйте ещё раз.", reply_markup=close_kb)
-                return
-
-            # ── Пересылка сообщения администратору ──
+            # ── Е) Иначе — пересылка админу ──
             await self.forward_to_admin(m, user, is_first=is_new)
             await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
-
-        # 5. Закрытие AI-сессии (inline callback «✖ Закрыть диалог с ИИ»)
-        @self.router.callback_query(lambda c: c.data == 'ai_close')
-        async def on_ai_close(cb: CallbackQuery):
-            uid_cb = cb.from_user.id
-            user_cb = next((u for u in self.users_list if u['id'] == uid_cb), None)
-            if user_cb:
-                user_cb.pop('_ai_session', None)
-                self.clear_ai_context(uid_cb)
-            try:
-                await cb.message.delete()
-            except Exception:
-                pass
-            await cb.answer("Диалог с ИИ закрыт.")
-            try:
-                await self.bot.send_message(
-                    uid_cb,
-                    "✅ Диалог с ИИ завершён.",
-                    reply_markup=self.get_main_keyboard()
-                )
-            except Exception:
-                pass
 
     def get_main_keyboard(self):
         from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
         active_btns = [b for b in self.buttons if b.get('text')]
-        # Добавляем AI-кнопку если режим 'button'
-        if self.ai_enabled and self.ai_mode == 'button' and self.ai_button_name:
-            active_btns = active_btns + [{'text': self.ai_button_name}]
+        ai_btn_name = self.config.get('ai_button_text', 'ИИ-ассистент')
+        
+        if self.ai_enabled and self.ai_mode in ('button', 'all'):
+            active_btns = active_btns + [{'text': ai_btn_name}]
+            
         if not active_btns: return ReplyKeyboardRemove()
+        
         keyboard_rows = []
         for i in range(0, len(active_btns), 2):
             keyboard_rows.append([KeyboardButton(text=b['text']) for b in active_btns[i:i+2]])
         return ReplyKeyboardMarkup(keyboard=keyboard_rows, resize_keyboard=True)
 
     async def run_instance(self):
-        # 1. Принудительно ждем первой синхронизации базы и проверки лицензии
-        # Вместо create_task вызываем их напрямую через await ОДИН раз
         logger.info(f"[*] Бот {self.bot_id} проверяет данные перед запуском...")
         
         try:
-            # Выполняем ОДИН цикл проверки лицензии и базы ДО запуска поллинга
-            await self.license_checker_logic() # Проверка лицензии
-            await self.sync_database_logic()   # Загрузка настроек и кнопок
+            await self.license_checker_logic() 
+            await self.sync_database_logic()   
         except Exception as e:
             logger.error(f"Ошибка при первичной загрузке данных: {e}")
 
-        # 2. Теперь запускаем их как фоновые задачи для обновления в будущем
         asyncio.create_task(self.database_sync_worker())
         asyncio.create_task(self.daily_stats_rotator())
         asyncio.create_task(self.license_checker())
         
-        # 3. Настраиваем хендлеры и роутеры
         await self.core_handlers_setup()
         self.dp.include_router(self.router)
         
-        logger.info(f"[*] Бот {self.bot_id} готов к работе. Лицензия: {'Истекла' if self.license_expired else 'ОК'}")
+        logger.info(f"[*] Бот {self.bot_id} готов. Лицензия: {'Истекла' if self.license_expired else 'ОК'}")
         
         try: 
             await self.dp.start_polling(self.bot)
