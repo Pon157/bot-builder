@@ -1036,6 +1036,17 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                     />
                   </label>
                 )}
+                {/* Кнопка теста ИИ */}
+                {(bot.ai?.mode ?? 'off') !== 'off' && (
+                  <button
+                    type="button"
+                    onClick={() => { setAiChatMsgs([]); setAiChatOpen(true); }}
+                    className="w-full py-4 rounded-2xl bg-purple-600/10 border border-purple-500/30 text-purple-400 text-xs font-black uppercase tracking-widest hover:bg-purple-600/20 transition-all flex items-center justify-center gap-2 mt-2"
+                  >
+                    <Brain className="w-4 h-4" />Протестировать ИИ-ассистента (в разработке)
+                  </button>
+                )}
+              </section>
 
               {/* Параметры модели */}
               <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-5">
