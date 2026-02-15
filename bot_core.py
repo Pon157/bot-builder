@@ -983,7 +983,9 @@ class BotInstance:
 
         # 4. Сообщения от обычных пользователей
         @self.router.message()
+        @self.router.message()
         async def user_input_router(m: Message):
+            # Пропускаем, если пишет админ в админ-чате
             if self.admin_chat_id and m.chat.id == self.admin_chat_id:
                 return
 
@@ -996,6 +998,37 @@ class BotInstance:
             if m.text:
                 clean_text = m.text.strip()
                 clean_lower = clean_text.lower()
+                ai_btn_text = self.config.get('ai_button_text', 'ИИ-ассистент')
+
+                # ── А) Кнопка "Назад" (Высший приоритет) ──
+                if clean_text == "⬅️ Назад":
+                    user.pop('_ai_session', None)
+                    await m.answer("Главное меню:", reply_markup=self.get_main_keyboard())
+                    return
+
+                # ── Б) Проверка на кнопки меню (с поддержкой вложенности) ──
+                matched_btn = self.get_button_by_text(clean_text)
+                if matched_btn:
+                    # Если нажата любая кнопка из дерева — выключаем ИИ сессию
+                    user.pop('_ai_session', None)
+                    
+                    children = matched_btn.get('children', [])
+                    if children:
+                        # Если есть вложенные кнопки — показываем подменю + кнопка Назад
+                        child_kb = self.build_keyboard_from_buttons(children + [{"text": "⬅️ Назад"}])
+                        resp = matched_btn.get('response', '')
+                        await m.answer(resp or "Выберите вариант:", reply_markup=child_kb)
+                    else:
+                        # Финальная кнопка: выполняем действие и ВОЗВРАЩАЕМ ГЛАВНОЕ МЕНЮ
+                        if matched_btn.get('type') == 'request':
+                            await self.forward_to_admin(m, user, btn_text=matched_btn['text'])
+                        
+                        resp_text = matched_btn.get('response', 'Принято!')
+                        # Перебрасываем в главное меню (reply_markup=self.get_main_keyboard())
+                        await m.answer(resp_text, reply_markup=self.get_main_keyboard())
+
+                    await self.log_and_update(uid, m.from_user.full_name, f"КНОПКА: {matched_btn['text']}")
+                    return
 
                 # ── /ai, /gpt, /nn — открываем AI-сессию ──
                 if clean_lower in ('/ai', '/gpt', '/nn'):
