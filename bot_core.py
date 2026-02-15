@@ -295,7 +295,7 @@ class BotInstance:
         self.ai_max_tokens    = int(ai_cfg.get('maxTokensPerReply', 800))
         self.ai_context_len   = int(ai_cfg.get('contextMessages', 6))
         self.ai_model         = ai_cfg.get('model', 'qwen-turbo')
-        self.qwen_api_key     = os.getenv('QWEN_API_KEY', '') or ai_cfg.get('apiKey', '')
+        self.qwen_api_key     = os.getenv('TIMEWEB_API_KEY') or os.getenv('QWEN_API_KEY')
         # Контекст диалогов: {user_id: [{"role":..,"content":..}]}
         if not hasattr(self, 'ai_context_cache'):
             self.ai_context_cache: Dict[int, List[dict]] = {}
