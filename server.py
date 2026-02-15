@@ -911,6 +911,14 @@ async def gen_ai_key(d: dict, x_admin_token: str = Header(None)):
         raise HTTPException(500, f"Ошибка сохранения: {res.text}")
 
     return {"key": key, "tokens": tokens}
+
+@app.get("/api/admin/ai-keys")
+async def get_ai_keys(x_admin_token: str = Header(None)):
+    if x_admin_token != A_SECRET: raise HTTPException(401)
+    
+    # Запрашиваем данные из новой таблицы
+    res = await db.get("ai_token_keys?select=*&order=created_at.desc")
+    return res.json()
     
 @app.post("/api/ai/activate-tokens")
 async def activate_ai_tokens(req: dict):
