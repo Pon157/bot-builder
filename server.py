@@ -884,20 +884,31 @@ async def activate_lic(req: dict):
 
 @app.post("/api/admin/generate-ai-key")
 async def gen_ai_key(d: dict, x_admin_token: str = Header(None)):
-    """Генерация ключа на AI-токены (AITOK-XXXXX-NNN). Только для администратора."""
-    if x_admin_token != A_SECRET: raise HTTPException(401, "Admin only")
+    """Генерация ключа на AI-токены. Только для администратора."""
+    if x_admin_token != A_SECRET: 
+        raise HTTPException(401, "Admin only")
+    
     tokens = int(d.get("tokens", 500000))
     price_rub = int(d.get("price_rub", 30))
     key = f"AITOK-{secrets.token_hex(3).upper()}-{random.randint(100,999)}"
+    
     payload = {
         "key": key,
         "tokens": tokens,
         "price_rub": price_rub,
         "used": False,
         "key_type": "ai_tokens",
-        "months": 0
+        "months": 0,
+        "created_at": datetime.now().isoformat() # ОБЯЗАТЕЛЬНО для сортировки на сайте
     }
-    await db.post("issued_keys", json=payload)
+    
+    # Отправляем в БД
+    res = await db.post("issued_keys", json=payload)
+    
+    if res.status_code not in [200, 201]:
+        logger.error(f"Ошибка БД при сохранении ключа: {res.text}")
+        raise HTTPException(500, "Ошибка сохранения в базу данных")
+
     return {"key": key, "tokens": tokens}
 
 @app.post("/api/ai/activate-tokens")
