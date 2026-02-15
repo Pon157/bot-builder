@@ -545,9 +545,12 @@ async def get_user_bots(user_id: str):
             }
 
             # Данные рандомайзера и постера — прямо в корень для фронтенда
-            bot["lotteries"] = cfg.get("lotteries", [])
-            bot["users"]     = cfg.get("users",     [])
-            bot["config"]    = cfg
+            bot["lotteries"]    = cfg.get("lotteries", [])
+            bot["users"]        = cfg.get("users",     [])
+            bot["config"]       = cfg
+            bot["ai"]           = cfg.get("ai", {})
+            bot["welcomePhoto"] = cfg.get("welcomePhoto", "")
+            bot["welcomeInline"]= cfg.get("welcomeInline", [])
 
             # --- КРИТИЧНО ДЛЯ АНАЛИТИКИ ---
             # Статистика может быть в колонке stats ИЛИ внутри config.stats.
@@ -697,27 +700,41 @@ async def save_bot(b: dict):
             raw_ch = [channel_id_val]
         channels_val = [c for c in raw_ch if c and str(c).strip()]
 
+        # AI конфиг
+        raw_ai_cfg = b.get("ai") or inc_cfg.get("ai") or old_config.get("ai") or {}
+        if not isinstance(raw_ai_cfg, dict): raw_ai_cfg = {}
+        ai_config = {
+            "enabled":         raw_ai_cfg.get("enabled", False),
+            "mode":            raw_ai_cfg.get("mode", "off"),
+            "buttonName":      raw_ai_cfg.get("buttonName", "ИИ-ассистент"),
+            "systemPrompt":    raw_ai_cfg.get("systemPrompt", "Ты полезный ИИ-ассистент."),
+            "maxTokensPerReply": int(raw_ai_cfg.get("maxTokensPerReply", 800)),
+            "contextMessages": int(raw_ai_cfg.get("contextMessages", 6)),
+            "model":           raw_ai_cfg.get("model", "qwen-turbo"),
+        }
+
         ui_config = {
             "stats": old_config.get("stats", {}),
             "buttons": btns,
             "triggers": get_val("triggers", []),
             "welcomeMessage": get_val("welcomeMessage", "Привет!"),
+            "welcomePhoto":   get_val("welcomePhoto", ""),
+            "welcomeInline":  get_val("welcomeInline", []),
             "settings": {**old_config.get("settings", {}), **(b.get("settings") or inc_cfg.get("settings") or {})},
             "connectedUsers": old_config.get("connectedUsers", []),
-            # Дублируем ID в конфиг для bot_core
             "admin_chat_id": new_admin_id,
             "adminChatId":   new_admin_id,
             "vk_group_id":   new_vk_id,
             "vkGroupId":     new_vk_id,
-            # Поля для poster / randomizer / /broadcast
             "adminIds":   admin_ids_list,
             "channelId":  channel_id_val,
             "channels":   channels_val,
             "lotChannel": lot_channel_val,
             "botLink":    bot_link_val,
-            # Сохраняем данные рандомайзера (не затираем при сохранении настроек)
             "lotteries":  old_config.get("lotteries", []),
             "users":      old_config.get("users",     []),
+            # AI-конфиг
+            "ai": ai_config,
         }
 
         # 5. ТОКЕН (Берем новый или оставляем старый зашифрованный)
@@ -822,16 +839,20 @@ async def get_bot_logs(bid: str):
 @app.post("/api/admin/generate-key")
 async def gen_key(d: dict, x_admin_token: str = Header(None)):
     if x_admin_token != A_SECRET: raise HTTPException(401, "Admin only")
-    
-    key = f"DE-{secrets.token_hex(3).upper()}-{random.randint(100, 999)}"
-    payload = {
-        "key": key,
-        "months": d.get('months', 1),
-        "days": d.get('days', 0),
-        "used": False
-    }
+
+    key_type = d.get("key_type", "license")  # 'license' | 'ai_tokens'
+    if key_type == "ai_tokens":
+        tokens = int(d.get("tokens", 500000))
+        key = f"AITOK-{secrets.token_hex(3).upper()}-{random.randint(100,999)}"
+        payload = {"key": key, "months": 0, "days": 0, "used": False,
+                   "key_type": "ai_tokens", "tokens": tokens}
+    else:
+        key = f"DE-{secrets.token_hex(3).upper()}-{random.randint(100,999)}"
+        payload = {"key": key, "months": d.get('months', 1), "days": d.get('days', 0),
+                   "used": False, "key_type": "license", "tokens": 0}
+
     await db.post("issued_keys", json=payload)
-    return {"key": key}
+    return {"key": key, "key_type": key_type}
 
 @app.post("/api/license/activate")
 async def activate_lic(req: dict):
@@ -856,6 +877,126 @@ async def activate_lic(req: dict):
     await db.patch("issued_keys", params={"key": f"eq.{key_code}"}, json={"used": True, "used_by_bot": bid})
     
     return {"status": "ok", "new_expiry": new_expiry}
+
+# ==========================================
+# AI ТОКЕНЫ
+# ==========================================
+
+@app.post("/api/admin/generate-ai-key")
+async def gen_ai_key(d: dict, x_admin_token: str = Header(None)):
+    """Генерация ключа на AI-токены (AITOK-XXXXX-NNN). Только для администратора."""
+    if x_admin_token != A_SECRET: raise HTTPException(401, "Admin only")
+    tokens = int(d.get("tokens", 500000))
+    price_rub = int(d.get("price_rub", 30))
+    key = f"AITOK-{secrets.token_hex(3).upper()}-{random.randint(100,999)}"
+    payload = {
+        "key": key,
+        "tokens": tokens,
+        "price_rub": price_rub,
+        "used": False,
+        "key_type": "ai_tokens",
+        "months": 0
+    }
+    await db.post("issued_keys", json=payload)
+    return {"key": key, "tokens": tokens}
+
+@app.post("/api/ai/activate-tokens")
+async def activate_ai_tokens(req: dict):
+    """Активация ключа на AI-токены для конкретного бота."""
+    key_code = req.get("key", "").strip().upper()
+    bid = req.get("botId", "").strip()
+    if not key_code or not bid:
+        return {"status": "error", "message": "Ключ и botId обязательны"}
+
+    # Ищем ключ типа ai_tokens
+    rk = await db.get("issued_keys", params={
+        "key": f"eq.{key_code}",
+        "used": "eq.false",
+        "key_type": "eq.ai_tokens"
+    })
+    if not rk.json():
+        return {"status": "error", "message": "Ключ недействителен, уже использован или не является AI-ключом"}
+
+    k_data = rk.json()[0]
+    tokens = int(k_data.get("tokens", 0))
+    if tokens <= 0:
+        return {"status": "error", "message": "Ключ содержит 0 токенов"}
+
+    # Проверяем бота
+    rb = await db.get("bots", params={"id": f"eq.{bid}"})
+    if not rb.json():
+        return {"status": "error", "message": "Бот не найден"}
+
+    # Upsert баланса токенов
+    # Пробуем получить текущий баланс
+    bal_r = await db.get("ai_token_balances", params={"bot_id": f"eq.{bid}"})
+    if bal_r.json():
+        cur = bal_r.json()[0]
+        new_total   = cur["tokens_total"] + tokens
+        new_balance = cur["tokens_balance"] + tokens
+        await db.patch("ai_token_balances",
+            params={"bot_id": f"eq.{bid}"},
+            json={"tokens_total": new_total, "tokens_balance": new_balance}
+        )
+    else:
+        await db.post("ai_token_balances", json={
+            "bot_id": bid,
+            "tokens_total": tokens,
+            "tokens_used": 0,
+            "tokens_balance": tokens
+        })
+
+    # Помечаем ключ использованным
+    await db.patch("issued_keys",
+        params={"key": f"eq.{key_code}"},
+        json={"used": True, "used_by_bot": bid}
+    )
+
+    return {"status": "ok", "tokens_added": tokens, "message": f"Начислено {tokens:,} токенов"}
+
+@app.get("/api/ai/balance/{bot_id}")
+async def get_ai_balance(bot_id: str):
+    """Текущий баланс AI-токенов для бота."""
+    r = await db.get("ai_token_balances", params={"bot_id": f"eq.{bot_id}"})
+    if r.json():
+        d = r.json()[0]
+        return {
+            "bot_id": bot_id,
+            "tokens_total":   d.get("tokens_total", 0),
+            "tokens_used":    d.get("tokens_used", 0),
+            "tokens_balance": d.get("tokens_balance", 0)
+        }
+    return {"bot_id": bot_id, "tokens_total": 0, "tokens_used": 0, "tokens_balance": 0}
+
+@app.get("/api/ai/usage/{bot_id}")
+async def get_ai_usage(bot_id: str):
+    """Лог расхода AI-токенов бота (последние 100 записей)."""
+    r = await db.get("ai_token_usage_log", params={
+        "bot_id": f"eq.{bot_id}",
+        "order": "created_at.desc",
+        "limit": "100"
+    })
+    return r.json() if r.status_code == 200 else []
+
+@app.post("/api/admin/upload-photo")
+async def upload_welcome_photo(request: Request, x_admin_token: str = Header(None)):
+    """Загрузка фото для стартового сообщения. Сохраняет в ./uploads/welcome/."""
+    import shutil, uuid
+    from fastapi import UploadFile
+    form = await request.form()
+    file: UploadFile = form.get("file")
+    if not file:
+        raise HTTPException(400, "Файл не передан")
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
+    fname = f"{uuid.uuid4().hex}.{ext}"
+    save_dir = "./uploads/welcome"
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, fname)
+    with open(save_path, "wb") as f_out:
+        shutil.copyfileobj(file.file, f_out)
+    # Возвращаем публичный URL (предполагаем что /uploads/ смонтирован)
+    public_url = f"/uploads/welcome/{fname}"
+    return {"url": public_url, "filename": fname}
 
 # ==========================================
 # 7. МАССОВАЯ РАССЫЛКА
