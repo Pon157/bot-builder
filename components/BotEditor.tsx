@@ -511,41 +511,38 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                         onChange={e => handleLocalUpdate({ ...bot, welcomeMessage: e.target.value })} />
                     </label>
 
-{/* Стартовое фото — скрываем для ВК, даже если это SupportBot */}
-{isSupportBot && !isVK && (
-  <label className="block">
-    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
-      <Image className="w-3 h-3 text-blue-400" />Фото к /start (опционально)
-    </span>
-    <div className="mt-2">
-      <input
-        placeholder="Вставьте прямую ссылку на фото (https://...)"
-        className="w-full bg-black border border-zinc-800 p-4 rounded-2xl text-white text-xs outline-none focus:border-blue-500 transition-all"
-        value={bot.welcomePhoto || ''}
-        onChange={e => handleLocalUpdate({ ...bot, welcomePhoto: e.target.value })} 
-      />
-    </div>
-    
-    {/* Блок превью: покажет картинку, если ссылка вставлена */}
-    {bot.welcomePhoto && (
-      <div className="mt-3 relative inline-block">
-        <img 
-          src={bot.welcomePhoto} 
-          alt="preview"
-          className="h-32 rounded-2xl object-cover border border-zinc-800 shadow-lg"
-          onError={e => (e.currentTarget.style.display = 'none')} 
-        />
-        <div className="absolute top-2 left-2 bg-black/50 px-2 py-1 rounded text-[8px] text-white uppercase font-bold backdrop-blur-sm">
-          Превью
-        </div>
-      </div>
-    )}
-    
-    <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold">
-      Бот отправит это фото первым сообщением вместе с текстом приветствия
-    </p>
-  </label>
-)}
+                    {/* Стартовое фото — только для TG support-ботов */}
+                    {isTgSupport && (
+                      <label className="block">
+                        <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
+                          <Image className="w-3 h-3 text-blue-400" />Фото к /start (опционально)
+                        </span>
+                        <div className="mt-2">
+                          <input
+                            placeholder="Вставьте прямую ссылку на фото (https://...)"
+                            className="w-full bg-black border border-zinc-800 p-4 rounded-2xl text-white text-xs outline-none focus:border-blue-500 transition-all"
+                            value={bot.welcomePhoto || ''}
+                            onChange={e => handleLocalUpdate({ ...bot, welcomePhoto: e.target.value })}
+                          />
+                        </div>
+                        {bot.welcomePhoto && (
+                          <div className="mt-3 relative inline-block">
+                            <img
+                              src={bot.welcomePhoto}
+                              alt="preview"
+                              className="h-32 rounded-2xl object-cover border border-zinc-800 shadow-lg"
+                              onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                            />
+                            <div className="absolute top-2 left-2 bg-black/50 px-2 py-1 rounded text-[8px] text-white uppercase font-bold backdrop-blur-sm">
+                              Превью
+                            </div>
+                          </div>
+                        )}
+                        <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold">
+                          Бот отправит это фото первым сообщением вместе с текстом приветствия
+                        </p>
+                      </label>
+                    )}
 
                     {/* Инлайн-кнопки к /start (только TG) */}
                     {isTgSupport && (
@@ -617,9 +614,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                         )}
                       </div>
                     )}
-)}
 
-                <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest opacity-50 ml-2">* Данные синхронизируются (согласно .env)</p>
+                <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest opacity-50 ml-2">* Данные синхронизируются (из файла .env)</p>
               </div>
             </section>
 
@@ -1052,7 +1048,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
               {/* Параметры модели */}
               <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-5">
                 <h3 className="text-sm font-black text-white flex items-center gap-2">
-                  <Settings className="w-4 h-4 text-blue-500" /> Параметры AI
+                  <Settings className="w-4 h-4 text-blue-500" /> Параметры Qwen
                 </h3>
                 <label className="block">
                   <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Модель</span>
@@ -1060,9 +1056,9 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                     className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-2xl text-sm text-white outline-none focus:border-blue-500 transition-all cursor-pointer"
                     value={bot.ai?.model || 'qwen-turbo'}
                     onChange={e => handleLocalUpdate({ ...bot, ai: { ...(bot.ai || {}), model: e.target.value } })}>
-                    <option value="qwen-turbo">turbo (быстрый, дешёвый)</option>
-                    <option value="qwen-plus">plus (умнее)</option>
-                    <option value="qwen-max">max (самый умный)</option>
+                    <option value="qwen-turbo">qwen-turbo (быстрый, дешёвый)</option>
+                    <option value="qwen-plus">qwen-plus (умнее)</option>
+                    <option value="qwen-max">qwen-max (самый умный)</option>
                   </select>
                 </label>
                 <div className="grid grid-cols-2 gap-4">
