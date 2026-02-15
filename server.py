@@ -925,54 +925,73 @@ async def activate_ai_tokens(req: dict):
     """Активация ключа на AI-токены для конкретного бота."""
     key_code = req.get("key", "").strip().upper()
     bid = req.get("botId", "").strip()
+    
     if not key_code or not bid:
         return {"status": "error", "message": "Ключ и botId обязательны"}
 
-    # Ищем ключ типа ai_tokens
-    rk = await db.get("issued_keys", params={
+    # 1. Ищем ключ в ПРАВИЛЬНОЙ таблице (ai_token_keys), которую ты создал миграцией
+    rk = await db.get("ai_token_keys", params={
         "key": f"eq.{key_code}",
-        "used": "eq.false",
-        "key_type": "eq.ai_tokens"
+        "used": "eq.false"
     })
-    if not rk.json():
-        return {"status": "error", "message": "Ключ недействителен, уже использован или не является AI-ключом"}
+    
+    keys_found = rk.json()
+    if not keys_found:
+        return {"status": "error", "message": "Ключ недействителен или уже использован"}
 
-    k_data = rk.json()[0]
+    k_data = keys_found[0]
     tokens = int(k_data.get("tokens", 0))
+    
     if tokens <= 0:
         return {"status": "error", "message": "Ключ содержит 0 токенов"}
 
-    # Проверяем бота
+    # 2. Проверяем, существует ли бот
     rb = await db.get("bots", params={"id": f"eq.{bid}"})
     if not rb.json():
         return {"status": "error", "message": "Бот не найден"}
 
-    # Upsert баланса токенов
-    # Пробуем получить текущий баланс
+    # 3. Обновляем или создаем баланс в ai_token_balances
     bal_r = await db.get("ai_token_balances", params={"bot_id": f"eq.{bid}"})
-    if bal_r.json():
-        cur = bal_r.json()[0]
-        new_total   = cur["tokens_total"] + tokens
-        new_balance = cur["tokens_balance"] + tokens
+    balances = bal_r.json()
+    
+    if balances:
+        # Если запись уже есть — плюсуем к текущему
+        cur = balances[0]
+        new_total = cur.get("tokens_total", 0) + tokens
+        new_balance = cur.get("tokens_balance", 0) + tokens
+        
         await db.patch("ai_token_balances",
             params={"bot_id": f"eq.{bid}"},
-            json={"tokens_total": new_total, "tokens_balance": new_balance}
+            json={
+                "tokens_total": new_total, 
+                "tokens_balance": new_balance,
+                "updated_at": datetime.now().isoformat()
+            }
         )
     else:
+        # Если записи нет — создаем новую
         await db.post("ai_token_balances", json={
             "bot_id": bid,
             "tokens_total": tokens,
             "tokens_used": 0,
-            "tokens_balance": tokens
+            "tokens_balance": tokens,
+            "updated_at": datetime.now().isoformat()
         })
 
-    # Помечаем ключ использованным
-    await db.patch("issued_keys",
+    # 4. Помечаем ключ использованным в таблице ai_token_keys
+    await db.patch("ai_token_keys",
         params={"key": f"eq.{key_code}"},
-        json={"used": True, "used_by_bot": bid}
+        json={
+            "used": True, 
+            "used_by_bot": bid
+        }
     )
 
-    return {"status": "ok", "tokens_added": tokens, "message": f"Начислено {tokens:,} токенов"}
+    return {
+        "status": "ok", 
+        "tokens_added": tokens, 
+        "message": f"✅ Начислено {tokens:,} токенов"
+    }
 
 @app.get("/api/ai/balance/{bot_id}")
 async def get_ai_balance(bot_id: str):
