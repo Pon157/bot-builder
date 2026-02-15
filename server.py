@@ -884,8 +884,7 @@ async def activate_lic(req: dict):
 
 @app.post("/api/admin/generate-ai-key")
 async def gen_ai_key(d: dict, x_admin_token: str = Header(None)):
-    """Генерация ключа на AI-токены. Только для администратора."""
-    # Используем A_SECRET, как у тебя в коде
+    """Генерация ключа на AI-токены. Пишем в ai_token_keys."""
     if x_admin_token != A_SECRET: 
         raise HTTPException(401, "Admin only")
     
@@ -893,22 +892,22 @@ async def gen_ai_key(d: dict, x_admin_token: str = Header(None)):
     price_rub = int(d.get("price_rub", 30))
     key = f"AITOK-{secrets.token_hex(3).upper()}-{random.randint(100,999)}"
     
+    # Собираем payload строго под таблицу ai_token_keys
     payload = {
         "key": key,
         "tokens": tokens,
-        "price_rub": price_rub, # Мы добавили эту колонку в SQL выше
+        "price_rub": price_rub,
         "used": False,
-        "key_type": "ai_tokens", # Это позволит сайту отличить ИИ от лицензии
-        "months": 0,
-        "created_at": datetime.now().isoformat()
+        "used_by_bot": None,
+        # Для TIMESTAMPTZ в Supabase лучше всего подходит ISO формат
+        "created_at": datetime.now().isoformat() 
     }
     
-    # Отправляем в общую таблицу ключей
-    res = await db.post("issued_keys", json=payload)
+    # ВНИМАНИЕ: меняем таблицу на ai_token_keys
+    res = await db.post("ai_token_keys", json=payload)
     
     if res.status_code not in [200, 201]:
-        # Если всё равно ошибка, выводим её в консоль для отладки
-        logger.error(f"Ошибка БД: {res.text}")
+        logger.error(f"Ошибка БД (ai_token_keys): {res.text}")
         raise HTTPException(500, f"Ошибка сохранения: {res.text}")
 
     return {"key": key, "tokens": tokens}
