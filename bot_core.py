@@ -1018,10 +1018,12 @@ class BotInstance:
                             InlineKeyboardButton(text="✖ Закрыть диалог с ИИ", callback_data="ai_close")
                         ]])
                         await m.answer(
-                            "🤖 <b>ИИ-ассистент активирован.</b>\n"
-                            "Задайте вопрос. Для выхода — нажмите кнопку ниже.",
-                            "Задайте вопрос. Для выхода — нажмите кнопку ниже.",
-                            reply_markup=close_kb
+                            text=(
+                                "🤖 <b>ИИ-ассистент активирован.</b>\n"
+                                "Задайте вопрос. Для выхода — нажмите кнопку ниже."
+                            ),
+                            reply_markup=close_kb,
+                            parse_mode="HTML"
                         )
                     else:
                         await m.answer("ИИ-ассистент не подключён к этому боту.")
