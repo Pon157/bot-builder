@@ -621,7 +621,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                 </p>
               </div>
             </section>
-            
+
             {/* Инфо-плашки для постера/рандомайзера */}
             {isPoster && (
               <div className="bg-emerald-500/5 border border-emerald-500/20 p-8 rounded-[2.5rem] space-y-3">
@@ -1090,9 +1090,9 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                 </label>
               </section>
             </div>
-          </div>
+          )} {/* Closes the ternary operator: (!aiBalance ...) ? (...) : (...) */}
         </div>
-      )}
+      )} {/* Closes: activeTab === 'ai' && isSupportBot && (...) */}
 
       {/* Аналитика и логи */}
       {activeTab === 'stats' && <BotStatsView bot={bot} onUpdate={onUpdate} />}
