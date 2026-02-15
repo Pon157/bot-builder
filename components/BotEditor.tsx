@@ -7,7 +7,8 @@ import {
   Settings, Cpu, BarChart3, Terminal, X, Save, Power,
   Ticket, Plus, MessageSquare, User, CheckSquare,
   Square, Zap, Layout, ShieldAlert, Lock, Trash2, AlertCircle, Globe,
-  Send, Shuffle, Hash, Users, Link, Smartphone, ChevronDown
+  Send, Shuffle, Hash, Users, Link, Smartphone, ChevronDown,
+  Brain, Image, ExternalLink, ArrowRight, Layers, Coins, Upload
 } from 'lucide-react';
 
 interface BotEditorProps {
@@ -18,10 +19,14 @@ interface BotEditorProps {
 }
 
 const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminMode }) => {
-  const [activeTab, setActiveTab] = useState<'settings' | 'logic' | 'interface' | 'logs' | 'stats' | 'chat'>('settings');
+  const [activeTab, setActiveTab] = useState<'settings' | 'logic' | 'interface' | 'ai' | 'logs' | 'stats' | 'chat'>('settings');
   const [isProcessing, setIsProcessing] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
+  const [aiBalance, setAiBalance] = useState<{tokens_balance: number, tokens_total: number, tokens_used: number} | null>(null);
+  const [aiKeyInput, setAiKeyInput] = useState('');
+  const [aiKeyStatus, setAiKeyStatus] = useState<string>('');
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   // ── Типы платформ ──
   const isVK         = bot.platform === 'vk';
@@ -40,6 +45,10 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
   useEffect(() => {
     if (activeTab === 'chat') {
       api.getBotMessages(bot.id).then(setMessages).catch(() => setMessages([]));
+    }
+    if (activeTab === 'ai') {
+      fetch(`/api/ai/balance/${bot.id}`)
+        .then(r => r.json()).then(setAiBalance).catch(() => {});
     }
   }, [activeTab, bot.id]);
 
@@ -97,13 +106,14 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
 
   // ── Вкладки по типу бота ──
   const tabs = [
-    { id: 'settings', label: 'Основные',     icon: Settings,  always: true },
-    { id: 'interface',label: 'Кнопки',       icon: Ticket,    always: false },
-    { id: 'logic',    label: 'Триггеры',     icon: Zap,       always: false },
-    { id: 'stats',    label: 'Аналитика',    icon: BarChart3, always: true  },
-    { id: 'logs',     label: 'Терминал',     icon: Terminal,  always: true  },
+    { id: 'settings', label: 'Основные',     icon: Settings,      always: true },
+    { id: 'interface',label: 'Кнопки',       icon: Ticket,        always: false },
+    { id: 'logic',    label: 'Триггеры',     icon: Zap,           always: false },
+    { id: 'ai',       label: 'ИИ-Ассистент', icon: Brain,         support: true },
+    { id: 'stats',    label: 'Аналитика',    icon: BarChart3,     always: true  },
+    { id: 'logs',     label: 'Терминал',     icon: Terminal,      always: true  },
     { id: 'chat',     label: 'CRM',          icon: MessageSquare, always: false },
-  ].filter(t => t.always || isSupportBot);
+  ].filter((t: any) => t.always || (t.support && isSupportBot) || (!t.always && !t.support && isSupportBot));
 
   // ── Иконка заголовка ──
   const HeaderIcon = isPoster ? Send : isRandomizer ? Shuffle : (isVK ? Globe : Cpu);
@@ -334,16 +344,98 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
 
                 {/* Приветствие — не для постера */}
                 {!isPoster && (
-                  <label className="block">
-                    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
-                      {isVK ? 'Текст приветствия' : 'Приветствие (/start)'}
-                    </span>
-                    <textarea
-                      placeholder="Текст для команды /start"
-                      className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] outline-none text-xs focus:border-blue-500 transition-all resize-none"
-                      value={bot.welcomeMessage || ''}
-                      onChange={e => handleLocalUpdate({ ...bot, welcomeMessage: e.target.value })} />
-                  </label>
+                  <div className="space-y-4">
+                    <label className="block">
+                      <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2">
+                        {isVK ? 'Текст приветствия' : 'Приветствие (/start)'}
+                      </span>
+                      <textarea
+                        placeholder="Текст для команды /start"
+                        className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white min-h-[100px] outline-none text-xs focus:border-blue-500 transition-all resize-none"
+                        value={bot.welcomeMessage || ''}
+                        onChange={e => handleLocalUpdate({ ...bot, welcomeMessage: e.target.value })} />
+                    </label>
+
+                    {/* Стартовое фото */}
+                    {isSupportBot && (
+                      <label className="block">
+                        <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
+                          <Image className="w-3 h-3 text-blue-400" />Фото к /start (опционально)
+                        </span>
+                        <div className="flex gap-2 mt-2">
+                          <input
+                            placeholder="URL или file_id Telegram"
+                            className="flex-1 bg-black border border-zinc-800 p-4 rounded-2xl text-white text-xs outline-none focus:border-blue-500 transition-all"
+                            value={bot.welcomePhoto || ''}
+                            onChange={e => handleLocalUpdate({ ...bot, welcomePhoto: e.target.value })} />
+                          <label className="cursor-pointer flex items-center gap-1 px-4 py-2 bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-2xl text-[10px] font-bold hover:bg-blue-500/20 transition-all">
+                            <Upload className="w-3 h-3" />
+                            <input type="file" accept="image/*" className="hidden"
+                              onChange={async e => {
+                                const file = e.target.files?.[0];
+                                if (!file) return;
+                                setUploadingPhoto(true);
+                                try {
+                                  const fd = new FormData();
+                                  fd.append('file', file);
+                                  const r = await fetch('/api/admin/upload-photo', { method: 'POST', body: fd });
+                                  const data = await r.json();
+                                  if (data.url) handleLocalUpdate({ ...bot, welcomePhoto: data.url });
+                                } catch { alert('Ошибка загрузки'); }
+                                finally { setUploadingPhoto(false); }
+                              }} />
+                            {uploadingPhoto ? '...' : 'Загрузить'}
+                          </label>
+                        </div>
+                        {bot.welcomePhoto && (
+                          <img src={bot.welcomePhoto} alt="preview"
+                            className="mt-3 h-24 rounded-2xl object-cover border border-zinc-800"
+                            onError={e => (e.currentTarget.style.display = 'none')} />
+                        )}
+                        <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold">Изображение отправляется вместе с текстом приветствия</p>
+                      </label>
+                    )}
+
+                    {/* Инлайн-кнопки к /start */}
+                    {isSupportBot && (
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
+                            <ExternalLink className="w-3 h-3 text-indigo-400" />Инлайн-кнопки к /start
+                          </span>
+                          <button type="button"
+                            onClick={() => handleLocalUpdate({ ...bot, welcomeInline: [...(bot.welcomeInline || []), { text: '', url: '' }] })}
+                            className="text-[9px] text-indigo-400 font-bold hover:text-indigo-300">
+                            + Добавить кнопку
+                          </button>
+                        </div>
+                        {(bot.welcomeInline || []).map((btn: any, i: number) => (
+                          <div key={i} className="flex gap-2 mb-2">
+                            <input placeholder="Текст кнопки"
+                              className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-indigo-500"
+                              value={btn.text}
+                              onChange={e => {
+                                const wb = [...(bot.welcomeInline || [])];
+                                wb[i] = { ...wb[i], text: e.target.value };
+                                handleLocalUpdate({ ...bot, welcomeInline: wb });
+                              }} />
+                            <input placeholder="https://..."
+                              className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-indigo-500"
+                              value={btn.url}
+                              onChange={e => {
+                                const wb = [...(bot.welcomeInline || [])];
+                                wb[i] = { ...wb[i], url: e.target.value };
+                                handleLocalUpdate({ ...bot, welcomeInline: wb });
+                              }} />
+                            <button type="button"
+                              onClick={() => handleLocalUpdate({ ...bot, welcomeInline: (bot.welcomeInline || []).filter((_: any, idx: number) => idx !== i) })}
+                              className="px-2 text-zinc-600 hover:text-rose-500"><X className="w-4 h-4" /></button>
+                          </div>
+                        ))}
+                        <p className="text-[8px] text-zinc-600 ml-2 uppercase font-bold">Ссылки показываются инлайн-кнопками под стартовым сообщением</p>
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest opacity-50 ml-2">* Данные синхронизируются (согласно .env)</p>
@@ -527,6 +619,32 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                       </button>
                     ))}
                   </div>
+                  <div className="border-t border-zinc-800 pt-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-[9px] font-black text-zinc-500 uppercase flex items-center gap-1.5">
+                        <Layers className="w-3 h-3 text-blue-400" /> Sub-кнопки
+                      </span>
+                      <button type="button"
+                        onClick={() => { const nb=[...bot.buttons]; nb[i].children=[...(nb[i].children||[]),{text:'',response:''}]; handleLocalUpdate({...bot,buttons:nb}); }}
+                        className="text-[9px] text-blue-400 font-bold hover:text-blue-300">+ Под-кнопка</button>
+                    </div>
+                    <p className="text-[8px] text-zinc-600 mb-2">При нажатии — показать эти кнопки вместо ответа:</p>
+                    {(btn.children||[]).map((child: any, ci: number) => (
+                      <div key={ci} className="flex gap-2 mb-2">
+                        <input placeholder="Кнопка"
+                          className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-blue-500"
+                          value={child.text}
+                          onChange={e => { const nb=[...bot.buttons]; nb[i].children[ci].text=e.target.value; handleLocalUpdate({...bot,buttons:nb}); }} />
+                        <input placeholder="Ответ"
+                          className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-blue-500"
+                          value={child.response}
+                          onChange={e => { const nb=[...bot.buttons]; nb[i].children[ci].response=e.target.value; handleLocalUpdate({...bot,buttons:nb}); }} />
+                        <button type="button"
+                          onClick={() => { const nb=[...bot.buttons]; nb[i].children=nb[i].children.filter((_:any,idx:number)=>idx!==ci); handleLocalUpdate({...bot,buttons:nb}); }}
+                          className="px-2 text-zinc-600 hover:text-rose-500"><X className="w-3 h-3" /></button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             ))}
@@ -578,6 +696,166 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════════
+          ВКЛАДКА: ИИ-АССИСТЕНТ
+      ════════════════════════════════════════════ */}
+      {activeTab === 'ai' && isSupportBot && (
+        <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          {/* Баланс токенов */}
+          <div className="bg-[#111] border border-zinc-800 p-6 rounded-[2.5rem] flex flex-col md:flex-row items-center gap-6">
+            <div className="flex-1">
+              <h3 className="text-sm font-black text-white flex items-center gap-2 mb-1">
+                <Coins className="w-4 h-4 text-amber-500" /> AI-токены
+              </h3>
+              {aiBalance ? (
+                <div className="grid grid-cols-3 gap-4 mt-3">
+                  {[
+                    { label: 'Остаток', val: aiBalance.tokens_balance, color: 'text-emerald-400' },
+                    { label: 'Всего',   val: aiBalance.tokens_total,   color: 'text-blue-400' },
+                    { label: 'Потрачено',val: aiBalance.tokens_used,   color: 'text-rose-400' },
+                  ].map(({ label, val, color }) => (
+                    <div key={label} className="bg-black border border-zinc-800 p-3 rounded-2xl text-center">
+                      <p className={`text-lg font-black ${color}`}>{val.toLocaleString()}</p>
+                      <p className="text-[8px] text-zinc-600 uppercase font-bold">{label}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-zinc-500 mt-2">Загрузка баланса...</p>
+              )}
+            </div>
+            <div className="w-full md:w-auto space-y-2">
+              <p className="text-[9px] text-zinc-500 font-bold uppercase ml-1">Активировать ключ AI</p>
+              <div className="flex gap-2">
+                <input
+                  className="flex-1 bg-black border border-zinc-800 rounded-xl p-3 text-xs text-white font-mono outline-none focus:border-amber-500 transition-all min-w-[180px]"
+                  placeholder="AITOK-XXXXXX-NNN"
+                  value={aiKeyInput}
+                  onChange={e => setAiKeyInput(e.target.value)}
+                />
+                <button
+                  onClick={async () => {
+                    if (!aiKeyInput.trim()) return;
+                    setAiKeyStatus('⏳ Активация...');
+                    try {
+                      const r = await fetch('/api/ai/activate-tokens', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ key: aiKeyInput.trim().toUpperCase(), botId: bot.id })
+                      });
+                      const res = await r.json();
+                      if (res.status === 'ok') {
+                        setAiKeyStatus(`✅ +${res.tokens_added?.toLocaleString()} токенов!`);
+                        setAiKeyInput('');
+                        fetch(`/api/ai/balance/${bot.id}`).then(r => r.json()).then(setAiBalance);
+                      } else {
+                        setAiKeyStatus(`❌ ${res.message}`);
+                      }
+                    } catch { setAiKeyStatus('❌ Ошибка сети'); }
+                  }}
+                  className="px-4 py-3 bg-amber-500/10 text-amber-500 border border-amber-500/20 rounded-xl text-xs font-black hover:bg-amber-500/20 transition-all"
+                >
+                  Активировать
+                </button>
+              </div>
+              {aiKeyStatus && <p className="text-[10px] text-zinc-400 ml-1">{aiKeyStatus}</p>}
+            </div>
+          </div>
+
+          {/* Настройки AI — блокируются если нет токенов */}
+          {(!aiBalance || aiBalance.tokens_balance <= 0) ? (
+            <div className="bg-amber-500/5 border border-amber-500/20 p-8 rounded-[2.5rem] text-center">
+              <Brain className="w-10 h-10 text-amber-500/40 mx-auto mb-3" />
+              <p className="text-sm font-black text-amber-400/60">Нет AI-токенов</p>
+              <p className="text-[10px] text-zinc-600 mt-1">Активируйте ключ выше или купите пакет в магазине</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              {/* Режим работы */}
+              <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
+                <h3 className="text-sm font-black text-white flex items-center gap-2">
+                  <Brain className="w-4 h-4 text-purple-500" /> Режим ИИ-ассистента
+                </h3>
+                <div className="space-y-2">
+                  {([
+                    { id: 'off',     label: 'Отключён',          sub: 'ИИ не используется' },
+                    { id: 'all',     label: 'На все сообщения',   sub: 'ИИ отвечает на каждый текст (если нет триггеров/кнопок)' },
+                    { id: 'button',  label: 'По кнопке',          sub: 'Кнопка «ИИ-ассистент» в клавиатуре' },
+                    { id: 'command', label: 'По команде /ai',      sub: 'Пользователь пишет /ai' },
+                  ] as const).map(({ id, label, sub }) => (
+                    <button key={id} type="button"
+                      onClick={() => handleLocalUpdate({ ...bot, ai: { ...(bot.ai || {}), mode: id, enabled: id !== 'off' } })}
+                      className={`w-full flex items-center justify-between p-4 rounded-2xl border text-left transition-all ${
+                        (bot.ai?.mode || 'off') === id
+                          ? 'bg-purple-500/10 border-purple-500/30 text-purple-400'
+                          : 'bg-black border-zinc-800 text-zinc-500 hover:border-zinc-700'
+                      }`}>
+                      <div>
+                        <p className="text-xs font-bold">{label}</p>
+                        <p className="text-[9px] opacity-60">{sub}</p>
+                      </div>
+                      {(bot.ai?.mode || 'off') === id && <CheckSquare className="w-4 h-4 shrink-0" />}
+                    </button>
+                  ))}
+                </div>
+                {bot.ai?.mode === 'button' && (
+                  <label className="block">
+                    <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Название кнопки</span>
+                    <input
+                      className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-2xl text-sm text-white outline-none focus:border-purple-500 transition-all"
+                      value={bot.ai?.buttonName || 'ИИ-ассистент'}
+                      onChange={e => handleLocalUpdate({ ...bot, ai: { ...(bot.ai || {}), buttonName: e.target.value } })}
+                    />
+                  </label>
+                )}
+              </section>
+
+              {/* Параметры модели */}
+              <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-5">
+                <h3 className="text-sm font-black text-white flex items-center gap-2">
+                  <Settings className="w-4 h-4 text-blue-500" /> Параметры Qwen
+                </h3>
+                <label className="block">
+                  <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Модель</span>
+                  <select
+                    className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-2xl text-sm text-white outline-none focus:border-blue-500 transition-all cursor-pointer"
+                    value={bot.ai?.model || 'qwen-turbo'}
+                    onChange={e => handleLocalUpdate({ ...bot, ai: { ...(bot.ai || {}), model: e.target.value } })}>
+                    <option value="qwen-turbo">qwen-turbo (быстрый, дешёвый)</option>
+                    <option value="qwen-plus">qwen-plus (умнее)</option>
+                    <option value="qwen-max">qwen-max (самый умный)</option>
+                  </select>
+                </label>
+                <div className="grid grid-cols-2 gap-4">
+                  <label className="block">
+                    <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Макс. токенов/ответ</span>
+                    <input type="number" min="100" max="4000" step="100"
+                      className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-2xl text-sm text-white outline-none focus:border-blue-500 transition-all"
+                      value={bot.ai?.maxTokensPerReply || 800}
+                      onChange={e => handleLocalUpdate({ ...bot, ai: { ...(bot.ai || {}), maxTokensPerReply: parseInt(e.target.value) } })} />
+                  </label>
+                  <label className="block">
+                    <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Глубина контекста</span>
+                    <input type="number" min="1" max="20"
+                      className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-2xl text-sm text-white outline-none focus:border-blue-500 transition-all"
+                      value={bot.ai?.contextMessages || 6}
+                      onChange={e => handleLocalUpdate({ ...bot, ai: { ...(bot.ai || {}), contextMessages: parseInt(e.target.value) } })} />
+                  </label>
+                </div>
+                <label className="block">
+                  <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Системный промпт</span>
+                  <textarea
+                    className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-2xl text-xs text-white outline-none focus:border-blue-500 transition-all resize-none min-h-[120px]"
+                    placeholder="Ты помощник поддержки компании. Отвечай вежливо и по делу."
+                    value={bot.ai?.systemPrompt || ''}
+                    onChange={e => handleLocalUpdate({ ...bot, ai: { ...(bot.ai || {}), systemPrompt: e.target.value } })} />
+                </label>
+              </section>
+            </div>
+          )}
         </div>
       )}
 
