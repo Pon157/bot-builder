@@ -939,14 +939,12 @@ class BotInstance:
 
             try:
                 if self.welcome_photo:
-                    # Фото + подпись + инлайн (или reply, если инлайна нет)
                     await m.answer_photo(
                         photo=self.welcome_photo,
                         caption=self.welcome_text,
                         reply_markup=inline_kb if inline_kb else reply_kb
                     )
                 else:
-                    # Просто текст + инлайн (или reply, если инлайна нет)
                     await m.answer(
                         text=self.welcome_text, 
                         reply_markup=inline_kb if inline_kb else reply_kb
@@ -956,6 +954,14 @@ class BotInstance:
                 await m.answer(text=self.welcome_text, reply_markup=reply_kb)
 
             await self.log_and_update(user['id'], m.from_user.full_name, "/start")
+
+        # 2.1 Обработка нажатия инлайн-кнопок (например, "Закрыть ИИ")
+        @self.router.callback_query(F.data == "ai_close")
+        async def handle_ai_close(call: CallbackQuery):
+            user, _ = await self.get_user_state(call.message)
+            user.pop('_ai_session', None)
+            await call.message.answer("Диалог с ИИ завершен.", reply_markup=self.get_main_keyboard())
+            await call.answer()
 
         # 3. Ввод от админа (Команды и Ответы)
         @self.router.message(F.chat.id == self.admin_chat_id)
@@ -977,9 +983,9 @@ class BotInstance:
                     await self.bot.copy_message(target_id, m.chat.id, m.message_id)
                     await self.log_and_update(target_id, "Admin", m.text or "[Медиа]", is_admin=True)
                 except TelegramForbiddenError:
-                    await m.reply("❌ <b>Ошибка:</b> Пользователь заблокировал бота.")
+                    await m.reply("Ошибка: Пользователь заблокировал бота.")
                 except Exception as e:
-                    await m.reply(f"❌ <b>Ошибка:</b> {e}")
+                    await m.reply(f"Ошибка: {e}")
 
         # 4. Сообщения от обычных пользователей
         @self.router.message()
@@ -996,9 +1002,12 @@ class BotInstance:
             if m.text:
                 clean_text = m.text.strip()
                 clean_lower = clean_text.lower()
+                
+                # Текст кнопки из конфига (чтобы кнопка в меню работала)
+                ai_btn_text = self.config.get('ai_button_text', 'ИИ-ассистент')
 
-                # ── /ai, /gpt, /nn — открываем AI-сессию ──
-                if clean_lower in ('/ai', '/gpt', '/nn'):
+                # ── /ai, /gpt, /nn или нажатие кнопки меню ──
+                if clean_lower in ('/ai', '/gpt', '/nn') or clean_text == ai_btn_text:
                     if self.ai_enabled and self.ai_mode in ('command', 'all', 'button'):
                         bal = await self.check_ai_tokens()
                         if bal <= 0:
@@ -1016,14 +1025,15 @@ class BotInstance:
                         )
                     else:
                         await m.answer("ИИ-ассистент не подключён к этому боту.")
-                    return # Важно: выходим, чтобы команда не ушла админу
+                    return 
 
+                # ── Сброс AI ──
                 if clean_lower == '/reset_ai':
                     self.clear_ai_context(uid)
                     user.pop('_ai_session', None)
                     await m.answer("Контекст и сессия ИИ сброшены.", reply_markup=self.get_main_keyboard())
                     return
-
+                    
                 # ── IF/ELSE ЛОГИКА КНОПОК (поддержка children) ──
                 # Ищем кнопку рекурсивно по всему дереву
                 matched_btn = self.get_button_by_text(clean_text)
