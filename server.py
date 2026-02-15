@@ -885,6 +885,7 @@ async def activate_lic(req: dict):
 @app.post("/api/admin/generate-ai-key")
 async def gen_ai_key(d: dict, x_admin_token: str = Header(None)):
     """Генерация ключа на AI-токены. Только для администратора."""
+    # Используем A_SECRET, как у тебя в коде
     if x_admin_token != A_SECRET: 
         raise HTTPException(401, "Admin only")
     
@@ -895,22 +896,23 @@ async def gen_ai_key(d: dict, x_admin_token: str = Header(None)):
     payload = {
         "key": key,
         "tokens": tokens,
-        "price_rub": price_rub,
+        "price_rub": price_rub, # Мы добавили эту колонку в SQL выше
         "used": False,
-        "key_type": "ai_tokens",
+        "key_type": "ai_tokens", # Это позволит сайту отличить ИИ от лицензии
         "months": 0,
-        "created_at": datetime.now().isoformat() # ОБЯЗАТЕЛЬНО для сортировки на сайте
+        "created_at": datetime.now().isoformat()
     }
     
-    # Отправляем в БД
+    # Отправляем в общую таблицу ключей
     res = await db.post("issued_keys", json=payload)
     
     if res.status_code not in [200, 201]:
-        logger.error(f"Ошибка БД при сохранении ключа: {res.text}")
-        raise HTTPException(500, "Ошибка сохранения в базу данных")
+        # Если всё равно ошибка, выводим её в консоль для отладки
+        logger.error(f"Ошибка БД: {res.text}")
+        raise HTTPException(500, f"Ошибка сохранения: {res.text}")
 
     return {"key": key, "tokens": tokens}
-
+    
 @app.post("/api/ai/activate-tokens")
 async def activate_ai_tokens(req: dict):
     """Активация ключа на AI-токены для конкретного бота."""
