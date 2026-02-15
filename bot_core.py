@@ -934,28 +934,32 @@ class BotInstance:
             if user.get("is_banned"):
                 return
 
-            reply_kb = self.get_main_keyboard()
+            reply_kb  = self.get_main_keyboard()
             inline_kb = self.build_inline_from_list(self.welcome_inline)
 
-            # Если есть стартовое фото — отправляем с подписью
-            if self.welcome_photo:
-                try:
+            # Стратегия:
+            # — Если есть инлайн-кнопки, они идут на главное сообщение/фото
+            # — Reply-клавиатура ставится отдельным тихим сообщением
+            # — Это единственный способ показать оба типа клавиатур в TG
+            try:
+                if self.welcome_photo:
+                    # Фото + подпись + инлайн (всё вместе)
                     await m.answer_photo(
                         self.welcome_photo,
                         caption=self.welcome_text,
-                        reply_markup=reply_kb
+                        reply_markup=inline_kb if inline_kb else reply_kb
                     )
+                    # Если есть и инлайн, и reply — добавляем reply отдельно
                     if inline_kb:
-                        await m.answer(".", reply_markup=inline_kb)
-                except Exception as _pe:
-                    logger.warning(f"start photo error: {_pe}")
-                    await m.answer(self.welcome_text, reply_markup=reply_kb)
+                        await m.answer("⬇️", reply_markup=reply_kb)
+                else:
+                    # Текст + инлайн (всё вместе)
+                    await m.answer(self.welcome_text, reply_markup=inline_kb if inline_kb else reply_kb)
                     if inline_kb:
-                        await m.answer("Ссылки:", reply_markup=inline_kb)
-            else:
+                        await m.answer("⬇️", reply_markup=reply_kb)
+            except Exception as _pe:
+                logger.warning(f"start msg error: {_pe}")
                 await m.answer(self.welcome_text, reply_markup=reply_kb)
-                if inline_kb:
-                    await m.answer("Ссылки:", reply_markup=inline_kb)
 
             await self.log_and_update(user['id'], m.from_user.full_name, "/start")
 
@@ -1002,17 +1006,31 @@ class BotInstance:
                 clean_text = m.text.strip()
                 clean_lower = clean_text.lower()
 
-                # ── /ai или /reset_ai ──
+                # ── /ai, /gpt, /nn — открываем AI-сессию ──
                 if clean_lower in ('/ai', '/gpt', '/nn'):
-                    if self.ai_enabled and self.ai_mode in ('command', 'all'):
-                        await m.answer("🤖 ИИ-ассистент активирован. Задайте вопрос.")
+                    if self.ai_enabled and self.ai_mode in ('command', 'all', 'button'):
+                        bal = await self.check_ai_tokens()
+                        if bal <= 0:
+                            await m.answer("⚠️ AI-токены закончились. Обратитесь к администратору.")
+                            return
+                        user['_ai_session'] = True
+                        close_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                            InlineKeyboardButton(text="✖ Закрыть диалог с ИИ", callback_data="ai_close")
+                        ]])
+                        await m.answer(
+                            "🤖 <b>ИИ-ассистент активирован.</b>\n"
+                            "Задайте вопрос. Для выхода — нажмите кнопку ниже.",
+                            "Задайте вопрос. Для выхода — нажмите кнопку ниже.",
+                            reply_markup=close_kb
+                        )
                     else:
-                        await m.answer("ИИ-ассистент не подключён.")
+                        await m.answer("ИИ-ассистент не подключён к этому боту.")
                     return
 
                 if clean_lower == '/reset_ai':
                     self.clear_ai_context(uid)
-                    await m.answer("🔄 Контекст диалога с ИИ сброшен.")
+                    user.pop('_ai_session', None)
+                    await m.answer("🔄 Контекст и сессия ИИ сброшены.", reply_markup=self.get_main_keyboard())
                     return
 
                 # ── IF/ELSE ЛОГИКА КНОПОК (поддержка children) ──
@@ -1071,34 +1089,68 @@ class BotInstance:
                         await m.answer("⚠️ Лимит AI-токенов исчерпан. Обратитесь к администратору.")
                         return
 
-            # ── КНОПКА ИИ (нажатие на ReplyKeyboard-кнопку с именем AI) ──
+            # ── КНОПКА ИИ — нажали кнопку «ИИ-ассистент» из клавиатуры ──
             if m.text and m.text.strip() == self.ai_button_name:
                 if self.ai_enabled and self.ai_mode == 'button':
-                    await m.answer("🤖 Напишите вопрос для ИИ-ассистента:")
-                    user['_waiting_ai'] = True
+                    bal = await self.check_ai_tokens()
+                    if bal <= 0:
+                        await m.answer("⚠️ AI-токены закончились. Обратитесь к администратору.")
+                        return
+                    user['_ai_session'] = True
+                    close_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="✖ Закрыть диалог с ИИ", callback_data="ai_close")
+                    ]])
+                    await m.answer(
+                        "🤖 <b>ИИ-ассистент активирован.</b>\nЗадайте вопрос:",
+                        reply_markup=close_kb
+                    )
                     return
 
-            # ── ЕСЛИ ПОЛЬЗОВАТЕЛЬ ЖДЁТ AI-ОТВЕТА ──
-            if user.get('_waiting_ai') and self.ai_enabled:
-                user.pop('_waiting_ai', None)
+            # ── АКТИВНАЯ AI-СЕССИЯ — обрабатываем любое сообщение ──
+            if user.get('_ai_session') and self.ai_enabled and m.text:
                 bal = await self.check_ai_tokens()
-                if bal > 0 and m.text:
-                    thinking = await m.answer("🤖 Думаю...")
-                    answer = await self.ai_call(uid, m.text)
-                    if answer:
-                        await thinking.delete()
-                        await m.answer(answer)
-                        await self.log_and_update(uid, m.from_user.full_name, f"AI: {m.text[:50]}")
-                        return
-                    else:
-                        await thinking.delete()
-                else:
-                    await m.answer("⚠️ Недостаточно AI-токенов.")
+                if bal <= 0:
+                    user.pop('_ai_session', None)
+                    await m.answer("⚠️ AI-токены закончились. Сессия закрыта.", reply_markup=self.get_main_keyboard())
                     return
+                close_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="✖ Закрыть диалог с ИИ", callback_data="ai_close")
+                ]])
+                thinking = await m.answer("🤖 Думаю...")
+                answer_text = await self.ai_call(uid, m.text)
+                await thinking.delete()
+                if answer_text:
+                    await m.answer(answer_text, reply_markup=close_kb)
+                    await self.log_and_update(uid, m.from_user.full_name, f"AI: {m.text[:50]}")
+                else:
+                    await m.answer("⚠️ Ошибка ИИ, попробуйте ещё раз.", reply_markup=close_kb)
+                return
 
             # ── Пересылка сообщения администратору ──
             await self.forward_to_admin(m, user, is_first=is_new)
             await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
+
+        # 5. Закрытие AI-сессии (inline callback «✖ Закрыть диалог с ИИ»)
+        @self.router.callback_query(lambda c: c.data == 'ai_close')
+        async def on_ai_close(cb: CallbackQuery):
+            uid_cb = cb.from_user.id
+            user_cb = next((u for u in self.users_list if u['id'] == uid_cb), None)
+            if user_cb:
+                user_cb.pop('_ai_session', None)
+                self.clear_ai_context(uid_cb)
+            try:
+                await cb.message.delete()
+            except Exception:
+                pass
+            await cb.answer("Диалог с ИИ закрыт.")
+            try:
+                await self.bot.send_message(
+                    uid_cb,
+                    "✅ Диалог с ИИ завершён.",
+                    reply_markup=self.get_main_keyboard()
+                )
+            except Exception:
+                pass
 
     def get_main_keyboard(self):
         from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
