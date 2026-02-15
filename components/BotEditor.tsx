@@ -112,7 +112,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
     { id: 'ai',       label: 'ИИ-Ассистент', icon: Brain,         support: true },
     { id: 'stats',    label: 'Аналитика',    icon: BarChart3,     always: true  },
     { id: 'logs',     label: 'Терминал',     icon: Terminal,      always: true  },
-    { id: 'chat',     label: 'CRM',          icon: MessageSquare, always: false },
   ].filter((t: any) => t.always || (t.support && isSupportBot) || (!t.always && !t.support && isSupportBot));
 
   // ── Иконка заголовка ──
@@ -364,19 +363,30 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
     </span>
     <div className="mt-2">
       <input
-        placeholder="Введите прямой URL изображения с postimages.org или yapx.ru"
+        placeholder="Вставьте прямую ссылку на фото (https://...)"
         className="w-full bg-black border border-zinc-800 p-4 rounded-2xl text-white text-xs outline-none focus:border-blue-500 transition-all"
         value={bot.welcomePhoto || ''}
         onChange={e => handleLocalUpdate({ ...bot, welcomePhoto: e.target.value })} 
       />
     </div>
+    
+    {/* Блок превью: покажет картинку, если ссылка вставлена */}
     {bot.welcomePhoto && (
-      <img src={bot.welcomePhoto} alt="preview"
-        className="mt-3 h-24 rounded-2xl object-cover border border-zinc-800"
-        onError={e => (e.currentTarget.style.display = 'none')} />
+      <div className="mt-3 relative inline-block">
+        <img 
+          src={bot.welcomePhoto} 
+          alt="preview"
+          className="h-32 rounded-2xl object-cover border border-zinc-800 shadow-lg"
+          onError={e => (e.currentTarget.style.display = 'none')} 
+        />
+        <div className="absolute top-2 left-2 bg-black/50 px-2 py-1 rounded text-[8px] text-white uppercase font-bold backdrop-blur-sm">
+          Превью
+        </div>
+      </div>
     )}
+    
     <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold">
-      Изображение отправляется вместе с текстом приветствия
+      Бот отправит это фото первым сообщением вместе с текстом приветствия
     </p>
   </label>
 )}
