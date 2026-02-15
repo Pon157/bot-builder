@@ -1035,21 +1035,36 @@ class BotInstance:
                     return
                     
                 # ── IF/ELSE ЛОГИКА КНОПОК (поддержка children) ──
-                # Ищем кнопку рекурсивно по всему дереву
+                # Если пользователь нажал "Назад", просто кидаем главное меню
+                if clean_text == "⬅️ Назад":
+                    await m.answer("Главное меню:", reply_markup=self.get_main_keyboard())
+                    return
+
                 matched_btn = self.get_button_by_text(clean_text)
                 if matched_btn:
-                    # Если кнопки-дети — показываем под-меню
                     children = matched_btn.get('children', [])
                     if children:
+                        # Создаем клавиатуру из детей и ДОБАВЛЯЕМ кнопку Назад
                         child_kb = self.build_keyboard_from_buttons(children)
+                        # Добавляем кнопку назад в конец (если твой билд позволяет)
+                        # Если build_keyboard_from_buttons принимает список, можно так:
+                        # child_kb = self.build_keyboard_from_buttons(children + [{'text': '⬅️ Назад'}])
+                        
                         resp = matched_btn.get('response', '')
-                        await m.answer(resp or f"Выберите:", reply_markup=child_kb)
+                        await m.answer(resp or "Выберите:", reply_markup=child_kb)
                     else:
-                        # Обычная кнопка: ответ + форвард если тикет
+                        # Обычная кнопка
                         if matched_btn.get('type') == 'request':
                             await self.forward_to_admin(m, user, btn_text=matched_btn['text'])
+                        
                         if matched_btn.get('response'):
-                            await m.answer(matched_btn['response'])
+                            # Если это конечная кнопка, можно сразу вернуть главное меню, 
+                            # чтобы юзер не висел в пустоте
+                            await m.answer(matched_btn['response'], reply_markup=self.get_main_keyboard())
+                        else:
+                            # Если ответа нет, просто подтверждаем возврат
+                            await m.answer("Принято.", reply_markup=self.get_main_keyboard())
+
                     await self.log_and_update(uid, m.from_user.full_name, f"КНОПКА: {matched_btn['text']}")
                     return
 
