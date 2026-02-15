@@ -27,6 +27,11 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
   const [aiKeyInput, setAiKeyInput] = useState('');
   const [aiKeyStatus, setAiKeyStatus] = useState<string>('');
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  // ── AI preview chat panel ──
+  const [aiChatOpen, setAiChatOpen]       = useState(false);
+  const [aiChatInput, setAiChatInput]     = useState('');
+  const [aiChatLoading, setAiChatLoading] = useState(false);
+  const [aiChatMsgs, setAiChatMsgs]       = useState<{role:'user'|'ai', text:string}[]>([]);
 
   // ── Типы платформ ──
   const isVK         = bot.platform === 'vk';
@@ -105,15 +110,16 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
   };
 
   // ── Вкладки по типу бота ──
+  // tgSupport = только TG support-боты (не VK, не poster, не randomizer)
+  const isTgSupport = isSupportBot && !isVK;
   const tabs = [
-    { id: 'settings',  label: 'Основные',      icon: Settings,      always: true },
-    { id: 'interface', label: 'Интерфейс',    icon: Ticket,        always: false },
-    { id: 'logic',     label: 'Логика',       icon: Zap,           always: false },
-    // ВК: Убираем вкладку ИИ из массива совсем
-    ...(isVK ? [] : [{ id: 'ai', label: 'ИИ-Ассистент', icon: Brain, support: true }]),
-    { id: 'stats',     label: 'Аналитика',    icon: BarChart3,     always: true  },
-    { id: 'logs',      label: 'Терминал',     icon: Terminal,      always: true  },
-  ].filter((t: any) => t.always || (t.support && isSupportBot) || (!t.always && !t.support && isSupportBot));
+    { id: 'settings',   label: 'Основные',     icon: Settings,  show: true          },
+    { id: 'interface',  label: 'Интерфейс',    icon: Ticket,    show: isTgSupport   },
+    { id: 'logic',      label: 'Логика',       icon: Zap,       show: isTgSupport   },
+    { id: 'ai',         label: 'ИИ-Ассистент', icon: Brain,     show: isTgSupport   },
+    { id: 'stats',      label: 'Аналитика',    icon: BarChart3, show: true          },
+    { id: 'logs',       label: 'Терминал',     icon: Terminal,  show: true          },
+  ].filter((t: any) => t.show);
   
   // ── Иконка заголовка ──
   const HeaderIcon = isPoster ? Send : isRandomizer ? Shuffle : (isVK ? Globe : Cpu);
@@ -126,19 +132,149 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
 
   const globalPointerStyle = (
   <style>{`
-    .bot-editor-container button, 
-    .bot-editor-container input, 
-    .bot-editor-container select, 
-    .bot-editor-container textarea,
-    .bot-editor-container [role="button"] {
-      cursor: pointer !important;
-    }
+    .bot-editor-container button,
+    .bot-editor-container select,
+    .bot-editor-container a,
+    .bot-editor-container [role="button"] { cursor: pointer !important; }
+    .bot-editor-container input[type="text"],
+    .bot-editor-container input[type="password"],
+    .bot-editor-container textarea { cursor: text !important; }
+    .bot-editor-container input[type="number"] { cursor: ns-resize !important; }
+    .bot-editor-container button:disabled,
+    .bot-editor-container input:disabled,
+    .bot-editor-container select:disabled { cursor: not-allowed !important; opacity: 0.5; }
+    .bot-editor-container button:hover:not(:disabled) { opacity: 0.88; }
   `}</style>
 );
+
+  // ── Превью-чат с ИИ ──
+  const sendAiChat = async () => {
+    const text = aiChatInput.trim();
+    if (!text || aiChatLoading) return;
+    setAiChatInput('');
+    setAiChatMsgs(prev => [...prev, { role: 'user', text }]);
+    setAiChatLoading(true);
+    try {
+      const r = await fetch('/api/ai/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          botId: bot.id,
+          message: text,
+          systemPrompt: bot.ai?.systemPrompt || 'Ты полезный ИИ-ассистент.',
+          model: bot.ai?.model || 'qwen-turbo',
+          maxTokens: bot.ai?.maxTokensPerReply || 800,
+        })
+      });
+      const data = await r.json();
+      setAiChatMsgs(prev => [...prev, { role: 'ai', text: data.reply || '⚠️ Нет ответа' }]);
+      fetch(`/api/ai/balance/${bot.id}`).then(r => r.json()).then(setAiBalance).catch(() => {});
+    } catch {
+      setAiChatMsgs(prev => [...prev, { role: 'ai', text: '❌ Ошибка соединения' }]);
+    } finally {
+      setAiChatLoading(false);
+    }
+  };
 
   return (
     <div className="bot-editor-container space-y-8 animate-in fade-in duration-500 pb-20">
       {globalPointerStyle}
+
+      {/* ══════════════════════════════════════════
+          AI CHAT PANEL — fullscreen overlay
+      ══════════════════════════════════════════ */}
+      {aiChatOpen && (
+        <div
+          className="fixed inset-0 z-[200] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={e => { if (e.target === e.currentTarget) setAiChatOpen(false); }}
+        >
+          <div className="w-full max-w-2xl h-[85vh] bg-[#0d0d0d] border border-zinc-700 rounded-[2.5rem] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+            {/* Шапка */}
+            <div className="flex items-center justify-between px-8 py-5 border-b border-zinc-800 bg-[#111] shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center">
+                  <Brain className="w-4 h-4 text-purple-400" />
+                </div>
+                <div>
+                  <p className="text-sm font-black text-white">ИИ-ассистент · превью</p>
+                  <p className="text-[9px] text-zinc-500 font-bold">{bot.ai?.model || 'qwen-turbo'} · {bot.ai?.systemPrompt ? 'кастомный промпт' : 'дефолтный промпт'}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                {aiBalance && (
+                  <span className="text-[9px] text-amber-400 font-bold bg-amber-500/10 px-3 py-1.5 rounded-lg border border-amber-500/20">
+                    {aiBalance.tokens_balance.toLocaleString()} токенов
+                  </span>
+                )}
+                <button
+                  onClick={() => { setAiChatOpen(false); setAiChatMsgs([]); }}
+                  className="w-9 h-9 rounded-xl bg-zinc-800 hover:bg-rose-500/20 text-zinc-400 hover:text-rose-400 transition-all flex items-center justify-center"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Лента сообщений */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-3">
+              {aiChatMsgs.length === 0 && (
+                <div className="flex flex-col items-center justify-center h-full gap-3 opacity-25 select-none">
+                  <Brain className="w-14 h-14 text-purple-400" />
+                  <p className="text-xs text-zinc-500 font-bold uppercase tracking-widest">Задайте вопрос ИИ</p>
+                  {bot.ai?.systemPrompt && (
+                    <p className="text-[9px] text-zinc-600 text-center max-w-xs">
+                      «{bot.ai.systemPrompt.slice(0, 90)}{bot.ai.systemPrompt.length > 90 ? '…' : ''}»
+                    </p>
+                  )}
+                </div>
+              )}
+              {aiChatMsgs.map((msg, idx) => (
+                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[78%] px-5 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap break-words ${
+                    msg.role === 'user'
+                      ? 'bg-blue-600 text-white rounded-br-sm'
+                      : 'bg-zinc-800/80 text-zinc-100 rounded-bl-sm border border-zinc-700'
+                  }`}>
+                    {msg.role === 'ai' && <span className="block text-[8px] text-purple-400 font-black uppercase mb-1 tracking-widest">ИИ</span>}
+                    {msg.text}
+                  </div>
+                </div>
+              ))}
+              {aiChatLoading && (
+                <div className="flex justify-start">
+                  <div className="bg-zinc-800/80 border border-zinc-700 px-5 py-4 rounded-2xl rounded-bl-sm flex items-center gap-1.5">
+                    {[0, 150, 300].map(d => (
+                      <span key={d} className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: `${d}ms` }} />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Ввод */}
+            <div className="p-4 border-t border-zinc-800 bg-[#111] shrink-0">
+              <div className="flex gap-3">
+                <input
+                  className="flex-1 bg-black border border-zinc-700 rounded-2xl px-5 py-4 text-sm text-white outline-none focus:border-purple-500 transition-all"
+                  placeholder="Введите сообщение..."
+                  value={aiChatInput}
+                  onChange={e => setAiChatInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAiChat(); } }}
+                  autoFocus
+                />
+                <button
+                  onClick={sendAiChat}
+                  disabled={aiChatLoading || !aiChatInput.trim()}
+                  className="w-14 h-14 rounded-2xl bg-purple-600 hover:bg-purple-500 disabled:opacity-30 text-white flex items-center justify-center transition-all shadow-lg shadow-purple-600/20 shrink-0"
+                >
+                  <Send className="w-5 h-5" />
+                </button>
+              </div>
+              <p className="text-[8px] text-zinc-600 mt-2 ml-2">Enter — отправить · Shift+Enter — новая строка</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Баннер несохранённых изменений */}
       {hasUnsavedChanges && (
@@ -181,13 +317,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
 
       {/* Вкладки */}
 <div className="flex gap-2 border-b border-zinc-800 overflow-x-auto no-scrollbar">
-  {tabs
-    .filter(t => {
-      // Если это ВК, скрываем вкладку AI
-      if (bot.platform === 'vk' && t.id === 'ai') return false;
-      return true;
-    })
-    .map(t => (
+  {tabs.map(t => (
       <button 
         key={t.id} 
         onClick={() => setActiveTab(t.id as any)}
@@ -198,7 +328,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
         <t.icon className="w-3.5 h-3.5" />
         {t.label}
       </button>
-    ))}
+  ))}
 </div>
 
       {/* ════════════════════════════════════════════
@@ -417,49 +547,76 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
   </label>
 )}
 
-                    {/* Инлайн-кнопки к /start — Скрываем для ВК */}
-{isSupportBot && !isVK && (
-  <div>
-    <div className="flex items-center justify-between mb-2">
-      <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
-        <ExternalLink className="w-3 h-3 text-indigo-400" />Инлайн-кнопки к /start
-      </span>
-      <button type="button"
-        onClick={() => handleLocalUpdate({ ...bot, welcomeInline: [...(bot.welcomeInline || []), { text: '', url: '' }] })}
-        className="text-[9px] text-indigo-400 font-bold hover:text-indigo-300">
-        + Добавить кнопку
-      </button>
-    </div>
-    
-    {(bot.welcomeInline || []).map((btn: any, i: number) => (
-      <div key={i} className="flex gap-2 mb-2">
-        <input placeholder="Текст кнопки"
-          className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-indigo-500"
-          value={btn.text}
-          onChange={e => {
-            const wb = [...(bot.welcomeInline || [])];
-            wb[i] = { ...wb[i], text: e.target.value };
-            handleLocalUpdate({ ...bot, welcomeInline: wb });
-          }} />
-        <input placeholder="https://..."
-          className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-indigo-500"
-          value={btn.url}
-          onChange={e => {
-            const wb = [...(bot.welcomeInline || [])];
-            wb[i] = { ...wb[i], url: e.target.value };
-            handleLocalUpdate({ ...bot, welcomeInline: wb });
-          }} />
-        <button type="button"
-          onClick={() => handleLocalUpdate({ ...bot, welcomeInline: (bot.welcomeInline || []).filter((_: any, idx: number) => idx !== i) })}
-          className="px-2 text-zinc-600 hover:text-rose-500">
-          <X className="w-4 h-4" />
-        </button>
-      </div>
-    ))}
-    <p className="text-[8px] text-zinc-600 ml-2 uppercase font-bold">
-      Ссылки показываются инлайн-кнопками под стартовым сообщением
-    </p>
-  </div>
+                    {/* Инлайн-кнопки к /start (только TG) */}
+                    {isTgSupport && (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
+                            <ExternalLink className="w-3 h-3 text-indigo-400" />Инлайн-кнопки к /start
+                          </span>
+                          <button type="button"
+                            onClick={() => handleLocalUpdate({ ...bot, welcomeInline: [...(bot.welcomeInline || []), { text: '', url: '' }] })}
+                            className="text-[9px] text-indigo-400 font-bold hover:text-indigo-300 uppercase tracking-wider">
+                            + Добавить
+                          </button>
+                        </div>
+
+                        {(bot.welcomeInline || []).map((btn: any, wi: number) => (
+                          <div key={wi} className="flex gap-2">
+                            <input placeholder="Текст кнопки"
+                              className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-indigo-500 transition-all"
+                              value={btn.text}
+                              onChange={e => {
+                                const wb = [...(bot.welcomeInline || [])];
+                                wb[wi] = { ...wb[wi], text: e.target.value };
+                                handleLocalUpdate({ ...bot, welcomeInline: wb });
+                              }} />
+                            <input placeholder="https://..."
+                              className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-indigo-500 transition-all"
+                              value={btn.url}
+                              onChange={e => {
+                                const wb = [...(bot.welcomeInline || [])];
+                                wb[wi] = { ...wb[wi], url: e.target.value };
+                                handleLocalUpdate({ ...bot, welcomeInline: wb });
+                              }} />
+                            <button type="button"
+                              onClick={() => handleLocalUpdate({ ...bot, welcomeInline: (bot.welcomeInline || []).filter((_: any, ii: number) => ii !== wi) })}
+                              className="px-2 text-zinc-600 hover:text-rose-500 transition-colors">
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ))}
+
+                        {/* Превью стартового сообщения с привязанными инлайн-кнопками */}
+                        {(bot.welcomeMessage || (bot.welcomeInline || []).length > 0) && (
+                          <div className="mt-1 bg-black/50 border border-zinc-800 rounded-2xl p-4">
+                            <p className="text-[8px] text-zinc-600 uppercase font-black mb-3 flex items-center gap-1.5">
+                              <Smartphone className="w-2.5 h-2.5" />Превью в Telegram
+                            </p>
+                            {/* Пузырь сообщения */}
+                            <div className="bg-zinc-900 rounded-2xl rounded-bl-sm p-3.5 max-w-[85%] mb-2">
+                              {bot.welcomePhoto && (
+                                <div className="w-full h-20 bg-zinc-800 rounded-xl mb-2 overflow-hidden">
+                                  <img src={bot.welcomePhoto} className="w-full h-full object-cover"
+                                    onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} alt="" />
+                                </div>
+                              )}
+                              <p className="text-[10px] text-zinc-300 leading-relaxed whitespace-pre-wrap break-words">
+                                {(bot.welcomeMessage || 'Привет!').slice(0, 120)}{(bot.welcomeMessage || '').length > 120 ? '…' : ''}
+                              </p>
+                            </div>
+                            {/* Инлайн-кнопки прикреплены прямо под сообщением */}
+                            {(bot.welcomeInline || []).filter((b: any) => b.text).map((b: any, pi: number) => (
+                              <div key={pi} className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl py-2 px-4 mb-1.5 text-center">
+                                <span className="text-[10px] text-indigo-300 font-semibold">{b.text}</span>
+                                {b.url && <span className="text-[8px] text-zinc-600 ml-2">{b.url.replace('https://', '')}</span>}
+                              </div>
+                            ))}
+                            <p className="text-[7px] text-zinc-700 uppercase mt-1.5">↑ Кнопки прикреплены к сообщению в TG</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
 )}
 
                 <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest opacity-50 ml-2">* Данные синхронизируются (согласно .env)</p>
@@ -610,7 +767,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
       {/* ════════════════════════════════════════════
           ВКЛАДКА: КНОПКИ (Интерфейс)
       ════════════════════════════════════════════ */}
-      {activeTab === 'interface' && isSupportBot && (
+      {activeTab === 'interface' && isTgSupport && (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
           
           <div className="flex justify-between items-center mb-6">
@@ -669,8 +826,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                     ))}
                   </div>
 
-                  {/* ── Sub-кнопки (СКРЫТО ДЛЯ ВК) ── */}
-                  {!isVK && (
+                  {/* ── Sub-кнопки (If/Else) ── */}
+                  {(
                     <div className="border-t border-zinc-800 pt-4">
                       <div className="flex items-center justify-between mb-3">
                         <span className="text-[9px] font-black text-zinc-500 uppercase flex items-center gap-1.5">
@@ -724,7 +881,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
       {/* ════════════════════════════════════════════
           ВКЛАДКА: ТРИГГЕРЫ (только для support-ботов)
       ════════════════════════════════════════════ */}
-      {activeTab === 'logic' && isSupportBot && (
+      {activeTab === 'logic' && isTgSupport && (
         <div className="space-y-6 animate-in fade-in duration-500">
           <div className="flex justify-between items-end mb-6">
             <h2 className="text-2xl font-black text-white uppercase">Триггеры авто-ответа</h2>
@@ -880,12 +1037,22 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                     />
                   </label>
                 )}
+                {/* Кнопка теста ИИ */}
+                {(bot.ai?.mode ?? 'off') !== 'off' && (
+                  <button
+                    type="button"
+                    onClick={() => { setAiChatMsgs([]); setAiChatOpen(true); }}
+                    className="w-full py-4 rounded-2xl bg-purple-600/10 border border-purple-500/30 text-purple-400 text-xs font-black uppercase tracking-widest hover:bg-purple-600/20 transition-all flex items-center justify-center gap-2 mt-2"
+                  >
+                    <Brain className="w-4 h-4" />Протестировать ИИ-ассистента
+                  </button>
+                )}
               </section>
 
               {/* Параметры модели */}
               <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-5">
                 <h3 className="text-sm font-black text-white flex items-center gap-2">
-                  <Settings className="w-4 h-4 text-blue-500" /> Параметры Qwen
+                  <Settings className="w-4 h-4 text-blue-500" /> Параметры AI
                 </h3>
                 <label className="block">
                   <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Модель</span>
@@ -893,9 +1060,9 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                     className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-2xl text-sm text-white outline-none focus:border-blue-500 transition-all cursor-pointer"
                     value={bot.ai?.model || 'qwen-turbo'}
                     onChange={e => handleLocalUpdate({ ...bot, ai: { ...(bot.ai || {}), model: e.target.value } })}>
-                    <option value="qwen-turbo">qwen-turbo (быстрый, дешёвый)</option>
-                    <option value="qwen-plus">qwen-plus (умнее)</option>
-                    <option value="qwen-max">qwen-max (самый умный)</option>
+                    <option value="qwen-turbo">turbo (быстрый, дешёвый)</option>
+                    <option value="qwen-plus">plus (умнее)</option>
+                    <option value="qwen-max">max (самый умный)</option>
                   </select>
                 </label>
                 <div className="grid grid-cols-2 gap-4">
