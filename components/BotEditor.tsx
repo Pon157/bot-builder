@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { BotConfig, BotStatus } from '../types';
 import { api } from '../services/apiService';
@@ -610,17 +611,18 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                               </div>
                             ))}
                             <p className="text-[7px] text-zinc-700 uppercase mt-1.5">↑ Кнопки прикреплены к сообщению в TG</p>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest opacity-50 ml-2">* Данные синхронизируются (из файла .env)</p>
+                  </div>
+                )}
               </div>
-            </section>
+            )}
+
+            <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest opacity-50 ml-2">
+              * Данные синхронизируются (из файла .env)
+            </p>
           </div>
-        </div>
-      )}
+        </section>
+      </div>
+
             {/* Инфо-плашки для постера/рандомайзера */}
             {isPoster && (
               <div className="bg-emerald-500/5 border border-emerald-500/20 p-8 rounded-[2.5rem] space-y-3">
@@ -1089,7 +1091,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                 </label>
               </section>
             </div>
-          )}
+          </div>
         </div>
       )}
 
