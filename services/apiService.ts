@@ -413,3 +413,23 @@ adminLogin: async (login: string, pass: string) => {
     }
   }
 };
+
+// --- AI KEYS MANAGEMENT ---
+  
+  // Получить список всех выданных AI ключей из базы
+  getAiKeys: async () => {
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/ai-keys`, { 
+      method: 'GET',
+      headers: {
+        'x-admin-token': localStorage.getItem('ADMIN_SECRET') || '' // передаем секрет админа
+      }
+    });
+    if (!response.ok) return [];
+    return await response.json();
+  },
+
+  // Проверить статус конкретного ключа или баланс
+  checkAiKeyStatus: async (key: string) => {
+    const response = await fetchWithTimeout(`${getApiBase()}/admin/ai-key-info/${key}`, { method: 'GET' });
+    return response.ok ? await response.json() : null;
+  },
