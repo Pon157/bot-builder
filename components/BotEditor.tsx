@@ -19,7 +19,7 @@ interface BotEditorProps {
 }
 
 const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminMode }) => {
-  const [activeTab, setActiveTab] = useState<'settings' | 'logic' | 'interface' | 'ai' | 'logs' | 'stats' | 'chat'>('settings');
+  const [activeTab, setActiveTab] = useState<'settings' | 'logic' | 'interface' | 'ai' | 'logs' | 'stats';
   const [isProcessing, setIsProcessing] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
@@ -364,7 +364,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                         </span>
                         <div className="flex gap-2 mt-2">
                           <input
-                            placeholder="URL или file_id Telegram"
+                            placeholder="Прямой url с сайта yapx.ru или postimages.org"
                             className="flex-1 bg-black border border-zinc-800 p-4 rounded-2xl text-white text-xs outline-none focus:border-blue-500 transition-all"
                             value={bot.welcomePhoto || ''}
                             onChange={e => handleLocalUpdate({ ...bot, welcomePhoto: e.target.value })} />
@@ -384,7 +384,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                                 } catch { alert('Ошибка загрузки'); }
                                 finally { setUploadingPhoto(false); }
                               }} />
-                            {uploadingPhoto ? '...' : 'Загрузить'}
                           </label>
                         </div>
                         {bot.welcomePhoto && (
