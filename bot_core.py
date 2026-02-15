@@ -990,7 +990,6 @@ class BotInstance:
         # 4. Сообщения от обычных пользователей
         @self.router.message()
         async def user_input_router(m: Message):
-            # Если пишет админ в своем чате — игнорим (для этого есть admin_input_router выше)
             if self.admin_chat_id and m.chat.id == self.admin_chat_id:
                 return
 
@@ -1005,13 +1004,13 @@ class BotInstance:
                 clean_lower = clean_text.lower()
                 ai_btn_text = self.config.get('ai_button_text', 'ИИ-ассистент')
 
-                # ── А) Кнопка "Назад" (универсальный сброс всего) ──
+                # ── 1. Кнопка "Назад" (универсальный сброс) ──
                 if clean_text == "⬅️ Назад":
                     user.pop('_ai_session', None)
                     await m.answer("Главное меню:", reply_markup=self.get_main_keyboard())
                     return
 
-                # ── Б) Активация ИИ (команды или кнопка) ──
+                # ── 2. Активация ИИ (команды или кнопка) ──
                 if clean_lower in ('/ai', '/gpt', '/nn') or clean_text == ai_btn_text:
                     if self.ai_enabled and self.ai_mode in ('command', 'all', 'button'):
                         bal = await self.check_ai_tokens()
@@ -1027,37 +1026,35 @@ class BotInstance:
                         await m.answer("ИИ-ассистент не подключён.")
                     return
 
-                # ── В) Сброс ИИ через команду ──
+                # ── 3. Сброс ИИ через команду ──
                 if clean_lower == '/reset_ai':
                     self.clear_ai_context(uid)
                     user.pop('_ai_session', None)
                     await m.answer("Контекст и сессия ИИ сброшены.", reply_markup=self.get_main_keyboard())
                     return
 
-                # ── Г) ЛОГИКА КНОПОК МЕНЮ (с поддержкой вложенности) ──
+                # ── 4. Логика кнопок меню (children) ──
                 matched_btn = self.get_button_by_text(clean_text)
                 if matched_btn:
-                    # Если нажата обычная кнопка — выключаем режим ИИ автоматически
-                    user.pop('_ai_session', None)
+                    user.pop('_ai_session', None) # Выключаем ИИ при нажатии кнопки меню
                     
                     children = matched_btn.get('children', [])
                     if children:
-                        # Показываем подменю + добавляем кнопку Назад
+                        # Подменю + кнопка Назад
                         child_kb = self.build_keyboard_from_buttons(children + [{"text": "⬅️ Назад"}])
                         await m.answer(matched_btn.get('response') or "Выберите вариант:", reply_markup=child_kb)
                     else:
-                        # Финальная кнопка
+                        # Обычная кнопка
                         if matched_btn.get('type') == 'request':
                             await self.forward_to_admin(m, user, btn_text=matched_btn['text'])
                         
-                        resp_text = matched_btn.get('response', 'Принято!')
-                        # Возвращаем в главное меню после ответа
-                        await m.answer(resp_text, reply_markup=self.get_main_keyboard())
+                        resp = matched_btn.get('response', 'Принято!')
+                        await m.answer(resp, reply_markup=self.get_main_keyboard())
                     
                     await self.log_and_update(uid, m.from_user.full_name, f"КНОПКА: {matched_btn['text']}")
                     return
 
-                # ── Д) ОБРАБОТКА ИИ (если сессия активна и это не кнопка) ──
+                # ── 5. Обработка ИИ (если сессия активна) ──
                 if user.get('_ai_session'):
                     bal = await self.check_ai_tokens()
                     if bal <= 0:
@@ -1065,47 +1062,12 @@ class BotInstance:
                         await m.answer("Токены кончились. Режим ИИ выключен.", reply_markup=self.get_main_keyboard())
                         return
                     
-                    # Здесь должен быть твой метод вызова нейронки
                     if hasattr(self, 'handle_ai_request'):
                         await self.handle_ai_request(m, user)
                     return
 
-            # ── Е) Если ничего не подошло — шлем админу как обычный тикет ──
+            # ── 6. Если ничего не подошло — шлем админу ──
             await self.forward_to_admin(m, user)
-                    
-                # ── IF/ELSE ЛОГИКА КНОПОК (поддержка children) ──
-                # Если пользователь нажал "Назад", просто кидаем главное меню
-                if clean_text == "⬅️ Назад":
-                    await m.answer("Главное меню:", reply_markup=self.get_main_keyboard())
-                    return
-
-                matched_btn = self.get_button_by_text(clean_text)
-                if matched_btn:
-                    children = matched_btn.get('children', [])
-                    if children:
-                        # Создаем клавиатуру из детей и ДОБАВЛЯЕМ кнопку Назад
-                        child_kb = self.build_keyboard_from_buttons(children)
-                        # Добавляем кнопку назад в конец (если твой билд позволяет)
-                        # Если build_keyboard_from_buttons принимает список, можно так:
-                        # child_kb = self.build_keyboard_from_buttons(children + [{'text': '⬅️ Назад'}])
-                        
-                        resp = matched_btn.get('response', '')
-                        await m.answer(resp or "Выберите:", reply_markup=child_kb)
-                    else:
-                        # Обычная кнопка
-                        if matched_btn.get('type') == 'request':
-                            await self.forward_to_admin(m, user, btn_text=matched_btn['text'])
-                        
-                        if matched_btn.get('response'):
-                            # Если это конечная кнопка, можно сразу вернуть главное меню, 
-                            # чтобы юзер не висел в пустоте
-                            await m.answer(matched_btn['response'], reply_markup=self.get_main_keyboard())
-                        else:
-                            # Если ответа нет, просто подтверждаем возврат
-                            await m.answer("Принято.", reply_markup=self.get_main_keyboard())
-
-                    await self.log_and_update(uid, m.from_user.full_name, f"КНОПКА: {matched_btn['text']}")
-                    return
 
                 # ── ТРИГГЕРЫ ──
                 triggered = False
