@@ -356,7 +356,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                         onChange={e => handleLocalUpdate({ ...bot, welcomeMessage: e.target.value })} />
                     </label>
 
-                   {/* Стартовое фото */}
+{/* Стартовое фото */}
 {isSupportBot && (
   <label className="block">
     <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
@@ -364,7 +364,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
     </span>
     <div className="mt-2">
       <input
-        placeholder="Введите URL изображения или file_id Telegram"
+        placeholder="Введите прямой URL изображения с postimages.org или yapx.ru"
         className="w-full bg-black border border-zinc-800 p-4 rounded-2xl text-white text-xs outline-none focus:border-blue-500 transition-all"
         value={bot.welcomePhoto || ''}
         onChange={e => handleLocalUpdate({ ...bot, welcomePhoto: e.target.value })} 
