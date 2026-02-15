@@ -1,4 +1,4 @@
-
+──
 import React, { useState, useEffect } from 'react';
 import { BotConfig, BotStatus } from '../types';
 import { api } from '../services/apiService';
@@ -603,26 +603,29 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                                 {(bot.welcomeMessage || 'Привет!').slice(0, 120)}{(bot.welcomeMessage || '').length > 120 ? '…' : ''}
                               </p>
                             </div>
-                            {/* Инлайн-кнопки прикреплены прямо под сообщением */}
-                            {(bot.welcomeInline || []).filter((b: any) => b.text).map((b: any, pi: number) => (
-                              <div key={pi} className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl py-2 px-4 mb-1.5 text-center">
-                                <span className="text-[10px] text-indigo-300 font-semibold">{b.text}</span>
-                                {b.url && <span className="text-[8px] text-zinc-600 ml-2">{b.url.replace('https://', '')}</span>}
-                              </div>
-                            ))}
-                            <p className="text-[7px] text-zinc-700 uppercase mt-1.5">↑ Кнопки прикреплены к сообщению в TG</p>
+                            {/* Инлайн-кнопки в превью */}
+                    {(bot.welcomeInline || []).filter((b: any) => b.text).map((b: any, pi: number) => (
+                      <div key={pi} className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl py-2 px-4 mb-1.5 text-center">
+                        <span className="text-[10px] text-indigo-300 font-semibold">{b.text}</span>
+                        {b.url && <span className="text-[8px] text-zinc-600 ml-2">{b.url.replace('https://', '')}</span>}
+                      </div>
+                    ))}
+                    <p className="text-[7px] text-zinc-700 uppercase mt-1.5">↑ Кнопки прикреплены к сообщению в TG</p>
                   </div>
                 )}
               </div>
             )}
 
-            <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest opacity-50 ml-2">
+            {/* Подпись про .env */}
+            <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest opacity-50 ml-2 mt-4">
               * Данные синхронизируются (из файла .env)
             </p>
           </div>
         </section>
-      </div>
-
+      </div> {/* Конец левой колонки */}
+    </div> {/* Конец grid-cols-1 lg:grid-cols-2 */}
+  </div>
+)}
             {/* Инфо-плашки для постера/рандомайзера */}
             {isPoster && (
               <div className="bg-emerald-500/5 border border-emerald-500/20 p-8 rounded-[2.5rem] space-y-3">
