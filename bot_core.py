@@ -937,42 +937,33 @@ class BotInstance:
             reply_kb  = self.get_main_keyboard()
             inline_kb = self.build_inline_from_list(self.welcome_inline)
 
-            # Стратегия:
-            # — Если есть инлайн-кнопки, они идут на главное сообщение/фото
-            # — Reply-клавиатура ставится отдельным тихим сообщением
-            # — Это единственный способ показать оба типа клавиатур в TG
             try:
                 if self.welcome_photo:
-                    # Фото + подпись + инлайн (всё вместе)
+                    # Фото + подпись + инлайн (или reply, если инлайна нет)
                     await m.answer_photo(
-                        self.welcome_photo,
+                        photo=self.welcome_photo,
                         caption=self.welcome_text,
                         reply_markup=inline_kb if inline_kb else reply_kb
                     )
-                    # Если есть и инлайн, и reply — добавляем reply отдельно
-                    if inline_kb:
-                        await m.answer("⬇️", reply_markup=reply_kb)
                 else:
-                    # Текст + инлайн (всё вместе)
-                    await m.answer(self.welcome_text, reply_markup=inline_kb if inline_kb else reply_kb)
-                    if inline_kb:
-                        await m.answer("⬇️", reply_markup=reply_kb)
+                    # Просто текст + инлайн (или reply, если инлайна нет)
+                    await m.answer(
+                        text=self.welcome_text, 
+                        reply_markup=inline_kb if inline_kb else reply_kb
+                    )
             except Exception as _pe:
                 logger.warning(f"start msg error: {_pe}")
-                await m.answer(self.welcome_text, reply_markup=reply_kb)
+                await m.answer(text=self.welcome_text, reply_markup=reply_kb)
 
             await self.log_and_update(user['id'], m.from_user.full_name, "/start")
 
         # 3. Ввод от админа (Команды и Ответы)
         @self.router.message(F.chat.id == self.admin_chat_id)
         async def admin_input_router(m: Message):
-            # А) Обработка команд (/broadcast, /ban и т.д.)
-            # Если ты ответил командой /broadcast на сообщение, логика сработает внутри admin_control_logic
             if m.text and (m.text.startswith("/") or m.text.startswith("!")):
                 if await self.admin_control_logic(m):
                     return
 
-            # Б) Ответ пользователю (в топик или реплаем)
             target_id = None
             if m.message_thread_id:
                 u = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
@@ -1011,28 +1002,26 @@ class BotInstance:
                     if self.ai_enabled and self.ai_mode in ('command', 'all', 'button'):
                         bal = await self.check_ai_tokens()
                         if bal <= 0:
-                            await m.answer("⚠️ AI-токены закончились. Обратитесь к администратору.")
+                            await m.answer("AI-токены закончились. Обратитесь к администратору.")
                             return
+                        
                         user['_ai_session'] = True
                         close_kb = InlineKeyboardMarkup(inline_keyboard=[[
-                            InlineKeyboardButton(text="✖ Закрыть диалог с ИИ", callback_data="ai_close")
+                            InlineKeyboardButton(text="Закрыть диалог с ИИ", callback_data="ai_close")
                         ]])
+                        
                         await m.answer(
-                            text=(
-                                "🤖 <b>ИИ-ассистент активирован.</b>\n"
-                                "Задайте вопрос. Для выхода — нажмите кнопку ниже."
-                            ),
-                            reply_markup=close_kb,
-                            parse_mode="HTML"
+                            text="ИИ-ассистент активирован. Задайте вопрос. Для выхода — нажмите кнопку ниже.",
+                            reply_markup=close_kb
                         )
                     else:
                         await m.answer("ИИ-ассистент не подключён к этому боту.")
-                    return
+                    return # Важно: выходим, чтобы команда не ушла админу
 
                 if clean_lower == '/reset_ai':
                     self.clear_ai_context(uid)
                     user.pop('_ai_session', None)
-                    await m.answer("🔄 Контекст и сессия ИИ сброшены.", reply_markup=self.get_main_keyboard())
+                    await m.answer("Контекст и сессия ИИ сброшены.", reply_markup=self.get_main_keyboard())
                     return
 
                 # ── IF/ELSE ЛОГИКА КНОПОК (поддержка children) ──
