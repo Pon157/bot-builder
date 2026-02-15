@@ -591,7 +591,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                             <p className="text-[8px] text-zinc-600 uppercase font-black mb-3 flex items-center gap-1.5">
                               <Smartphone className="w-2.5 h-2.5" />Превью в Telegram
                             </p>
-                            {/* Пузырь сообщения */}
                             <div className="bg-zinc-900 rounded-2xl rounded-bl-sm p-3.5 max-w-[85%] mb-2">
                               {bot.welcomePhoto && (
                                 <div className="w-full h-20 bg-zinc-800 rounded-xl mb-2 overflow-hidden">
@@ -603,29 +602,26 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                                 {(bot.welcomeMessage || 'Привет!').slice(0, 120)}{(bot.welcomeMessage || '').length > 120 ? '…' : ''}
                               </p>
                             </div>
-                            {/* Инлайн-кнопки в превью */}
-                    {(bot.welcomeInline || []).filter((b: any) => b.text).map((b: any, pi: number) => (
-                      <div key={pi} className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl py-2 px-4 mb-1.5 text-center">
-                        <span className="text-[10px] text-indigo-300 font-semibold">{b.text}</span>
-                        {b.url && <span className="text-[8px] text-zinc-600 ml-2">{b.url.replace('https://', '')}</span>}
+                            {(bot.welcomeInline || []).filter((b: any) => b.text).map((b: any, pi: number) => (
+                              <div key={pi} className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl py-2 px-4 mb-1.5 text-center">
+                                <span className="text-[10px] text-indigo-300 font-semibold">{b.text}</span>
+                                {b.url && <span className="text-[8px] text-zinc-600 ml-2">{b.url.replace('https://', '')}</span>}
+                              </div>
+                            ))}
+                            <p className="text-[7px] text-zinc-700 uppercase mt-1.5">↑ Кнопки прикреплены к сообщению в TG</p>
+                          </div>
+                        )}
                       </div>
-                    ))}
-                    <p className="text-[7px] text-zinc-700 uppercase mt-1.5">↑ Кнопки прикреплены к сообщению в TG</p>
+                    )}
                   </div>
-                )}
-              </div>
-            )}
+                )} {/* <=== ВОТ ОНА, ТА САМАЯ ПОТЕРЯННАЯ СКОБКА (Закрывает !isPoster) */}
 
-            {/* Подпись про .env */}
-            <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest opacity-50 ml-2 mt-4">
-              * Данные синхронизируются (из файла .env)
-            </p>
-          </div>
-        </section>
-      </div> {/* Конец левой колонки */}
-    </div> {/* Конец grid-cols-1 lg:grid-cols-2 */}
-  </div>
-)}
+                <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest opacity-50 ml-2 mt-4">
+                  * Данные синхронизируются (из файла .env)
+                </p>
+              </div>
+            </section>
+            
             {/* Инфо-плашки для постера/рандомайзера */}
             {isPoster && (
               <div className="bg-emerald-500/5 border border-emerald-500/20 p-8 rounded-[2.5rem] space-y-3">
