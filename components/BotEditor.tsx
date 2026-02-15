@@ -356,44 +356,30 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                         onChange={e => handleLocalUpdate({ ...bot, welcomeMessage: e.target.value })} />
                     </label>
 
-                    {/* Стартовое фото */}
-                    {isSupportBot && (
-                      <label className="block">
-                        <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
-                          <Image className="w-3 h-3 text-blue-400" />Фото к /start (опционально)
-                        </span>
-                        <div className="flex gap-2 mt-2">
-                          <input
-                            placeholder="Прямой url с сайта yapx.ru или postimages.org"
-                            className="flex-1 bg-black border border-zinc-800 p-4 rounded-2xl text-white text-xs outline-none focus:border-blue-500 transition-all"
-                            value={bot.welcomePhoto || ''}
-                            onChange={e => handleLocalUpdate({ ...bot, welcomePhoto: e.target.value })} />
-                          <label className="cursor-pointer flex items-center gap-1 px-4 py-2 bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-2xl text-[10px] font-bold hover:bg-blue-500/20 transition-all">
-                            <Upload className="w-3 h-3" />
-                            <input type="file" accept="image/*" className="hidden"
-                              onChange={async e => {
-                                const file = e.target.files?.[0];
-                                if (!file) return;
-                                setUploadingPhoto(true);
-                                try {
-                                  const fd = new FormData();
-                                  fd.append('file', file);
-                                  const r = await fetch('/api/admin/upload-photo', { method: 'POST', body: fd });
-                                  const data = await r.json();
-                                  if (data.url) handleLocalUpdate({ ...bot, welcomePhoto: data.url });
-                                } catch { alert('Ошибка загрузки'); }
-                                finally { setUploadingPhoto(false); }
-                              }} />
-                          </label>
-                        </div>
-                        {bot.welcomePhoto && (
-                          <img src={bot.welcomePhoto} alt="preview"
-                            className="mt-3 h-24 rounded-2xl object-cover border border-zinc-800"
-                            onError={e => (e.currentTarget.style.display = 'none')} />
-                        )}
-                        <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold">Изображение отправляется вместе с текстом приветствия</p>
-                      </label>
-                    )}
+                   {/* Стартовое фото */}
+{isSupportBot && (
+  <label className="block">
+    <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
+      <Image className="w-3 h-3 text-blue-400" />Фото к /start (опционально)
+    </span>
+    <div className="mt-2">
+      <input
+        placeholder="Введите URL изображения или file_id Telegram"
+        className="w-full bg-black border border-zinc-800 p-4 rounded-2xl text-white text-xs outline-none focus:border-blue-500 transition-all"
+        value={bot.welcomePhoto || ''}
+        onChange={e => handleLocalUpdate({ ...bot, welcomePhoto: e.target.value })} 
+      />
+    </div>
+    {bot.welcomePhoto && (
+      <img src={bot.welcomePhoto} alt="preview"
+        className="mt-3 h-24 rounded-2xl object-cover border border-zinc-800"
+        onError={e => (e.currentTarget.style.display = 'none')} />
+    )}
+    <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold">
+      Изображение отправляется вместе с текстом приветствия
+    </p>
+  </label>
+)}
 
                     {/* Инлайн-кнопки к /start */}
                     {isSupportBot && (
