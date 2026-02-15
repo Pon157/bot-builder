@@ -86,6 +86,9 @@ supabase: Client = create_client(SB_URL, SB_KEY)
 class PromoState(StatesGroup):
     waiting_for_code = State()
 
+class AiActivateState(StatesGroup):
+    waiting_bot_id = State()
+
 # ==========================================
 # 2. ЭКОНОМИЧЕСКАЯ МОДЕЛЬ
 # ==========================================
@@ -105,6 +108,13 @@ PERIODS = {
     1: {"label": "1 Месяц", "mult": 1.0},
     3: {"label": "3 Месяца", "mult": 2.5},
     12: {"label": "1 Год", "mult": 8.0}
+}
+
+# AI токены — пакеты (токены: цена в рублях)
+AI_TOKEN_PACKS = {
+    500_000:  {"label": "500 000 токенов",  "price_rub": 30},
+    1_500_000:{"label": "1 500 000 токенов","price_rub": 80},
+    5_000_000:{"label": "5 000 000 токенов","price_rub": 230},
 }
 
 # Настройки партнеров
@@ -225,20 +235,26 @@ async def send_menu_interface(m: Union[Message, CallbackQuery], user_id: int, mo
 
 @dp.message(Command("start"))
 async def cmd_start(m: Message):
-    """
-    Старт: установка команд для админа и инициализация юзера.
-    Исправлен NameError: теперь используется db_get_user_info.
-    """
     if m.from_user.id == MY_OWNER_ID:
         await bot.set_my_commands(
-            [BotCommand(command="start", description="🏠 Меню"), 
-             BotCommand(command="broadcast", description="📢 Рассылка")],
+            [BotCommand(command="start", description="🏠 Меню"),
+             BotCommand(command="broadcast", description="📢 Рассылка"),
+             BotCommand(command="ai_keys", description="🤖 Выдать AI-ключ")],
             scope=BotCommandScopeChat(chat_id=m.from_user.id)
         )
-    
+
     user_info = await db_get_user_info(m.from_user.id)
     db_upsert_user(m.from_user.id, user_info["currency"], m.from_user.username)
-    await send_menu_interface(m, m.from_user.id, mode="standard")
+    await send_main_menu(m)
+
+async def send_main_menu(m):
+    """Главное меню с выбором раздела."""
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="🔑 Лицензия бота",    callback_data="menu_license"))
+    kb.row(InlineKeyboardButton(text="🤖 AI-токены",         callback_data="menu_ai"))
+    text = "👋 <b>Добро пожаловать!</b>\n\nВыберите раздел:"
+    fn = m.answer if isinstance(m, Message) else m.message.edit_text
+    await fn(text, reply_markup=kb.as_markup(), parse_mode="HTML")
 
 @dp.message(Command("broadcast"))
 async def cmd_broadcast_text(m: Message):
@@ -435,6 +451,161 @@ async def cb_save_curr(cb: CallbackQuery):
     db_upsert_user(cb.from_user.id, currency=code)
     await cb.answer(f"Валюта {code} сохранена!")
     await send_menu_interface(cb, cb.from_user.id, mode="standard")
+
+# ==========================================
+# AI-ТОКЕНЫ МЕНЮ
+# ==========================================
+
+@dp.callback_query(F.data == "menu_license")
+async def cb_menu_license(cb: CallbackQuery):
+    await send_menu_interface(cb, cb.from_user.id, mode="standard")
+
+@dp.callback_query(F.data == "menu_ai")
+async def cb_menu_ai(cb: CallbackQuery):
+    """Меню покупки AI-токенов."""
+    kb = InlineKeyboardBuilder()
+    for tokens, info in AI_TOKEN_PACKS.items():
+        kb.row(InlineKeyboardButton(
+            text=f"{info['label']} — {info['price_rub']} ₽",
+            callback_data=f"buyai_{tokens}"
+        ))
+    kb.row(InlineKeyboardButton(text="🔑 Активировать ключ AI", callback_data="activate_ai_key"))
+    kb.row(InlineKeyboardButton(text="🏠 Назад",               callback_data="back_main"))
+    ai_menu_text = ("🤖 <b>AI-токены для бота</b>\n\n"
+                    "Токены расходуются при ответах ИИ-ассистента.\n"
+                    "Чем длиннее сообщения — тем больше расход.\n\n"
+                    "Выберите пакет:")
+    await cb.message.edit_text(ai_menu_text, reply_markup=kb.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("buyai_"))
+async def cb_buy_ai(cb: CallbackQuery):
+    tokens = int(cb.data.replace("buyai_", ""))
+    info = AI_TOKEN_PACKS.get(tokens)
+    if not info:
+        return await cb.answer("Пакет не найден", show_alert=True)
+
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="💳 Оплатить",
+        url="https://www.donationalerts.com/r/dialoge_engine"))
+    kb.row(InlineKeyboardButton(text="✅ Я оплатил",
+        callback_data=f"verifyai_{tokens}"))
+    kb.row(InlineKeyboardButton(text="◀️ Назад", callback_data="menu_ai"))
+
+    buy_text = (f"🤖 <b>Заказ: {info['label']}</b>\n\n"
+               f"Сумма: <b>{info['price_rub']} ₽</b>\n\n"
+               "1. Переведите сумму по ссылке.\n"
+               "2. В комментарии укажите ваш Telegram ID.\n"
+               "3. Нажмите «Я оплатил».")
+    await cb.message.edit_text(buy_text, reply_markup=kb.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("verifyai_"))
+async def cb_verify_ai(cb: CallbackQuery):
+    tokens = int(cb.data.replace("verifyai_", ""))
+    info = AI_TOKEN_PACKS.get(tokens, {})
+
+    akb = InlineKeyboardBuilder()
+    akb.row(
+        InlineKeyboardButton(text="✅ Выдать AI-ключ",
+            callback_data=f"adm_ai_ok_{cb.from_user.id}_{tokens}"),
+        InlineKeyboardButton(text="❌ Отказ",
+            callback_data=f"adm_no_{cb.from_user.id}")
+    )
+    try:
+        notify_text = (f"🤖 <b>Заявка AI-токены</b>\n"
+                       f"Юзер: {cb.from_user.full_name} (<code>{cb.from_user.id}</code>)\n"
+                       f"Пакет: {info.get('label', '?')} | Сумма: {info.get('price_rub', '?')} ₽")
+        await bot.send_message(ADM_CHAT, notify_text, reply_markup=akb.as_markup(), parse_mode="HTML")
+        await cb.message.edit_text("⏳ Заявка отправлена. Ожидайте подтверждения.")
+    except Exception as e:
+        await cb.answer("Ошибка отправки", show_alert=True)
+
+@dp.callback_query(F.data.startswith("adm_ai_ok_"))
+async def cb_admin_approve_ai(cb: CallbackQuery):
+    """Администратор выдаёт AI-ключ пользователю."""
+    parts = cb.data.split("_")  # adm_ai_ok_USERID_TOKENS
+    uid  = parts[4]
+    tokens = int(parts[5])
+
+    try:
+        r = requests.post(f"{SRV_URL}/api/admin/generate-ai-key",
+            json={"tokens": tokens, "price_rub": AI_TOKEN_PACKS.get(tokens, {}).get("price_rub", 0)},
+            headers={"x-admin-token": ADM_SECRET}, timeout=15)
+        if r.status_code == 200:
+            key = r.json().get("key")
+            msg = (f"🎉 <b>Оплата подтверждена!</b>\n\n"
+                   f"Ваш AI-ключ: <code>{key}</code>\n\n"
+                   "Активируйте его в боте через «🤖 AI-токены → Активировать ключ AI».")
+            await bot.send_message(uid, msg, parse_mode="HTML")
+            await cb.message.edit_text(
+                f"✅ AI-ключ выдан: <code>{key}</code>",
+                parse_mode="HTML"
+            )
+        else:
+            await cb.message.edit_text(f"❌ Ошибка API: {r.status_code}")
+    except Exception as e:
+        await cb.message.edit_text(f"❌ Ошибка: {e}")
+
+@dp.callback_query(F.data == "activate_ai_key")
+async def cb_activate_ai_key(cb: CallbackQuery, state: FSMContext):
+    """Запрашиваем ключ и bot_id."""
+    text = (
+        "🔑 <b>Активация AI-ключа</b>\n\n"
+        "Отправьте сообщение в формате:\n"
+        "<code>AITOK-XXXXXX-NNN bot_id</code>\n\n"
+        "Ключ и ID бота через пробел.\n"
+        "ID бота найдёте в настройках бота."
+    )
+    await cb.message.edit_text(text, parse_mode="HTML")
+    await state.set_state(AiActivateState.waiting_bot_id)
+
+@dp.message(AiActivateState.waiting_bot_id)
+async def process_ai_activation(m: Message, state: FSMContext):
+    parts = m.text.strip().split()
+    if len(parts) < 2:
+        await m.answer(
+            "Укажите ключ и ID бота через пробел.\n"
+            "Пример: <code>AITOK-ABC123-456 bot_a1b2c3d4</code>",
+            parse_mode="HTML"
+        )
+        return
+    key_code = parts[0].upper()
+    bot_id   = parts[1].strip()
+    await state.clear()
+    try:
+        r = requests.post(f"{SRV_URL}/api/ai/activate-tokens",
+            json={"key": key_code, "botId": bot_id}, timeout=15)
+        res = r.json()
+        if res.get("status") == "ok":
+            tokens = res.get("tokens_added", 0)
+            await m.answer(
+                f"✅ <b>Активировано!</b>\n\n"
+                f"Бот <code>{bot_id}</code> получил <b>{tokens:,}</b> AI-токенов.",
+                parse_mode="HTML"
+            )
+        else:
+            await m.answer(f"❌ {res.get('message', 'Ошибка')}")
+    except Exception as e:
+        await m.answer(f"❌ Ошибка сервера: {e}")
+
+@dp.callback_query(F.data == "back_main")
+async def cb_back_main(cb: CallbackQuery):
+    await send_main_menu(cb)
+
+@dp.message(Command("ai_keys"))
+async def cmd_ai_keys(m: Message):
+    """Только для владельца: быстрая генерация AI-ключа."""
+    if m.from_user.id != MY_OWNER_ID:
+        return
+    parts = m.text.split()
+    tokens = int(parts[1]) if len(parts) > 1 else 500_000
+    try:
+        r = requests.post(f"{SRV_URL}/api/admin/generate-ai-key",
+            json={"tokens": tokens},
+            headers={"x-admin-token": ADM_SECRET}, timeout=10)
+        key = r.json().get("key")
+        await m.answer(f"🤖 AI-ключ: <code>{key}</code>\nТокены: {tokens:,}", parse_mode="HTML")
+    except Exception as e:
+        await m.answer(f"❌ {e}")
 
 # ==========================================
 # 9. ЗАПУСК БОТА
