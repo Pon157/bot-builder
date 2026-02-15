@@ -106,14 +106,15 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
 
   // ── Вкладки по типу бота ──
   const tabs = [
-    { id: 'settings', label: 'Основные',     icon: Settings,      always: true },
-    { id: 'interface',label: 'Кнопки',       icon: Ticket,        always: false },
-    { id: 'logic',    label: 'Триггеры',     icon: Zap,           always: false },
-    { id: 'ai',       label: 'ИИ-Ассистент', icon: Brain,         support: true },
-    { id: 'stats',    label: 'Аналитика',    icon: BarChart3,     always: true  },
-    { id: 'logs',     label: 'Терминал',     icon: Terminal,      always: true  },
+    { id: 'settings',  label: 'Основные',      icon: Settings,      always: true },
+    { id: 'interface', label: 'Интерфейс',    icon: Ticket,        always: false },
+    { id: 'logic',     label: 'Логика',       icon: Zap,           always: false },
+    // ВК: Убираем вкладку ИИ из массива совсем
+    ...(isVK ? [] : [{ id: 'ai', label: 'ИИ-Ассистент', icon: Brain, support: true }]),
+    { id: 'stats',     label: 'Аналитика',    icon: BarChart3,     always: true  },
+    { id: 'logs',      label: 'Терминал',     icon: Terminal,      always: true  },
   ].filter((t: any) => t.always || (t.support && isSupportBot) || (!t.always && !t.support && isSupportBot));
-
+  
   // ── Иконка заголовка ──
   const HeaderIcon = isPoster ? Send : isRandomizer ? Shuffle : (isVK ? Globe : Cpu);
   const platformColor = isPoster ? 'text-emerald-500' : isRandomizer ? 'text-purple-500' : isVK ? 'text-sky-500' : 'text-blue-500';
@@ -123,8 +124,21 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                         isVK ? 'bg-sky-500/10 border-sky-500/20 text-sky-400' :
                         'bg-blue-500/10 border-blue-500/20 text-blue-400';
 
+  const globalPointerStyle = (
+  <style>{`
+    .bot-editor-container button, 
+    .bot-editor-container input, 
+    .bot-editor-container select, 
+    .bot-editor-container textarea,
+    .bot-editor-container [role="button"] {
+      cursor: pointer !important;
+    }
+  `}</style>
+);
+
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 pb-20">
+    <div className="bot-editor-container space-y-8 animate-in fade-in duration-500 pb-20">
+      {globalPointerStyle}
 
       {/* Баннер несохранённых изменений */}
       {hasUnsavedChanges && (
@@ -166,14 +180,26 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
       </header>
 
       {/* Вкладки */}
-      <div className="flex gap-2 border-b border-zinc-800 overflow-x-auto no-scrollbar">
-        {tabs.map(t => (
-          <button key={t.id} onClick={() => setActiveTab(t.id as any)}
-            className={`px-6 py-4 text-[10px] font-black uppercase tracking-widest border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${activeTab === t.id ? 'border-blue-500 text-blue-500' : 'border-transparent text-zinc-500'}`}>
-            <t.icon className="w-3.5 h-3.5" />{t.label}
-          </button>
-        ))}
-      </div>
+<div className="flex gap-2 border-b border-zinc-800 overflow-x-auto no-scrollbar">
+  {tabs
+    .filter(t => {
+      // Если это ВК, скрываем вкладку AI
+      if (bot.platform === 'vk' && t.id === 'ai') return false;
+      return true;
+    })
+    .map(t => (
+      <button 
+        key={t.id} 
+        onClick={() => setActiveTab(t.id as any)}
+        className={`px-6 py-4 text-[10px] font-black uppercase tracking-widest border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${
+          activeTab === t.id ? 'border-blue-500 text-blue-500' : 'border-transparent text-zinc-500'
+        }`}
+      >
+        <t.icon className="w-3.5 h-3.5" />
+        {t.label}
+      </button>
+    ))}
+</div>
 
       {/* ════════════════════════════════════════════
           ВКЛАДКА: НАСТРОЙКИ
@@ -355,8 +381,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                         onChange={e => handleLocalUpdate({ ...bot, welcomeMessage: e.target.value })} />
                     </label>
 
-{/* Стартовое фото */}
-{isSupportBot && (
+{/* Стартовое фото — скрываем для ВК, даже если это SupportBot */}
+{isSupportBot && !isVK && (
   <label className="block">
     <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
       <Image className="w-3 h-3 text-blue-400" />Фото к /start (опционально)
@@ -391,47 +417,50 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
   </label>
 )}
 
-                    {/* Инлайн-кнопки к /start */}
-                    {isSupportBot && (
-                      <div>
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
-                            <ExternalLink className="w-3 h-3 text-indigo-400" />Инлайн-кнопки к /start
-                          </span>
-                          <button type="button"
-                            onClick={() => handleLocalUpdate({ ...bot, welcomeInline: [...(bot.welcomeInline || []), { text: '', url: '' }] })}
-                            className="text-[9px] text-indigo-400 font-bold hover:text-indigo-300">
-                            + Добавить кнопку
-                          </button>
-                        </div>
-                        {(bot.welcomeInline || []).map((btn: any, i: number) => (
-                          <div key={i} className="flex gap-2 mb-2">
-                            <input placeholder="Текст кнопки"
-                              className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-indigo-500"
-                              value={btn.text}
-                              onChange={e => {
-                                const wb = [...(bot.welcomeInline || [])];
-                                wb[i] = { ...wb[i], text: e.target.value };
-                                handleLocalUpdate({ ...bot, welcomeInline: wb });
-                              }} />
-                            <input placeholder="https://..."
-                              className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-indigo-500"
-                              value={btn.url}
-                              onChange={e => {
-                                const wb = [...(bot.welcomeInline || [])];
-                                wb[i] = { ...wb[i], url: e.target.value };
-                                handleLocalUpdate({ ...bot, welcomeInline: wb });
-                              }} />
-                            <button type="button"
-                              onClick={() => handleLocalUpdate({ ...bot, welcomeInline: (bot.welcomeInline || []).filter((_: any, idx: number) => idx !== i) })}
-                              className="px-2 text-zinc-600 hover:text-rose-500"><X className="w-4 h-4" /></button>
-                          </div>
-                        ))}
-                        <p className="text-[8px] text-zinc-600 ml-2 uppercase font-bold">Ссылки показываются инлайн-кнопками под стартовым сообщением</p>
-                      </div>
-                    )}
-                  </div>
-                )}
+                    {/* Инлайн-кнопки к /start — Скрываем для ВК */}
+{isSupportBot && !isVK && (
+  <div>
+    <div className="flex items-center justify-between mb-2">
+      <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
+        <ExternalLink className="w-3 h-3 text-indigo-400" />Инлайн-кнопки к /start
+      </span>
+      <button type="button"
+        onClick={() => handleLocalUpdate({ ...bot, welcomeInline: [...(bot.welcomeInline || []), { text: '', url: '' }] })}
+        className="text-[9px] text-indigo-400 font-bold hover:text-indigo-300">
+        + Добавить кнопку
+      </button>
+    </div>
+    
+    {(bot.welcomeInline || []).map((btn: any, i: number) => (
+      <div key={i} className="flex gap-2 mb-2">
+        <input placeholder="Текст кнопки"
+          className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-indigo-500"
+          value={btn.text}
+          onChange={e => {
+            const wb = [...(bot.welcomeInline || [])];
+            wb[i] = { ...wb[i], text: e.target.value };
+            handleLocalUpdate({ ...bot, welcomeInline: wb });
+          }} />
+        <input placeholder="https://..."
+          className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-indigo-500"
+          value={btn.url}
+          onChange={e => {
+            const wb = [...(bot.welcomeInline || [])];
+            wb[i] = { ...wb[i], url: e.target.value };
+            handleLocalUpdate({ ...bot, welcomeInline: wb });
+          }} />
+        <button type="button"
+          onClick={() => handleLocalUpdate({ ...bot, welcomeInline: (bot.welcomeInline || []).filter((_: any, idx: number) => idx !== i) })}
+          className="px-2 text-zinc-600 hover:text-rose-500">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+    ))}
+    <p className="text-[8px] text-zinc-600 ml-2 uppercase font-bold">
+      Ссылки показываются инлайн-кнопками под стартовым сообщением
+    </p>
+  </div>
+)}
 
                 <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest opacity-50 ml-2">* Данные синхронизируются (согласно .env)</p>
               </div>
@@ -579,67 +608,112 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
       )}
 
       {/* ════════════════════════════════════════════
-          ВКЛАДКА: КНОПКИ (только для support-ботов)
+          ВКЛАДКА: КНОПКИ (Интерфейс)
       ════════════════════════════════════════════ */}
       {activeTab === 'interface' && isSupportBot && (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-2xl font-black text-white uppercase">Конструктор Кнопок</h2>
-            <button onClick={() => handleLocalUpdate({ ...bot, buttons: [...(bot.buttons||[]), {text:'',response:'',type:'message'}] })}
-              className="bg-blue-600 px-8 py-4 rounded-2xl text-[11px] font-black text-white uppercase flex items-center gap-2 shadow-lg shadow-blue-600/20 hover:bg-blue-500 transition-all">
+            <button 
+              onClick={() => handleLocalUpdate({ ...bot, buttons: [...(bot.buttons||[]), {text:'', response:'', type:'message'}] })}
+              className="bg-blue-600 px-8 py-4 rounded-2xl text-[11px] font-black text-white uppercase flex items-center gap-2 shadow-lg shadow-blue-600/20 hover:bg-blue-500 transition-all"
+            >
               <Plus className="w-4 h-4" />Новая кнопка
             </button>
           </div>
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             {(bot.buttons||[]).map((btn, i) => (
               <div key={i} className="bg-[#0d0d0d] border border-zinc-800 rounded-[2.5rem] p-8 space-y-6 relative border-t-4 border-t-blue-500/20 shadow-xl">
-                <button onClick={() => handleLocalUpdate({...bot,buttons:bot.buttons.filter((_,idx)=>idx!==i)})}
-                  className="absolute top-6 right-6 text-zinc-600 hover:text-rose-500 transition-colors"><X className="w-5 h-5" /></button>
+                
+                {/* Кнопка удаления */}
+                <button 
+                  onClick={() => handleLocalUpdate({...bot, buttons: bot.buttons.filter((_, idx) => idx !== i)})}
+                  className="absolute top-6 right-6 text-zinc-600 hover:text-rose-500 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+
                 <div className="space-y-5">
+                  {/* Текст кнопки */}
                   <label className="block">
                     <span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Текст на кнопке</span>
-                    <input className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-blue-500"
-                      value={btn.text} onChange={e => { const nb=[...bot.buttons]; nb[i].text=e.target.value; handleLocalUpdate({...bot,buttons:nb}); }} />
+                    <input 
+                      className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm font-bold outline-none focus:border-blue-500"
+                      value={btn.text} 
+                      onChange={e => { const nb=[...bot.buttons]; nb[i].text=e.target.value; handleLocalUpdate({...bot, buttons:nb}); }} 
+                    />
                   </label>
+
+                  {/* Ответ системы */}
                   <label className="block">
                     <span className="text-[9px] font-bold text-zinc-600 uppercase ml-2">Ответ системы</span>
-                    <textarea className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm min-h-[120px] outline-none focus:border-blue-500 resize-none"
-                      value={btn.response} onChange={e => { const nb=[...bot.buttons]; nb[i].response=e.target.value; handleLocalUpdate({...bot,buttons:nb}); }} />
+                    <textarea 
+                      className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white text-sm min-h-[120px] outline-none focus:border-blue-500 resize-none"
+                      value={btn.response} 
+                      onChange={e => { const nb=[...bot.buttons]; nb[i].response=e.target.value; handleLocalUpdate({...bot, buttons:nb}); }} 
+                    />
                   </label>
+
+                  {/* Переключатель типа сообщения */}
                   <div className="flex bg-black p-1 rounded-xl border border-zinc-800">
-                    {['message','request'].map(type => (
-                      <button key={type} onClick={() => { const nb=[...bot.buttons]; nb[i].type=type as any; handleLocalUpdate({...bot,buttons:nb}); }}
-                        className={`flex-1 py-2.5 rounded-lg text-[9px] font-black uppercase transition-all ${btn.type===type?'bg-blue-600 text-white shadow-lg':'text-zinc-600 hover:text-zinc-400'}`}>
-                        {type==='message'?'Обычный ответ':'🆘 Заявка (Тикет)'}
+                    {['message', 'request'].map(type => (
+                      <button 
+                        key={type} 
+                        onClick={() => { const nb=[...bot.buttons]; nb[i].type=type as any; handleLocalUpdate({...bot, buttons:nb}); }}
+                        className={`flex-1 py-2.5 rounded-lg text-[9px] font-black uppercase transition-all ${btn.type===type ? 'bg-blue-600 text-white shadow-lg' : 'text-zinc-600 hover:text-zinc-400'}`}
+                      >
+                        {type==='message' ? 'Обычный ответ' : '🆘 Заявка (Тикет)'}
                       </button>
                     ))}
                   </div>
-                  <div className="border-t border-zinc-800 pt-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <span className="text-[9px] font-black text-zinc-500 uppercase flex items-center gap-1.5">
-                        <Layers className="w-3 h-3 text-blue-400" /> Sub-кнопки
-                      </span>
-                      <button type="button"
-                        onClick={() => { const nb=[...bot.buttons]; nb[i].children=[...(nb[i].children||[]),{text:'',response:''}]; handleLocalUpdate({...bot,buttons:nb}); }}
-                        className="text-[9px] text-blue-400 font-bold hover:text-blue-300">+ Под-кнопка</button>
-                    </div>
-                    <p className="text-[8px] text-zinc-600 mb-2">При нажатии — показать эти кнопки вместо ответа:</p>
-                    {(btn.children||[]).map((child: any, ci: number) => (
-                      <div key={ci} className="flex gap-2 mb-2">
-                        <input placeholder="Кнопка"
-                          className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-blue-500"
-                          value={child.text}
-                          onChange={e => { const nb=[...bot.buttons]; nb[i].children[ci].text=e.target.value; handleLocalUpdate({...bot,buttons:nb}); }} />
-                        <input placeholder="Ответ"
-                          className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-blue-500"
-                          value={child.response}
-                          onChange={e => { const nb=[...bot.buttons]; nb[i].children[ci].response=e.target.value; handleLocalUpdate({...bot,buttons:nb}); }} />
-                        <button type="button"
-                          onClick={() => { const nb=[...bot.buttons]; nb[i].children=nb[i].children.filter((_:any,idx:number)=>idx!==ci); handleLocalUpdate({...bot,buttons:nb}); }}
-                          className="px-2 text-zinc-600 hover:text-rose-500"><X className="w-3 h-3" /></button>
+
+                  {/* ── Sub-кнопки (СКРЫТО ДЛЯ ВК) ── */}
+                  {!isVK && (
+                    <div className="border-t border-zinc-800 pt-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-[9px] font-black text-zinc-500 uppercase flex items-center gap-1.5">
+                          <Layers className="w-3 h-3 text-blue-400" /> Sub-кнопки
+                        </span>
+                        <button 
+                          type="button"
+                          onClick={() => { const nb=[...bot.buttons]; nb[i].children=[...(nb[i].children||[]), {text:'', response:''}]; handleLocalUpdate({...bot, buttons:nb}); }}
+                          className="text-[9px] text-blue-400 font-bold hover:text-blue-300"
+                        >
+                          + Под-кнопка
+                        </button>
                       </div>
-                    ))}
-                  </div>
+                      
+                      <p className="text-[8px] text-zinc-600 mb-2">При нажатии — показать эти кнопки вместо ответа:</p>
+                      
+                      {(btn.children||[]).map((child: any, ci: number) => (
+                        <div key={ci} className="flex gap-2 mb-2">
+                          <input 
+                            placeholder="Кнопка"
+                            className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-blue-500"
+                            value={child.text}
+                            onChange={e => { const nb=[...bot.buttons]; nb[i].children[ci].text=e.target.value; handleLocalUpdate({...bot, buttons:nb}); }} 
+                          />
+                          <input 
+                            placeholder="Ответ"
+                            className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-blue-500"
+                            value={child.response}
+                            onChange={e => { const nb=[...bot.buttons]; nb[i].children[ci].response=e.target.value; handleLocalUpdate({...bot, buttons:nb}); }} 
+                          />
+                          <button 
+                            type="button"
+                            onClick={() => { const nb=[...bot.buttons]; nb[i].children=nb[i].children.filter((_:any, idx:number) => idx !== ci); handleLocalUpdate({...bot, buttons:nb}); }}
+                            className="px-2 text-zinc-600 hover:text-rose-500"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {/* Конец блока Sub-кнопок */}
+
                 </div>
               </div>
             ))}
