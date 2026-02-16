@@ -1064,69 +1064,22 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                     <option value="max">max (самый умный)</option>
                   </select>
                 </label>
-<div className="grid grid-cols-2 gap-4">
-  <label className="block">
-    <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Макс. токенов/ответ</span>
-    <input
-      type="number"
-      min="100"
-      max="20000"
-      step="100"
-      className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-2xl text-sm text-white outline-none focus:border-blue-500 transition-all"
-      value={bot.ai?.maxTokensPerReply || 800}
-      onChange={e => {
-        const value = e.target.value;
-        // Обрабатываем пустые значения и невалидные ввод
-        const parsedValue = value === '' ? '' : parseInt(value, 10);
-        
-        // Проверяем на NaN и выход за границы
-        if (parsedValue === '' || isNaN(parsedValue)) {
-          return; // Не обновляем состояние при некорректном вводе
-        }
-        if (parsedValue < 100 || parsedValue > 4000) {
-          return; // Ограничиваем диапазон
-        }
-
-        handleLocalUpdate({
-          ...bot,
-          ai: {
-            ...(bot.ai || {}),
-            maxTokensPerReply: parsedValue
-          }
-        });
-      }}
-    />
-  </label>
-  <label className="block">
-    <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Глубина контекста</span>
-    <input
-      type="number"
-      min="1"
-      max="20"
-      className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-2xl text-sm text-white outline-none focus:border-blue-500 transition-all"
-      value={bot.ai?.contextMessages || 6}
-      onChange={e => {
-        const value = e.target.value;
-        const parsedValue = value === '' ? '' : parseInt(value, 10);
-
-        if (parsedValue === '' || isNaN(parsedValue)) {
-          return;
-        }
-        if (parsedValue < 1 || parsedValue > 20) {
-          return;
-        }
-
-        handleLocalUpdate({
-          ...bot,
-          ai: {
-            ...(bot.ai || {}),
-            contextMessages: parsedValue
-          }
-        });
-      }}
-    />
-  </label>
-</div>
+                <div className="grid grid-cols-2 gap-4">
+                  <label className="block">
+                    <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Макс. токенов/ответ</span>
+                    <input type="number" min="100" max="4000" step="100"
+                      className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-2xl text-sm text-white outline-none focus:border-blue-500 transition-all"
+                      value={bot.ai?.maxTokensPerReply || 800}
+                      onChange={e => handleLocalUpdate({ ...bot, ai: { ...(bot.ai || {}), maxTokensPerReply: parseInt(e.target.value) } })} />
+                  </label>
+                  <label className="block">
+                    <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Глубина контекста</span>
+                    <input type="number" min="1" max="20"
+                      className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-2xl text-sm text-white outline-none focus:border-blue-500 transition-all"
+                      value={bot.ai?.contextMessages || 6}
+                      onChange={e => handleLocalUpdate({ ...bot, ai: { ...(bot.ai || {}), contextMessages: parseInt(e.target.value) } })} />
+                  </label>
+                </div>
                 <label className="block">
                   <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Системный промпт</span>
                   <textarea
