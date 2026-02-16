@@ -1048,11 +1048,12 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                 )}
               </section>
 
-              {/* Параметры модели */}
+{/* Параметры модели */}
               <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-5">
                 <h3 className="text-sm font-black text-white flex items-center gap-2">
                   <Settings className="w-4 h-4 text-blue-500" /> Параметры
                 </h3>
+                
                 <label className="block">
                   <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Модель</span>
                   <select
@@ -1064,35 +1065,62 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                     <option value="max">max (самый умный)</option>
                   </select>
                 </label>
+
                 <div className="grid grid-cols-2 gap-4">
                   <label className="block">
                     <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Макс. токенов/ответ</span>
-                    <input type="number" min="100" max="4000" step="100"
+                    <input 
+                      type="number" 
+                      min="100" 
+                      max="4000" 
+                      step="100"
                       className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-2xl text-sm text-white outline-none focus:border-blue-500 transition-all"
-                      value={bot.ai?.maxTokensPerReply || 800}
-                      onChange={e => handleLocalUpdate({ ...bot, ai: { ...(bot.ai || {}), maxTokensPerReply: parseInt(e.target.value) } })} />
+                      // Используем ?? '', чтобы при удалении цифр поле оставалось пустым, а не сбрасывалось на 800
+                      value={bot.ai?.maxTokensPerReply ?? ''} 
+                      onChange={e => {
+                        const val = e.target.value === '' ? undefined : parseInt(e.target.value);
+                        handleLocalUpdate({ 
+                          ...bot, 
+                          ai: { ...(bot.ai || {}), maxTokensPerReply: val } 
+                        });
+                      }} 
+                    />
                   </label>
+
                   <label className="block">
                     <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Глубина контекста</span>
-                    <input type="number" min="1" max="20"
+                    <input 
+                      type="number" 
+                      min="1" 
+                      max="20"
                       className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-2xl text-sm text-white outline-none focus:border-blue-500 transition-all"
-                      value={bot.ai?.contextMessages || 6}
-                      onChange={e => handleLocalUpdate({ ...bot, ai: { ...(bot.ai || {}), contextMessages: parseInt(e.target.value) } })} />
+                      // Используем ?? '', чтобы при удалении цифр поле не возвращало 6
+                      value={bot.ai?.contextMessages ?? ''} 
+                      onChange={e => {
+                        const val = e.target.value === '' ? undefined : parseInt(e.target.value);
+                        handleLocalUpdate({ 
+                          ...bot, 
+                          ai: { ...(bot.ai || {}), contextMessages: val } 
+                        });
+                      }} 
+                    />
                   </label>
                 </div>
+
                 <label className="block">
                   <span className="text-[9px] text-zinc-500 font-bold uppercase ml-2">Системный промпт</span>
                   <textarea
                     className="w-full mt-2 bg-black border border-zinc-800 p-4 rounded-2xl text-xs text-white outline-none focus:border-blue-500 transition-all resize-none min-h-[120px]"
                     placeholder="Ты помощник поддержки компании. Отвечай вежливо и по делу."
                     value={bot.ai?.systemPrompt || ''}
-                    onChange={e => handleLocalUpdate({ ...bot, ai: { ...(bot.ai || {}), systemPrompt: e.target.value } })} />
+                    onChange={e => handleLocalUpdate({ ...bot, ai: { ...(bot.ai || {}), systemPrompt: e.target.value } })} 
+                  />
                 </label>
               </section>
             </div>
-          )} {/* Closes the ternary operator: (!aiBalance ...) ? (...) : (...) */}
+          )}
         </div>
-      )} {/* Closes: activeTab === 'ai' && isSupportBot && (...) */}
+      )}
 
       {/* Аналитика и логи */}
       {activeTab === 'stats' && <BotStatsView bot={bot} onUpdate={onUpdate} />}
