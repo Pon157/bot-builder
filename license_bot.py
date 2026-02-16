@@ -238,9 +238,8 @@ async def cmd_start(m: Message):
     if m.from_user.id == MY_OWNER_ID:
         await bot.set_my_commands(
             [BotCommand(command="start", description="🏠 Меню"),
-             BotCommand(command="broadcast", description="📢 Рассылка"),
-             BotCommand(command="ai_keys", description="🤖 Выдать AI-ключ")],
-            scope=BotCommandScopeChat(chat_id=m.from_user.id)
+             BotCommand(command="broadcast", description="📢 Рассылка")],
+              scope=BotCommandScopeChat(chat_id=m.from_user.id)
         )
 
     user_info = await db_get_user_info(m.from_user.id)
