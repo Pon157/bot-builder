@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { BotConfig, BotStatus } from '../types';
 import { api } from '../services/apiService';
@@ -111,13 +110,13 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
   };
 
   // ── Вкладки по типу бота ──
-  // tgSupport = только TG support-боты (не VK, не poster, не randomizer)
+  // isSupportBot = все боты поддержки (TG + VK), isTgSupport = только TG
   const isTgSupport = isSupportBot && !isVK;
   const tabs = [
     { id: 'settings',   label: 'Основные',     icon: Settings,  show: true          },
-    { id: 'interface',  label: 'Интерфейс',    icon: Ticket,    show: isTgSupport   },
-    { id: 'logic',      label: 'Логика',       icon: Zap,       show: isTgSupport   },
-    { id: 'ai',         label: 'ИИ-Ассистент', icon: Brain,     show: isTgSupport   },
+    { id: 'interface',  label: 'Интерфейс',    icon: Ticket,    show: isSupportBot  },
+    { id: 'logic',      label: 'Логика',       icon: Zap,       show: isSupportBot  },
+    { id: 'ai',         label: 'ИИ-Ассистент', icon: Brain,     show: isSupportBot  },
     { id: 'stats',      label: 'Аналитика',    icon: BarChart3, show: true          },
     { id: 'logs',       label: 'Терминал',     icon: Terminal,  show: true          },
   ].filter((t: any) => t.show);
@@ -145,6 +144,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
     .bot-editor-container input:disabled,
     .bot-editor-container select:disabled { cursor: not-allowed !important; opacity: 0.5; }
     .bot-editor-container button:hover:not(:disabled) { opacity: 0.88; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
   `}</style>
 );
 
@@ -289,14 +290,14 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
       )}
 
       {/* Шапка */}
-      <header className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] flex flex-col md:flex-row justify-between items-center gap-6 shadow-2xl">
-        <div className="flex items-center gap-6">
-          <div className={`w-16 h-16 rounded-2xl flex items-center justify-center border-2 ${bot.status === BotStatus.RUNNING ? `border-current/30 bg-current/5 ${platformColor}` : 'bg-zinc-900 border-zinc-800 text-zinc-600'}`}>
-            <HeaderIcon className="w-8 h-8" />
+      <header className="bg-[#111] border border-zinc-800 p-6 md:p-8 rounded-[2.5rem] flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
+        <div className="flex items-center gap-4 md:gap-6">
+          <div className={`w-14 h-14 md:w-16 md:h-16 rounded-2xl flex items-center justify-center border-2 ${bot.status === BotStatus.RUNNING ? `border-current/30 bg-current/5 ${platformColor}` : 'bg-zinc-900 border-zinc-800 text-zinc-600'}`}>
+            <HeaderIcon className="w-7 h-7 md:w-8 md:h-8" />
           </div>
           <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-3xl font-black text-white">{bot.name}</h1>
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-2xl md:text-3xl font-black text-white">{bot.name}</h1>
               <span className={`px-2 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest border ${badgeStyle}`}>{platformBadge}</span>
               {isAdminMode && <span className="px-2 py-1 bg-orange-500/10 border border-orange-500/20 rounded-lg text-orange-500 text-[8px] font-black uppercase tracking-widest">Support</span>}
             </div>
@@ -306,11 +307,11 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
             </div>
           </div>
         </div>
-        <div className="flex gap-4">
-          <button onClick={syncState} disabled={isProcessing} className={`px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all ${hasUnsavedChanges ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}>
+        <div className="flex gap-3 w-full md:w-auto">
+          <button onClick={syncState} disabled={isProcessing} className={`flex-1 md:flex-none px-4 md:px-6 py-3 md:py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 transition-all ${hasUnsavedChanges ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}>
             <Save className="w-4 h-4" /> Сохранить
           </button>
-          <button onClick={handleToggleServer} disabled={isProcessing} className={`px-10 py-4 rounded-2xl font-black text-xs uppercase flex items-center gap-2 shadow-xl transition-all ${bot.status === BotStatus.RUNNING ? 'bg-red-500/10 text-red-500 border border-red-500/20' : 'bg-blue-600 text-white'}`}>
+          <button onClick={handleToggleServer} disabled={isProcessing} className={`flex-1 md:flex-none px-6 md:px-10 py-3 md:py-4 rounded-2xl font-black text-xs uppercase flex items-center justify-center gap-2 shadow-xl transition-all ${bot.status === BotStatus.RUNNING ? 'bg-red-500/10 text-red-500 border border-red-500/20' : 'bg-blue-600 text-white'}`}>
             <Power className="w-4 h-4" /> {bot.status === BotStatus.RUNNING ? 'Стоп' : 'Запустить'}
           </button>
         </div>
@@ -374,19 +375,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                 <Settings className="w-4 h-4 text-blue-500" /> Основные настройки
               </h2>
               <div className="space-y-5">
-
-                {/* Платформа — показываем только для support-ботов */}
-                {isSupportBot && (
-                  <div className="flex bg-black p-1 rounded-2xl border border-zinc-800">
-                    {['telegram', 'vk'].map(p => (
-                      <button key={p} type="button"
-                        onClick={() => handleLocalUpdate({ ...bot, platform: p as any })}
-                        className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${bot.platform === p ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'text-zinc-500 hover:text-zinc-300'}`}>
-                        {p === 'telegram' ? 'Telegram Bot' : 'VK Community'}
-                      </button>
-                    ))}
-                  </div>
-                )}
 
                 {/* Токен */}
                 <label className="block">
@@ -512,11 +500,12 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                         onChange={e => handleLocalUpdate({ ...bot, welcomeMessage: e.target.value })} />
                     </label>
 
-                    {/* Стартовое фото — только для TG support-ботов */}
-                    {isTgSupport && (
+                    {/* Стартовое фото — для всех support-ботов */}
+                    {isSupportBot && (
                       <label className="block">
                         <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
-                          <Image className="w-3 h-3 text-blue-400" />Фото к /start (опционально)
+                          <Image className="w-3 h-3 text-blue-400" />
+                          {isVK ? 'Фото к приветствию (опционально)' : 'Фото к /start (опционально)'}
                         </span>
                         <div className="mt-2">
                           <input
@@ -540,7 +529,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                           </div>
                         )}
                         <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold">
-                          Бот отправит это фото первым сообщением вместе с текстом приветствия
+                          {isVK ? 'Бот прикрепит фото к первому сообщению пользователя' : 'Бот отправит это фото первым сообщением вместе с текстом приветствия'}
                         </p>
                       </label>
                     )}
@@ -766,7 +755,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
       {/* ════════════════════════════════════════════
           ВКЛАДКА: КНОПКИ (Интерфейс)
       ════════════════════════════════════════════ */}
-      {activeTab === 'interface' && isTgSupport && (
+      {activeTab === 'interface' && isSupportBot && (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
           
           <div className="flex justify-between items-center mb-6">
@@ -825,6 +814,29 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                     ))}
                   </div>
 
+                  {/* VK — цвет кнопки */}
+                  {isVK && (
+                    <div>
+                      <p className="text-[9px] font-black text-zinc-600 uppercase ml-2 mb-2">Цвет кнопки</p>
+                      <div className="grid grid-cols-4 gap-2">
+                        {([
+                          { id: 'primary',   label: 'Синяя',   cls: 'bg-blue-600/20 border-blue-500/40 text-blue-400'    },
+                          { id: 'positive',  label: 'Зелёная', cls: 'bg-emerald-600/20 border-emerald-500/40 text-emerald-400' },
+                          { id: 'negative',  label: 'Красная', cls: 'bg-rose-600/20 border-rose-500/40 text-rose-400'    },
+                          { id: 'secondary', label: 'Серая',   cls: 'bg-zinc-700/40 border-zinc-600/40 text-zinc-400'    },
+                        ] as const).map(c => (
+                          <button key={c.id} type="button"
+                            onClick={() => { const nb=[...bot.buttons]; nb[i].color=c.id; handleLocalUpdate({...bot, buttons:nb}); }}
+                            className={`py-2 rounded-xl border text-[8px] font-black uppercase transition-all ${
+                              (btn.color || 'primary') === c.id ? c.cls + ' ring-2 ring-current' : 'bg-black border-zinc-800 text-zinc-600 hover:border-zinc-700'
+                            }`}>
+                            {c.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {/* ── Sub-кнопки (If/Else) ── */}
                   {(
                     <div className="border-t border-zinc-800 pt-4">
@@ -880,7 +892,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
       {/* ════════════════════════════════════════════
           ВКЛАДКА: ТРИГГЕРЫ (только для support-ботов)
       ════════════════════════════════════════════ */}
-      {activeTab === 'logic' && isTgSupport && (
+      {activeTab === 'logic' && isSupportBot && (
         <div className="space-y-6 animate-in fade-in duration-500">
           <div className="flex justify-between items-end mb-6">
             <h2 className="text-2xl font-black text-white uppercase">Триггеры авто-ответа</h2>
