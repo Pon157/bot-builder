@@ -73,29 +73,34 @@ const Dashboard: React.FC<DashboardProps> = ({ bots, onSelectBot, onAddBot }) =>
               className="bg-[#111] border border-zinc-800 rounded-[2.5rem] p-8 hover:border-blue-500/50 transition-all cursor-pointer group relative"
               onClick={() => onSelectBot(bot.id)}
           >
-              {/* Индикатор платформы в углу */}
-              <div className="absolute top-0 right-6 transform -translate-y-1/2">
-                <span className="bg-zinc-800 text-zinc-500 text-[8px] font-black px-3 py-1.5 rounded-xl uppercase tracking-wider shadow-lg">
-                  {bot.platform || 'telegram'}
-                </span>
-              </div>
-
               <div className="flex justify-between items-start mb-6">
                   <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${bot.status === 'RUNNING' ? 'bg-blue-500/10 text-blue-500' : 'bg-zinc-900 text-zinc-600'}`}>
-                      {/* Меняем иконку в зависимости от платформы */}
                       {bot.platform === 'vk' ? (
-                        <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
                           <path d="M13.162 18.994c-6.098 0-9.57-4.172-9.714-11.107h3.047c.101 5.088 2.339 7.243 4.116 7.688V7.887H13.5v4.39c1.673-.18 3.514-2.185 4.102-4.39h2.903a9.408 9.408 0 01-3.763 5.483 9.771 9.771 0 014.436 5.624h-3.235c-.636-1.992-2.228-3.528-4.557-3.757v3.757h-.224z"/>
                         </svg>
+                      ) : bot.platform === 'poster' ? (
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      ) : bot.platform === 'randomizer' ? (
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path d="M16 3h5m0 0v5m0-5l-6 6M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-1m-8-5l3 3 3-3" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
                       ) : (
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                         </svg>
                       )}
                   </div>
-                  <span className={`text-[9px] px-3 py-1 rounded-full font-black uppercase ${bot.status === 'RUNNING' ? 'bg-green-500/10 text-green-500' : 'bg-zinc-800 text-zinc-500'}`}>
-                      {bot.status}
-                  </span>
+                  <div className="flex items-center gap-2">
+                      <span className="bg-zinc-800/80 text-zinc-500 text-[8px] font-black px-2.5 py-1 rounded-lg uppercase tracking-wider">
+                        {bot.platform === 'vk' ? 'VK' : bot.platform === 'poster' ? 'Постинг' : bot.platform === 'randomizer' ? 'Лотерея' : 'Telegram'}
+                      </span>
+                      <span className={`text-[9px] px-3 py-1 rounded-full font-black uppercase ${bot.status === 'RUNNING' ? 'bg-green-500/10 text-green-500' : 'bg-zinc-800 text-zinc-500'}`}>
+                          {bot.status}
+                      </span>
+                  </div>
               </div>
               
               <h3 className="text-xl font-black text-white mb-2 group-hover:text-blue-500 transition-colors">{bot.name}</h3>
