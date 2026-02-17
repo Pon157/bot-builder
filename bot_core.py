@@ -485,8 +485,7 @@ class BotInstance:
                         await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
                     
                     elif action == "sync_state":
-                        # 1. ПОЛУЧАЕМ актуальный конфиг из базы прямо сейчас
-                        # Это нужно, чтобы не затереть изменения из админки
+                        # 1. ПОЛУЧАЕМ актуальный конфиг из базы
                         res = await client.get(
                             f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", 
                             headers=headers
@@ -496,27 +495,30 @@ class BotInstance:
                             remote_data = res.json()[0]
                             remote_config = remote_data.get("config", {})
                             
-                            # 2. ОБЪЕДИНЯЕМ данные
-                            # Мы оставляем кнопки, триггеры и настройки из БАЗЫ (админки)
-                            # Но обновляем статистику и список пользователей из ПАМЯТИ бота
+                            # 2. СОХРАНЯЕМ users_list и stats в БД
                             new_config = {
-                                **remote_config, # Всё что в базе (кнопки, темы, приветствие)
-                                "stats": self.stats_data, # Статистика от бота
-                                "connectedUsers": self.users_list, # Юзеры от бота
+                                **remote_config, # Кнопки, триггеры, настройки из админки
+                                "stats": self.stats_data,
+                                "connectedUsers": self.users_list,
                                 "admin_chat_id": self.admin_chat_id,
                                 "adminChatId": self.admin_chat_id
                             }
 
-                            # 3. ОТПРАВЛЯЕМ обратно
+                            # 3. ОТПРАВЛЯЕМ в БД
                             await client.patch(
                                 f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", 
                                 json={"config": new_config}, 
                                 headers=headers
                             )
                             
-                            # 4. ОБНОВЛЯЕМ ПАМЯТЬ БОТА
-                            # Чтобы бот сразу узнал о новых кнопках из админки
+                            # 4. ОБНОВЛЯЕМ только кнопки/триггеры/настройки (НЕ users_list!)
+                            # Сохраняем текущих юзеров в памяти
+                            saved_users = self.users_list
+                            saved_stats = self.stats_data
                             self.apply_config({"config": remote_config})
+                            # Возвращаем пользователей и статистику обратно
+                            self.users_list = saved_users
+                            self.stats_data = saved_stats
                     
                     self.sync_queue.task_done()
                 except asyncio.TimeoutError:
