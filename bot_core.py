@@ -30,23 +30,23 @@ class LicenseMiddleware(BaseMiddleware):
         self.bot_instance = bot_instance
         super().__init__()
 
+    async def __call__(
+        self,
+        handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]],
+        event: Message,
+        data: Dict[str, Any]
+    ) -> Any:
+        # Проверка лицензии
+        if getattr(self.bot_instance, 'license_expired', False):
+            if isinstance(event, Message):
+                await event.answer("❌ <b>Лицензия этого бота истекла.</b>\nПожалуйста, продлите её в панели управления.")
+            return 
+        return await handler(event, data)
+
 class BanMiddleware(BaseMiddleware):
     def __init__(self, bot_instance):
         self.bot_instance = bot_instance
         super().__init__()
-
-    async def __call__(self, handler, event, data):
-        user_id = event.from_user.id
-        # Ищем юзера в памяти
-        user = next((u for u in self.bot_instance.users_list if u['id'] == user_id), None)
-        
-        if user and user.get("is_banned"):
-            # Если это сообщение, можем ответить, что доступ закрыт
-            if isinstance(event, Message):
-                await event.answer("🚫 <b>Доступ заблокирован.</b>")
-            return # Прерываем выполнение
-        
-        return await handler(event, data)
 
     async def __call__(
         self,
@@ -54,10 +54,18 @@ class BanMiddleware(BaseMiddleware):
         event: Message,
         data: Dict[str, Any]
     ) -> Any:
-        # Если лицензия помечена как истекшая
-        if getattr(self.bot_instance, 'license_expired', False):
-            await event.answer("❌ <b>Лицензия этого бота истекла.</b>\nПожалуйста, продлите её в панели управления.")
-            return # Дальше код обработчиков не идет
+        # Проверка бана
+        if event.from_user:
+            user_id = event.from_user.id
+            # Ищем юзера в памяти
+            user = next((u for u in self.bot_instance.users_list if u.get('id') == user_id), None)
+            
+            if user and user.get("is_banned"):
+                if not user.get("is_admin", False):
+                    # Если хочешь, чтобы бот отвечал забаненному — раскомментируй строку ниже:
+                    # await event.answer("🚫 Доступ заблокирован.")
+                    return # Прерываем выполнение (игнор)
+        
         return await handler(event, data)
 
 # --- ГЛОБАЛЬНАЯ КОНФИГУРАЦИЯ ЛОГИРОВАНИЯ ---
