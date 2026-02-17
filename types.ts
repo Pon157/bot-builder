@@ -89,6 +89,18 @@ export interface BotConfig {
   }[];
   stats?: BotStats;
   config?: any; // raw config from DB
+  welcomePhoto?: string;
+  welcomeInline?: { text: string; url: string }[];
+  channels?: string[];
+  ai?: {
+    mode?: 'off' | 'all' | 'button' | 'command';
+    enabled?: boolean;
+    model?: string;
+    systemPrompt?: string;
+    maxTokensPerReply?: number;
+    contextMessages?: number;
+    buttonName?: string;
+  };
   settings?: {
     useTopics: boolean;
     topicPerRequest: boolean;
@@ -104,6 +116,12 @@ export interface BotConfig {
     showHeaderId: boolean;
     showHeaderName: boolean;
     showHeaderUsername: boolean;
+    // Шаблоны шапок сообщений
+    notifyOnStart?: boolean;
+    notifyOnBlock?: boolean;
+    firstMessageHeader?: string;
+    ticketMessageHeader?: string;
+    commonMessageHeader?: string;
     // Настройки для Callback API ВК
     vkConfirmCode?: string;
     vkSecretKey?: string;
