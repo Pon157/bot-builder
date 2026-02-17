@@ -23,7 +23,9 @@ from vkbottle import BaseMiddleware, Bot, CtxStorage
 from vkbottle.bot import Message
 from vkbottle.dispatch.rules import ABCRule
 from vkbottle import Keyboard, KeyboardButtonColor, Text
+from vkbottle.tools import Link as VKLink
 from vkbottle.exception_factory import VKAPIError
+from typing import Dict, List, Optional
 
 # --- ГЛОБАЛЬНАЯ КОНФИГУРАЦИЯ ЛОГИРОВАНИЯ ---
 logging.basicConfig(
@@ -236,11 +238,29 @@ class BotInstance:
         self.buttons       = full_cfg.get('buttons', [])
         self.triggers      = full_cfg.get('triggers', [])
         self.welcome_text  = full_cfg.get('welcomeMessage', 'Здравствуйте!')
+        self.welcome_photo = full_cfg.get('welcomePhoto', '')
+        self.welcome_inline= full_cfg.get('welcomeInline', [])  # [{text, url}]
         self.settings      = full_cfg.get('settings', {})
         self.rate_limit    = float(self.settings.get('rateLimit', 1.0))
         self.auto_ban_limit= int(self.settings.get('autoBanThreshold', 3))
         self.users_list    = full_cfg.get('connectedUsers', [])
         self.license_expires_at = full_cfg.get('license_expires_at', 0)
+
+        # ── ИИ-конфиг ──
+        ai_cfg = full_cfg.get('ai', {}) or {}
+        self.ai_enabled       = ai_cfg.get('enabled', False)
+        self.ai_mode          = ai_cfg.get('mode', 'off')
+        self.ai_button_name   = ai_cfg.get('buttonName', 'ИИ-ассистент')
+        self.ai_system_prompt = ai_cfg.get('systemPrompt', 'Ты полезный ИИ-ассистент.')
+        self.ai_max_tokens    = int(ai_cfg.get('maxTokensPerReply', 800))
+        self.ai_context_len   = int(ai_cfg.get('contextMessages', 6))
+        self.ai_model         = ai_cfg.get('model', 'gpt-4o')
+        self.qwen_api_key     = os.getenv('TIMEWEB_API_KEY') or os.getenv('QWEN_API_KEY')
+        agent_id = os.getenv('TIMEWEB_AGENT_ID', '14ce55f9-dce2-4f2d-ad98-ff2cffe19ca2')
+        self.ai_url = f"https://agent.timeweb.cloud/api/v1/cloud-ai/agents/{agent_id}/v1/chat/completions"
+        # Контекст диалогов: {user_id: [{"role":..,"content":..}]}
+        if not hasattr(self, 'ai_context_cache'):
+            self.ai_context_cache: Dict[int, List[dict]] = {}
 
         # --- Статистика — ТОЛЬКО при первом запуске ---
         if is_initial:
@@ -399,6 +419,76 @@ class BotInstance:
                     except:
                         pass
                         
+    # ─────────────────────────────────────────────
+    # AI / TIMEWEB INTEGRATION (VK)
+    # ─────────────────────────────────────────────
+    async def ai_call(self, user_id: int, user_text: str) -> Optional[str]:
+        """Вызов AI API с контекстом диалога."""
+        if not self.qwen_api_key or not self.ai_url:
+            return None
+        ctx = self.ai_context_cache.setdefault(user_id, [])
+        ctx.append({"role": "user", "content": user_text})
+        if len(ctx) > self.ai_context_len * 2:
+            ctx = ctx[-(self.ai_context_len * 2):]
+            self.ai_context_cache[user_id] = ctx
+        messages = [{"role": "system", "content": self.ai_system_prompt}] + ctx
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    self.ai_url,
+                    headers={"Authorization": f"Bearer {self.qwen_api_key}", "Content-Type": "application/json"},
+                    json={"model": self.ai_model, "messages": messages, "max_tokens": self.ai_max_tokens, "temperature": 0.7}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    answer = data["choices"][0]["message"]["content"]
+                    usage = data.get("usage", {})
+                    total = usage.get("total_tokens", 0)
+                    ctx.append({"role": "assistant", "content": answer})
+                    asyncio.create_task(self._deduct_tokens(user_id, usage, total))
+                    return answer
+                else:
+                    logger.error(f"AI API error {resp.status_code}: {resp.text[:200]}")
+                    return None
+        except Exception as e:
+            logger.error(f"AI call error: {e}")
+            return None
+
+    async def _deduct_tokens(self, user_id: int, usage: dict, total: int):
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}", "Content-Type": "application/json"}
+                await client.post(f"{self.sb_url}/rest/v1/rpc/deduct_ai_tokens", headers=headers,
+                                  json={"p_bot_id": self.bot_id, "p_amount": total})
+                await client.post(f"{self.sb_url}/rest/v1/ai_token_usage_log",
+                                  headers={**headers, "Prefer": "return=minimal"},
+                                  json={"bot_id": self.bot_id, "user_id": user_id,
+                                        "prompt_tokens": usage.get("prompt_tokens", 0),
+                                        "response_tokens": usage.get("completion_tokens", 0),
+                                        "total_tokens": total, "model": self.ai_model})
+        except Exception as e:
+            logger.warning(f"Token deduct error: {e}")
+
+    async def check_ai_tokens(self) -> int:
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
+                r = await client.get(f"{self.sb_url}/rest/v1/ai_token_balances?bot_id=eq.{self.bot_id}", headers=headers)
+                if r.status_code == 200 and r.json():
+                    return r.json()[0].get("tokens_balance", 0)
+        except Exception:
+            pass
+        return 0
+
+    def clear_ai_context(self, user_id: int):
+        self.ai_context_cache.pop(user_id, None)
+
+    def get_ai_keyboard(self) -> str:
+        """Клавиатура только с кнопкой закрытия ИИ-диалога."""
+        kb = Keyboard(one_time=False, inline=False)
+        kb.add(Text("✖ Закрыть ИИ-диалог"), color=KeyboardButtonColor.NEGATIVE)
+        return kb.get_json()
+
     async def check_antispam(self, user_id: int) -> bool:
         if self.rate_limit <= 0: return False
         now = time.time()
@@ -585,16 +675,31 @@ class BotInstance:
             return True
         return False
 
-    def get_main_keyboard(self):
+    def get_main_keyboard(self) -> str:
         active_btns = [b for b in self.buttons if b.get('text')]
-        if not active_btns: return Keyboard().get_json()
+        # Добавляем кнопку ИИ если режим 'button'
+        ai_btn_name = self.ai_button_name if self.ai_enabled and self.ai_mode == 'button' else None
+        if not active_btns and not ai_btn_name:
+            return Keyboard().get_json()
         
         kb = Keyboard(one_time=False, inline=False)
-        # Разбиваем по 2 кнопки в ряд
-        for i, btn in enumerate(active_btns):
+        all_btns = list(active_btns)
+        for i, btn in enumerate(all_btns):
             if i % 2 == 0 and i != 0:
                 kb.row()
-            kb.add(Text(btn['text']), color=KeyboardButtonColor.PRIMARY)
+            color_map = {
+                'primary': KeyboardButtonColor.PRIMARY,
+                'positive': KeyboardButtonColor.POSITIVE,
+                'negative': KeyboardButtonColor.NEGATIVE,
+                'secondary': KeyboardButtonColor.SECONDARY,
+            }
+            color = color_map.get(btn.get('color', 'primary'), KeyboardButtonColor.PRIMARY)
+            kb.add(Text(btn['text']), color=color)
+        
+        if ai_btn_name:
+            if active_btns:
+                kb.row()
+            kb.add(Text(ai_btn_name), color=KeyboardButtonColor.SECONDARY)
             
         return kb.get_json()
 
@@ -787,15 +892,11 @@ class BotInstance:
             # Авто-привязка: если бот получил сообщение из беседы, а admin_chat_id не задан
             if not self.admin_chat_id and m.peer_id and m.peer_id > 2000000000:
                 await self.bind_peer_id(m.peer_id, invited_by=m.from_id)
-                return  # Не обрабатываем как юзерское сообщение
+                return
 
-            # Игнорируем любые сообщения из привязанной беседы
-            # (они обрабатываются handle_admin_message выше)
+            # Игнорируем сообщения из привязанной/любой беседы
             if self.admin_chat_id and m.peer_id == self.admin_chat_id:
                 return
-            
-            # Также игнорируем любые сообщения из ЛЮБОЙ беседы (peer_id > 2000000000)
-            # если они не из привязанной — чтобы бот не реагировал в чужих беседах
             if m.peer_id and m.peer_id > 2000000000:
                 return
             
@@ -803,32 +904,154 @@ class BotInstance:
             if user.get("is_banned") or await self.check_antispam(user['id']): return
             
             if m.text:
-                clean_text = m.text.lower().strip()
-                
-                # Обработка START (включая стандартную кнопку VK "Начать")
-                if clean_text in ["start", "/start", "начать"]:
-                    await m.answer(self.welcome_text, keyboard=self.get_main_keyboard())
+                clean_text = m.text.strip()
+                clean_lower = clean_text.lower()
+
+                # ── Закрытие ИИ-диалога ──
+                if clean_text == "✖ Закрыть ИИ-диалог":
+                    user.pop('_ai_session', None)
+                    self.clear_ai_context(user['id'])
+                    await m.answer("✅ Диалог с ИИ завершён.", keyboard=self.get_main_keyboard())
+                    return
+
+                # ── Обработка START ──
+                if clean_lower in ["start", "/start", "начать"]:
+                    # Приветствие с фото (если задано)
+                    attachment_str = None
+                    if self.welcome_photo:
+                        # Загружаем фото через messages.getMessagesUploadServer
+                        try:
+                            upload_server = await self.bot.api.photos.get_messages_upload_server(peer_id=user['id'])
+                            async with httpx.AsyncClient(timeout=15) as hclient:
+                                # Скачиваем фото по URL
+                                img_resp = await hclient.get(self.welcome_photo)
+                                upload_resp = await hclient.post(
+                                    upload_server.upload_url,
+                                    files={"photo": ("photo.jpg", img_resp.content, "image/jpeg")}
+                                )
+                                uploaded = upload_resp.json()
+                            saved = await self.bot.api.photos.save_messages_photo(
+                                photo=uploaded["photo"], server=uploaded["server"], hash=uploaded["hash"]
+                            )
+                            if saved:
+                                p = saved[0]
+                                attachment_str = f"photo{p.owner_id}_{p.id}"
+                        except Exception as e:
+                            logger.warning(f"VK welcome photo upload error: {e}")
+                    
+                    # Инлайн-кнопки к /start (как отдельное сообщение с inline-клавиатурой)
+                    inline_buttons = [b for b in (self.welcome_inline or []) if b.get('text') and b.get('url')]
+                    
+                    # Отправляем приветствие
+                    await self.bot.api.messages.send(
+                        peer_id=user['id'],
+                        message=self.welcome_text,
+                        attachment=attachment_str,
+                        keyboard=self.get_main_keyboard(),
+                        random_id=0
+                    )
+                    
+                    # Если есть URL-кнопки — отправляем их отдельным инлайн-сообщением
+                    if inline_buttons:
+                        try:
+                            inline_kb = Keyboard(inline=True)
+                            for bi, ib in enumerate(inline_buttons):
+                                if bi > 0:
+                                    inline_kb.row()
+                                inline_kb.add(VKLink(ib['url'], ib['text']))
+                            await self.bot.api.messages.send(
+                                peer_id=user['id'],
+                                message="⬇️",
+                                keyboard=inline_kb.get_json(),
+                                random_id=0
+                            )
+                        except Exception as e:
+                            logger.warning(f"VK inline buttons error: {e}")
+                    
                     await self.log_and_update(user['id'], user['first_name'], "/start")
                     return
 
-                # КНОПКИ
+                # ── AI команда (/ai, /gpt) ──
+                if clean_lower in ['/ai', '/gpt', '/nn']:
+                    if self.ai_enabled:
+                        bal = await self.check_ai_tokens()
+                        if bal <= 0:
+                            await m.answer("⚠️ AI-токены закончились. Пополните баланс в панели управления.", keyboard=self.get_main_keyboard())
+                            return
+                        user['_ai_session'] = True
+                        await m.answer("🤖 ИИ-ассистент активирован. Задайте вопрос:", keyboard=self.get_ai_keyboard())
+                    else:
+                        await m.answer("ИИ-ассистент не подключён.")
+                    return
+
+                # ── Активная ИИ-сессия ──
+                if user.get('_ai_session') and self.ai_enabled:
+                    bal = await self.check_ai_tokens()
+                    if bal <= 0:
+                        user.pop('_ai_session', None)
+                        self.clear_ai_context(user['id'])
+                        await m.answer("⚠️ AI-токены закончились. Диалог завершён.", keyboard=self.get_main_keyboard())
+                        return
+                    reply = await self.ai_call(user['id'], m.text)
+                    if reply:
+                        await m.answer(reply, keyboard=self.get_ai_keyboard())
+                    else:
+                        await m.answer("⚠️ ИИ не смог ответить. Попробуйте позже.", keyboard=self.get_ai_keyboard())
+                    await self.log_and_update(user['id'], user['first_name'], m.text)
+                    return
+
+                # ── КНОПКИ (с поддержкой sub-кнопок) ──
                 for btn in self.buttons:
-                    if btn.get('text') and btn['text'].lower() == clean_text:
-                        if btn.get('type') == 'request': 
+                    if btn.get('text') and btn['text'].lower() == clean_lower:
+                        # Если кнопка активирует ИИ-кнопку
+                        if self.ai_enabled and self.ai_mode == 'button' and btn['text'] == self.ai_button_name:
+                            bal = await self.check_ai_tokens()
+                            if bal <= 0:
+                                await m.answer("⚠️ AI-токены закончились.", keyboard=self.get_main_keyboard())
+                                return
+                            user['_ai_session'] = True
+                            await m.answer("🤖 ИИ-ассистент активирован. Задайте вопрос:", keyboard=self.get_ai_keyboard())
+                            await self.log_and_update(user['id'], user['first_name'], f"КНОПКА: {btn['text']}")
+                            return
+                        
+                        # Sub-кнопки (children)
+                        children = btn.get('children', [])
+                        if children:
+                            child_btns = [c for c in children if c.get('text')]
+                            if child_btns:
+                                sub_kb = Keyboard(one_time=True, inline=False)
+                                for ci, ch in enumerate(child_btns):
+                                    if ci % 2 == 0 and ci != 0:
+                                        sub_kb.row()
+                                    sub_kb.add(Text(ch['text']), color=KeyboardButtonColor.PRIMARY)
+                                response_text = btn.get('response') or "Выберите действие:"
+                                await m.answer(response_text, keyboard=sub_kb.get_json())
+                                await self.log_and_update(user['id'], user['first_name'], f"КНОПКА: {btn['text']}")
+                                return
+                        
+                        if btn.get('type') == 'request':
                             await self.forward_to_admin(m, user, btn_text=btn['text'])
-                        if btn.get('response'): 
-                            # Возвращаем клавиатуру вместе с ответом
+                        if btn.get('response'):
                             await m.answer(btn['response'], keyboard=self.get_main_keyboard())
                         await self.log_and_update(user['id'], user['first_name'], f"КНОПКА: {btn['text']}")
                         return
                 
-                # ТРИГГЕРЫ
+                # ── ТРИГГЕРЫ ──
                 for trig in self.triggers:
-                    if trig.get('keyword') and trig['keyword'].lower() in clean_text:
-                        # Возвращаем клавиатуру вместе с ответом
+                    if trig.get('keyword') and trig['keyword'].lower() in clean_lower:
                         await m.answer(trig['response'], keyboard=self.get_main_keyboard())
                         await self.log_and_update(user['id'], user['first_name'], f"ТРИГГЕР: {trig['keyword']}")
                         return
+
+                # ── ИИ режим "all" — отвечаем на любое сообщение ──
+                if self.ai_enabled and self.ai_mode == 'all':
+                    bal = await self.check_ai_tokens()
+                    if bal > 0:
+                        reply = await self.ai_call(user['id'], m.text)
+                        if reply:
+                            await m.answer(reply, keyboard=self.get_main_keyboard())
+                            await self.log_and_update(user['id'], user['first_name'], m.text)
+                            return
             
             # Если ничего не совпало - пересылаем админу
             await self.forward_to_admin(m, user, is_first=is_new)
