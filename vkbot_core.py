@@ -246,7 +246,11 @@ class BotInstance:
         self.settings      = full_cfg.get('settings', {})
         self.rate_limit    = float(self.settings.get('rateLimit', 1.0))
         self.auto_ban_limit= int(self.settings.get('autoBanThreshold', 3))
-        self.users_list    = full_cfg.get('connectedUsers', [])
+        
+        # users_list обновляем ТОЛЬКО при первом запуске, при hot-reload сохраняем память
+        if is_initial or not hasattr(self, 'users_list'):
+            self.users_list = full_cfg.get('connectedUsers', [])
+        
         self.license_expires_at = full_cfg.get('license_expires_at', 0)
 
         # ── ИИ-конфиг ──
