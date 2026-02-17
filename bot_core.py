@@ -50,21 +50,33 @@ class BanMiddleware(BaseMiddleware):
 
     async def __call__(
         self,
-        handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]],
-        event: Message,
+        handler: Callable[[Any, Dict[str, Any]], Awaitable[Any]],
+        event: Any,
         data: Dict[str, Any]
     ) -> Any:
-        # Проверка бана
-        if event.from_user:
-            user_id = event.from_user.id
-            # Ищем юзера в памяти
+        # Извлекаем пользователя из события (сообщения или кнопки)
+        user_tg = getattr(event, 'from_user', None)
+        
+        if user_tg:
+            user_id = user_tg.id
+            # Ищем юзера в кэше бота
             user = next((u for u in self.bot_instance.users_list if u.get('id') == user_id), None)
             
             if user and user.get("is_banned"):
-                if not user.get("is_admin", False):
-                    # Если хочешь, чтобы бот отвечал забаненному — раскомментируй строку ниже:
-                    # await event.answer("🚫 Доступ заблокирован.")
-                    return # Прерываем выполнение (игнор)
+                # Если это не админ
+                admin_ids = self.bot_instance.config.get("adminIds", [])
+                if user_id not in admin_ids and user_id != self.bot_instance.admin_chat_id:
+                    
+                    # Если это сообщение — пишем текстом
+                    if isinstance(event, Message):
+                        await event.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
+                    # Если это кнопка — показываем уведомление
+                    elif isinstance(event, CallbackQuery):
+                        await event.answer("🚫 Вы заблокированы.", show_alert=True)
+                        
+                    return # ПРЕРЫВАЕМ выполнение (кнопки и команды не сработают)
+        
+        return await handler(event, data)
         
         return await handler(event, data)
 
@@ -933,11 +945,13 @@ class BotInstance:
         return False
         
     async def core_handlers_setup(self):
-        # 0. Мидлварь для проверки лицензии
-        self.router.message.middleware(LicenseMiddleware(self))
-
-        # Мидлварь для проверки бана
+        # Регистрируем проверку бана ПЕРВОЙ для всех типов событий
         self.router.message.middleware(BanMiddleware(self))
+        self.router.callback_query.middleware(BanMiddleware(self)) # Чтобы кнопки не жались
+        
+        # Проверка лицензии
+        self.router.message.middleware(LicenseMiddleware(self))
+        self.router.callback_query.middleware(LicenseMiddleware(self))
 
         # 1. Обработка блокировки бота пользователем
         @self.router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=ChatMemberStatus.KICKED))
