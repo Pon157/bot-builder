@@ -814,29 +814,6 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                     ))}
                   </div>
 
-                  {/* VK — цвет кнопки */}
-                  {isVK && (
-                    <div>
-                      <p className="text-[9px] font-black text-zinc-600 uppercase ml-2 mb-2">Цвет кнопки</p>
-                      <div className="grid grid-cols-4 gap-2">
-                        {([
-                          { id: 'primary',   label: 'Синяя',   cls: 'bg-blue-600/20 border-blue-500/40 text-blue-400'    },
-                          { id: 'positive',  label: 'Зелёная', cls: 'bg-emerald-600/20 border-emerald-500/40 text-emerald-400' },
-                          { id: 'negative',  label: 'Красная', cls: 'bg-rose-600/20 border-rose-500/40 text-rose-400'    },
-                          { id: 'secondary', label: 'Серая',   cls: 'bg-zinc-700/40 border-zinc-600/40 text-zinc-400'    },
-                        ] as const).map(c => (
-                          <button key={c.id} type="button"
-                            onClick={() => { const nb=[...bot.buttons]; nb[i].color=c.id; handleLocalUpdate({...bot, buttons:nb}); }}
-                            className={`py-2 rounded-xl border text-[8px] font-black uppercase transition-all ${
-                              (btn.color || 'primary') === c.id ? c.cls + ' ring-2 ring-current' : 'bg-black border-zinc-800 text-zinc-600 hover:border-zinc-700'
-                            }`}>
-                            {c.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
                   {/* ── Sub-кнопки (If/Else) ── */}
                   {(
                     <div className="border-t border-zinc-800 pt-4">
