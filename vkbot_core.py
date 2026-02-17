@@ -23,7 +23,10 @@ from vkbottle import BaseMiddleware, Bot, CtxStorage
 from vkbottle.bot import Message
 from vkbottle.dispatch.rules import ABCRule
 from vkbottle import Keyboard, KeyboardButtonColor, Text
-from vkbottle.tools import Link as VKLink
+try:
+    from vkbottle import OpenLink as VKLink
+except ImportError:
+    VKLink = None  # fallback: URL-кнопки недоступны в этой версии
 from vkbottle.exception_factory import VKAPIError
 from typing import Dict, List, Optional
 
@@ -286,6 +289,32 @@ class BotInstance:
                     "date": today, "incoming": 0, "outgoing": 0,
                     "totalUsers": len(self.users_list), "activeUsers": 0
                 }]
+
+    async def sync_database_logic(self):
+        """Одноразовая синхронизация при старте: загружает актуальный конфиг из БД."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                headers = {
+                    "apikey": self.sb_key,
+                    "Authorization": f"Bearer {self.sb_key}",
+                    "Content-Type": "application/json",
+                }
+                res = await client.get(
+                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                    headers=headers
+                )
+                if res.status_code == 200 and res.json():
+                    remote_data = res.json()[0]
+                    remote_config = remote_data.get("config") or {}
+                    if not isinstance(remote_config, dict):
+                        try:
+                            remote_config = json.loads(remote_config)
+                        except Exception:
+                            remote_config = {}
+                    self.apply_config({**remote_data, "config": remote_config})
+                    logger.info(f"✅ VK [{self.bot_id}] Конфиг загружен (кнопок: {len(self.buttons)}, триггеров: {len(self.triggers)})")
+        except Exception as e:
+            logger.error(f"sync_database_logic VK error: {e}")
 
     async def daily_stats_rotator(self):
         while self.is_running:
@@ -687,14 +716,8 @@ class BotInstance:
         for i, btn in enumerate(all_btns):
             if i % 2 == 0 and i != 0:
                 kb.row()
-            color_map = {
-                'primary': KeyboardButtonColor.PRIMARY,
-                'positive': KeyboardButtonColor.POSITIVE,
-                'negative': KeyboardButtonColor.NEGATIVE,
-                'secondary': KeyboardButtonColor.SECONDARY,
-            }
-            color = color_map.get(btn.get('color', 'primary'), KeyboardButtonColor.PRIMARY)
-            kb.add(Text(btn['text']), color=color)
+            # VK поддерживает PRIMARY, SECONDARY, POSITIVE, NEGATIVE
+            kb.add(Text(btn['text']), color=KeyboardButtonColor.PRIMARY)
         
         if ai_btn_name:
             if active_btns:
@@ -901,7 +924,22 @@ class BotInstance:
                 return
             
             user, is_new = await self.get_user_state(m)
-            if user.get("is_banned") or await self.check_antispam(user['id']): return
+            
+            # ── БАН: отвечаем и полностью прерываем обработку ──
+            if user.get("is_banned"):
+                try:
+                    await self.bot.api.messages.send(
+                        peer_id=user['id'],
+                        message="🚫 Вы заблокированы в этом боте.",
+                        random_id=0
+                    )
+                except Exception:
+                    pass
+                return  # НЕ пересылаем в чат админов
+            
+            # ── Анти-спам ──
+            if await self.check_antispam(user['id']):
+                return
             
             if m.text:
                 clean_text = m.text.strip()
@@ -954,17 +992,26 @@ class BotInstance:
                     # Если есть URL-кнопки — отправляем их отдельным инлайн-сообщением
                     if inline_buttons:
                         try:
-                            inline_kb = Keyboard(inline=True)
-                            for bi, ib in enumerate(inline_buttons):
-                                if bi > 0:
-                                    inline_kb.row()
-                                inline_kb.add(VKLink(ib['url'], ib['text']))
-                            await self.bot.api.messages.send(
-                                peer_id=user['id'],
-                                message="⬇️",
-                                keyboard=inline_kb.get_json(),
-                                random_id=0
-                            )
+                            if VKLink is not None:
+                                inline_kb = Keyboard(inline=True)
+                                for bi, ib in enumerate(inline_buttons):
+                                    if bi > 0:
+                                        inline_kb.row()
+                                    inline_kb.add(VKLink(ib['url'], ib['text']))
+                                await self.bot.api.messages.send(
+                                    peer_id=user['id'],
+                                    message="🔗 Ссылки:",
+                                    keyboard=inline_kb.get_json(),
+                                    random_id=0
+                                )
+                            else:
+                                # Fallback: выводим ссылки текстом
+                                links_text = "\n".join([f"🔗 {b['text']}: {b['url']}" for b in inline_buttons])
+                                await self.bot.api.messages.send(
+                                    peer_id=user['id'],
+                                    message=links_text,
+                                    random_id=0
+                                )
                         except Exception as e:
                             logger.warning(f"VK inline buttons error: {e}")
                     
@@ -1084,6 +1131,7 @@ class BotInstance:
 
         # Инициализация логики (лицензия, хендлеры)
         await self.license_checker_logic()
+        await self.sync_database_logic()  # Загружаем актуальный конфиг из БД
         await self.core_handlers_setup()
 
         logger.info(f"[*] Бот VK {self.bot_id} готов. AdminID: {self.admin_chat_id}")
