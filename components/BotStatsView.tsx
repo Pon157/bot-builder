@@ -8,7 +8,7 @@ import {
 import {
   Users, UserMinus, UserCheck, Activity, AlertTriangle,
   TrendingUp, Search, ShieldAlert, MessageSquare,
-  Clock, RefreshCw, Send, Shuffle, Trophy, Gift,
+  Clock, Send, Shuffle, Trophy, Gift,
   FileText, ArrowUpRight, ArrowDownRight, Zap, Hash
 } from 'lucide-react';
 
@@ -294,27 +294,15 @@ const RandomizerStats: React.FC<{ bot: BotConfig }> = ({ bot }) => {
 const SupportStats: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void }> = ({ bot, onUpdate }) => {
   const [search, setSearch]     = useState('');
   const [filter, setFilter]     = useState<'all'|'active'|'banned'|'unsubscribed'>('all');
-  const [liveStats, setLive]    = useState<any>(null);
-  const [lastUpd, setLastUpd]   = useState<Date|null>(null);
-  const [polling, setPolling]   = useState(true);
-  const pollRef = useRef<ReturnType<typeof setInterval>|null>(null);
+  const [lastUpd, setLastUpd]   = useState<Date>(new Date());
 
-  useEffect(() => {
-    const fetch = async () => {
-      try {
-        const data = await api.getBotStats(bot.id);
-        if (data?.stats) { setLive(data.stats); setLastUpd(new Date()); }
-      } catch {}
-    };
-    fetch();
-    if (polling) pollRef.current = setInterval(fetch, POLL_MS);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [bot.id, polling]);
+  // Обновляем timestamp при каждом ре-рендере с новыми данными
+  useEffect(() => { setLastUpd(new Date()); }, [bot.stats]);
 
   const stats = useMemo(() => {
-    const src = liveStats || (bot.stats && Object.keys(bot.stats).length > 0 ? bot.stats : null) || bot.config?.stats;
+    const src = (bot.stats && Object.keys(bot.stats).length > 0 ? bot.stats : null) || bot.config?.stats;
     return src || { totalMessages: 0, incomingToday: 0, outgoingToday: 0, bannedCount: 0, history: [], activeUsers24h: 0 };
-  }, [liveStats, bot.stats, bot.config?.stats]);
+  }, [bot.stats, bot.config?.stats]);
 
   const users = (bot.config?.connectedUsers || bot.connectedUsers || []) as any[];
 
@@ -353,22 +341,12 @@ const SupportStats: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void 
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
-      {/* Live indicator */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <button onClick={() => setPolling(p => !p)}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all ${
-              polling ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-zinc-900 border-zinc-800 text-zinc-500'
-            }`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${polling ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-600'}`} />
-            {polling ? 'Live' : 'Пауза'}
-          </button>
-          {lastUpd && <span className="text-[9px] text-zinc-600 font-mono">Обновлено: {lastUpd.toLocaleTimeString()}</span>}
-        </div>
-        <button onClick={() => { setLive(null); setPolling(true); }}
-          className="p-2 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-500 hover:text-white transition-all">
-          <RefreshCw className="w-3.5 h-3.5" />
-        </button>
+      {/* Индикатор обновления */}
+      <div className="flex items-center justify-end">
+        <span className="text-[9px] text-zinc-600 font-mono flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          Обновлено: {lastUpd.toLocaleTimeString()}
+        </span>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -502,21 +480,36 @@ const BotStatsView: React.FC<Props> = ({ bot, onUpdate }) => {
   const pollRef = useRef<ReturnType<typeof setInterval>|null>(null);
 
   useEffect(() => {
-    const fetch = async () => {
+    const doFetch = async () => {
       try {
         const data = await api.getBotStats(bot.id);
         if (data?.stats) { setLive(data.stats); setLastUpd(new Date()); }
       } catch {}
     };
-    fetch();
-    if (polling) pollRef.current = setInterval(fetch, POLL_MS);
+    doFetch();
+    if (polling) pollRef.current = setInterval(doFetch, POLL_MS);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [bot.id, polling]);
 
-  const effectiveBot = liveStats ? { ...bot, stats: { ...bot.stats, ...liveStats } } : bot;
+  // Для постера приоритет: liveStats (если содержит totalPosts), иначе config.stats
+  const effectiveBot = (() => {
+    if (!liveStats) return bot;
+    if (bot.platform === 'poster') {
+      // Мержим: берём totalPosts из liveStats (если есть), иначе из config
+      const configStats = bot.config?.stats || bot.stats || {};
+      const merged = {
+        ...configStats,
+        ...liveStats,
+        totalPosts: (liveStats.totalPosts || 0) > 0 ? liveStats.totalPosts : (configStats.totalPosts || 0),
+        history: (liveStats.history?.length > 0 ? liveStats.history : configStats.history) || [],
+      };
+      return { ...bot, stats: merged };
+    }
+    return { ...bot, stats: { ...bot.stats, ...liveStats } };
+  })();
 
   if (bot.platform === 'poster') {
-    const stats = liveStats || bot.config?.stats || bot.stats || {};
+    const stats = effectiveBot.stats || {};
     return (
       <div>
         <div className="flex items-center justify-between mb-5">
@@ -562,6 +555,7 @@ const BotStatsView: React.FC<Props> = ({ bot, onUpdate }) => {
     );
   }
 
+  // Support bot (TG + VK) — передаём данные в SupportStats, убираем двойной polling
   return <SupportStats bot={effectiveBot} onUpdate={onUpdate} />;
 };
 
