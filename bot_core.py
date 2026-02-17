@@ -30,6 +30,24 @@ class LicenseMiddleware(BaseMiddleware):
         self.bot_instance = bot_instance
         super().__init__()
 
+class BanMiddleware(BaseMiddleware):
+    def __init__(self, bot_instance):
+        self.bot_instance = bot_instance
+        super().__init__()
+
+    async def __call__(self, handler, event, data):
+        user_id = event.from_user.id
+        # Ищем юзера в памяти
+        user = next((u for u in self.bot_instance.users_list if u['id'] == user_id), None)
+        
+        if user and user.get("is_banned"):
+            # Если это сообщение, можем ответить, что доступ закрыт
+            if isinstance(event, Message):
+                await event.answer("🚫 <b>Доступ заблокирован.</b>")
+            return # Прерываем выполнение
+        
+        return await handler(event, data)
+
     async def __call__(
         self,
         handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]],
@@ -909,6 +927,9 @@ class BotInstance:
     async def core_handlers_setup(self):
         # 0. Мидлварь для проверки лицензии
         self.router.message.middleware(LicenseMiddleware(self))
+
+        # Мидлварь для проверки бана
+        self.router.message.middleware(BanMiddleware(self))
 
         # 1. Обработка блокировки бота пользователем
         @self.router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=ChatMemberStatus.KICKED))
