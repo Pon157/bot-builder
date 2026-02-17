@@ -475,7 +475,18 @@ async def get_bot_stats_api(bot_id: str):
             "outgoingToday": max_val("outgoingToday"),
             "totalMessages": max_val("totalMessages"),
             "activeUsers24h":max_val("activeUsers24h"),
+            # Poster-specific fields
+            "totalPosts":    max_val("totalPosts"),
         }
+
+        # Для постера — восстанавливаем поле posts в истории (оно отдельно от incoming/outgoing)
+        # Перебираем оба источника истории и добираем поле posts
+        for src in [cfg_stats.get("history") or [], db_stats.get("history") or []]:
+            for pt in src:
+                date = pt.get("date", "??")
+                if date in history_map and "posts" in pt:
+                    existing = history_map[date]
+                    existing["posts"] = max(existing.get("posts", 0), pt.get("posts", 0))
 
         logger.info(f"📊 Stats [{bot_id}]: {len(merged_history)} дней, {payload['totalMessages']} сообщений")
         return {"stats": payload}
@@ -1016,6 +1027,81 @@ async def get_ai_usage(bot_id: str):
         "limit": "100"
     })
     return r.json() if r.status_code == 200 else []
+
+@app.post("/api/ai/preview")
+async def ai_preview_chat(req: dict):
+    """Preview-чат с ИИ ассистентом из панели управления.
+    
+    Не расходует токены бота — использует системный баланс для тестирования.
+    """
+    import os, httpx as _httpx
+    bot_id     = req.get("botId", "")
+    message    = req.get("message", "").strip()
+    sys_prompt = req.get("systemPrompt", "Ты полезный ИИ-ассистент.")
+    model      = req.get("model", "gpt-4o")
+    max_tok    = int(req.get("maxTokens", 800))
+
+    if not message:
+        raise HTTPException(400, "message is required")
+
+    # Проверяем баланс токенов бота
+    bal_r = await db.get("ai_token_balances", params={"bot_id": f"eq.{bot_id}"})
+    balance = 0
+    if bal_r.json():
+        balance = bal_r.json()[0].get("tokens_balance", 0)
+    if balance <= 0:
+        return {"reply": "⚠️ AI-токены закончились. Активируйте ключ в разделе ИИ-ассистент."}
+
+    api_key  = os.getenv("TIMEWEB_API_KEY") or os.getenv("QWEN_API_KEY", "")
+    agent_id = os.getenv("TIMEWEB_AGENT_ID", "14ce55f9-dce2-4f2d-ad98-ff2cffe19ca2")
+    ai_url   = f"https://agent.timeweb.cloud/api/v1/cloud-ai/agents/{agent_id}/v1/chat/completions"
+
+    if not api_key:
+        return {"reply": "❌ AI-ключ не настроен в .env (TIMEWEB_API_KEY)"}
+
+    try:
+        async with _httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                ai_url,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user",   "content": message},
+                    ],
+                    "max_tokens": max_tok,
+                    "temperature": 0.7,
+                }
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                reply = data["choices"][0]["message"]["content"]
+                total_tokens = data.get("usage", {}).get("total_tokens", 0)
+
+                # Списываем токены с баланса бота (preview тоже расходует)
+                if total_tokens > 0 and bot_id:
+                    try:
+                        headers_db = {
+                            "apikey": S_KEY, "Authorization": f"Bearer {S_KEY}",
+                            "Content-Type": "application/json"
+                        }
+                        async with _httpx.AsyncClient(timeout=5) as db_client:
+                            await db_client.post(
+                                f"{S_URL}/rest/v1/rpc/deduct_ai_tokens",
+                                headers=headers_db,
+                                json={"p_bot_id": bot_id, "p_amount": total_tokens}
+                            )
+                    except Exception:
+                        pass
+
+                return {"reply": reply, "tokens_used": total_tokens}
+            else:
+                logger.error(f"AI Preview error {resp.status_code}: {resp.text[:200]}")
+                return {"reply": f"❌ Ошибка AI API: {resp.status_code}"}
+    except Exception as e:
+        logger.error(f"AI preview exception: {e}")
+        return {"reply": "❌ Ошибка соединения с ИИ-сервисом"}
 
 @app.post("/api/admin/upload-photo")
 async def upload_welcome_photo(request: Request, x_admin_token: str = Header(None)):
