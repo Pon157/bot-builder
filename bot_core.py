@@ -77,8 +77,7 @@ class BanMiddleware(BaseMiddleware):
                     return # ПРЕРЫВАЕМ выполнение (кнопки и команды не сработают)
         
         return await handler(event, data)
-        
-        return await handler(event, data)
+
 
 # --- ГЛОБАЛЬНАЯ КОНФИГУРАЦИЯ ЛОГИРОВАНИЯ ---
 logging.basicConfig(
@@ -223,55 +222,6 @@ class BotInstance:
             logger.error(f"❌ Ошибка обновления статистики: {e}", exc_info=True)
         
 
-    async def update_stats(self, is_incoming: bool = True):
-        """Обновляет статистику в памяти и отправляет в Supabase"""
-        try:
-            today = datetime.now().strftime("%d.%m")
-            # Берем текущую статику из памяти (которую мы синхронизировали)
-            stats = self.config.get("stats", {})
-            if not isinstance(stats, dict): 
-                stats = {}
-            
-            # Общие счетчики
-            stats["totalMessages"] = stats.get("totalMessages", 0) + 1
-            if is_incoming:
-                stats["incomingToday"] = stats.get("incomingToday", 0) + 1
-            else:
-                stats["outgoingToday"] = stats.get("outgoingToday", 0) + 1
-
-            # Работа с историей для графиков
-            history = stats.get("history", [])
-            if not isinstance(history, list):
-                history = []
-                
-            day_entry = next((item for item in history if item.get("date") == today), None)
-
-            if day_entry:
-                if is_incoming: 
-                    day_entry["incoming"] = day_entry.get("incoming", 0) + 1
-                else: 
-                    day_entry["outgoing"] = day_entry.get("outgoing", 0) + 1
-            else:
-                history.append({
-                    "date": today,
-                    "incoming": 1 if is_incoming else 0,
-                    "outgoing": 0 if is_incoming else 1,
-                    "totalUsers": len(self.config.get("connectedUsers", [])),
-                    "activeUsers": 1
-                })
-            
-            stats["history"] = history[-14:] # Храним только 2 недели
-            self.config["stats"] = stats
-
-            # Сохраняем в базу (Supabase)
-            async with httpx.AsyncClient() as client:
-                await client.patch(
-                    f"{self.supabase_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                    headers=self.headers,
-                    json={"stats": stats}
-                )
-        except Exception as e:
-            logger.error(f"Error updating stats: {e}", exc_info=True)
     async def license_checker_logic(self):
         #Вынесли логику в отдельный метод, чтобы вызывать её при старте
         try:
@@ -575,56 +525,33 @@ class BotInstance:
                     logger.error(f"Sync Worker Error: {e}")
                     try: self.sync_queue.task_done()
                     except: pass
-        
-        # --- ИНИЦИАЛИЗАЦИЯ СТАТИСТИКИ ---
-        # Мы НЕ создаем статы с нуля, а вытягиваем их из пришедшего конфига (Supabase)
-        incoming_stats = full_cfg.get('stats')
-        if isinstance(incoming_stats, dict):
-            # Если stats есть в БД, берем их как основу
-            self.stats_data = {
-                "totalMessages": incoming_stats.get("totalMessages", 0),
-                "incomingToday": incoming_stats.get("incomingToday", 0),
-                "outgoingToday": incoming_stats.get("outgoingToday", 0),
-                "bannedCount": incoming_stats.get("bannedCount", 0),
-                "activeUsers24h": incoming_stats.get("activeUsers24h", 0),
-                "history": incoming_stats.get("history", [])
-            }
-        else:
-            # Если в БД совсем пусто (первый запуск бота)
-            self.stats_data = {
-                "totalMessages": 0,
-                "incomingToday": 0,
-                "outgoingToday": 0,
-                "bannedCount": 0,
-                "history": [],
-                "activeUsers24h": 0
-            }
 
-        # --- ИНИЦИАЛИЗАЦИЯ ИСТОРИИ (UTC) ---
-        now = datetime.now() # Оставляем системный UTC
-        current_date = now.strftime("%d.%m")
-        
-        if not self.stats_data["history"]:
-            self.stats_data["history"] = [{
-                "date": current_date,
-                "incoming": 0,
-                "outgoing": 0,
-                "totalUsers": len(self.users_list),
-                "activeUsers": 0
-            }]
-
-        # --- ИНИЦИАЛИЗАЦИЯ ИСТОРИИ (UTC) ---
-        now = datetime.now() # Оставляем системный UTC
-        current_date = now.strftime("%d.%m")
-        
-        if not self.stats_data["history"]:
-            self.stats_data["history"] = [{
-                "date": current_date,
-                "incoming": 0,
-                "outgoing": 0,
-                "totalUsers": len(self.users_list),
-                "activeUsers": 0
-            }]
+    async def sync_database_logic(self):
+        """Одноразовая синхронизация при старте: загружает актуальный конфиг из БД."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                headers = {
+                    "apikey": self.sb_key,
+                    "Authorization": f"Bearer {self.sb_key}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal"
+                }
+                res = await client.get(
+                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                    headers=headers
+                )
+                if res.status_code == 200 and res.json():
+                    remote_data = res.json()[0]
+                    remote_config = remote_data.get("config") or {}
+                    if not isinstance(remote_config, dict):
+                        try:
+                            remote_config = json.loads(remote_config)
+                        except Exception:
+                            remote_config = {}
+                    self.apply_config({**remote_data, "config": remote_config})
+                    logger.info(f"✅ [{self.bot_id}] Конфиг загружен из БД (кнопок: {len(self.buttons)}, триггеров: {len(self.triggers)})")
+        except Exception as e:
+            logger.error(f"sync_database_logic error: {e}")
 
     async def daily_stats_rotator(self):
         """
@@ -907,11 +834,6 @@ class BotInstance:
             except: pass
             await m.reply(f"✅ Пользователь <code>{uid}</code> заблокирован.")
             return True
-
-        if cmd == 'ban':
-            target_user["is_banned"] = True
-            print(f"DEBUG: Отправляю юзера {uid} в очередь на бан") # Добавь для проверки
-            await self.sync_queue.put(('update_user', target_user))
         
         # 🟢 РАЗБАН
         elif command == "unban":
@@ -941,7 +863,7 @@ class BotInstance:
             return True
             
         # 🔄 СНЯТЬ ВАРН
-        elif command == "unwarn" or command == "unwarn":
+        elif command == "unwarn":
             target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
             await self.sync_queue.put(("sync_state", None))
             await m.reply(f"✅ Предупреждение снято. Текущее кол-во варнов у <code>{uid}</code>: {target_user['warns']}")
@@ -980,6 +902,7 @@ class BotInstance:
         async def handle_start_msg(m: Message):
             user, is_new = await self.get_user_state(m)
             if user.get("is_banned"):
+                await m.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
                 return
 
             reply_kb  = self.get_main_keyboard()
@@ -1031,14 +954,19 @@ class BotInstance:
 
         # 4. Сообщения от обычных пользователей
         @self.router.message()
-        @self.router.message()
         async def user_input_router(m: Message):
             # Пропускаем, если пишет админ в админ-чате
             if self.admin_chat_id and m.chat.id == self.admin_chat_id:
                 return
 
             user, is_new = await self.get_user_state(m)
-            if user.get("is_banned") or await self.check_antispam(user['id']):
+            
+            # Заблокированный — отвечаем и СРАЗУ выходим (ничего не пересылаем в чат админов)
+            if user.get("is_banned"):
+                await m.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
+                return  # НЕ пересылаем в чат админов
+            
+            if await self.check_antispam(user['id']):
                 return
 
             uid = user['id']
@@ -1051,10 +979,24 @@ class BotInstance:
                 # ── А) Кнопка "Назад" (Высший приоритет) ──
                 if clean_text == "⬅️ Назад":
                     user.pop('_ai_session', None)
+                    self.clear_ai_context(uid)
                     await m.answer("Главное меню:", reply_markup=self.get_main_keyboard())
                     return
 
-                # ── Б) Проверка на кнопки меню (с поддержкой вложенности) ──
+                # ── Б) Кнопка ИИ-ассистента из клавиатуры (второй приоритет) ──
+                if self.ai_enabled and self.ai_mode == 'button' and clean_text == self.ai_button_name:
+                    bal = await self.check_ai_tokens()
+                    if bal <= 0:
+                        await m.answer("⚠️ AI-токены закончились. Обратитесь к администратору.")
+                        return
+                    user['_ai_session'] = True
+                    close_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="✖ Закрыть диалог с ИИ", callback_data="ai_close")
+                    ]])
+                    await m.answer("🤖 <b>ИИ-ассистент активирован.</b>\nЗадайте вопрос:", reply_markup=close_kb)
+                    return
+
+                # ── В) Проверка на кнопки меню (с поддержкой вложенности) ──
                 matched_btn = self.get_button_by_text(clean_text)
                 if matched_btn:
                     # Если нажата любая кнопка из дерева — выключаем ИИ сессию
@@ -1072,13 +1014,12 @@ class BotInstance:
                             await self.forward_to_admin(m, user, btn_text=matched_btn['text'])
                         
                         resp_text = matched_btn.get('response', 'Принято!')
-                        # Перебрасываем в главное меню (reply_markup=self.get_main_keyboard())
                         await m.answer(resp_text, reply_markup=self.get_main_keyboard())
 
                     await self.log_and_update(uid, m.from_user.full_name, f"КНОПКА: {matched_btn['text']}")
                     return
 
-                # ── /ai, /gpt, /nn — открываем AI-сессию ──
+                # ── Г) /ai, /gpt, /nn — открываем AI-сессию ──
                 if clean_lower in ('/ai', '/gpt', '/nn'):
                     if self.ai_enabled and self.ai_mode in ('command', 'all', 'button'):
                         bal = await self.check_ai_tokens()
@@ -1088,16 +1029,15 @@ class BotInstance:
                         
                         user['_ai_session'] = True
                         close_kb = InlineKeyboardMarkup(inline_keyboard=[[
-                            InlineKeyboardButton(text="Закрыть диалог с ИИ", callback_data="ai_close")
+                            InlineKeyboardButton(text="✖ Закрыть диалог с ИИ", callback_data="ai_close")
                         ]])
-                        
                         await m.answer(
                             text="ИИ-ассистент активирован. Задайте вопрос. Для выхода — нажмите кнопку ниже.",
                             reply_markup=close_kb
                         )
                     else:
                         await m.answer("ИИ-ассистент не подключён к этому боту.")
-                    return # Важно: выходим, чтобы команда не ушла админу
+                    return
 
                 if clean_lower == '/reset_ai':
                     self.clear_ai_context(uid)
@@ -1105,45 +1045,17 @@ class BotInstance:
                     await m.answer("Контекст и сессия ИИ сброшены.", reply_markup=self.get_main_keyboard())
                     return
 
-               # ── IF/ELSE ЛОГИКА КНОПОК (поддержка children) ──
-                # Ищем кнопку рекурсивно по всему дереву
-                matched_btn = self.get_button_by_text(clean_text)
-                if matched_btn:
-                    # Если нажата кнопка меню — выключаем ИИ сессию
-                    user.pop('_ai_session', None)
-                    
-                    children = matched_btn.get('children', [])
-                    if children:
-                        # Если есть дети — показываем под-меню и кнопку "Назад"
-                        child_kb = self.build_keyboard_from_buttons(children + [{"text": "⬅️ Назад"}])
-                        resp = matched_btn.get('response', '')
-                        await m.answer(resp or "Выберите:", reply_markup=child_kb)
-                    else:
-                        # Финальная кнопка: выполняем действие и КИДАЕМ ГЛАВНОЕ МЕНЮ
-                        if matched_btn.get('type') == 'request':
-                            await self.forward_to_admin(m, user, btn_text=matched_btn['text'])
-                        
-                        # Получаем текст ответа или ставим дефолтный
-                        resp_text = matched_btn.get('response', 'Принято!')
-                        
-                        # Главная фишка: отправляем ответ вместе с основной клавиатурой
-                        await m.answer(resp_text, reply_markup=self.get_main_keyboard())
-
-                    await self.log_and_update(uid, m.from_user.full_name, f"КНОПКА: {matched_btn['text']}")
-                    return
-
-                # ── ТРИГГЕРЫ ──
+                # ── Д) ТРИГГЕРЫ ──
                 triggered = False
                 for trig in self.triggers:
                     if trig.get('keyword') and trig['keyword'].lower() in clean_lower:
                         resp_text = trig.get('response', '')
-                        # Если у триггера есть children-кнопки
                         trig_children = trig.get('children', [])
                         if trig_children:
                             child_kb = self.build_keyboard_from_buttons(trig_children)
                             await m.answer(resp_text or "Выберите:", reply_markup=child_kb)
                         else:
-                            await m.answer(resp_text)
+                            await m.answer(resp_text or "")
                         await self.log_and_update(uid, m.from_user.full_name, f"ТРИГГЕР: {trig['keyword']}")
                         triggered = True
                         break
@@ -1151,9 +1063,8 @@ class BotInstance:
                 if triggered:
                     return
 
-                # ── ИИ-АССИСТЕНТ ──
+                # ── Е) ИИ-АССИСТЕНТ — режим «отвечать на всё» ──
                 if self.ai_enabled and self.ai_mode == 'all':
-                    # Проверяем баланс токенов
                     bal = await self.check_ai_tokens()
                     if bal > 0:
                         thinking = await m.answer("🤖 Думаю...")
@@ -1169,28 +1080,12 @@ class BotInstance:
                         await m.answer("⚠️ Лимит AI-токенов исчерпан. Обратитесь к администратору.")
                         return
 
-            # ── КНОПКА ИИ — нажали кнопку «ИИ-ассистент» из клавиатуры ──
-            if m.text and m.text.strip() == self.ai_button_name:
-                if self.ai_enabled and self.ai_mode == 'button':
-                    bal = await self.check_ai_tokens()
-                    if bal <= 0:
-                        await m.answer("⚠️ AI-токены закончились. Обратитесь к администратору.")
-                        return
-                    user['_ai_session'] = True
-                    close_kb = InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="✖ Закрыть диалог с ИИ", callback_data="ai_close")
-                    ]])
-                    await m.answer(
-                        "🤖 <b>ИИ-ассистент активирован.</b>\nЗадайте вопрос:",
-                        reply_markup=close_kb
-                    )
-                    return
-
-            # ── АКТИВНАЯ AI-СЕССИЯ — обрабатываем любое сообщение ──
+            # ── Ж) Активная AI-сессия — обрабатываем текст ──
             if user.get('_ai_session') and self.ai_enabled and m.text:
                 bal = await self.check_ai_tokens()
                 if bal <= 0:
                     user.pop('_ai_session', None)
+                    self.clear_ai_context(uid)
                     await m.answer("⚠️ AI-токены закончились. Сессия закрыта.", reply_markup=self.get_main_keyboard())
                     return
                 close_kb = InlineKeyboardMarkup(inline_keyboard=[[
