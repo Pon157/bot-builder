@@ -907,6 +907,11 @@ class BotInstance:
             except: pass
             await m.reply(f"✅ Пользователь <code>{uid}</code> заблокирован.")
             return True
+
+        if cmd == 'ban':
+            target_user["is_banned"] = True
+            print(f"DEBUG: Отправляю юзера {uid} в очередь на бан") # Добавь для проверки
+            await self.sync_queue.put(('update_user', target_user))
         
         # 🟢 РАЗБАН
         elif command == "unban":
