@@ -62,19 +62,16 @@ class BanMiddleware(BaseMiddleware):
             # Ищем юзера в кэше бота
             user = next((u for u in self.bot_instance.users_list if u.get('id') == user_id), None)
             
+            # ЖЕЛЕЗОБЕТОН: Если забанен — СРАЗУ БЛОК без проверки админа
             if user and user.get("is_banned"):
-                # Если это не админ
-                admin_ids = self.bot_instance.config.get("adminIds", [])
-                if user_id not in admin_ids and user_id != self.bot_instance.admin_chat_id:
+                # Если это сообщение — пишем текстом
+                if isinstance(event, Message):
+                    await event.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
+                # Если это кнопка — показываем уведомление
+                elif isinstance(event, CallbackQuery):
+                    await event.answer("🚫 Вы заблокированы.", show_alert=True)
                     
-                    # Если это сообщение — пишем текстом
-                    if isinstance(event, Message):
-                        await event.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
-                    # Если это кнопка — показываем уведомление
-                    elif isinstance(event, CallbackQuery):
-                        await event.answer("🚫 Вы заблокированы.", show_alert=True)
-                        
-                    return # ПРЕРЫВАЕМ выполнение (кнопки и команды не сработают)
+                return # ПРЕРЫВАЕМ выполнение
         
         return await handler(event, data)
 
@@ -727,18 +724,7 @@ class BotInstance:
             logger.error(f"Forwarding Error: {e}")
 
     async def admin_control_logic(self, m: Message):
-        # --- 0. ЗАЩИТА: Проверка прав по adminIds и admin_chat_id ---
-        admin_ids = self.config.get("adminIds", [])
-        
-        is_admin = (
-            m.from_user.id in admin_ids or 
-            str(m.from_user.id) in map(str, admin_ids) or
-            m.from_user.id == self.admin_chat_id
-        )
-
-        if not is_admin:
-            return False
-
+        # --- 0. УБРАНА ПРОВЕРКА ПРАВ: ЛЮБОЙ УЧАСТНИК ЧАТА МОЖЕТ БАНИТЬ ---
         # Проверка на наличие текста команды (/ или !)
         if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): 
             return False
