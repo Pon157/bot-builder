@@ -789,10 +789,6 @@ class BotInstance:
             return True
 
         async def admin_control_logic(self, m: Message, command: str):
-        """
-        ПОЛНАЯ ЛОГИКА АДМИН-КОМАНД (БАН, ВАРН, РАЗБАН)
-        Включает поиск пользователя и немедленную синхронизацию с БД.
-        """
         # --- 2. ПОИСК ЦЕЛЕВОГО ПОЛЬЗОВАТЕЛЯ ---
         target_user = None
         # Используем self.users_list напрямую, чтобы изменения сохранялись в памяти бота
