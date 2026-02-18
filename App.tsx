@@ -9,6 +9,7 @@ import Auth from './components/Auth';
 import Profile from './components/Profile';
 import CreateBotModal from './components/CreateBotModal';
 import AdminPanel from './components/AdminPanel';
+import Landing from './components/Landing';
 import { api } from './services/apiService';
 import { Menu, X, ArrowLeft } from 'lucide-react';
 
@@ -336,7 +337,10 @@ const App: React.FC = () => {
   return (
     <BrowserRouter>
       <Routes>
-        {/* --- [ РОУТЫ БЕЗ ЛАЙАУТА ] --- */}
+        {/* --- [ ПУБЛИЧНЫЕ РОУТЫ ] --- */}
+        
+        {/* 0. Лендинг (главная страница) */}
+        <Route path="/" element={<Landing />} />
         
         {/* 1. Авторизация пользователей */}
         <Route 
@@ -409,7 +413,7 @@ const App: React.FC = () => {
                   
                   <Route path="/broadcast" element={<BroadcastManager bots={bots} />} />
                   
-                  <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                  <Route path="/dashboard" element={<Navigate to="/dashboard" replace />} />
                 </Routes>
               </MainLayout>
             ) : (
