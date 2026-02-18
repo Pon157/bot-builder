@@ -673,6 +673,32 @@ class BotInstance:
         if command == "ban":
             target_user["is_banned"] = True
             self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
+            
+            # КРИТИЧНО: Принудительная немедленная запись в БД
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    headers = {
+                        "apikey": self.sb_key,
+                        "Authorization": f"Bearer {self.sb_key}",
+                        "Content-Type": "application/json"
+                    }
+                    res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
+                    if res.status_code == 200 and res.json():
+                        remote_config = res.json()[0].get("config", {})
+                        new_config = {
+                            **remote_config,
+                            "connectedUsers": self.users_list,
+                            "stats": self.stats_data
+                        }
+                        await client.patch(
+                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                            json={"config": new_config, "stats": self.stats_data},
+                            headers=headers
+                        )
+                        logger.info(f"✅ VK БАН записан в БД: user {uid}")
+            except Exception as e:
+                logger.error(f"❌ VK Ошибка записи бана в БД: {e}")
+            
             await self.sync_queue.put(("sync_state", None))
             try: await self.bot.api.messages.send(peer_id=uid, message="🚫 Доступ ограничен администратором.", random_id=0)
             except: pass
@@ -681,6 +707,32 @@ class BotInstance:
         elif command == "unban":
             target_user["is_banned"] = False
             self.stats_data["bannedCount"] = max(0, self.stats_data.get("bannedCount", 1) - 1)
+            
+            # КРИТИЧНО: Принудительная запись
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    headers = {
+                        "apikey": self.sb_key,
+                        "Authorization": f"Bearer {self.sb_key}",
+                        "Content-Type": "application/json"
+                    }
+                    res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
+                    if res.status_code == 200 and res.json():
+                        remote_config = res.json()[0].get("config", {})
+                        new_config = {
+                            **remote_config,
+                            "connectedUsers": self.users_list,
+                            "stats": self.stats_data
+                        }
+                        await client.patch(
+                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                            json={"config": new_config, "stats": self.stats_data},
+                            headers=headers
+                        )
+                        logger.info(f"✅ VK РАЗБАН записан в БД: user {uid}")
+            except Exception as e:
+                logger.error(f"❌ VK Ошибка записи разбана в БД: {e}")
+            
             await self.sync_queue.put(("sync_state", None))
             try: await self.bot.api.messages.send(peer_id=uid, message="✅ Ваш доступ восстановлен администратором.", random_id=0)
             except: pass
@@ -688,10 +740,62 @@ class BotInstance:
             return True
         elif command == "warn":
             target_user["warns"] = target_user.get("warns", 0) + 1
+            
+            # КРИТИЧНО: Принудительная запись
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    headers = {
+                        "apikey": self.sb_key,
+                        "Authorization": f"Bearer {self.sb_key}",
+                        "Content-Type": "application/json"
+                    }
+                    res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
+                    if res.status_code == 200 and res.json():
+                        remote_config = res.json()[0].get("config", {})
+                        new_config = {
+                            **remote_config,
+                            "connectedUsers": self.users_list,
+                            "stats": self.stats_data
+                        }
+                        await client.patch(
+                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                            json={"config": new_config, "stats": self.stats_data},
+                            headers=headers
+                        )
+                        logger.info(f"✅ VK ВАРН записан в БД: user {uid}, warns={target_user['warns']}")
+            except Exception as e:
+                logger.error(f"❌ VK Ошибка записи варна в БД: {e}")
+            
             await self.sync_queue.put(("sync_state", None))
             if self.auto_ban_limit > 0 and target_user["warns"] >= self.auto_ban_limit:
                 target_user["is_banned"] = True
                 self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
+                
+                # Ещё раз пишем для автобана
+                try:
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        headers = {
+                            "apikey": self.sb_key,
+                            "Authorization": f"Bearer {self.sb_key}",
+                            "Content-Type": "application/json"
+                        }
+                        res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
+                        if res.status_code == 200 and res.json():
+                            remote_config = res.json()[0].get("config", {})
+                            new_config = {
+                                **remote_config,
+                                "connectedUsers": self.users_list,
+                                "stats": self.stats_data
+                            }
+                            await client.patch(
+                                f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                                json={"config": new_config, "stats": self.stats_data},
+                                headers=headers
+                            )
+                            logger.info(f"✅ VK АВТО-БАН записан в БД: user {uid}")
+                except Exception as e:
+                    logger.error(f"❌ VK Ошибка записи автобана в БД: {e}")
+                
                 await self.sync_queue.put(("sync_state", None))
                 try: await self.bot.api.messages.send(peer_id=uid, message=f"🚫 Авто-бан: Лимит варнов ({target_user['warns']}) исчерпан.", random_id=0)
                 except: pass
