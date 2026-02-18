@@ -788,15 +788,9 @@ class BotInstance:
             )
             return True
 
-        async def admin_control_logic(self, m: Message, command: str):
-        """
-        ПОЛНАЯ ЛОГИКА АДМИН-КОМАНД (БАН, ВАРН, РАЗБАН)
-        Включает поиск пользователя и немедленную синхронизацию с БД.
-        """
-        # --- 2. ПОИСК ЦЕЛЕВОГО ПОЛЬЗОВАТЕЛЯ ---
+        # --- 2. ПОИСК ЦЕЛЕВОГО ПОЛЬЗОВАТЕЛЯ (для бан/варн) ---
         target_user = None
-        # Используем self.users_list напрямую, чтобы изменения сохранялись в памяти бота
-        users_list = self.users_list 
+        users_list = self.config.get("connectedUsers", [])
         
         # Поиск по топику (если пишем в ветке пользователя)
         if m.message_thread_id:
@@ -804,24 +798,19 @@ class BotInstance:
         
         # Поиск по реплаю на пересланное ботом сообщение
         if not target_user and m.reply_to_message:
-            uid_from_map = self.msg_map.get(m.reply_to_message.message_id)
-            if uid_from_map:
-                target_user = next((u for u in users_list if int(u['id']) == int(uid_from_map)), None)
+            uid = self.msg_map.get(m.reply_to_message.message_id)
+            if uid:
+                target_user = next((u for u in users_list if int(u['id']) == int(uid)), None)
         
         # Если команда требует пользователя, но он не найден — выходим
         if not target_user: 
+            # Если это была просто команда админа без контекста пользователя,
+            # мы возвращаем False, чтобы другие хендлеры могли сработать
             return False
 
         uid = target_user['id']
         ban_limit = self.config.get("settings", {}).get("autoBanThreshold", 3)
         
-        # Заголовки для запросов к Supabase
-        headers = {
-            "apikey": self.sb_key,
-            "Authorization": f"Bearer {self.sb_key}",
-            "Content-Type": "application/json"
-        }
-
         # --- 3. КОМАНДЫ МОДЕРАЦИИ ---
 
         # 🚫 БАН
@@ -829,13 +818,30 @@ class BotInstance:
             target_user["is_banned"] = True
             self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
             
+            # КРИТИЧНО: Принудительная немедленная запись в БД
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
+                    headers = {
+                        "apikey": self.sb_key,
+                        "Authorization": f"Bearer {self.sb_key}",
+                        "Content-Type": "application/json"
+                    }
+                    # Получаем актуальный конфиг
                     res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
                     if res.status_code == 200 and res.json():
                         remote_config = res.json()[0].get("config", {})
-                        new_config = {**remote_config, "connectedUsers": self.users_list, "stats": self.stats_data}
-                        await client.patch(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", json={"config": new_config}, headers=headers)
+                        # Обновляем users_list с баном
+                        new_config = {
+                            **remote_config,
+                            "connectedUsers": self.users_list,
+                            "stats": self.stats_data
+                        }
+                        # ПИШЕМ В БД СРАЗУ
+                        await client.patch(
+                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                            json={"config": new_config},
+                            headers=headers
+                        )
                         logger.info(f"✅ БАН записан в БД: user {uid}")
             except Exception as e:
                 logger.error(f"❌ Ошибка записи бана в БД: {e}")
@@ -849,16 +855,29 @@ class BotInstance:
         # 🟢 РАЗБАН
         elif command == "unban":
             target_user["is_banned"] = False
-            target_user["warns"] = 0 # Сбрасываем варны при разбане
             self.stats_data["bannedCount"] = max(0, self.stats_data.get("bannedCount", 1) - 1)
             
+            # КРИТИЧНО: Принудительная запись в БД
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
+                    headers = {
+                        "apikey": self.sb_key,
+                        "Authorization": f"Bearer {self.sb_key}",
+                        "Content-Type": "application/json"
+                    }
                     res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
                     if res.status_code == 200 and res.json():
                         remote_config = res.json()[0].get("config", {})
-                        new_config = {**remote_config, "connectedUsers": self.users_list, "stats": self.stats_data}
-                        await client.patch(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", json={"config": new_config}, headers=headers)
+                        new_config = {
+                            **remote_config,
+                            "connectedUsers": self.users_list,
+                            "stats": self.stats_data
+                        }
+                        await client.patch(
+                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                            json={"config": new_config},
+                            headers=headers
+                        )
                         logger.info(f"✅ РАЗБАН записан в БД: user {uid}")
             except Exception as e:
                 logger.error(f"❌ Ошибка записи разбана в БД: {e}")
@@ -873,49 +892,73 @@ class BotInstance:
         elif command == "warn":
             target_user["warns"] = target_user.get("warns", 0) + 1
             
-            # Логика авто-бана при достижении лимита
-            if target_user["warns"] >= ban_limit:
-                target_user["is_banned"] = True
-                self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
-                msg_text = f"🚨 <b>АВТО-БАН!</b>\nЮзер: <code>{uid}</code>\nВарнов: {target_user['warns']}/{ban_limit}"
-                user_notif = f"🚫 <b>Авто-бан:</b> Лимит предупреждений ({target_user['warns']}/{ban_limit}) исчерпан."
-            else:
-                msg_text = f"⚠️ Варн выдан пользователю <code>{uid}</code>. Всего: {target_user['warns']}/{ban_limit}"
-                user_notif = f"⚠️ <b>Предупреждение!</b> ({target_user['warns']}/{ban_limit})"
-
-            # Запись в БД (и для варна, и для автобана)
+            # КРИТИЧНО: Принудительная запись в БД
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
+                    headers = {
+                        "apikey": self.sb_key,
+                        "Authorization": f"Bearer {self.sb_key}",
+                        "Content-Type": "application/json"
+                    }
                     res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
                     if res.status_code == 200 and res.json():
                         remote_config = res.json()[0].get("config", {})
-                        new_config = {**remote_config, "connectedUsers": self.users_list, "stats": self.stats_data}
-                        await client.patch(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", json={"config": new_config}, headers=headers)
-                        logger.info(f"✅ ВАРН/АВТОБАН записан в БД: user {uid}")
+                        new_config = {
+                            **remote_config,
+                            "connectedUsers": self.users_list,
+                            "stats": self.stats_data
+                        }
+                        await client.patch(
+                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                            json={"config": new_config},
+                            headers=headers
+                        )
+                        logger.info(f"✅ ВАРН записан в БД: user {uid}, warns={target_user['warns']}")
             except Exception as e:
                 logger.error(f"❌ Ошибка записи варна в БД: {e}")
             
             await self.sync_queue.put(("sync_state", None))
-            try: await self.bot.send_message(uid, user_notif)
-            except: pass
-            await m.reply(msg_text)
+            
+            if target_user["warns"] >= ban_limit:
+                target_user["is_banned"] = True
+                self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
+                # Ещё раз пишем в БД для автобана
+                try:
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        headers = {
+                            "apikey": self.sb_key,
+                            "Authorization": f"Bearer {self.sb_key}",
+                            "Content-Type": "application/json"
+                        }
+                        res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
+                        if res.status_code == 200 and res.json():
+                            remote_config = res.json()[0].get("config", {})
+                            new_config = {
+                                **remote_config,
+                                "connectedUsers": self.users_list,
+                                "stats": self.stats_data
+                            }
+                            await client.patch(
+                                f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                                json={"config": new_config},
+                                headers=headers
+                            )
+                            logger.info(f"✅ АВТО-БАН записан в БД: user {uid}")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка записи автобана в БД: {e}")
+                
+                try: await self.bot.send_message(uid, f"🚫 <b>Авто-бан:</b> Лимит предупреждений ({target_user['warns']}/{ban_limit}) исчерпан.")
+                except: pass
+                await m.reply(f"🚨 <b>АВТО-БАН!</b>\nЮзер: <code>{uid}</code>\nВарнов: {target_user['warns']}/{ban_limit}")
+            else:
+                try: await self.bot.send_message(uid, f"⚠️ <b>Предупреждение!</b> ({target_user['warns']}/{ban_limit})")
+                except: pass
+                await m.reply(f"⚠️ Варн выдан пользователю <code>{uid}</code>. Всего: {target_user['warns']}/{ban_limit}")
             return True
             
         # 🔄 СНЯТЬ ВАРН
         elif command == "unwarn":
             target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
-            
-            # Для полноты добавим запись в БД и для снятия варна
-            try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
-                    if res.status_code == 200 and res.json():
-                        remote_config = res.json()[0].get("config", {})
-                        new_config = {**remote_config, "connectedUsers": self.users_list, "stats": self.stats_data}
-                        await client.patch(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", json={"config": new_config}, headers=headers)
-            except Exception as e:
-                logger.error(f"❌ Ошибка записи unwarn в БД: {e}")
-
             await self.sync_queue.put(("sync_state", None))
             await m.reply(f"✅ Предупреждение снято. Текущее кол-во варнов у <code>{uid}</code>: {target_user['warns']}")
             return True
