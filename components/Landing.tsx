@@ -37,8 +37,7 @@ const Landing = () => {
     }
   ];
 
-  // Здесь в будущем ты будешь делать fetch() из базы данных (только status = 'approved')
-  const reviews = [
+  const [reviews, setReviews] = useState<any[]>([]); // Состояние для динамических отзывов
     {
       author: "@Fopertion",
       role: "Владелец ИИ-бота (@Alia_Nova_Bot)",
