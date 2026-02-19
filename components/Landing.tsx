@@ -38,6 +38,24 @@ const Landing = () => {
   ];
 
   const [reviews, setReviews] = useState<any[]>([]); // Состояние для динамических отзывов
+  const fetchApprovedReviews = async () => {
+  const baseUrl = import.meta.env.VITE_API_URL || '';
+  try {
+    const response = await fetch(`${baseUrl}/reviews/get`);
+    if (response.ok) {
+      const data = await response.json();
+      setReviews(data);
+    }
+  } catch (error) {
+    console.error("Ошибка при загрузке отзывов:", error);
+  }
+};
+
+React.useEffect(() => {
+  fetchApprovedReviews();
+}, []);
+
+  
     {
       author: "@Fopertion",
       role: "Владелец ИИ-бота (@Alia_Nova_Bot)",
@@ -142,23 +160,23 @@ const Landing = () => {
           </div>
 
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {reviews.map((review, i) => (
-              <div key={i} className="p-8 border border-slate-800 bg-slate-900/50 flex flex-col justify-between">
-                <div>
-                  <div className="flex gap-1 mb-4">
-                    {[...Array(review.rating)].map((_, j) => (
-                      <Star key={j} className="w-4 h-4 fill-blue-500 text-blue-500" />
-                    ))}
-                  </div>
-                  <p className="text-slate-300 mb-6 leading-relaxed text-sm">"{review.text}"</p>
-                </div>
-                <div className="border-t border-slate-800 pt-4 mt-4">
-                  <p className="font-semibold text-white">{review.author}</p>
-                  <p className="text-sm text-slate-500">{review.role}</p>
-                </div>
-              </div>
-            ))}
-          </div>
+  {reviews.map((review, i) => (
+    <div key={i} className="p-8 border border-slate-800 bg-slate-900/50 flex flex-col justify-between">
+      <div>
+        <div className="flex gap-1 mb-4">
+          {[...Array(review.rating || 5)].map((_, j) => (
+            <Star key={j} className="w-4 h-4 fill-blue-500 text-blue-500" />
+          ))}
+        </div>
+        <p className="text-slate-300 mb-6 leading-relaxed text-sm">"{review.review_text}"</p>
+      </div>
+      <div className="border-t border-slate-800 pt-4 mt-4">
+        <p className="font-semibold text-white">{review.author_name}</p>
+        <p className="text-sm text-slate-500">{review.author_role}</p>
+      </div>
+    </div>
+  ))}
+</div>
         </div>
       </div>
 
