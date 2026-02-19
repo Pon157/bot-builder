@@ -23,18 +23,34 @@ dp = Dispatcher()
 # --- ТЕЛЕГРАМ МОДЕРАЦИЯ ---
 @dp.callback_query(F.data.startswith("rev_"))
 async def handle_moderation(callback: types.CallbackQuery):
-    if str(callback.from_user.id) != ADMIN_ID:
-        return await callback.answer("Нет доступа!", show_alert=True)
+    # Печатаем в консоль, чтобы точно видеть, кто нажал
+    print(f"Кнопку нажал: {callback.from_user.id}") 
 
-    action, review_id = callback.data.split(":")[0], callback.data.split(":")[1]
+    # Проверяем, что нажал именно ТЫ (сравниваем строки для надежности)
+    if str(callback.from_user.id) != str(MY_ID):
+        return await callback.answer(f"Нет доступа! Ваш ID ({callback.from_user.id}) не в списке.", show_alert=True)
+
+    # Разбор данных (используем split один раз для оптимизации)
+    parts = callback.data.split(":")
+    action = parts[0]
+    review_id = parts[1]
+    
     new_status = "approved" if action == "rev_approve" else "rejected"
 
     try:
+        # Обновляем статус в Supabase
         supabase.table("reviews").update({"status": new_status}).eq("id", review_id).execute()
+        
         status_label = "✅ ОДОБРЕНО" if new_status == "approved" else "❌ УДАЛЕНО"
-        await callback.message.edit_text(f"{callback.message.text}\n\nСтатус: {status_label}", reply_markup=None)
+        
+        # Редактируем сообщение, убирая кнопки
+        await callback.message.edit_text(
+            f"{callback.message.text}\n\nСтатус: {status_label}", 
+            reply_markup=None
+        )
         await callback.answer("Готово")
     except Exception as e:
+        print(f"Ошибка БД: {e}")
         await callback.answer(f"Ошибка БД: {e}")
 
 # --- API МЕТОДЫ ---
