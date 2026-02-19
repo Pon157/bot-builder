@@ -55,32 +55,37 @@ const Landing = () => {
   const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    // Подгружаем URL из .env (VITE_API_URL)
+    // baseUrl теперь будет "/api" (из твоего обновленного .env)
     const baseUrl = import.meta.env.VITE_API_URL || '';
     
     try {
-      const response = await fetch(`${baseUrl}/reviews/get`); {
+      // 1. Путь для ОТПРАВКИ: /api/reviews
+      // 2. Убираем точку с запятой перед объектом настроек
+      const response = await fetch(`${baseUrl}/reviews`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          // Если ты настроил проверку ADMIN_SECRET в боте, 
+          // бэкенд FastAPI сам добавит нужные заголовки при пересылке,
+          // фронтенду они обычно не нужны.
         },
         body: JSON.stringify(reviewForm),
       });
 
       if (response.ok) {
-        alert("Спасибо! Отзыв отправлен на модерацию администратору.");
-        setIsReviewModalOpen(false);
-        setReviewForm({ name: '', role: '', text: '', rating: 5 });
+        alert("Отзыв отправлен на модерацию!");
+        // Очисти форму здесь, если нужно
+        setReviewForm({ name: '', role: '', text: '', rating: 5 }); 
       } else {
-        // Пробуем прочитать ошибку от FastAPI
-        const errorData = await response.json().catch(() => ({}));
-        alert(`Ошибка: ${errorData.detail || "Не удалось отправить отзыв"}`);
+        const errorData = await response.json();
+        console.error("Ошибка сервера:", errorData);
+        alert("Ошибка при отправке отзыва.");
       }
     } catch (error) {
-      console.error("Ошибка при отправке:", error);
-      alert("Сервер недоступен. Проверьте подключение к 89.19.213.111:8000");
+      console.error("Ошибка сети:", error);
+      alert("Не удалось связаться с сервером.");
     }
-  };
+};
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-300 font-sans selection:bg-blue-900 selection:text-white">
