@@ -404,28 +404,29 @@ adminLogin: async (login: string, pass: string) => {
     return response.ok ? await response.json() : null;
   },
 
-  // Добавь это в объект export const api = { ... }
 
-  // Отправить новый отзыв на модерацию
   submitReview: async (reviewData: { name: string, role: string, text: string, rating: number }) => {
-    const response = await fetch(`http://твой_ip_сервера:3001/api/reviews`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': 'MRAKOTIK' 
-      },
-      body: JSON.stringify(reviewData)
-    });
-    return response.ok;
+    try {
+      const response = await fetch(`${getApiBase()}/reviews/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reviewData)
+      });
+      return response.ok;
+    } catch (e) {
+      console.error("Review submit error:", e);
+      return false;
+    }
   },
 
-  // Получить только одобренные отзывы для лендинга
+  // Получить список одобренных отзывов для лендинга
   getApprovedReviews: async () => {
     try {
-      const response = await fetch(`http://твой_ip_сервера:3001/api/reviews/get`);
+      const response = await fetch(`${getApiBase()}/reviews/list`);
       if (!response.ok) return [];
       return await response.json();
     } catch (e) {
+      console.error("Get reviews error:", e);
       return [];
     }
   },
