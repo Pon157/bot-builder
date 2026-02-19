@@ -59,7 +59,7 @@ const Landing = () => {
     const baseUrl = import.meta.env.VITE_API_URL || '';
     
     try {
-      const response = await fetch(`${baseUrl}/api/reviews/submit`, {
+      const response = await fetch(`${baseUrl}/reviews/get`); {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
