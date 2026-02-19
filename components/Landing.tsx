@@ -65,11 +65,17 @@ const Landing = () => {
   const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const baseUrl = import.meta.env.VITE_API_URL || '';
+    // Достаем секрет из переменных окружения Vite
+    const adminSecret = import.meta.env.VITE_ADMIN_SECRET || '';
     
     try {
       const response = await fetch(`${baseUrl}/reviews`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          // ДОБАВЛЯЕМ ЭТОТ ЗАГОЛОВОК:
+          'X-Admin-Secret': adminSecret 
+        },
         body: JSON.stringify(reviewForm),
       });
 
@@ -80,13 +86,13 @@ const Landing = () => {
       } else {
         const errorData = await response.json();
         console.error("Ошибка сервера:", errorData);
-        alert("Ошибка при отправке отзыва.");
+        alert(`Ошибка: ${errorData.error || 'unauthorized'}`);
       }
     } catch (error) {
       console.error("Ошибка сети:", error);
       alert("Не удалось связаться с сервером.");
     }
-  };
+};
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-300 font-sans selection:bg-blue-900 selection:text-white">
