@@ -72,7 +72,7 @@ const Landing = () => {
           </div>
           
           <h1 className="text-4xl md:text-6xl font-bold text-white tracking-tight mb-6">
-            DialogEngine. <br/>
+            Dialoge Engine. <br/>
             <span className="text-blue-500">Корпоративные боты</span> нового поколения.
           </h1>
           
