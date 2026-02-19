@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { MessageSquare, Zap, BarChart3, Send, ArrowRight, Star, ExternalLink, X, PlusCircle } from 'lucide-react';
 
 const Landing = () => {
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
   const [reviewForm, setReviewForm] = useState({ name: '', role: '', text: '', rating: 5 });
+  const [reviews, setReviews] = useState<any[]>([]); // Состояние для динамических отзывов
 
   const features = [
     {
@@ -37,61 +38,44 @@ const Landing = () => {
     }
   ];
 
-  const [reviews, setReviews] = useState<any[]>([]); // Состояние для динамических отзывов
-  const fetchApprovedReviews = async () => {
-  const baseUrl = import.meta.env.VITE_API_URL || '';
-  try {
-    const response = await fetch(`${baseUrl}/reviews/get`);
-    if (response.ok) {
-      const data = await response.json();
-      setReviews(data);
-    }
-  } catch (error) {
-    console.error("Ошибка при загрузке отзывов:", error);
-  }
-};
-
-React.useEffect(() => {
-  fetchApprovedReviews();
-}, []);
-
-  
-    {
-      author: "@Fopertion",
-      role: "Владелец ИИ-бота (@Alia_Nova_Bot)",
-      text: "Создание ИИ через Dialoge Engine — это по-настоящему имба. Интерфейс понятный даже новичку, нет необходимости писать сложный код. Боты работают быстро и корректно, задержек почти нет. Отдельный плюс за гибкую настройку поведения ИИ.",
-      rating: 5
-    }
-  ];
-
   const team = [
     { name: "Kotickr", role: "Разработчик + Владелец", telegram: "https://t.me/Kotickr" },
     { name: "Gift Relayers", role: "Директор", telegram: "https://t.me/giftrelayers" }
   ];
 
+  // --- ЗАГРУЗКА ОДОБРЕННЫХ ОТЗЫВОВ ---
+  const fetchApprovedReviews = async () => {
+    const baseUrl = import.meta.env.VITE_API_URL || '';
+    try {
+      const response = await fetch(`${baseUrl}/reviews/get`);
+      if (response.ok) {
+        const data = await response.json();
+        setReviews(data);
+      }
+    } catch (error) {
+      console.error("Ошибка при загрузке отзывов:", error);
+    }
+  };
+
+  useEffect(() => {
+    fetchApprovedReviews();
+  }, []);
+
+  // --- ОТПРАВКА НОВОГО ОТЗЫВА ---
   const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // baseUrl теперь будет "/api" (из твоего обновленного .env)
     const baseUrl = import.meta.env.VITE_API_URL || '';
     
     try {
-      // 1. Путь для ОТПРАВКИ: /api/reviews
-      // 2. Убираем точку с запятой перед объектом настроек
       const response = await fetch(`${baseUrl}/reviews`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          // Если ты настроил проверку ADMIN_SECRET в боте, 
-          // бэкенд FastAPI сам добавит нужные заголовки при пересылке,
-          // фронтенду они обычно не нужны.
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(reviewForm),
       });
 
       if (response.ok) {
         alert("Отзыв отправлен на модерацию!");
-        // Очисти форму здесь, если нужно
+        setIsReviewModalOpen(false);
         setReviewForm({ name: '', role: '', text: '', rating: 5 }); 
       } else {
         const errorData = await response.json();
@@ -102,7 +86,7 @@ React.useEffect(() => {
       console.error("Ошибка сети:", error);
       alert("Не удалось связаться с сервером.");
     }
-};
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-300 font-sans selection:bg-blue-900 selection:text-white">
@@ -160,23 +144,27 @@ React.useEffect(() => {
           </div>
 
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-  {reviews.map((review, i) => (
-    <div key={i} className="p-8 border border-slate-800 bg-slate-900/50 flex flex-col justify-between">
-      <div>
-        <div className="flex gap-1 mb-4">
-          {[...Array(review.rating || 5)].map((_, j) => (
-            <Star key={j} className="w-4 h-4 fill-blue-500 text-blue-500" />
-          ))}
-        </div>
-        <p className="text-slate-300 mb-6 leading-relaxed text-sm">"{review.review_text}"</p>
-      </div>
-      <div className="border-t border-slate-800 pt-4 mt-4">
-        <p className="font-semibold text-white">{review.author_name}</p>
-        <p className="text-sm text-slate-500">{review.author_role}</p>
-      </div>
-    </div>
-  ))}
-</div>
+            {reviews.length > 0 ? (
+              reviews.map((review, i) => (
+                <div key={i} className="p-8 border border-slate-800 bg-slate-900/50 flex flex-col justify-between">
+                  <div>
+                    <div className="flex gap-1 mb-4">
+                      {[...Array(review.rating || 5)].map((_, j) => (
+                        <Star key={j} className="w-4 h-4 fill-blue-500 text-blue-500" />
+                      ))}
+                    </div>
+                    <p className="text-slate-300 mb-6 leading-relaxed text-sm">"{review.review_text}"</p>
+                  </div>
+                  <div className="border-t border-slate-800 pt-4 mt-4">
+                    <p className="font-semibold text-white">{review.author_name}</p>
+                    <p className="text-sm text-slate-500">{review.author_role}</p>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="text-slate-500 italic col-span-full text-center py-10">Отзывов пока нет. Будьте первым!</p>
+            )}
+          </div>
         </div>
       </div>
 
@@ -184,7 +172,6 @@ React.useEffect(() => {
       <div className="py-20 bg-slate-900/50">
         <div className="max-w-6xl mx-auto px-4 sm:px-6">
           <div className="grid md:grid-cols-2 gap-12">
-            
             {/* Partners */}
             <div>
               <h2 className="text-2xl font-bold text-white mb-8">Партнёры</h2>
@@ -232,7 +219,6 @@ React.useEffect(() => {
                 ))}
               </div>
             </div>
-
           </div>
         </div>
       </div>
