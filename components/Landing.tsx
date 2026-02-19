@@ -52,13 +52,46 @@ const Landing = () => {
     { name: "Gift Relayers", role: "Директор", telegram: "https://t.me/giftrelayers" }
   ];
 
-  const handleReviewSubmit = (e) => {
+  const handleReviewSubmit = async (e) => {
     e.preventDefault();
-    // TODO: Здесь будет fetch запрос на твой API
-    console.log("Отправка на модерацию:", reviewForm);
-    alert("Спасибо! Отзыв отправлен на модерацию администратору.");
-    setIsReviewModalOpen(false);
-    setReviewForm({ name: '', role: '', text: '', rating: 5 });
+    
+    // Подгружаем URL из .env (VITE_API_URL=http://89.19.213.111:8000)
+    const baseUrl = import.meta.env.VITE_API_URL || '';
+    
+    try {
+      const response = await fetch(`${baseUrl}/api/reviews/submit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(reviewForm),
+      });
+
+      if (response.ok) {
+        alert("Спасибо! Отзыв отправлен на модерацию администратору.");
+        setIsReviewModalOpen(false);
+        setReviewForm({ name: '', role: '', text: '', rating: 5 });
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        alert(`Ошибка: ${errorData.detail || "Не удалось отправить отзыв"}`);
+      }
+    } catch (error) {
+      console.error("Ошибка при отправке:", error);
+      alert("Сервер недоступен. Проверьте подключение к 89.19.213.111:8000");
+    }
+
+      if (response.ok) {
+        alert("Спасибо! Отзыв отправлен на модерацию администратору.");
+        setIsReviewModalOpen(false);
+        setReviewForm({ name: '', role: '', text: '', rating: 5 });
+      } else {
+        const errorData = await response.json();
+        alert(`Ошибка: ${errorData.detail || "Не удалось отправить отзыв"}`);
+      }
+    } catch (error) {
+      console.error("Ошибка при отправке:", error);
+      alert("Сервер недоступен. Попробуйте позже.");
+    }
   };
 
   return (
