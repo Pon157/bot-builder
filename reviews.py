@@ -21,16 +21,25 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # --- ТЕЛЕГРАМ МОДЕРАЦИЯ ---
+# --- ТЕЛЕГРАМ МОДЕРАЦИЯ ---
 @dp.callback_query(F.data.startswith("rev_"))
 async def handle_moderation(callback: types.CallbackQuery):
-    # Печатаем в консоль, чтобы точно видеть, кто нажал
-    print(f"Кнопку нажал: {callback.from_user.id}") 
+    # 1. Проверяем права пользователя в этом чате
+    try:
+        member = await callback.bot.get_chat_member(
+            chat_id=callback.message.chat.id, 
+            user_id=callback.from_user.id
+        )
+        
+        # Разрешаем только создателю и администраторам
+        if member.status not in ["administrator", "creator"]:
+            return await callback.answer("❌ Доступ только для администраторов чата!", show_alert=True)
+            
+    except Exception as e:
+        print(f"Ошибка проверки прав: {e}")
+        return await callback.answer("Ошибка проверки прав", show_alert=True)
 
-    # Проверяем, что нажал именно ТЫ (сравниваем строки для надежности)
-    if str(callback.from_user.id) != str(MY_ID):
-        return await callback.answer(f"Нет доступа! Ваш ID ({callback.from_user.id}) не в списке.", show_alert=True)
-
-    # Разбор данных (используем split один раз для оптимизации)
+    # 2. Если админ — продолжаем работу
     parts = callback.data.split(":")
     action = parts[0]
     review_id = parts[1]
@@ -43,9 +52,9 @@ async def handle_moderation(callback: types.CallbackQuery):
         
         status_label = "✅ ОДОБРЕНО" if new_status == "approved" else "❌ УДАЛЕНО"
         
-        # Редактируем сообщение, убирая кнопки
+        # Убираем кнопки и пишем кто модерировал
         await callback.message.edit_text(
-            f"{callback.message.text}\n\nСтатус: {status_label}", 
+            f"{callback.message.text}\n\nСтатус: {status_label}\nМодератор: {callback.from_user.first_name}", 
             reply_markup=None
         )
         await callback.answer("Готово")
