@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware 
 from cryptography.fernet import Fernet
 
-# Импорт сервиса почты (файл email_service.py должен быть рядом)
+# Импорт твоего сервиса почты (файл email_service.py должен быть рядом)
 try:
     from email_service import EmailService
 except ImportError:
@@ -89,31 +89,6 @@ def decrypt_val(val: str) -> str:
     except:
         return val 
 
-@app.post("/api/reviews/submit")
-async def proxy_submit_review(request: Request):
-    data = await request.json()
-    
-    # URL твоего Python-бота (порт 3001)
-    bot_url = "http://localhost:3001/api/reviews"
-    
-    async with httpx.AsyncClient() as client:
-        try:
-            # Отправляем запрос боту с секретным токеном из .env
-            response = await client.post(
-                bot_url,
-                json=data,
-                headers={"x-admin-token": os.getenv("ADMIN_SECRET")} # Тот самый MRAKOTIK
-            )
-            return response.json()
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Bot connection error: {e}")
-
-@app.get("/api/reviews/list")
-async def proxy_get_reviews():
-    # Проксируем получение списка одобренных отзывов
-    async with httpx.AsyncClient() as client:
-        response = await client.get("http://localhost:3001/api/reviews/get")
-        return response.json()
 # ==========================================
 # 2. МЕНЕДЖЕР ПРОЦЕССОВ БОТОВ
 # ==========================================
