@@ -1687,7 +1687,40 @@ async def vk_get_peer_info(peer_id: int):
             "description": f"Личный диалог с пользователем VK ID={peer_id}"
         }
 
+# --- ДОБАВИТЬ В КОНЕЦ ФАЙЛА server.py ---
 
+@app.post("/api/reviews/submit")
+async def proxy_submit_review(request: Request):
+    # Данные от React
+    data = await request.json()
+    
+    # URL нашего Python-бота (который на порту 3001)
+    bot_reviews_url = "http://localhost:3001/api/reviews"
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            # Отправляем боту, добавляя секрет ADMIN_SECRET из .env
+            response = await client.post(
+                bot_reviews_url,
+                json=data,
+                headers={"x-admin-token": os.getenv("ADMIN_SECRET")}
+            )
+            return response.json()
+        except Exception as e:
+            logger.error(f"Ошибка проксирования отзыва: {e}")
+            raise HTTPException(status_code=500, detail="Бот модерации недоступен")
+
+@app.get("/api/reviews/list")
+async def proxy_get_reviews():
+    async with httpx.AsyncClient() as client:
+        try:
+            # Забираем одобренные отзывы у бота
+            response = await client.get("http://localhost:3001/api/reviews/get")
+            return response.json()
+        except Exception as e:
+            logger.error(f"Ошибка получения отзывов: {e}")
+            return []
+            
 # ==========================================
 # 9. СИСТЕМНЫЕ
 # ==========================================
