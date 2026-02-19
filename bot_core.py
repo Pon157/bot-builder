@@ -725,22 +725,34 @@ class BotInstance:
 
     async def admin_control_logic(self, m: Message):
         """
-        ЕДИНАЯ ЛОГИКА АДМИН-КОМАНД
+        ЕДИНАЯ ЛОГИКА АДМИН-КОМАНД (Статистика, Рассылка, Бан, Варн, Разбан)
+        Вызывается как: await self.admin_control_logic(m)
         """
-        # 1. Проверка на наличие текста и префикса команды
+        # 1. Проверка на наличие текста и префикса команды (/ или !)
         if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): 
             return False
         
         cmd_parts = m.text.split()
         command = cmd_parts[0][1:].lower()
         
-        # --- 1. ГЛОБАЛЬНЫЕ КОМАНДЫ (НЕ ТРЕБУЮТ РЕПЛАЯ/ТОПИКА) ---
+        # Заголовки для Supabase (используются в модерации)
+        headers = {
+            "apikey": self.sb_key, 
+            "Authorization": f"Bearer {self.sb_key}", 
+            "Content-Type": "application/json"
+        }
+
+        # --- ГРУППА 1: ГЛОБАЛЬНЫЕ КОМАНДЫ (НЕ ТРЕБУЮТ ЮЗЕРА) ---
         
         # 📊 СТАТИСТИКА
         if command == "stats":
             total_users = len(self.users_list)
             banned = self.stats_data.get("bannedCount", 0)
-            await m.reply(f"📊 <b>Статистика бота:</b>\n\n👥 Юзеров: {total_users}\n🚫 Забанено: {banned}")
+            await m.reply(
+                f"📊 <b>Статистика бота:</b>\n\n"
+                f"👥 Всего пользователей: {total_users}\n"
+                f"🚫 Заблокировано: {banned}"
+            )
             return True
 
         # 📢 РАССЫЛКА
@@ -748,56 +760,63 @@ class BotInstance:
             if m.reply_to_message:
                 target_msg_id = m.reply_to_message.message_id
                 sent_count, err_count = 0, 0
-                status_msg = await m.reply("🚀 <b>Запускаю рассылку...</b>")
+                status_msg = await m.reply("🚀 <b>Запускаю полную рассылку...</b>")
                 
                 for user in self.users_list:
                     try:
+                        u_id = int(user['id'])
                         await self.bot.copy_message(
-                            chat_id=int(user['id']), 
-                            from_chat_id=m.chat.id, 
+                            chat_id=u_id,
+                            from_chat_id=m.chat.id,
                             message_id=target_msg_id
                         )
                         sent_count += 1
-                        await asyncio.sleep(0.05)
+                        await asyncio.sleep(0.05) # Защита от Flood Limit
                     except Exception:
                         err_count += 1
                         user["is_active"] = False
-                
-                await status_msg.edit_text(f"✅ <b>Завершено!</b>\n👤 Доставлено: {sent_count}\n🚫 Ошибки: {err_count}")
-                await self.sync_queue.put(("sync_state", None))
+
+                await status_msg.edit_text(
+                    f"✅ <b>Рассылка завершена!</b>\n\n"
+                    f"👤 Доставлено: {sent_count}\n"
+                    f"🚫 Ошибки: {err_count}"
+                )
+                await self._save_to_db(headers)
                 return True
             else:
+                # Если просто ввели /broadcast без реплая
                 self.broadcast_cache[m.from_user.id] = "WAITING"
-                await m.reply("📢 Пришлите сообщение для рассылки следующим шагом.")
+                await m.reply("📢 <b>Режим рассылки.</b>\nПришлите сообщение (текст/фото/видео), которое нужно разослать.")
                 return True
 
-        # --- 2. КОМАНДЫ МОДЕРАЦИИ (ТРЕБУЮТ КОНТЕКСТА ЮЗЕРА) ---
+        # --- ГРУППА 2: КОМАНДЫ МОДЕРАЦИИ (ТРЕБУЮТ КОНТЕКСТ ЮЗЕРА) ---
         
         target_user = None
-        # Поиск по топику
+        # А) Поиск по топику (если пишем в ветке форума)
         if m.message_thread_id:
             target_user = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
-        # Поиск по реплаю
+        
+        # Б) Поиск по реплаю (на сообщение, которое переслал бот)
         if not target_user and m.reply_to_message:
             uid_from_map = self.msg_map.get(m.reply_to_message.message_id)
             if uid_from_map:
                 target_user = next((u for u in self.users_list if int(u['id']) == int(uid_from_map)), None)
 
+        # Если команда модерации, но юзер не определен — выходим
         if not target_user:
-            return False # Если не нашли юзера, команда игнорируется (или пиши ошибку)
+            return False 
 
         uid = target_user['id']
         ban_limit = self.config.get("settings", {}).get("autoBanThreshold", 3)
-        headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}", "Content-Type": "application/json"}
 
         # 🚫 БАН
         if command == "ban":
             target_user["is_banned"] = True
             self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
             await self._save_to_db(headers)
-            try: await self.bot.send_message(uid, "🚫 <b>Доступ ограничен.</b>")
+            try: await self.bot.send_message(uid, "🚫 <b>Доступ к боту ограничен администратором.</b>")
             except: pass
-            await m.reply(f"✅ Юзер <code>{uid}</code> забанен.")
+            await m.reply(f"✅ Пользователь <code>{uid}</code> заблокирован.")
             return True
 
         # 🟢 РАЗБАН
@@ -806,9 +825,9 @@ class BotInstance:
             target_user["warns"] = 0
             self.stats_data["bannedCount"] = max(0, self.stats_data.get("bannedCount", 1) - 1)
             await self._save_to_db(headers)
-            try: await self.bot.send_message(uid, "✅ <b>Доступ восстановлен.</b>")
+            try: await self.bot.send_message(uid, "✅ <b>Ваш доступ к боту восстановлен.</b>")
             except: pass
-            await m.reply(f"✅ Юзер <code>{uid}</code> разбанен.")
+            await m.reply(f"✅ Пользователь <code>{uid}</code> разблокирован.")
             return True
 
         # ⚠️ ВАРН
@@ -817,32 +836,52 @@ class BotInstance:
             if target_user["warns"] >= ban_limit:
                 target_user["is_banned"] = True
                 self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
-                msg = f"🚨 <b>АВТО-БАН!</b> ({target_user['warns']}/{ban_limit})"
-                u_msg = "🚫 Лимит предупреждений. Бан."
+                msg_text = f"🚨 <b>АВТО-БАН!</b>\nЮзер: <code>{uid}</code>\nВарнов: {target_user['warns']}/{ban_limit}"
+                user_notif = f"🚫 <b>Авто-бан:</b> Лимит предупреждений ({target_user['warns']}/{ban_limit}) исчерпан."
             else:
-                msg = f"⚠️ Варн выдан. ({target_user['warns']}/{ban_limit})"
-                u_msg = f"⚠️ Вам выдано предупреждение ({target_user['warns']}/{ban_limit})"
-            
+                msg_text = f"⚠️ Варн выдан пользователю <code>{uid}</code>. Всего: {target_user['warns']}/{ban_limit}"
+                user_notif = f"⚠️ <b>Предупреждение!</b> ({target_user['warns']}/{ban_limit})"
+
             await self._save_to_db(headers)
-            try: await self.bot.send_message(uid, u_msg)
+            try: await self.bot.send_message(uid, user_notif)
             except: pass
-            await m.reply(msg)
+            await m.reply(msg_text)
+            return True
+
+        # 🔄 СНЯТЬ ВАРН
+        elif command == "unwarn":
+            target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
+            await self._save_to_db(headers)
+            await m.reply(f"✅ Предупреждение снято. Теперь варнов у <code>{uid}</code>: {target_user['warns']}")
             return True
 
         return False
 
     async def _save_to_db(self, headers):
-        """Вспомогательная функция сохранения"""
+        """
+        Вспомогательная функция для синхронизации состояния с Supabase и очередью.
+        """
         try:
             async with httpx.AsyncClient(timeout=10) as client:
+                # Сначала берем актуальный конфиг, чтобы не затереть другие поля
                 res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
                 if res.status_code == 200 and res.json():
                     remote_config = res.json()[0].get("config", {})
-                    new_config = {**remote_config, "connectedUsers": self.users_list, "stats": self.stats_data}
-                    await client.patch(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", json={"config": new_config}, headers=headers)
+                    # Обновляем только список юзеров и статистику
+                    new_config = {
+                        **remote_config, 
+                        "connectedUsers": self.users_list, 
+                        "stats": self.stats_data
+                    }
+                    await client.patch(
+                        f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", 
+                        json={"config": new_config}, 
+                        headers=headers
+                    )
+            # Сигнал локальной очереди на синхронизацию
             await self.sync_queue.put(("sync_state", None))
         except Exception as e:
-            logger.error(f"DB Error: {e}")
+            logging.error(f"❌ Ошибка сохранения в БД: {e}")
         
     async def core_handlers_setup(self):
         # Регистрируем проверку бана ПЕРВОЙ для всех типов событий
