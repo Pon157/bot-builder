@@ -52,10 +52,10 @@ const Landing = () => {
     { name: "Gift Relayers", role: "Директор", telegram: "https://t.me/giftrelayers" }
   ];
 
-  const handleReviewSubmit = async (e) => {
+  const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    // Подгружаем URL из .env (VITE_API_URL=http://89.19.213.111:8000)
+    // Подгружаем URL из .env (VITE_API_URL)
     const baseUrl = import.meta.env.VITE_API_URL || '';
     
     try {
@@ -72,25 +72,13 @@ const Landing = () => {
         setIsReviewModalOpen(false);
         setReviewForm({ name: '', role: '', text: '', rating: 5 });
       } else {
+        // Пробуем прочитать ошибку от FastAPI
         const errorData = await response.json().catch(() => ({}));
         alert(`Ошибка: ${errorData.detail || "Не удалось отправить отзыв"}`);
       }
     } catch (error) {
       console.error("Ошибка при отправке:", error);
       alert("Сервер недоступен. Проверьте подключение к 89.19.213.111:8000");
-    }
-
-      if (response.ok) {
-        alert("Спасибо! Отзыв отправлен на модерацию администратору.");
-        setIsReviewModalOpen(false);
-        setReviewForm({ name: '', role: '', text: '', rating: 5 });
-      } else {
-        const errorData = await response.json();
-        alert(`Ошибка: ${errorData.detail || "Не удалось отправить отзыв"}`);
-      }
-    } catch (error) {
-      console.error("Ошибка при отправке:", error);
-      alert("Сервер недоступен. Попробуйте позже.");
     }
   };
 
