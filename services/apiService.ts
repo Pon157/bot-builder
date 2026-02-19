@@ -404,6 +404,32 @@ adminLogin: async (login: string, pass: string) => {
     return response.ok ? await response.json() : null;
   },
 
+  // Добавь это в объект export const api = { ... }
+
+  // Отправить новый отзыв на модерацию
+  submitReview: async (reviewData: { name: string, role: string, text: string, rating: number }) => {
+    const response = await fetch(`http://твой_ip_сервера:3001/api/reviews`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': 'MRAKOTIK' 
+      },
+      body: JSON.stringify(reviewData)
+    });
+    return response.ok;
+  },
+
+  // Получить только одобренные отзывы для лендинга
+  getApprovedReviews: async () => {
+    try {
+      const response = await fetch(`http://твой_ip_сервера:3001/api/reviews/get`);
+      if (!response.ok) return [];
+      return await response.json();
+    } catch (e) {
+      return [];
+    }
+  },
+
   // --- BOT MANAGEMENT ---
 
   // --- ДОБАВИТЬ В api.ts ---
