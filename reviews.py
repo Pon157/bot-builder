@@ -69,9 +69,9 @@ async def get_approved_reviews(request):
     return web.json_response(res.data)
 
 async def post_new_review(request):
-    """Метод для приема отзыва от FastAPI бэкенда"""
-    # Проверка секрета: бэкенд шлет x-admin-token
-    if request.headers.get("x-admin-token") != ADMIN_SECRET:
+    """Метод для приема отзыва"""
+    # МЕНЯЕМ x-admin-token на X-Admin-Secret
+    if request.headers.get("X-Admin-Secret") != ADMIN_SECRET:
         return web.json_response({"error": "Unauthorized"}, status=403)
 
     data = await request.json()
