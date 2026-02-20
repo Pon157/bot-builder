@@ -6,7 +6,8 @@ import {
   ExternalLink, Clock, Search, ShieldCheck, 
   ChevronRight, HardDrive, Cpu, MessageSquare, 
   AlertCircle, Menu, X, Globe, Zap, CheckCircle2,
-  Lock, Trash2, Filter, MoreVertical, Ban
+  Lock, Trash2, Filter, MoreVertical, Ban, Briefcase,
+  Mail, Star, ChevronDown, ChevronUp, Megaphone, Code2, UserCheck
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -41,7 +42,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [password, setPassword] = useState('');
   
   // --- UI State ---
-  const [activeTab, setActiveTab] = useState<'dash' | 'users' | 'bots' | 'keys' | 'monitoring'>('dash');
+  const [activeTab, setActiveTab] = useState<'dash' | 'users' | 'bots' | 'keys' | 'monitoring' | 'applications'>('dash');
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -52,6 +53,8 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [generatedKey, setGeneratedKey] = useState('');
   const [keyDuration, setKeyDuration] = useState(1);
   const [realLogs, setRealLogs] = useState<any[]>([]);
+  const [applications, setApplications] = useState<any[]>([]);
+  const [appExpandedId, setAppExpandedId] = useState<string | null>(null);
 
   // 1. Авторизация
   const handleLogin = async (e: React.FormEvent) => {
@@ -73,17 +76,19 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const loadAllData = async (t: string) => {
     setLoading(true);
     try {
-      const [uData, bData, logsData, dashboardData] = await Promise.all([
+      const [uData, bData, logsData, dashboardData, appsData] = await Promise.all([
         api.getAllUsers(t),
         api.getAllBots(t),
         api.getSystemLogs(t), // Реальные логи из bot_messages
-        api.getAdminDashboard(t)
+        api.getAdminDashboard(t),
+        api.getApplications(t),
       ]);
       
       setUsers(uData || []);
       setBots(bData || []);
       setRealLogs(logsData || []);
       setStats(dashboardData || {});
+      setApplications(appsData || []);
 
     } catch (err) { 
       console.error("Critical load error:", err); 
@@ -203,6 +208,12 @@ const handleConfigAccess = async (botId: string) => {
     );
   }
 
+  const VACANCY_MAP: Record<string, { label: string; icon: any; color: string }> = {
+    smm:      { label: 'SMM / Монтажёр / Пиар', icon: Megaphone, color: 'text-sky-400' },
+    outreach: { label: 'Спец. по работе с ботами', icon: UserCheck, color: 'text-violet-400' },
+    tech:     { label: 'Тех. администратор ботов', icon: Code2,    color: 'text-emerald-400' },
+  };
+
   return (
     <div className="min-h-screen bg-[#050505] text-zinc-300 flex flex-col md:flex-row font-sans selection:bg-red-600/30">
       
@@ -223,6 +234,7 @@ const handleConfigAccess = async (botId: string) => {
           <NavBtn icon={Bot} label="Управление ботами" active={activeTab === 'bots'} onClick={() => setActiveTab('bots')} />
           <NavBtn icon={Key} label="Центр лицензий" active={activeTab === 'keys'} onClick={() => setActiveTab('keys')} />
           <NavBtn icon={Activity} label="Мониторинг" active={activeTab === 'monitoring'} onClick={() => setActiveTab('monitoring')} />
+          <NavBtn icon={Briefcase} label="Отклики" active={activeTab === 'applications'} onClick={() => setActiveTab('applications')} badge={applications.filter((a:any)=>a.status==='new').length} />
         </nav>
 
         <div className="mt-auto pt-8 border-t border-zinc-900/50">
@@ -246,6 +258,7 @@ const handleConfigAccess = async (botId: string) => {
         <MobileNavBtn icon={Bot} active={activeTab === 'bots'} onClick={() => setActiveTab('bots')} />
         <MobileNavBtn icon={Key} active={activeTab === 'keys'} onClick={() => setActiveTab('keys')} />
         <MobileNavBtn icon={Activity} active={activeTab === 'monitoring'} onClick={() => setActiveTab('monitoring')} />
+        <MobileNavBtn icon={Briefcase} active={activeTab === 'applications'} onClick={() => setActiveTab('applications')} badge={applications.filter((a:any)=>a.status==='new').length} />
       </nav>
 
       {/* --- MAIN CONTENT --- */}
@@ -261,6 +274,7 @@ const handleConfigAccess = async (botId: string) => {
                 {activeTab === 'bots' && 'Fleet Operations'}
                 {activeTab === 'keys' && 'Licensing Hub'}
                 {activeTab === 'monitoring' && 'System Logs'}
+                {activeTab === 'applications' && 'Отклики на вакансии'}
               </h1>
               <div className="flex items-center gap-3 mt-4">
                 <div className="h-1 w-16 bg-red-600 rounded-full" />
@@ -475,6 +489,141 @@ const handleConfigAccess = async (botId: string) => {
             </div>
           )}
 
+          {/* --- TAB: APPLICATIONS --- */}
+          {activeTab === 'applications' && (
+            <div className="space-y-6 animate-in fade-in duration-500">
+              <div className="flex items-center justify-between px-2">
+                <p className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em]">
+                  Всего откликов: {applications.length} · Новых: {applications.filter((a:any)=>a.status==='new').length}
+                </p>
+                <button
+                  onClick={() => token && fetch(`/api/applications/list`, { headers: { 'x-admin-token': token } }).then(r=>r.json()).then(setApplications)}
+                  className="text-zinc-500 hover:text-white flex items-center gap-2 text-[10px] font-black uppercase transition-colors"
+                >
+                  <RefreshCw size={12} /> Обновить
+                </button>
+              </div>
+
+              {applications.length === 0 ? (
+                <div className="border border-zinc-800/50 rounded-[3rem] p-16 text-center">
+                  <Briefcase size={40} className="text-zinc-800 mx-auto mb-4" />
+                  <p className="text-zinc-600 font-black uppercase text-xs tracking-widest">Откликов пока нет</p>
+                  <p className="text-zinc-700 text-[10px] mt-1">Они появятся здесь после отклика на странице /careers</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {applications.map((app: any) => {
+                    const vInfo = VACANCY_MAP[app.vacancy_id] || { label: app.vacancy_title || 'Неизвестно', icon: Briefcase, color: 'text-zinc-400' };
+                    const VIcon = vInfo.icon;
+                    const isExpanded = appExpandedId === app.id;
+                    const isNew = app.status === 'new';
+
+                    return (
+                      <div key={app.id} className={`border rounded-[2rem] overflow-hidden transition-all ${isNew ? 'bg-blue-950/20 border-blue-900/40' : 'bg-zinc-900/20 border-zinc-800/40'}`}>
+                        
+                        {/* Card header */}
+                        <button
+                          onClick={() => setAppExpandedId(isExpanded ? null : app.id)}
+                          className="w-full flex items-center gap-5 p-6 text-left group"
+                        >
+                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 border ${isNew ? 'bg-blue-900/30 border-blue-700/40' : 'bg-zinc-800/50 border-zinc-700/30'} ${vInfo.color}`}>
+                            <VIcon size={20} />
+                          </div>
+
+                          <div className="flex-1 min-w-0">
+                            <div className="flex flex-wrap items-center gap-2 mb-0.5">
+                              <p className="font-black text-white text-sm">{app.contact || 'Без контакта'}</p>
+                              {isNew && (
+                                <span className="text-[8px] font-black uppercase px-2 py-0.5 bg-blue-600 text-white rounded-full tracking-widest">Новый</span>
+                              )}
+                            </div>
+                            <p className="text-zinc-500 text-[11px]">{vInfo.label}</p>
+                            <p className="text-zinc-700 text-[10px] mt-0.5">
+                              {new Date(app.created_at).toLocaleString('ru-RU', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' })}
+                            </p>
+                          </div>
+
+                          <div className={`shrink-0 transition-colors ${isExpanded ? vInfo.color : 'text-zinc-700 group-hover:text-zinc-400'}`}>
+                            {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                          </div>
+                        </button>
+
+                        {/* Expanded body */}
+                        {isExpanded && (
+                          <div className="px-6 pb-6 space-y-4 animate-in fade-in duration-150">
+                            <div className="h-px bg-zinc-800/60" />
+
+                            <div className="grid md:grid-cols-2 gap-4">
+                              {[
+                                { label: 'Контакт для связи', value: app.contact },
+                                { label: 'Вакансия', value: app.vacancy_title || vInfo.label },
+                                { label: 'Опыт', value: app.experience },
+                              ].map(({ label, value }) => value && (
+                                <div key={label} className="bg-black/40 border border-zinc-800/50 rounded-2xl p-4">
+                                  <p className="text-[9px] font-black text-zinc-600 uppercase tracking-widest mb-1.5">{label}</p>
+                                  <p className="text-white text-sm leading-relaxed">{value}</p>
+                                </div>
+                              ))}
+                            </div>
+
+                            {app.about && (
+                              <div className="bg-black/40 border border-zinc-800/50 rounded-2xl p-4">
+                                <p className="text-[9px] font-black text-zinc-600 uppercase tracking-widest mb-1.5">О себе / Сильные стороны</p>
+                                <p className="text-zinc-300 text-sm leading-relaxed whitespace-pre-wrap">{app.about}</p>
+                              </div>
+                            )}
+
+                            {app.extra && (
+                              <div className="bg-black/40 border border-zinc-800/50 rounded-2xl p-4">
+                                <p className="text-[9px] font-black text-zinc-600 uppercase tracking-widest mb-1.5">Портфолио / Ссылки</p>
+                                <p className="text-zinc-300 text-sm leading-relaxed whitespace-pre-wrap break-all">{app.extra}</p>
+                              </div>
+                            )}
+
+                            {/* Actions */}
+                            <div className="flex gap-3 pt-1">
+                              {isNew && (
+                                <button
+                                  onClick={async () => {
+                                    if (!token) return;
+                                    await fetch(`/api/applications/${app.id}/status`, {
+                                      method: 'PATCH',
+                                      headers: { 'Content-Type': 'application/json', 'x-admin-token': token },
+                                      body: JSON.stringify({ status: 'reviewed' }),
+                                    });
+                                    setApplications(prev => prev.map((a:any) => a.id === app.id ? { ...a, status: 'reviewed' } : a));
+                                  }}
+                                  className="flex items-center gap-2 px-4 py-2 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 text-[10px] font-black uppercase rounded-xl transition-all"
+                                >
+                                  <CheckCircle2 size={14} /> Отмечено как просмотрено
+                                </button>
+                              )}
+                              <button
+                                onClick={async () => {
+                                  if (!token || !window.confirm('Удалить этот отклик?')) return;
+                                  await fetch(`/api/applications/${app.id}`, {
+                                    method: 'DELETE',
+                                    headers: { 'x-admin-token': token },
+                                  });
+                                  setApplications(prev => prev.filter((a:any) => a.id !== app.id));
+                                  setAppExpandedId(null);
+                                }}
+                                className="flex items-center gap-2 px-4 py-2 bg-rose-600/10 hover:bg-rose-600/20 text-rose-500 text-[10px] font-black uppercase rounded-xl transition-all"
+                              >
+                                <Trash2 size={14} /> Удалить
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+
         </div>
       </main>
     </div>
@@ -483,18 +632,22 @@ const handleConfigAccess = async (botId: string) => {
 
 // --- SUB-COMPONENTS ---
 
-const NavBtn = ({ icon: Icon, label, active, onClick }: any) => (
+const NavBtn = ({ icon: Icon, label, active, onClick, badge }: any) => (
   <button onClick={onClick} className={`w-full flex items-center gap-4 px-6 py-4 rounded-2xl transition-all border ${active ? 'bg-white text-black border-white shadow-2xl shadow-white/5 font-black scale-[1.02]' : 'text-zinc-500 border-transparent hover:text-white hover:bg-zinc-900/50'}`}>
     <Icon size={20} className={active ? 'text-black' : 'text-zinc-600'} />
     <span className="text-[11px] uppercase tracking-widest">{label}</span>
-    {active && <div className="ml-auto w-1.5 h-1.5 bg-red-600 rounded-full" />}
+    <div className="ml-auto flex items-center gap-2">
+      {badge > 0 && <span className="w-5 h-5 bg-blue-600 text-white text-[9px] font-black rounded-full flex items-center justify-center">{badge}</span>}
+      {active && <div className="w-1.5 h-1.5 bg-red-600 rounded-full" />}
+    </div>
   </button>
 );
 
-const MobileNavBtn = ({ icon: Icon, active, onClick }: any) => (
+const MobileNavBtn = ({ icon: Icon, active, onClick, badge }: any) => (
   <button onClick={onClick} className={`p-4 rounded-2xl transition-all relative ${active ? 'text-red-500' : 'text-zinc-600'}`}>
     <Icon size={24} />
     {active && <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-red-500 rounded-full" />}
+    {badge > 0 && <span className="absolute top-2 right-2 w-4 h-4 bg-blue-600 text-white text-[8px] font-black rounded-full flex items-center justify-center">{badge}</span>}
   </button>
 );
 
