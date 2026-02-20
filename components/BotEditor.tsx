@@ -534,12 +534,13 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                       </label>
                     )}
 
-                    {/* Инлайн-кнопки к /start (только TG) */}
-                    {isTgSupport && (
+                    {/* Инлайн-кнопки к /start (TG + VK) */}
+                    {isSupportBot && (
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
                           <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
-                            <ExternalLink className="w-3 h-3 text-indigo-400" />Инлайн-кнопки к /start
+                            <ExternalLink className="w-3 h-3 text-indigo-400" />
+                            {isVK ? 'URL-кнопки к приветствию (VK OpenLink)' : 'Инлайн-кнопки к /start'}
                           </span>
                           <button type="button"
                             onClick={() => handleLocalUpdate({ ...bot, welcomeInline: [...(bot.welcomeInline || []), { text: '', url: '' }] })}
@@ -548,10 +549,16 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                           </button>
                         </div>
 
+                        {isVK && (
+                          <p className="text-[8px] text-sky-400/60 ml-2 bg-sky-500/5 border border-sky-500/10 rounded-xl p-2.5 leading-relaxed">
+                            💡 В VK кнопки-ссылки отправляются как инлайн-кнопка (OpenLink) вместе с приветствием. Требуется vkbottle ≥ 4.3.
+                          </p>
+                        )}
+
                         {(bot.welcomeInline || []).map((btn: any, wi: number) => (
                           <div key={wi} className="flex gap-2">
                             <input placeholder="Текст кнопки"
-                              className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-indigo-500 transition-all"
+                              className={`flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none transition-all ${isVK ? 'focus:border-sky-500' : 'focus:border-indigo-500'}`}
                               value={btn.text}
                               onChange={e => {
                                 const wb = [...(bot.welcomeInline || [])];
@@ -559,7 +566,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                                 handleLocalUpdate({ ...bot, welcomeInline: wb });
                               }} />
                             <input placeholder="https://..."
-                              className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-indigo-500 transition-all"
+                              className={`flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none transition-all ${isVK ? 'focus:border-sky-500' : 'focus:border-indigo-500'}`}
                               value={btn.url}
                               onChange={e => {
                                 const wb = [...(bot.welcomeInline || [])];
@@ -574,13 +581,13 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                           </div>
                         ))}
 
-                        {/* Превью стартового сообщения с привязанными инлайн-кнопками */}
+                        {/* Превью стартового сообщения */}
                         {(bot.welcomeMessage || (bot.welcomeInline || []).length > 0) && (
                           <div className="mt-1 bg-black/50 border border-zinc-800 rounded-2xl p-4">
                             <p className="text-[8px] text-zinc-600 uppercase font-black mb-3 flex items-center gap-1.5">
-                              <Smartphone className="w-2.5 h-2.5" />Превью в Telegram
+                              <Smartphone className="w-2.5 h-2.5" />Превью {isVK ? 'в VK' : 'в Telegram'}
                             </p>
-                            <div className="bg-zinc-900 rounded-2xl rounded-bl-sm p-3.5 max-w-[85%] mb-2">
+                            <div className={`rounded-2xl rounded-bl-sm p-3.5 max-w-[85%] mb-2 ${isVK ? 'bg-sky-950/40 border border-sky-900/30' : 'bg-zinc-900'}`}>
                               {bot.welcomePhoto && (
                                 <div className="w-full h-20 bg-zinc-800 rounded-xl mb-2 overflow-hidden">
                                   <img src={bot.welcomePhoto} className="w-full h-full object-cover"
@@ -592,12 +599,19 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                               </p>
                             </div>
                             {(bot.welcomeInline || []).filter((b: any) => b.text).map((b: any, pi: number) => (
-                              <div key={pi} className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl py-2 px-4 mb-1.5 text-center">
-                                <span className="text-[10px] text-indigo-300 font-semibold">{b.text}</span>
-                                {b.url && <span className="text-[8px] text-zinc-600 ml-2">{b.url.replace('https://', '')}</span>}
+                              <div key={pi} className={`rounded-xl py-2 px-4 mb-1.5 text-center flex items-center justify-center gap-1.5 ${
+                                isVK
+                                  ? 'bg-sky-500/10 border border-sky-500/20'
+                                  : 'bg-indigo-500/10 border border-indigo-500/20'
+                              }`}>
+                                {isVK && <ExternalLink className="w-2.5 h-2.5 text-sky-400/60 shrink-0" />}
+                                <span className={`text-[10px] font-semibold ${isVK ? 'text-sky-300' : 'text-indigo-300'}`}>{b.text}</span>
+                                {b.url && <span className="text-[8px] text-zinc-600 ml-1">{b.url.replace('https://', '').slice(0, 25)}</span>}
                               </div>
                             ))}
-                            <p className="text-[7px] text-zinc-700 uppercase mt-1.5">↑ Кнопки прикреплены к сообщению в TG</p>
+                            <p className="text-[7px] text-zinc-700 uppercase mt-1.5">
+                              {isVK ? '↑ OpenLink-кнопки в VK (инлайн под сообщением)' : '↑ Кнопки прикреплены к сообщению в TG'}
+                            </p>
                           </div>
                         )}
                       </div>
@@ -858,6 +872,96 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                     </div>
                   )}
                   {/* Конец блока Sub-кнопок */}
+
+                  {/* ── Инлайн URL-кнопки к ответу кнопки ── */}
+                  <div className="border-t border-zinc-800 pt-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-[9px] font-black text-zinc-500 uppercase flex items-center gap-1.5">
+                        <ExternalLink className="w-3 h-3 text-indigo-400" />
+                        {isVK ? 'URL-кнопки к ответу (OpenLink)' : 'Инлайн URL-кнопки к ответу'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nb = [...bot.buttons];
+                          nb[i].inline = [...(nb[i].inline || []), { text: '', url: '' }];
+                          handleLocalUpdate({ ...bot, buttons: nb });
+                        }}
+                        className="text-[9px] text-indigo-400 font-bold hover:text-indigo-300"
+                      >
+                        + Ссылка
+                      </button>
+                    </div>
+
+                    {isVK && (
+                      <p className="text-[8px] text-sky-400/60 mb-2 bg-sky-500/5 border border-sky-500/10 rounded-xl p-2 leading-relaxed">
+                        💡 В VK отправляются как инлайн OpenLink-кнопки под сообщением ответа.
+                      </p>
+                    )}
+
+                    <p className="text-[8px] text-zinc-600 mb-2">
+                      {isVK
+                        ? 'URL-кнопки появятся под ответом бота в VK:'
+                        : 'Инлайн-кнопки появятся под ответом бота (только TG):'}
+                    </p>
+
+                    {(btn.inline || []).map((ib: any, ii: number) => (
+                      <div key={ii} className="flex gap-2 mb-2">
+                        <input
+                          placeholder="Текст кнопки"
+                          className={`flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none transition-all ${isVK ? 'focus:border-sky-500' : 'focus:border-indigo-500'}`}
+                          value={ib.text}
+                          onChange={e => {
+                            const nb = [...bot.buttons];
+                            nb[i].inline[ii] = { ...nb[i].inline[ii], text: e.target.value };
+                            handleLocalUpdate({ ...bot, buttons: nb });
+                          }}
+                        />
+                        <input
+                          placeholder="https://..."
+                          className={`flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none transition-all ${isVK ? 'focus:border-sky-500' : 'focus:border-indigo-500'}`}
+                          value={ib.url}
+                          onChange={e => {
+                            const nb = [...bot.buttons];
+                            nb[i].inline[ii] = { ...nb[i].inline[ii], url: e.target.value };
+                            handleLocalUpdate({ ...bot, buttons: nb });
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nb = [...bot.buttons];
+                            nb[i].inline = (nb[i].inline || []).filter((_: any, idx: number) => idx !== ii);
+                            handleLocalUpdate({ ...bot, buttons: nb });
+                          }}
+                          className="px-2 text-zinc-600 hover:text-rose-500"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+
+                    {/* Мини-превью инлайн-кнопок */}
+                    {(btn.inline || []).filter((b: any) => b.text).length > 0 && (
+                      <div className="mt-2 bg-black/40 border border-zinc-800/60 rounded-xl p-3 space-y-1">
+                        <p className="text-[7px] text-zinc-700 uppercase font-bold mb-2 flex items-center gap-1">
+                          <Smartphone className="w-2 h-2" />Превью
+                        </p>
+                        <div className="bg-zinc-900/70 rounded-xl p-2.5 max-w-[80%] mb-1.5">
+                          <p className="text-[9px] text-zinc-400">{btn.response ? btn.response.slice(0, 60) + (btn.response.length > 60 ? '…' : '') : 'Ответ кнопки...'}</p>
+                        </div>
+                        {(btn.inline || []).filter((b: any) => b.text).map((b: any, pi: number) => (
+                          <div key={pi} className={`rounded-lg py-1.5 px-3 text-center flex items-center justify-center gap-1 ${
+                            isVK ? 'bg-sky-500/10 border border-sky-500/20' : 'bg-indigo-500/10 border border-indigo-500/20'
+                          }`}>
+                            <ExternalLink className={`w-2 h-2 shrink-0 ${isVK ? 'text-sky-400/60' : 'text-indigo-400/60'}`} />
+                            <span className={`text-[9px] font-semibold ${isVK ? 'text-sky-300' : 'text-indigo-300'}`}>{b.text}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {/* Конец блока Инлайн URL-кнопок */}
 
                 </div>
               </div>
