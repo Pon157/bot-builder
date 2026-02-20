@@ -551,7 +551,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
 
                         {isVK && (
                           <p className="text-[8px] text-sky-400/60 ml-2 bg-sky-500/5 border border-sky-500/10 rounded-xl p-2.5 leading-relaxed">
-                            💡 В VK кнопки-ссылки отправляются как инлайн-кнопка (OpenLink) вместе с приветствием.
+                            💡 В VK кнопки-ссылки отправляются как инлайн-кнопка (OpenLink) вместе с приветствием. 
+                          </p>
                         )}
 
                         {(bot.welcomeInline || []).map((btn: any, wi: number) => (
