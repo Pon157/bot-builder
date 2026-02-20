@@ -230,6 +230,14 @@ class BotInstance:
         self.settings      = full_cfg.get('settings', {})
         self.rate_limit    = float(self.settings.get('rateLimit', 1.0))
         self.auto_ban_limit= int(self.settings.get('autoBanThreshold', 3))
+
+        # -- Список ID администраторов (из редактора, поле adminIds) --
+        # Если список пустой -- команды разрешены всем участникам беседы
+        raw_admin_ids = full_cfg.get('adminIds') or full_cfg.get('admin_ids') or []
+        try:
+            self.admin_ids: List[int] = [int(x) for x in raw_admin_ids if str(x).strip().isdigit()]
+        except Exception:
+            self.admin_ids = []
         
         if is_initial or not hasattr(self, 'users_list'):
             self.users_list = full_cfg.get('connectedUsers', [])
@@ -686,11 +694,42 @@ class BotInstance:
     # ─────────────────────────────────────────────
     # КОМАНДЫ АДМИНИСТРАТОРА
     # ─────────────────────────────────────────────
+    def is_admin(self, user_id: int) -> bool:
+        """Проверяет, является ли пользователь администратором бота.
+        
+        Если self.admin_ids пустой (не задан в редакторе) — разрешаем всем
+        участникам беседы (обратная совместимость).
+        Если задан — проверяем вхождение.
+        """
+        if not self.admin_ids:
+            return True  # Список пустой = доверяем всем в беседе
+        return user_id in self.admin_ids
+
     async def admin_control_logic(self, m: Message):
         """Единая логика всех админ-команд: /stats, /broadcast, /ban, /unban, /warn, /unwarn"""
         if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): 
             return False
-        
+
+        # /getid — специальная команда, доступна без проверки прав
+        if m.text.strip().lower() in ["/getid", "!getid"]:
+            await self.bot.api.messages.send(
+                peer_id=m.peer_id,
+                message=(
+                    "ℹ️ Информация о беседе:\n\n"
+                    f"📌 peer_id беседы: {m.peer_id}\n"
+                    f"👤 Ваш VK ID: {m.from_id}\n"
+                    f"🤖 Текущий admin_chat_id бота: {self.admin_chat_id}\n"
+                    f"🛡 admin_ids: {self.admin_ids or 'не задан (все в беседе)'}"
+                ),
+                random_id=0
+            )
+            return True
+
+        # Проверка прав для всех остальных команд
+        if not self.is_admin(m.from_id):
+            logger.info(f"[VK] Команда от незнакомого юзера {m.from_id} отклонена (не в admin_ids)")
+            return False
+
         cmd_parts = m.text.lower().split()
         command = cmd_parts[0][1:]
 
