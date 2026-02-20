@@ -9,6 +9,7 @@ import httpx
 import secrets
 import random
 import hashlib
+import uuid
 from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
 # ДОБАВИЛИ Request СЮДА:
@@ -1720,6 +1721,123 @@ async def proxy_get_reviews():
         except Exception as e:
             logger.error(f"Ошибка получения отзывов: {e}")
             return []
+
+@app.post("/api/applications/submit")
+async def submit_application(request: Request):
+    """Принимает отклик с сайта /careers и сохраняет в Supabase."""
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    required = ["contact", "experience", "about"]
+    for field in required:
+        if not data.get(field, "").strip():
+            raise HTTPException(status_code=422, detail=f"Field '{field}' is required")
+
+    record = {
+        "id":            str(uuid.uuid4()),
+        "vacancy_id":    data.get("vacancy_id", "unknown"),
+        "vacancy_title": data.get("vacancy_title", ""),
+        "contact":       data.get("contact", "").strip(),
+        "experience":    data.get("experience", "").strip(),
+        "about":         data.get("about", "").strip(),
+        "extra":         data.get("extra", "").strip(),
+        "status":        "new",
+        "created_at":    datetime.utcnow().isoformat() + "Z",
+    }
+
+    try:
+        r = await db.post(
+            "job_applications",
+            json=record,
+            headers={"Prefer": "return=minimal"}
+        )
+        if r.status_code not in (200, 201):
+            logger.error(f"Supabase insert error: {r.status_code} {r.text}")
+            raise HTTPException(status_code=500, detail="DB error")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Applications submit error: {e}")
+        raise HTTPException(status_code=500, detail="Server error")
+
+    logger.info(f"📨 Новый отклик: {record['vacancy_title']} от {record['contact']}")
+    return {"ok": True, "id": record["id"]}
+
+
+# ── Список откликов (только для админа) ─────────────────────────
+@app.get("/api/applications/list")
+async def list_applications(x_admin_token: str = Header(None)):
+    """Возвращает все отклики, отсортированные от новых к старым."""
+    if not verify_admin_token(x_admin_token):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        r = await db.get(
+            "job_applications",
+            params={"order": "created_at.desc", "limit": "200"}
+        )
+        if r.status_code == 200:
+            return r.json()
+        return []
+    except Exception as e:
+        logger.error(f"Applications list error: {e}")
+        return []
+
+
+# ── Обновление статуса отклика ───────────────────────────────────
+@app.patch("/api/applications/{app_id}/status")
+async def update_application_status(
+    app_id: str,
+    request: Request,
+    x_admin_token: str = Header(None)
+):
+    """Меняет статус отклика: new → reviewed (или другой)."""
+    if not verify_admin_token(x_admin_token):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        body = await request.json()
+        status = body.get("status", "reviewed")
+    except Exception:
+        status = "reviewed"
+
+    try:
+        r = await db.patch(
+            f"job_applications?id=eq.{app_id}",
+            json={"status": status},
+            headers={"Prefer": "return=minimal"}
+        )
+        if r.status_code in (200, 204):
+            return {"ok": True}
+        raise HTTPException(status_code=500, detail="DB error")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Applications status update error: {e}")
+        raise HTTPException(status_code=500, detail="Server error")
+
+
+# ── Удаление отклика ─────────────────────────────────────────────
+@app.delete("/api/applications/{app_id}")
+async def delete_application(app_id: str, x_admin_token: str = Header(None)):
+    """Удаляет отклик по ID."""
+    if not verify_admin_token(x_admin_token):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        r = await db.delete(f"job_applications?id=eq.{app_id}")
+        if r.status_code in (200, 204):
+            return {"ok": True}
+        raise HTTPException(status_code=500, detail="DB error")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Applications delete error: {e}")
+        raise HTTPException(status_code=500, detail="Server error")
+
+
             
 # ==========================================
 # 9. СИСТЕМНЫЕ
