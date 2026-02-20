@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { MessageSquare, Zap, BarChart3, Send, ArrowRight, Star, ExternalLink, X, PlusCircle } from 'lucide-react';
+import { MessageSquare, Zap, BarChart3, Send, ArrowRight, Star, ExternalLink, X, PlusCircle, Briefcase } from 'lucide-react';
 
 const Landing = () => {
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
@@ -225,6 +225,30 @@ const Landing = () => {
                 ))}
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* --- CAREERS BANNER --- */}
+      <div className="py-16 border-b border-slate-800 bg-gradient-to-br from-blue-950/30 to-slate-900/50">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-8 p-8 border border-blue-500/20 bg-blue-600/5 rounded-2xl">
+            <div className="flex items-center gap-5">
+              <div className="w-14 h-14 bg-blue-600/20 border border-blue-500/30 rounded-xl flex items-center justify-center shrink-0">
+                <Briefcase className="w-7 h-7 text-blue-400" />
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-500 mb-1">Открытые вакансии · 3 позиции</p>
+                <h3 className="text-xl font-bold text-white">Присоединяйтесь к команде</h3>
+                <p className="text-slate-400 text-sm mt-0.5">SMM, специалисты по работе с ботами, тех. администраторы</p>
+              </div>
+            </div>
+            <a
+              href="/careers"
+              className="shrink-0 inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm px-7 py-3.5 rounded-xl transition-all shadow-lg shadow-blue-600/20 whitespace-nowrap"
+            >
+              Смотреть вакансии <ArrowRight className="w-4 h-4" />
+            </a>
           </div>
         </div>
       </div>
