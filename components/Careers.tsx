@@ -93,7 +93,7 @@ const VACANCIES: Vacancy[] = [
     glow: 'shadow-emerald-500/20',
     pill: 'text-emerald-400 border-emerald-500/30',
     pillBg: 'bg-emerald-500/10',
-    badge: 'Фикс за бот',
+    badge: 'Создание ботов на заказ',
     title: 'Технический администратор ботов',
     short: 'Настройка и запуск ботов клиентов через наш конструктор',
     pay: 'Фиксированная ставка за каждый бот',
