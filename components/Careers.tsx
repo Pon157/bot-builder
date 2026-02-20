@@ -66,10 +66,10 @@ const VACANCIES: Vacancy[] = [
     glow: 'shadow-violet-500/20',
     pill: 'text-violet-400 border-violet-500/30',
     pillBg: 'bg-violet-500/10',
-    badge: '15–30 ⭐ за клиента',
+    badge: '15–30 звезд за клиента',
     title: 'Специалист по привлечению клиентов',
     short: 'Переманивать владельцев ботов на наш конструктор',
-    pay: '15–30 ⭐ за клиента',
+    pay: '15–30 звезд за клиента',
     payNote: 'Зависит от суммы покупки ключа клиентом. Бонусы за объём.',
     tasks: [
       'Поиск владельцев ботов, работающих не на нашем конструкторе',
@@ -206,13 +206,13 @@ const Careers: React.FC = () => {
           </h1>
 
           <p className="text-slate-400 text-base md:text-lg max-w-xl leading-relaxed">
-            Dialoge Engine растёт — нам нужны люди с инициативой. Удалёнка, гибкий формат, честная оплата.
+            Dialoge Engine растёт — нам нужны люди с инициативой. Удалёнка, свободный график.
           </p>
 
           <div className="mt-10 flex flex-wrap gap-8">
             {[
               { icon: Star,  label: 'Полностью удалённо' },
-              { icon: Zap,   label: 'Гибкий график'       },
+              { icon: Zap,   label: 'Свободный график'       },
               { icon: Users, label: 'Маленькая живая команда' },
             ].map(({ icon: Icon, label }) => (
               <div key={label} className="flex items-center gap-2 text-slate-500 text-sm">
