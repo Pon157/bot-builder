@@ -10,6 +10,7 @@ import Profile from './components/Profile';
 import CreateBotModal from './components/CreateBotModal';
 import AdminPanel from './components/AdminPanel';
 import Landing from './components/Landing';
+import Careers from './components/Careers';
 import { api } from './services/apiService';
 import { Menu, X, ArrowLeft } from 'lucide-react';
 
@@ -342,6 +343,9 @@ const App: React.FC = () => {
         {/* 0. Лендинг (главная страница) */}
         <Route path="/" element={<Landing />} />
         
+        {/* 1а. Страница вакансий */}
+        <Route path="/careers" element={<Careers />} />
+
         {/* 1. Авторизация пользователей */}
         <Route 
           path="/auth" 
