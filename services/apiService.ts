@@ -301,6 +301,17 @@ adminLogin: async (login: string, pass: string) => {
     return response.json();
   },
 
+  // Отклики на вакансии (для администратора)
+  getApplications: async (token: string) => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/applications/list`, {
+        method: 'GET',
+        headers: { 'x-admin-token': token }
+      });
+      return response.ok ? await response.json() : [];
+    } catch { return []; }
+  },
+
   // 4. Бан/Разбан пользователя
   adminToggleBan: async (token: string, userId: string, isBanned: boolean) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/user/ban`, {
@@ -460,5 +471,3 @@ adminLogin: async (login: string, pass: string) => {
     }
   }
 };
-
-
