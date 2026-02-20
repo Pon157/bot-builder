@@ -398,7 +398,7 @@ const Careers: React.FC = () => {
                     required
                     value={form.experience}
                     onChange={field('experience')}
-                    placeholder="Например: 1 год SMM в Instagram + монтаж Reels"
+                    placeholder="Например: 1 год SMM в TikTok + монтаж"
                     className="w-full bg-black/60 border border-slate-700 focus:border-blue-500 p-3.5 rounded-xl text-white text-sm outline-none transition-all placeholder:text-slate-700"
                   />
                 </div>
