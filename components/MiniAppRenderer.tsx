@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 
 // ─── Types (duplicated for standalone use) ────────────────────────────────────
 
 type CompType =
   | 'heading' | 'text' | 'button' | 'linkButton'
-  | 'input' | 'textarea' | 'divider' | 'image' | 'spacer' | 'card';
+  | 'input' | 'textarea' | 'divider' | 'image' | 'spacer';
 
 interface CompProps {
   text?: string;
