@@ -447,24 +447,6 @@ adminLogin: async (login: string, pass: string) => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/miniapps/save`, {
         method: 'POST',
-        body: JSON.stringify(appData)
-      });
-      if (!response.ok) {
-        console.error("Ошибка сохранения MiniApp:", await response.text());
-        return false;
-      }
-      return await response.json();
-    } catch (e) {
-      console.error("Network error on saveMiniApp:", e);
-      return false;
-    }
-  },
-
-  // Сохранение или обновление MiniApp
-  saveMiniApp: async (appData: any) => {
-    try {
-      const response = await fetchWithTimeout(`${getApiBase()}/miniapps/save`, {
-        method: 'POST',
         body: JSON.stringify({
           id: appData.id,
           owner_id: appData.owner_id, // Обязательно для вашей БД (NOT NULL)
@@ -492,30 +474,33 @@ adminLogin: async (login: string, pass: string) => {
       return null;
     }
   },
-
-  // --- MINI APPS UPDATES ---
-  listMiniApps: async (ownerId: string) => {
-    try {
-      const response = await fetchWithTimeout(`${getApiBase()}/miniapps/list/${ownerId}`);
-      return response.ok ? await response.json() : [];
-    } catch (e) {
-      return [];
-    }
-  },
-
-  submitMiniAppForm: async (appId: string, botId: string | undefined, formData: any) => {
-    try {
-      const response = await fetchWithTimeout(`${getApiBase()}/miniapps/submit`, {
-        method: 'POST',
-        body: JSON.stringify({ app_id: appId, bot_id: botId, data: formData })
-      });
-      return response.ok;
-    } catch (e) {
-      console.error("Direct submit error", e);
-      return false;
-    }
-  },
   
+  listMiniApps: async (botId: string) => {
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/miniapps/list-by-bot/${botId}`);
+      if (!res.ok) return [];
+      return await res.json();
+    } catch (e) { console.error("listMiniApps error:", e); return []; }
+  },
+
+  getMiniAppLicense: async (botId: string) => {
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/miniapps/license/${botId}`);
+      if (!res.ok) return { active: false };
+      return await res.json();
+    } catch (e) { return { active: false }; }
+  },
+
+  activateMiniAppKey: async (key: string, botId: string) => {
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/miniapps/activate`, {
+        method: 'POST',
+        body: JSON.stringify({ key, botId })
+      });
+      return await res.json();
+    } catch (e) { return { status: 'error', message: 'Ошибка сети' }; }
+  },
+
   // --- BOT MANAGEMENT ---
 
   // --- ДОБАВИТЬ В api.ts ---
