@@ -442,6 +442,39 @@ adminLogin: async (login: string, pass: string) => {
     }
   },
 
+  // Сохранение или обновление MiniApp
+  saveMiniApp: async (appData: any) => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/miniapps/save`, {
+        method: 'POST',
+        body: JSON.stringify({
+          id: appData.id,
+          owner_id: appData.owner_id, // Обязательно для вашей БД (NOT NULL)
+          title: appData.title || 'Без названия',
+          theme: appData.theme,
+          components: appData.components,
+          form_webhook: appData.formWebhook || '' // Мапим camelCase в snake_case для БД
+        })
+      });
+      return response.ok;
+    } catch (e) {
+      console.error("Ошибка при сохранении MiniApp:", e);
+      return false;
+    }
+  },
+
+  // Получение MiniApp по ID
+  getMiniApp: async (appId: string) => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/miniapps/${appId}`);
+      if (!response.ok) return null;
+      return await response.json();
+    } catch (e) {
+      console.error("Ошибка при загрузке MiniApp:", e);
+      return null;
+    }
+  },
+  
   // --- BOT MANAGEMENT ---
 
   // --- ДОБАВИТЬ В api.ts ---
