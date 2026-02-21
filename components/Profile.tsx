@@ -3,7 +3,7 @@ import { User, BotConfig } from '../types';
 import { api } from '../services/apiService';
 import {
   Key, ShoppingCart, Bot as BotIcon, RefreshCw, FileText,
-  ExternalLink, Megaphone, MessageCircle, LifeBuoy, Brain, Coins, Zap
+  ExternalLink, Megaphone, MessageCircle, LifeBuoy, Brain, Coins, Zap, AppWindow
 } from 'lucide-react';
 
 interface ProfileProps {
@@ -17,7 +17,11 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
   const [selectedBotId, setSelectedBotId]   = useState('');
   const [isActivating, setIsActivating]     = useState(false);
   const [isSyncing, setIsSyncing]           = useState(false);
-  const [activeSection, setActiveSection]   = useState<'license' | 'ai'>('license');
+  const [activeSection, setActiveSection]   = useState<'license' | 'ai' | 'miniapps'>('license');
+  const [miniappKey, setMiniappKey]         = useState('');
+  const [miniappBotId, setMiniappBotId]     = useState('');
+  const [activatingMiniapp, setActivatingMiniapp] = useState(false);
+  const [miniappLicenses, setMiniappLicenses] = useState<Record<string, {active: boolean, expires_at: number}>>({});
 
   // AI-токены
   const [aiKey, setAiKey]               = useState('');
@@ -27,15 +31,40 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
 
   const GITHUB_RAW_URL = "https://raw.githubusercontent.com/Pon157/bot-builder/main";
 
-  // Загружаем AI-балансы при маунте
+  // Загружаем AI-балансы и мини-апп лицензии при маунте
   useEffect(() => {
     bots.forEach(bot => {
       fetch(`/api/ai/balance/${bot.id}`)
         .then(r => r.json())
         .then(d => setAiBalances(prev => ({ ...prev, [bot.id]: d.tokens_balance || 0 })))
         .catch(() => {});
+      fetch(`/api/miniapps/license/${bot.id}`)
+        .then(r => r.json())
+        .then(d => setMiniappLicenses(prev => ({ ...prev, [bot.id]: d })))
+        .catch(() => {});
     });
   }, [bots]);
+
+  const handleActivateMiniapp = async () => {
+    if (!miniappKey || !miniappBotId) return;
+    setActivatingMiniapp(true);
+    try {
+      const r = await fetch('/api/miniapps/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: miniappKey.trim().toUpperCase(), botId: miniappBotId })
+      });
+      const res = await r.json();
+      if (res.status === 'ok') {
+        setMiniappLicenses(prev => ({ ...prev, [miniappBotId]: { active: true, expires_at: res.expires_at } }));
+        alert(`✅ Мини-апп активированы! До ${new Date(res.expires_at).toLocaleDateString()}`);
+        setMiniappKey('');
+      } else {
+        alert('Ошибка: ' + (res.message || 'Неизвестная ошибка'));
+      }
+    } catch { alert('Ошибка сети'); }
+    finally { setActivatingMiniapp(false); }
+  };
 
   const refreshData = async () => {
     setIsSyncing(true);
@@ -102,14 +131,15 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
       </header>
 
       {/* Переключатель раздела */}
-      <div className="flex bg-black border border-zinc-800 rounded-2xl p-1 w-fit gap-1">
+      <div className="flex bg-black border border-zinc-800 rounded-2xl p-1 w-fit gap-1 flex-wrap">
         {([
-          { id: 'license', label: '🔑 Лицензии', icon: Key },
-          { id: 'ai',      label: '🤖 AI-токены', icon: Brain },
+          { id: 'license',  label: '🔑 Лицензии'    },
+          { id: 'ai',       label: '🤖 AI-токены'   },
+          { id: 'miniapps', label: '📱 Мини-апп'    },
         ] as const).map(({ id, label }) => (
           <button key={id} onClick={() => setActiveSection(id)}
-            className={`px-6 py-3 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all ${
-              activeSection === id ? 'bg-blue-600 text-white shadow-lg' : 'text-zinc-500 hover:text-zinc-300'
+            className={`px-5 py-3 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all ${
+              activeSection === id ? 'bg-indigo-600 text-white shadow-lg' : 'text-zinc-500 hover:text-zinc-300'
             }`}>{label}</button>
         ))}
       </div>
@@ -238,6 +268,65 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
               </div>
             </section>
           </>)}
+
+          {/* ── МИНИ-АПП ── */}
+          {activeSection === 'miniapps' && (<>
+            {/* Статус по ботам */}
+            <section className="bg-[#121212] border border-zinc-800 rounded-[1.5rem] md:rounded-[2.5rem] p-5 md:p-8 shadow-2xl">
+              <h3 className="text-lg md:text-xl font-bold text-white mb-6 flex items-center gap-2">
+                <AppWindow className="w-5 h-5 text-indigo-500" />Мини-апп по ботам
+              </h3>
+              <div className="space-y-3">
+                {bots.map(bot => {
+                  const lic = miniappLicenses[bot.id];
+                  const active = lic?.active || false;
+                  const expiry = lic?.expires_at || 0;
+                  const days = Math.max(0, Math.ceil((expiry - Date.now()) / (1000 * 3600 * 24)));
+                  return (
+                    <div key={bot.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-black border border-zinc-800 rounded-2xl gap-3 hover:border-zinc-700 transition-colors">
+                      <div>
+                        <p className="text-sm font-bold text-white truncate max-w-[200px]">{bot.name}</p>
+                        <p className="text-[10px] text-zinc-500 font-mono">{bot.id}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className={`text-xs font-black uppercase tracking-widest ${active ? 'text-indigo-400' : 'text-zinc-600'}`}>
+                          {active ? `✅ ${days} дн. доступа` : '— Не активно'}
+                        </p>
+                        {expiry > 0 && <p className="text-[9px] text-zinc-600">До {new Date(expiry).toLocaleDateString()}</p>}
+                      </div>
+                    </div>
+                  );
+                })}
+                {bots.length === 0 && <p className="text-center text-zinc-600 py-10 uppercase text-[10px] font-bold">Нет ботов</p>}
+              </div>
+            </section>
+
+            {/* Активация ключа */}
+            <section className="bg-[#111] border border-zinc-800 rounded-[1.5rem] md:rounded-[2.5rem] p-5 md:p-8 space-y-6">
+              <h3 className="text-lg md:text-xl font-bold flex items-center gap-2 text-white">
+                <Key className="w-5 h-5 text-indigo-500" />Активация мини-апп ключа
+              </h3>
+              <div className="space-y-4">
+                <label className="block">
+                  <span className="text-[10px] font-bold text-zinc-500 uppercase mb-2 block ml-2">Выберите бота</span>
+                  <select className="w-full bg-black border border-zinc-800 rounded-xl p-4 text-sm text-white outline-none focus:border-indigo-500 appearance-none cursor-pointer"
+                    value={miniappBotId} onChange={e => setMiniappBotId(e.target.value)}>
+                    <option value="">-- Выбрать из списка --</option>
+                    {bots.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                  </select>
+                </label>
+                <input className="w-full bg-black border border-zinc-800 rounded-xl p-4 text-sm font-mono text-white outline-none focus:border-indigo-500 transition-colors"
+                  placeholder="MAPP-XXXXXX-NNN"
+                  value={miniappKey}
+                  onChange={e => setMiniappKey(e.target.value)} />
+                <button onClick={handleActivateMiniapp}
+                  disabled={activatingMiniapp || !miniappKey || !miniappBotId}
+                  className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-black px-8 py-4 rounded-xl transition-all uppercase tracking-widest text-xs shadow-lg shadow-indigo-600/20">
+                  {activatingMiniapp ? 'Активация...' : 'Активировать мини-апп'}
+                </button>
+              </div>
+            </section>
+          </>)}
         </div>
 
         {/* Правая колонка */}
@@ -257,6 +346,30 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
               <a href="https://t.me/dialogengine_bot" target="_blank" rel="noreferrer"
                 className="w-full bg-white text-black font-black py-4 rounded-xl uppercase tracking-widest text-xs hover:bg-zinc-200 transition-all shadow-xl text-center">
                 Купить ключ в TG
+              </a>
+            </div>
+          )}
+
+          {/* Магазин мини-апп */}
+          {activeSection === 'miniapps' && (
+            <div className="bg-indigo-600/10 border border-indigo-500/20 rounded-3xl p-6 md:p-8 flex flex-col items-center text-center shadow-xl">
+              <AppWindow className="w-10 h-10 md:w-12 md:h-12 text-indigo-400 mb-4" />
+              <h3 className="text-lg font-bold text-white mb-2">Мини-приложения</h3>
+              <div className="text-xs text-zinc-400 mb-6 space-y-2">
+                <p>Публичные веб-страницы с формами, кнопками и контентом.</p>
+                <div className="py-3 bg-black/40 rounded-xl border border-indigo-500/10 mt-2 space-y-1">
+                  <p className="text-white font-bold text-sm">📱 1 месяц — 90 ₽</p>
+                  <p className="text-zinc-500 text-xs">за бота · неограниченно приложений</p>
+                </div>
+                <div className="text-left py-2 space-y-1">
+                  <p className="text-zinc-500">✅ Формы через бота / Sheets / вебхук</p>
+                  <p className="text-zinc-500">✅ Кастомные темы и градиенты</p>
+                  <p className="text-zinc-500">✅ Публичная ссылка /app/...</p>
+                </div>
+              </div>
+              <a href="https://t.me/dialogengine_bot" target="_blank" rel="noreferrer"
+                className="w-full bg-indigo-600 text-white font-black py-4 rounded-xl uppercase tracking-widest text-xs hover:bg-indigo-500 transition-all shadow-xl text-center">
+                Купить ключ в TG — 90 ₽
               </a>
             </div>
           )}
