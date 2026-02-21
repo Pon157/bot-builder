@@ -285,10 +285,10 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
 
       {/* Баннер несохранённых изменений */}
       {hasUnsavedChanges && (
-        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[100] bg-blue-600 text-white px-8 py-4 rounded-2xl shadow-2xl flex items-center gap-4 animate-bounce">
-          <AlertCircle className="w-5 h-5" />
-          <span className="text-xs font-black uppercase tracking-widest">Несохранённые изменения!</span>
-          <button onClick={syncState} disabled={isProcessing} className="bg-white text-blue-600 px-4 py-1.5 rounded-xl font-black text-[10px] uppercase">
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[100] bg-blue-600 text-white px-4 md:px-8 py-3 md:py-4 rounded-2xl shadow-2xl flex items-center gap-3 md:gap-4 max-w-[90vw]">
+          <AlertCircle className="w-4 h-4 md:w-5 md:h-5 shrink-0" />
+          <span className="text-[10px] md:text-xs font-black uppercase tracking-widest">Несохранённые изменения!</span>
+          <button onClick={syncState} disabled={isProcessing} className="bg-white text-blue-600 px-3 md:px-4 py-1.5 rounded-xl font-black text-[10px] uppercase shrink-0">
             Сохранить
           </button>
         </div>
@@ -323,17 +323,18 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
       </header>
 
       {/* Вкладки */}
-<div className="flex gap-2 border-b border-zinc-800 overflow-x-auto no-scrollbar">
+<div className="flex gap-1 border-b border-zinc-800 overflow-x-auto no-scrollbar -mx-1 px-1">
   {tabs.map(t => (
       <button 
         key={t.id} 
         onClick={() => setActiveTab(t.id as any)}
-        className={`px-6 py-4 text-[10px] font-black uppercase tracking-widest border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${
+        className={`px-3 md:px-6 py-3 md:py-4 text-[9px] md:text-[10px] font-black uppercase tracking-widest border-b-2 transition-all flex items-center gap-1.5 whitespace-nowrap ${
           activeTab === t.id ? 'border-blue-500 text-blue-500' : 'border-transparent text-zinc-500'
         }`}
       >
-        <t.icon className="w-3.5 h-3.5" />
-        {t.label}
+        <t.icon className="w-3 h-3 md:w-3.5 md:h-3.5" />
+        <span className="hidden sm:inline">{t.label}</span>
+        <span className="sm:hidden">{t.label.slice(0, 3)}</span>
       </button>
   ))}
 </div>
@@ -1390,9 +1391,23 @@ const MiniPropsPanel: React.FC<{
           </label>
           <label className="block">
             <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">Жирность</span>
-            <select value={p.fontWeight || (comp.type === 'heading' ? '800' : '400')} onChange={e => up({ fontWeight: e.target.value })} className={inp('cursor-pointer')}>
-              <option value="400">Обычный</option><option value="600">Полужирный</option><option value="700">Жирный</option><option value="800">Очень жирный</option>
-            </select>
+            <div className="flex gap-1">
+              {([
+                { v: '400', l: 'Обычный' },
+                { v: '600', l: 'Средний' },
+                { v: '700', l: 'Жирный' },
+                { v: '800', l: 'Очень' },
+              ] as const).map(({ v, l }) => {
+                const def = comp.type === 'heading' ? '800' : '400';
+                const active = p.fontWeight === v || (!p.fontWeight && v === def);
+                return (
+                  <button key={v} onClick={() => up({ fontWeight: v })} style={{ fontWeight: v }}
+                    className={`flex-1 py-1.5 rounded-lg border text-[8px] transition-all truncate px-0.5 ${active ? 'bg-indigo-500/20 border-indigo-500/40 text-indigo-300' : 'border-zinc-800 text-zinc-600 hover:border-zinc-700 hover:text-white'}`}>
+                    {l}
+                  </button>
+                );
+              })}
+            </div>
           </label>
         </div>
         <div className="flex gap-1">
@@ -1831,7 +1846,10 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
 
   const addComp = (type: MiniCompType) => {
     if (!editing) return;
-    updateApp({ components: [...editing.components, newMiniComp(type)] });
+    const newC = newMiniComp(type);
+    updateApp({ components: [...editing.components, newC] });
+    setSelComp(newC.id);
+    setRightTab('props');
     setMobileTab('canvas');
   };
 
@@ -2028,7 +2046,7 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
         </div>
       )}
 
-      <div className="flex gap-3" style={{ minHeight: 560 }}>
+      <div className="flex gap-3" style={{ minHeight: 'min(560px, 70vh)' }}>
         {/* Левая: блоки */}
         {!previewMode && (
           <div className={`w-36 shrink-0 flex-col gap-0.5 ${mobileTab !== 'blocks' ? 'hidden md:flex' : 'flex'}`}>
@@ -2108,12 +2126,12 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
             {rightTab === 'props' && editing!.components.length > 0 && (
               <div className="border-t border-zinc-800 p-2 shrink-0">
                 <p className="text-[7px] font-black text-zinc-700 uppercase tracking-widest mb-1.5 px-1">Слои</p>
-                <div className="space-y-0.5 max-h-28 overflow-y-auto">
+                <div className="space-y-0.5 max-h-36 overflow-y-auto">
                   {editing!.components.map((c, i) => {
                     const itm = MINI_PALETTE.find(pl => pl.type === c.type);
                     const Ic = itm?.icon || Square;
                     return (
-                      <button key={c.id} onClick={() => setSelComp(c.id)}
+                      <button key={c.id} onClick={() => { setSelComp(c.id); setRightTab('props'); setMobileTab('panel'); }}
                         className={`w-full flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[9px] font-bold transition-all ${selectedComp === c.id ? 'bg-indigo-500/15 text-indigo-300' : 'text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800/40'}`}>
                         <Ic className="w-2.5 h-2.5 shrink-0" />
                         <span className="truncate">{itm?.label || c.type}</span>
