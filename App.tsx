@@ -11,6 +11,8 @@ import CreateBotModal from './components/CreateBotModal';
 import AdminPanel from './components/AdminPanel';
 import Landing from './components/Landing';
 import Careers from './components/Careers';
+import MiniAppBuilder from './components/MiniAppBuilder';
+import MiniAppRenderer from './components/MiniAppRenderer';
 import { api } from './services/apiService';
 import { Menu, X, ArrowLeft } from 'lucide-react';
 
@@ -343,6 +345,9 @@ const App: React.FC = () => {
         {/* 0. Лендинг (главная страница) */}
         <Route path="/" element={<Landing />} />
         
+        {/* Публичный рендер мини-приложения */}
+        <Route path="/app/:appId" element={<MiniAppRenderer />} />
+
         {/* 1а. Страница вакансий */}
         <Route path="/careers" element={<Careers />} />
 
@@ -416,6 +421,7 @@ const App: React.FC = () => {
 } />
                   
                   <Route path="/broadcast" element={<BroadcastManager bots={bots} />} />
+                  <Route path="/miniapps" element={<MiniAppBuilder user={user} />} />
                   
                   <Route path="/dashboard" element={<Navigate to="/dashboard" replace />} />
                 </Routes>
