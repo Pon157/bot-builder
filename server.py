@@ -2110,45 +2110,54 @@ async def submit_miniapp_form(request: Request):
         raise HTTPException(status_code=422, detail="app_id required")
 
     try:
-        # Если фронтенд не прислал настройки — загружаем из БД по app_id
-        if not webhook_type:
-            r = await db.get("mini_apps", params={"id": f"eq.{app_id}", "select": "*", "limit": "1"})
-            if r.status_code == 200 and r.json():
-                row = r.json()[0]
-                webhook_type   = row.get("webhook_type", "formbot")
-                notify_chat_id = notify_chat_id or row.get("notify_chat_id", "")
-                sheets_url     = sheets_url or row.get("sheets_url", "")
-                form_webhook   = form_webhook or row.get("form_webhook", "")
-                app_title      = app_title or row.get("title", "")
+        # 1. Извлекаем данные формы из запроса
+        form_data = data.get("form_data", {})
+        app_id = data.get("app_id")
 
-        # Форматируем текст уведомления
-        lines = []
-        if app_title:
-            lines.append(f"<b>Форма: {app_title}</b>")
-        else:
-            lines.append("<b>Новая заявка</b>")
-        lines.append("")
-        for k, v in form_data.items():
-            if k.startswith("_"):
-                continue
-            lines.append(f"<b>{k}</b>: {v}")
-        if not form_data:
-            lines.append("(форма без полей)")
-        msg_html = "\n".join(lines)
+        # 2. Получаем актуальные настройки мини-приложения из БД
+        # Нам нужно узнать notify_chat_id и webhook_type
+        r = await db.get("mini_apps", params={"id": f"eq.{app_id}", "select": "*", "limit": "1"})
+        
+        if r.status_code == 200 and r.json():
+            app_row = r.json()[0]
+            webhook_type = app_row.get("webhook_type", "bot")
+            notify_chat_id = app_row.get("notify_chat_id", "") # Тот самый ID из forms_bot
+            
+            logger.info(f"Processing form: app={app_id}, type={webhook_type}, chat={notify_chat_id}")
 
-        # 1. Выделенный бот для форм — самый простой способ
-        if webhook_type == "formbot" and notify_chat_id and FORM_BOT_TOKEN:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(
-                    f"https://api.telegram.org/bot{FORM_BOT_TOKEN}/sendMessage",
-                    json={
-                        "chat_id": notify_chat_id,
-                        "text": msg_html,
-                        "parse_mode": "HTML",
-                    }
-                )
-                if resp.status_code != 200:
-                    logger.warning(f"Form bot send error: {resp.text}")
+            # 3. ЛОГИКА ОТПРАВКИ В TELEGRAM (через выделенного бота)
+            if webhook_type == "bot" and notify_chat_id:
+                # Берем токен нашего бота из .env
+                bot_token = os.getenv("FORM_BOT_TOKEN")
+                
+                if bot_token:
+                    # Форматируем сообщение
+                    lines = [
+                        "<b>Новая форма!</b>",
+                        f"Приложение: <code>{app_id}</code>",
+                        "---"
+                    ]
+                    for k, v in form_data.items():
+                        lines.append(f"<b>{k}</b>: {v}")
+                    
+                    msg_text = "\n".join(lines)
+
+                    # Отправляем напрямую в Telegram API
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        resp = await client.post(
+                            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                            json={
+                                "chat_id": notify_chat_id,
+                                "text": msg_text,
+                                "parse_mode": "HTML"
+                            }
+                        )
+                        if resp.status_code == 200:
+                            logger.info(f"Message sent to chat {notify_chat_id}")
+                        else:
+                            logger.error(f"TG Error: {resp.text}")
+                else:
+                    logger.error("FORM_BOT_TOKEN not found in .env")
 
         # 2. Google Sheets через Apps Script
         elif webhook_type == "sheets" and sheets_url:
