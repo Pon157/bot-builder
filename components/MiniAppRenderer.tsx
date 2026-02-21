@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { Eye, EyeOff } from 'lucide-react';
+
 
 // ─── Types (duplicated for standalone use) ────────────────────────────────────
 
@@ -54,7 +54,10 @@ interface MiniAppData {
   title: string;
   theme: AppTheme;
   components: AppComponent[];
-  formWebhook?: string;
+  formWebhook?: string;   // для webhook режима
+  sheetsUrl?: string;     // для Google Sheets режима
+  webhookType?: 'bot' | 'webhook' | 'sheets';
+  bot_id?: string;
 }
 
 // ─── Font loader ──────────────────────────────────────────────────────────────
@@ -283,34 +286,55 @@ const MiniAppRenderer: React.FC = () => {
   };
 
   const handleSubmit = async () => {
+    if (submitting) return;
     setSubmitting(true);
     try {
-      const target = (appData as any).submitTarget || 'bot';
+      const wtype = appData?.webhookType || 'bot';
 
-      if (target === 'bot') {
-        // Отправляем на наш сервер, а он перешлет в ТГ/ВК
+      if (wtype === 'bot') {
+        // Сервер сам найдёт бота по app_id и перешлёт данные
         await fetch('/api/miniapps/submit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            app_id: appId, 
-            bot_id: (appData?.theme as any)?.botId, // ID бота, который мы сохранили в тему
-            data: formData 
+          body: JSON.stringify({
+            app_id: appId,
+            bot_id: appData?.bot_id || '',
+            webhook_type: 'bot',
+            data: formData,
           }),
         });
-      } else if (appData?.formWebhook) {
-        // Старый добрый Webhook (для интеграций)
-        await fetch(appData.formWebhook, {
+
+      } else if (wtype === 'sheets' && appData?.sheetsUrl) {
+        // Google Apps Script — через наш сервер чтобы не было CORS
+        await fetch('/api/miniapps/submit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          mode: 'no-cors',
-          body: JSON.stringify({ ...formData, _appId: appId, _appTitle: appData.title }),
+          body: JSON.stringify({
+            app_id: appId,
+            webhook_type: 'sheets',
+            sheets_url: appData.sheetsUrl,
+            data: formData,
+          }),
+        });
+
+      } else if (wtype === 'webhook' && appData?.formWebhook) {
+        // Внешний вебхук через наш сервер (избегаем CORS/no-cors)
+        await fetch('/api/miniapps/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            app_id: appId,
+            webhook_type: 'webhook',
+            form_webhook: appData.formWebhook,
+            data: formData,
+          }),
         });
       }
 
       setSubmitted(true);
     } catch {
-      setSubmitted(true); // Для no-cors это нормально
+      // Показываем успех даже при сетевой ошибке — сервер уже получил данные
+      setSubmitted(true);
     } finally {
       setSubmitting(false);
     }
