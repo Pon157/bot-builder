@@ -1846,17 +1846,18 @@ async def save_miniapp(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    app_id    = data.get("id") or str(uuid.uuid4())
-    owner_id  = data.get("owner_id", "")
-    title     = data.get("title", "Без названия")[:120]
-    theme     = data.get("theme", {})
+    app_id     = data.get("id") or str(uuid.uuid4())
+    owner_id   = data.get("owner_id", "")
+    title      = data.get("title", "Без названия")[:120]
+    theme      = data.get("theme", {})
     components = data.get("components", [])
-    webhook   = data.get("formWebhook", "")
+    # Приводим к snake_case для БД
+    webhook    = data.get("formWebhook") or data.get("form_webhook", "")
 
     if not owner_id:
         raise HTTPException(status_code=422, detail="owner_id required")
 
-    # Не даём хранить более 100 компонентов
+    # Ограничение на количество компонентов
     if len(components) > 100:
         raise HTTPException(status_code=422, detail="Too many components (max 100)")
 
@@ -1871,15 +1872,18 @@ async def save_miniapp(request: Request):
     }
 
     try:
-        # Upsert (вставить или обновить если id уже есть)
+        # ВАЖНО: Добавляем ?on_conflict=id, иначе Supabase не поймет, что нужно обновлять
         r = await db.post(
-            "mini_apps",
+            "mini_apps?on_conflict=id", 
             json=record,
             headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
         )
-        if r.status_code not in (200, 201):
+        
+        # 204 No Content возвращается при return=minimal, это признак успеха
+        if r.status_code not in (200, 201, 204):
             logger.error(f"Miniapp save error: {r.status_code} {r.text}")
-            raise HTTPException(status_code=500, detail="DB error")
+            raise HTTPException(status_code=500, detail=f"DB error: {r.text}")
+            
     except HTTPException:
         raise
     except Exception as e:
@@ -1903,9 +1907,10 @@ async def get_miniapp(app_id: str):
             results = r.json()
             if results:
                 app_data = results[0]
-                # Переименовываем form_webhook → formWebhook для фронта
+                # Мапим обратно для фронтенда
                 app_data["formWebhook"] = app_data.pop("form_webhook", "")
                 return app_data
+        
         raise HTTPException(status_code=404, detail="App not found")
     except HTTPException:
         raise
@@ -1928,7 +1933,9 @@ async def list_miniapps(owner_id: str):
                 "limit":    "50",
             }
         )
-        return r.json() if r.status_code == 200 else []
+        if r.status_code == 200:
+            return r.json()
+        return []
     except Exception as e:
         logger.error(f"Miniapp list error: {e}")
         return []
@@ -1944,12 +1951,18 @@ async def delete_miniapp(app_id: str, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
+    if not owner_id:
+         raise HTTPException(status_code=422, detail="owner_id required for deletion")
+
     try:
+        # Проверка владельца прямо в запросе к БД
         r = await db.delete(
             f"mini_apps?id=eq.{app_id}&owner_id=eq.{owner_id}"
         )
         if r.status_code in (200, 204):
             return {"ok": True}
+        
+        logger.warning(f"Delete failed: {r.status_code} {r.text}")
         raise HTTPException(status_code=403, detail="Forbidden or not found")
     except HTTPException:
         raise
