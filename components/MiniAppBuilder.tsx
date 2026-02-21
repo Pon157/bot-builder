@@ -1,11 +1,10 @@
-import React, { useState } from 'react';
-import { Eye, EyeOff } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Plus, Trash2, ChevronUp, ChevronDown, Settings2, Eye, EyeOff,
   Type, MousePointerClick, Link2, TextCursorInput, AlignLeft,
   Minus, Image as ImageIcon, Save, Palette,
   X, MoveVertical, Square, Layers, Globe, Check,
-  AlignCenter, AlignRight, Layout
+  AlignCenter, AlignRight, Layout, Bold
 } from 'lucide-react';
 import { User } from '../types';
 
@@ -331,8 +330,20 @@ const PropertiesPanel: React.FC<{
             <PInput type="number" min={10} max={80} value={p.fontSize || 28} onChange={e => up({ fontSize: Number(e.target.value) })} />
           </PropInput>
           <PropInput label="Жирность">
-            <PSelect value={p.fontWeight || '800'} onChange={e => up({ fontWeight: e.target.value })}
-              options={[{value:'400',label:'Обычный'},{value:'600',label:'Полужирный'},{value:'700',label:'Жирный'},{value:'800',label:'Очень жирный'},{value:'900',label:'Черный'}]} />
+            <div className="flex gap-1">
+              {([{v:'400',l:'A'},{v:'600',l:'B'},{v:'700',l:'B'},{v:'800',l:'B'},{v:'900',l:'B'}] as const).map(({v,l},i) => (
+                <button key={v} onClick={() => up({ fontWeight: v })}
+                  style={{ fontWeight: v }}
+                  className={`flex-1 py-2 rounded-lg border text-[11px] transition-all ${p.fontWeight===v||(!p.fontWeight&&v==='800')?'bg-indigo-500/20 border-indigo-500/50 text-indigo-300':'border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-white'}`}>
+                  {['薄','正','中','粗','黑'][i]}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-1 mt-1">
+              {(['400','600','700','800','900'] as const).map(v => (
+                <span key={v} className="flex-1 text-center text-[8px] text-zinc-700">{v}</span>
+              ))}
+            </div>
           </PropInput>
           <PropInput label="Выравнивание">
             <div className="flex gap-1">
@@ -359,8 +370,15 @@ const PropertiesPanel: React.FC<{
             <PInput type="number" min={10} max={60} value={p.fontSize || 16} onChange={e => up({ fontSize: Number(e.target.value) })} />
           </PropInput>
           <PropInput label="Жирность">
-            <PSelect value={p.fontWeight || '400'} onChange={e => up({ fontWeight: e.target.value })}
-              options={[{value:'400',label:'Обычный'},{value:'600',label:'Полужирный'},{value:'700',label:'Жирный'}]} />
+            <div className="flex gap-1">
+              {([{v:'400',l:'Обычный'},{v:'600',l:'Средний'},{v:'700',l:'Жирный'},{v:'800',l:'Очень жирный'}] as const).map(({v,l}) => (
+                <button key={v} onClick={() => up({ fontWeight: v })}
+                  style={{ fontWeight: v }}
+                  className={`flex-1 py-2 rounded-lg border text-[9px] transition-all truncate px-1 ${p.fontWeight===v||(!p.fontWeight&&v==='400')?'bg-indigo-500/20 border-indigo-500/50 text-indigo-300':'border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-white'}`}>
+                  {l}
+                </button>
+              ))}
+            </div>
           </PropInput>
           <PropInput label="Выравнивание">
             <div className="flex gap-1">
@@ -565,6 +583,9 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ user }) => {
   const [saving, setSaving]           = useState(false);
   const [saved, setSaved]             = useState(false);
   const [publishedUrl, setPublishedUrl] = useState<string | null>(null);
+  const [mobileTab, setMobileTab]     = useState<'blocks' | 'canvas' | 'panel'>('canvas');
+
+  const layerListRef = useRef<HTMLDivElement>(null);
 
   const selected = app.components.find(c => c.id === selectedId) || null;
 
@@ -572,6 +593,10 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ user }) => {
     const c = newComp(type);
     setApp(a => ({ ...a, components: [...a.components, c] }));
     setSelectedId(c.id);
+    setRightTab('props');
+    setMobileTab('canvas');
+    // Auto-switch to panel after short delay so user can see the new block
+    setTimeout(() => setMobileTab('panel'), 300);
   };
 
   const removeComp = (id: string) => {
@@ -658,55 +683,72 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ user }) => {
     <div className="flex flex-col h-full bg-[#080808] text-zinc-300">
 
       {/* ── TOP BAR ─────────────────────────────────────────── */}
-      <div className="flex items-center gap-3 px-5 py-3.5 border-b border-zinc-800/80 bg-[#0d0d0d] shrink-0">
-        <div className="flex items-center gap-3 flex-1 min-w-0">
-          <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center shrink-0">
-            <Layout className="w-4 h-4 text-white" />
+      <div className="flex items-center gap-2 px-3 md:px-5 py-3 border-b border-zinc-800/80 bg-[#0d0d0d] shrink-0 flex-wrap">
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          <div className="w-7 h-7 md:w-8 md:h-8 rounded-lg bg-indigo-600 flex items-center justify-center shrink-0">
+            <Layout className="w-3.5 h-3.5 md:w-4 md:h-4 text-white" />
           </div>
           <input
             value={app.title}
             onChange={e => setApp(a => ({ ...a, title: e.target.value }))}
-            className="text-white font-black text-sm bg-transparent outline-none border-b border-transparent focus:border-indigo-500 transition-all max-w-64 truncate"
+            className="text-white font-black text-sm bg-transparent outline-none border-b border-transparent focus:border-indigo-500 transition-all flex-1 min-w-0 truncate"
             placeholder="Название приложения"
           />
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0">
           {/* Preview toggle */}
           <button
             onClick={() => setPreviewMode(p => !p)}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${previewMode ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30' : 'bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-700'}`}
+            className={`flex items-center gap-1 px-2.5 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${previewMode ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30' : 'bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-700'}`}
           >
             {previewMode ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-            {previewMode ? 'Редактор' : 'Превью'}
+            <span className="hidden sm:inline">{previewMode ? 'Редактор' : 'Превью'}</span>
           </button>
 
           {/* Save */}
           <button
             onClick={saveApp}
             disabled={saving}
-            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all shadow-lg ${saved ? 'bg-emerald-600 text-white shadow-emerald-600/20' : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/20'}`}
+            className={`flex items-center gap-1 px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all shadow-lg ${saved ? 'bg-emerald-600 text-white shadow-emerald-600/20' : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/20'}`}
           >
             {saved ? <Check className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
-            {saved ? 'Сохранено!' : saving ? 'Сохраняю...' : 'Сохранить'}
+            <span className="hidden sm:inline">{saved ? 'Сохранено!' : saving ? '...' : 'Сохранить'}</span>
           </button>
 
           {/* Published URL */}
           {publishedUrl && (
             <a href={publishedUrl} target="_blank" rel="noopener noreferrer"
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 transition-all">
-              <Globe className="w-3.5 h-3.5" /> Открыть
+              className="flex items-center gap-1 px-2.5 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 transition-all">
+              <Globe className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Открыть</span>
             </a>
           )}
         </div>
       </div>
+
+      {/* ── MOBILE TAB BAR ──────────────────────────────────── */}
+      {!previewMode && (
+        <div className="flex md:hidden gap-1 px-3 py-2 border-b border-zinc-800/80 bg-[#0d0d0d] shrink-0">
+          {([
+            { id: 'blocks' as const, label: 'Блоки' },
+            { id: 'canvas' as const, label: 'Холст' },
+            { id: 'panel'  as const, label: rightTab === 'theme' ? 'Тема' : 'Свойства' },
+          ]).map(({ id, label }) => (
+            <button key={id} onClick={() => setMobileTab(id)}
+              className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${mobileTab === id ? 'bg-indigo-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* ── BODY ─────────────────────────────────────────────── */}
       <div className="flex flex-1 min-h-0">
 
         {/* ── LEFT: PALETTE ─────────────────────────────────── */}
         {!previewMode && (
-          <aside className="w-48 border-r border-zinc-800/80 bg-[#0a0a0a] flex flex-col shrink-0 overflow-y-auto">
+          <aside className={`w-44 md:w-48 border-r border-zinc-800/80 bg-[#0a0a0a] flex-col shrink-0 overflow-y-auto ${mobileTab === 'blocks' ? 'flex' : 'hidden md:flex'}`}>
             <div className="px-4 pt-4 pb-2">
               <p className="text-[9px] font-black text-zinc-500 uppercase tracking-[0.2em]">Компоненты</p>
             </div>
@@ -747,7 +789,7 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ user }) => {
 
         {/* ── CENTER: CANVAS ─────────────────────────────────── */}
         <main
-          className="flex-1 overflow-y-auto"
+          className={`flex-1 overflow-y-auto ${(!previewMode && mobileTab !== 'canvas') ? 'hidden md:block' : 'block'}`}
           style={{ background: '#111' }}
           onClick={() => !previewMode && setSelectedId(null)}
         >
@@ -773,7 +815,7 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ user }) => {
                     <div
                       key={comp.id}
                       style={{ position: 'relative' }}
-                      onClick={e => { if (!previewMode) { e.stopPropagation(); setSelectedId(comp.id); }}}
+                      onClick={e => { if (!previewMode) { e.stopPropagation(); setSelectedId(comp.id); setRightTab('props'); setMobileTab('panel'); }}}
                     >
                       <PreviewComp
                         comp={comp}
@@ -820,7 +862,7 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ user }) => {
 
         {/* ── RIGHT: PROPERTIES ─────────────────────────────── */}
         {!previewMode && (
-          <aside className="w-64 border-l border-zinc-800/80 bg-[#0a0a0a] flex flex-col shrink-0">
+          <aside className={`w-56 md:w-64 border-l border-zinc-800/80 bg-[#0a0a0a] flex-col shrink-0 ${mobileTab === 'panel' ? 'flex' : 'hidden md:flex'}`}>
             {/* Tabs */}
             <div className="flex border-b border-zinc-800/80 shrink-0">
               {[
@@ -854,12 +896,12 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ user }) => {
                 <p className="text-[9px] font-black text-zinc-600 uppercase tracking-widest mb-2 flex items-center gap-1.5">
                   <Layers className="w-3 h-3" /> Слои ({app.components.length})
                 </p>
-                <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                <div ref={layerListRef} className="space-y-0.5 max-h-40 overflow-y-auto">
                   {app.components.map((c, i) => {
                     const item = PALETTE_ITEMS.find(p => p.type === c.type);
                     const Icon = item?.icon || Square;
                     return (
-                      <button key={c.id} onClick={() => setSelectedId(c.id)}
+                      <button key={c.id} onClick={() => { setSelectedId(c.id); setRightTab('props'); }}
                         className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-[10px] transition-all ${selectedId === c.id ? 'bg-indigo-500/15 text-indigo-300' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40'}`}>
                         <Icon className="w-3 h-3 shrink-0" />
                         <span className="truncate font-bold">{item?.label || c.type}</span>
