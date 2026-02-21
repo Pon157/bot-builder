@@ -501,6 +501,22 @@ adminLogin: async (login: string, pass: string) => {
     } catch (e) { return { status: 'error', message: 'Ошибка сети' }; }
   },
 
+  submitForm: async (appId: string, formData: any) => {
+  try {
+    const response = await fetchWithTimeout(`${getApiBase()}/forms/submit`, {
+      method: 'POST',
+      body: JSON.stringify({
+        app_id: appId,
+        form_data: formData
+      })
+    });
+    return await response.json();
+  } catch (e) {
+    console.error("submitForm error:", e);
+    return { ok: False, error: 'Ошибка сети' };
+  }
+},
+
   // --- BOT MANAGEMENT ---
 
   // --- ДОБАВИТЬ В api.ts ---
