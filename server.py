@@ -2242,7 +2242,6 @@ async def handle_form_submit(request: Request):
         webhook_type = app_row.get("webhook_type")
         chat_id = app_row.get("notify_chat_id")
 
-        # Добавили проверку на 'formbot'
         if webhook_type in ["bot", "formbot"] and chat_id:
             bot_token = os.getenv("FORM_BOT_TOKEN")
             if not bot_token:
@@ -2250,8 +2249,8 @@ async def handle_form_submit(request: Request):
                 return {"ok": True, "warning": "Бот не настроен"}
 
             # Формируем текст сообщения
-            text = f"<b>Новая форма!</b>\nID: <code>{app_id}</code>\n"
-            text += "---" * 5 + "\n"
+            text = f"<b>🔔 Новая заявка!</b>\nID: <code>{app_id}</code>\n"
+            text += "—" * 10 + "\n"
             for key, value in form_data.items():
                 text += f"<b>{key}:</b> {value}\n"
 
@@ -2263,13 +2262,16 @@ async def handle_form_submit(request: Request):
                     timeout=10.0
                 )
                 
-                # Проверка результата отправки
                 if response.status_code == 200:
                     logger.info(f"Уведомление отправлено в чат {chat_id}")
                 else:
                     logger.error(f"Ошибка Telegram API: {response.status_code} {response.text}")
 
         return {"ok": True}
+    except Exception as e:
+        logger.error(f"Ошибка при обработке формы: {e}")
+        return {"ok": False, "error": str(e)}
+
 # ==========================================
 # 9. СИСТЕМНЫЕ
 # ==========================================
@@ -2278,9 +2280,8 @@ async def handle_form_submit(request: Request):
 async def ping_pong():
     return {"status": "online", "server_time": time.time()}
 
-# Блок запуска всегда должен быть в конце файла
+# Блок запуска
 if __name__ == "__main__":
     import uvicorn
-    import time # Не забудьте импортировать time, если он не импортирован выше
     # Запуск сервера на порту 8000
     uvicorn.run(app, host="0.0.0.0", port=8000)
