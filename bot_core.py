@@ -1222,7 +1222,7 @@ class BotInstance:
                 pass
             await cb.answer("Диалог с ИИ закрыт.")
             try:
-                await self.bot.send_message(
+                await self.bot.send_message()
                     uid_cb,
                     "✅ Диалог с ИИ завершён.",
 
