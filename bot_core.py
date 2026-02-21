@@ -696,11 +696,16 @@ class BotInstance:
             logger.error(f"Topic Error: {e}")
             return None
 
-    async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = ""):
+    async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = "", is_ai_request: bool = False):
         if not self.admin_chat_id: return
         force_new_topic = self.topic_per_req and (btn_text != "" or is_first)
         thread_id = await self.resolve_thread(user, force_new=force_new_topic)
         header_text = format_admin_header(m, self.settings, is_first, btn_text)
+
+        # Помечаем ИИ-запросы — пересылаются в чат, но отвечать не нужно
+        if is_ai_request:
+            ai_tag = "\n<b>[ИИ-запрос · не отвечать]</b>\n"
+            header_text = header_text.rstrip('\n') + ai_tag + "\n"
         
         try:
             sent_msg = None
@@ -755,6 +760,36 @@ class BotInstance:
             )
             return True
 
+        # 🔍 ПОИСК ПОЛЬЗОВАТЕЛЯ ПО ID (/whois <id>)
+        elif command == "whois":
+            if len(cmd_parts) < 2:
+                await m.reply("Использование: <code>/whois &lt;user_id&gt;</code>")
+                return True
+            try:
+                lookup_id = int(cmd_parts[1])
+            except ValueError:
+                await m.reply("ID должен быть числом.")
+                return True
+            found = next((u for u in self.users_list if int(u['id']) == lookup_id), None)
+            if not found:
+                await m.reply(f"Пользователь <code>{lookup_id}</code> не найден в базе.")
+                return True
+            username = found.get("username")
+            name_line = found.get("first_name", "—")
+            if username:
+                name_line += f" (@{username})"
+            joined = datetime.fromtimestamp(found.get("joined_at", 0)).strftime("%d.%m.%Y %H:%M") if found.get("joined_at") else "—"
+            last_seen = datetime.fromtimestamp(found.get("last_seen", 0)).strftime("%d.%m.%Y %H:%M") if found.get("last_seen") else "—"
+            await m.reply(
+                f"🔍 <b>Пользователь <code>{lookup_id}</code>:</b>\n\n"
+                f"Имя: {name_line}\n"
+                f"Забанен: {'Да' if found.get('is_banned') else 'Нет'}\n"
+                f"Варнов: {found.get('warns', 0)}\n"
+                f"Зашёл: {joined}\n"
+                f"Последняя активность: {last_seen}"
+            )
+            return True
+
         # 📢 РАССЫЛКА
         elif command == "broadcast":
             if m.reply_to_message:
@@ -801,6 +836,30 @@ class BotInstance:
             uid_from_map = self.msg_map.get(m.reply_to_message.message_id)
             if uid_from_map:
                 target_user = next((u for u in self.users_list if int(u['id']) == int(uid_from_map)), None)
+
+        # В) Поиск по прямому ID в аргументе команды: /ban 123456789
+        if not target_user and len(cmd_parts) > 1:
+            try:
+                direct_id = int(cmd_parts[1])
+                target_user = next((u for u in self.users_list if int(u['id']) == direct_id), None)
+                if not target_user:
+                    # Создаём минимальную запись, чтобы можно было забанить превентивно
+                    if command in ('ban', 'unban'):
+                        target_user = {
+                            "id": direct_id,
+                            "first_name": f"User#{direct_id}",
+                            "username": None,
+                            "is_banned": False,
+                            "warns": 0,
+                            "joined_at": int(time.time()),
+                            "last_seen": int(time.time()),
+                        }
+                        self.users_list.append(target_user)
+                    else:
+                        await m.reply(f"Пользователь с ID <code>{direct_id}</code> не найден в базе.")
+                        return True
+            except ValueError:
+                pass
 
         # Если команда модерации, но юзер не определен — выходим
         if not target_user:
@@ -983,6 +1042,13 @@ class BotInstance:
 
             uid = user['id']
 
+            # ── РЕЖИМ АКТИВНОГО ТИКЕТА ──
+            # Пока обращение не закрыто — всё пересылается в чат, клавиатура скрыта
+            if user.get('_in_ticket'):
+                await self.forward_to_admin(m, user)
+                await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
+                return
+
             if m.text:
                 clean_text = m.text.strip()
                 clean_lower = clean_text.lower()
@@ -1021,12 +1087,24 @@ class BotInstance:
                         resp = matched_btn.get('response', '')
                         await m.answer(resp or "Выберите вариант:", reply_markup=child_kb)
                     else:
-                        # Финальная кнопка: выполняем действие и ВОЗВРАЩАЕМ ГЛАВНОЕ МЕНЮ
                         if matched_btn.get('type') == 'request':
+                            # ── ОТКРЫТИЕ ТИКЕТА: убираем клавиатуру до закрытия обращения ──
+                            user['_in_ticket'] = True
                             await self.forward_to_admin(m, user, btn_text=matched_btn['text'])
-                        
-                        resp_text = matched_btn.get('response', 'Принято!')
-                        await m.answer(resp_text, reply_markup=self.get_main_keyboard())
+                            resp_text = matched_btn.get('response', 'Ваше обращение принято. Ожидайте ответа оператора.')
+                            # Убираем Reply-клавиатуру
+                            await m.answer(resp_text, reply_markup=ReplyKeyboardRemove())
+                            # Отдельным сообщением — инлайн-кнопка закрытия (без смайликов)
+                            close_ticket_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                                InlineKeyboardButton(text="Закрыть обращение", callback_data="ticket_close")
+                            ]])
+                            await m.answer(
+                                "Вы можете продолжать писать сообщения — они будут доставлены оператору.",
+                                reply_markup=close_ticket_kb
+                            )
+                        else:
+                            resp_text = matched_btn.get('response', 'Принято!')
+                            await m.answer(resp_text, reply_markup=self.get_main_keyboard())
 
                     await self.log_and_update(uid, m.from_user.full_name, f"КНОПКА: {matched_btn['text']}")
                     return
@@ -1084,6 +1162,8 @@ class BotInstance:
                         if answer:
                             await thinking.delete()
                             await m.answer(answer)
+                            # Пересылаем запрос в чат с пометкой — не отвечать
+                            await self.forward_to_admin(m, user, is_ai_request=True)
                             await self.log_and_update(uid, m.from_user.full_name, f"AI: {clean_text[:50]}")
                             return
                         else:
@@ -1108,6 +1188,8 @@ class BotInstance:
                 await thinking.delete()
                 if answer_text:
                     await m.answer(answer_text, reply_markup=close_kb)
+                    # Пересылаем запрос в чат с пометкой — не отвечать
+                    await self.forward_to_admin(m, user, is_ai_request=True)
                     await self.log_and_update(uid, m.from_user.full_name, f"AI: {m.text[:50]}")
                 else:
                     await m.answer("⚠️ Ошибка ИИ, попробуйте ещё раз.", reply_markup=close_kb)
@@ -1134,6 +1216,47 @@ class BotInstance:
                 await self.bot.send_message(
                     uid_cb,
                     "✅ Диалог с ИИ завершён.",
+                    reply_markup=self.get_main_keyboard()
+                )
+            except Exception:
+                pass
+
+        # 6. Закрытие тикета пользователем
+        @self.router.callback_query(lambda c: c.data == 'ticket_close')
+        async def on_ticket_close(cb: CallbackQuery):
+            uid_cb = cb.from_user.id
+            user_cb = next((u for u in self.users_list if u['id'] == uid_cb), None)
+
+            if user_cb:
+                user_cb.pop('_in_ticket', None)
+                # Уведомляем администратора о закрытии
+                if self.admin_chat_id:
+                    thread_id = user_cb.get("last_topic_id")
+                    name = user_cb.get("first_name", str(uid_cb))
+                    username = user_cb.get("username")
+                    user_line = f"{name}"
+                    if username:
+                        user_line += f" (@{username})"
+                    user_line += f" | ID: <code>{uid_cb}</code>"
+                    try:
+                        await self.bot.send_message(
+                            self.admin_chat_id,
+                            f"Обращение закрыто пользователем.\n{user_line}",
+                            message_thread_id=thread_id
+                        )
+                    except Exception:
+                        pass
+
+            try:
+                await cb.message.delete()
+            except Exception:
+                pass
+
+            await cb.answer("Обращение закрыто.")
+            try:
+                await self.bot.send_message(
+                    uid_cb,
+                    "Обращение закрыто.",
                     reply_markup=self.get_main_keyboard()
                 )
             except Exception:
