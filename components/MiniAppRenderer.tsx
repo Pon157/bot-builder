@@ -283,23 +283,38 @@ const MiniAppRenderer: React.FC = () => {
   };
 
   const handleSubmit = async () => {
-    if (!appData?.formWebhook) return;
     setSubmitting(true);
     try {
-      await fetch(appData.formWebhook, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        mode: 'no-cors',
-        body: JSON.stringify({ ...formData, _appId: appId, _appTitle: appData.title }),
-      });
+      const target = (appData as any).submitTarget || 'bot';
+
+      if (target === 'bot') {
+        // Отправляем на наш сервер, а он перешлет в ТГ/ВК
+        await fetch('/api/miniapps/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            app_id: appId, 
+            bot_id: (appData?.theme as any)?.botId, // ID бота, который мы сохранили в тему
+            data: formData 
+          }),
+        });
+      } else if (appData?.formWebhook) {
+        // Старый добрый Webhook (для интеграций)
+        await fetch(appData.formWebhook, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          mode: 'no-cors',
+          body: JSON.stringify({ ...formData, _appId: appId, _appTitle: appData.title }),
+        });
+      }
+
       setSubmitted(true);
     } catch {
-      setSubmitted(true); // still show success (no-cors won't confirm)
+      setSubmitted(true); // Для no-cors это нормально
     } finally {
       setSubmitting(false);
     }
   };
-
   if (loading) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0a0a0f' }}>
