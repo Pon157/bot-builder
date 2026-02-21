@@ -336,17 +336,34 @@ const PropertiesPanel: React.FC<{
             options={[{ value: '400', label: 'Обычный' }, { value: '600', label: 'Полужирный' }, { value: '700', label: 'Жирный' }, { value: '800', label: 'Очень жирный' }, { value: '900', label: 'Черный' }]} />
         </PropInput>
         <PropInput label="Выравнивание">
-          <div className="flex gap-1">
-            {[['left', AlignLeft], ['center', AlignCenter], ['right', AlignRight]].map(([val, Icon]) => (
-              <button key={val as string} onClick={() => up({ align: val as any })}
-                className={`flex-1 p-2.5 rounded-lg border text-xs font-bold transition-all flex items-center justify-center ${p.align === val ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-400' : 'border-zinc-800 text-zinc-600 hover:border-zinc-700'}`}>
-                <(Icon as React.ElementType) className="w-3.5 h-3.5" />
-              </button>
-            ))}
-          </div>
-        </PropInput>
-        <ColorRow label="Цвет текста (пусто = авто)" value={p.color || ''} placeholder={theme.textPrimary} onChange={v => up({ color: v })} />
-      </>)}
+  <div className="flex gap-1">
+    {[
+      ['left', AlignLeft], 
+      ['center', AlignCenter], 
+      ['right', AlignRight]
+    ].map(([val, Icon]) => {
+      // Создаем локальную переменную с большой буквы для JSX
+      const BtnIcon = Icon as React.ElementType;
+
+      return (
+        <button 
+          key={val as string} 
+          onClick={() => up({ align: val as any })}
+          className={`flex-1 p-2.5 rounded-lg border text-xs font-bold transition-all flex items-center justify-center ${p.align === val ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-400' : 'border-zinc-800 text-zinc-600 hover:border-zinc-700'}`}
+        >
+          {/* Используем новую переменную */}
+          <BtnIcon className="w-3.5 h-3.5" />
+        </button>
+      );
+    })}
+  </div>
+</PropInput>
+<ColorRow 
+  label="Цвет текста (пусто = авто)" 
+  value={p.color || ''} 
+  placeholder={theme.textPrimary} 
+  onChange={v => up({ color: v })} 
+/>
 
       {/* BUTTON / LINK BUTTON ────────────── */}
       {(comp.type === 'button' || comp.type === 'linkButton') && (<>
