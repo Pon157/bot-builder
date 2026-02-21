@@ -1257,7 +1257,9 @@ interface MiniTheme {
 }
 
 interface MiniApp {
-  id: string; title: string; theme: MiniTheme; components: MiniComp[]; formWebhook?: string;
+  id: string; title: string; theme: MiniTheme; components: MiniComp[]; 
+  formWebhook?: string; 
+  submitTarget?: 'bot' | 'webhook'; // ДОБАВИТЬ ЭТО
 }
 
 const MINI_PALETTE: { type: MiniCompType; label: string; icon: React.ElementType }[] = [
@@ -1590,7 +1592,112 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
 
   const theme = editing?.theme || DEFAULT_MINI_THEME;
 
-  // ── Список приложений ─────────────────────────────────────────
+// ── Главный компонент вкладки ─────────────────────────────────────────────────
+const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isVK: boolean }> = ({ bot, onUpdate, isVK }) => {
+  const [apps, setApps] = React.useState<MiniApp[]>(() => {
+    try { return JSON.parse(localStorage.getItem(`miniapps_${bot.id}`) || '[]'); } catch { return []; }
+  });
+  const [editingId, setEditingId]   = React.useState<string | null>(null);
+  const [selectedComp, setSelComp]  = React.useState<string | null>(null);
+  const [rightTab, setRightTab]     = React.useState<'props' | 'theme'>('props');
+  const [saving, setSaving]         = React.useState(false);
+  const [saved, setSaved]           = React.useState(false);
+  const [copiedId, setCopiedId]     = React.useState<string | null>(null);
+  const [previewMode, setPreviewMode] = React.useState(false);
+
+  const editing = apps.find(a => a.id === editingId) || null;
+  const selComp = editing?.components.find(c => c.id === selectedComp) || null;
+
+  const persist = (next: MiniApp[]) => {
+    setApps(next);
+    localStorage.setItem(`miniapps_${bot.id}`, JSON.stringify(next));
+  };
+
+  const saveToServer = async (app: MiniApp) => {
+    setSaving(true);
+    try {
+      // Используем apiService, чтобы URL формировался правильно
+      const res = await api.saveMiniApp({ ...app, owner_id: bot.owner_id });
+      
+      if (!res) throw new Error("Сервер вернул ошибку");
+      
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) { 
+      console.error("Ошибка при сохранении в БД:", err);
+      alert("Не удалось сохранить в базу. Проверьте консоль.");
+    } finally { 
+      setSaving(false); 
+    }
+  };
+
+  const createApp = () => {
+    const app: MiniApp = {
+      id: mkMiniId(),
+      title: 'Новое приложение',
+      theme: { ...DEFAULT_MINI_THEME },
+      components: [newMiniComp('heading'), newMiniComp('text'), newMiniComp('button')],
+      formWebhook: '',
+    };
+    const next = [...apps, app];
+    persist(next);
+    setEditingId(app.id);
+    setSelComp(null);
+    setPreviewMode(false);
+  };
+
+  const deleteApp = (id: string) => {
+    if (!window.confirm('Удалить это мини-приложение?')) return;
+    const next = apps.filter(a => a.id !== id);
+    persist(next);
+    if (editingId === id) setEditingId(null);
+  };
+
+  const updateApp = (patch: Partial<MiniApp>) => {
+    if (!editingId) return;
+    const next = apps.map(a => a.id === editingId ? { ...a, ...patch } : a);
+    persist(next);
+  };
+
+  const addComp = (type: MiniCompType) => {
+    if (!editing) return;
+    const c = newMiniComp(type);
+    updateApp({ components: [...editing.components, c] });
+    setSelComp(c.id);
+  };
+
+  const removeComp = (id: string) => {
+    if (!editing) return;
+    updateApp({ components: editing.components.filter(c => c.id !== id) });
+    if (selectedComp === id) setSelComp(null);
+  };
+
+  const moveComp = (id: string, dir: -1 | 1) => {
+    if (!editing) return;
+    const comps = [...editing.components];
+    const idx = comps.findIndex(c => c.id === id);
+    const to = idx + dir;
+    if (to < 0 || to >= comps.length) return;
+    [comps[idx], comps[to]] = [comps[to], comps[idx]];
+    updateApp({ components: comps });
+  };
+
+  const updateCompProps = (id: string, props: Partial<MiniCompProps>) => {
+    if (!editing) return;
+    updateApp({ components: editing.components.map(c => c.id === id ? { ...c, props: { ...c.props, ...props } } : c) });
+  };
+
+  const copyUrl = (id: string) => {
+    const url = `${window.location.origin}/app/${id}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    });
+  };
+
+  const theme = editing?.theme || DEFAULT_MINI_THEME;
+
+  // ── Рендер списка приложений ─────────────────────────────────────────
   if (!editingId) return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex items-center justify-between">
@@ -1604,7 +1711,6 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
         </button>
       </div>
 
-      {/* Инфо-плашка */}
       <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-2xl p-5 flex gap-4 items-start">
         <div className="w-9 h-9 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center shrink-0 mt-0.5">
           <AppWindow className="w-4 h-4 text-indigo-400" />
@@ -1634,7 +1740,6 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
             <div key={app.id}
               style={{ borderColor: app.theme.primary + '30', background: app.theme.bg + '20' }}
               className="border rounded-[2rem] overflow-hidden group hover:scale-[1.01] transition-all">
-              {/* Превью-хедер с живой темой */}
               <div style={{ background: app.theme.bg, minHeight: 90, position: 'relative', overflow: 'hidden' }}>
                 {app.theme.gradient && <div style={{ position: 'absolute', inset: 0, background: app.theme.gradient }} />}
                 <div className="relative z-10 p-5 flex items-end h-full">
@@ -1654,7 +1759,6 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
                 </div>
               </div>
 
-              {/* Actions */}
               <div className="p-4 flex items-center gap-2 bg-zinc-900/50 border-t border-zinc-800/50">
                 <button onClick={() => { setEditingId(app.id); setSelComp(null); setPreviewMode(false); }}
                   className="flex-1 text-[9px] font-black uppercase text-zinc-400 hover:text-white bg-zinc-800 hover:bg-zinc-700 py-2.5 rounded-xl transition-all flex items-center justify-center gap-1.5">
@@ -1680,6 +1784,178 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
       )}
     </div>
   );
+
+  // ── Рендер редактора ───────────────────────────────────────────────
+  return (
+    <div className="fixed inset-0 z-[60] bg-zinc-950 flex flex-col animate-in fade-in duration-300">
+      {/* Header */}
+      <div className="h-16 border-b border-zinc-900 flex items-center px-4 gap-4 bg-zinc-950/50 backdrop-blur-xl">
+        <button onClick={() => setEditingId(null)} className="p-2 hover:bg-zinc-900 rounded-xl text-zinc-400 transition-colors">
+          <X className="w-5 h-5" />
+        </button>
+        <div className="h-8 w-px bg-zinc-900 mx-1" />
+        <input 
+          value={editing.title} 
+          onChange={e => updateApp({ title: e.target.value })}
+          className="bg-transparent border-none focus:ring-0 text-white font-black uppercase text-sm w-64"
+          placeholder="Название приложения..."
+        />
+        
+        <div className="ml-auto flex items-center gap-2">
+          <button onClick={() => setPreviewMode(!previewMode)}
+            className={`px-4 py-2 rounded-xl text-[10px] font-bold uppercase transition-all flex items-center gap-2 ${previewMode ? 'bg-indigo-500 text-white' : 'bg-zinc-900 text-zinc-400 hover:text-white'}`}>
+            {previewMode ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+            {previewMode ? 'Редактор' : 'Предпросмотр'}
+          </button>
+          <button 
+            onClick={() => saveToServer(editing)}
+            disabled={saving}
+            className={`px-6 py-2 rounded-xl text-[10px] font-bold uppercase transition-all flex items-center gap-2 ${saved ? 'bg-emerald-500 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white'} disabled:opacity-50`}>
+            {saving ? <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : (saved ? <Check className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />)}
+            {saved ? 'Сохранено' : (saving ? 'Сохранение...' : 'Сохранить в облако')}
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 flex overflow-hidden">
+        {/* Палитра компонентов */}
+        {!previewMode && (
+          <div className="w-64 border-r border-zinc-900 p-4 overflow-y-auto space-y-6">
+            <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">Палитра блоков</p>
+            <div className="grid grid-cols-1 gap-2">
+              {MINI_PALETTE.map(item => (
+                <button key={item.type} onClick={() => addComp(item.type)}
+                  className="w-full flex items-center gap-3 p-3 rounded-2xl bg-zinc-900/50 border border-zinc-800/50 hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-all text-left group">
+                  <div className="w-8 h-8 rounded-lg bg-zinc-800 flex items-center justify-center text-zinc-400 group-hover:text-indigo-400 transition-colors">
+                    <item.icon className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-zinc-300">{item.label}</p>
+                    <p className="text-[8px] text-zinc-600">{item.desc}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Рабочая область (Canvas) */}
+        <div className="flex-1 bg-zinc-900/30 overflow-y-auto p-12 flex justify-center">
+          <div className={`w-full max-w-md transition-all duration-500 ${previewMode ? 'scale-100' : 'scale-[0.98]'}`}>
+            <div 
+              style={{ 
+                background: theme.bg, 
+                minHeight: '80vh',
+                borderRadius: previewMode ? theme.radius * 2 : 32,
+                boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)',
+                position: 'relative',
+                overflow: 'hidden'
+              }}
+              className="border border-zinc-800/50"
+            >
+              {theme.gradient && <div style={{ position: 'absolute', inset: 0, background: theme.gradient, pointerEvents: 'none' }} />}
+              
+              <div className="relative z-10 p-6 space-y-4">
+                {editing.components.map((c) => (
+                  <div key={c.id} 
+                    onClick={() => !previewMode && setSelComp(c.id)}
+                    className={`relative group ${!previewMode ? 'cursor-pointer' : ''}`}>
+                    
+                    {!previewMode && selectedComp === c.id && (
+                      <div className="absolute -inset-2 border-2 border-indigo-500 rounded-xl z-20 pointer-events-none animate-in fade-in zoom-in-95 duration-200" />
+                    )}
+
+                    <div className={!previewMode && selectedComp === c.id ? 'opacity-100' : ''}>
+                      <MiniCompRenderer comp={c} theme={theme} />
+                    </div>
+
+                    {!previewMode && selectedComp === c.id && (
+                      <div className="absolute -right-12 top-0 flex flex-col gap-1 z-30">
+                        <button onClick={(e) => { e.stopPropagation(); moveComp(c.id, -1); }} className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded-lg"><ChevronUp className="w-3 h-3" /></button>
+                        <button onClick={(e) => { e.stopPropagation(); moveComp(c.id, 1); }} className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded-lg"><ChevronDown className="w-3 h-3" /></button>
+                        <button onClick={(e) => { e.stopPropagation(); removeComp(c.id); }} className="p-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 rounded-lg"><Trash2 className="w-3 h-3" /></button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Правая панель свойств */}
+        {!previewMode && (
+          <div className="w-80 border-l border-zinc-900 bg-zinc-950/50 flex flex-col">
+            <div className="flex border-b border-zinc-900">
+              <button onClick={() => setRightTab('props')} className={`flex-1 py-4 text-[10px] font-black uppercase tracking-widest transition-all ${rightTab === 'props' ? 'text-indigo-400 border-b-2 border-indigo-500' : 'text-zinc-600 hover:text-zinc-400'}`}>Свойства</button>
+              <button onClick={() => setRightTab('theme')} className={`flex-1 py-4 text-[10px] font-black uppercase tracking-widest transition-all ${rightTab === 'theme' ? 'text-indigo-400 border-b-2 border-indigo-500' : 'text-zinc-600 hover:text-zinc-400'}`}>Дизайн</button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5">
+              {rightTab === 'props' ? (
+                selComp ? (
+                  <div className="space-y-6">
+                    <div className="flex items-center gap-2 mb-4">
+                      <div className="p-2 bg-indigo-500/10 rounded-lg text-indigo-400">
+                        {React.createElement(MINI_PALETTE.find(p => p.type === selComp.type)?.icon || Square, { className: 'w-4 h-4' })}
+                      </div>
+                      <p className="text-xs font-black text-white uppercase">{MINI_PALETTE.find(p => p.type === selComp.type)?.label}</p>
+                    </div>
+                    <MiniPropEditor comp={selComp} update={(p) => updateCompProps(selComp.id, p)} />
+                  </div>
+                ) : (
+                  <div className="h-full flex flex-col items-center justify-center text-center p-6">
+                    <MousePointerClick className="w-8 h-8 text-zinc-800 mb-3" />
+                    <p className="text-zinc-600 text-[10px] font-bold uppercase tracking-wider">Выберите блок на холсте,<br/>чтобы изменить его</p>
+                  </div>
+                )
+              ) : (
+                <div className="space-y-6">
+                  <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest mb-4">Глобальная тема</p>
+                  <MiniThemeEditor theme={theme} onChange={t => updateApp({ theme: t })} />
+                  <div className="pt-6 border-t border-zinc-900">
+                    <label className="block mb-4">
+                      <span className="text-[9px] font-black text-zinc-500 uppercase tracking-widest block mb-2">Webhook для форм</span>
+                      <input 
+                        value={editing.formWebhook || ''}
+                        onChange={e => updateApp({ formWebhook: e.target.value })}
+                        className="w-full bg-zinc-900 border-zinc-800 rounded-xl text-xs text-white p-3 focus:border-indigo-500 transition-all"
+                        placeholder="https://your-api.com/webhook"
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Слои (Список компонентов) */}
+            {rightTab === 'props' && editing.components.length > 0 && (
+              <div className="border-t border-zinc-800/80 p-3 shrink-0">
+                <p className="text-[9px] font-black text-zinc-600 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                  <Layers className="w-3 h-3" /> Слои ({editing.components.length})
+                </p>
+                <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                  {editing.components.map((c, i) => {
+                    const item = MINI_PALETTE.find(p => p.type === c.type);
+                    const Icon = item?.icon || Square;
+                    return (
+                      <button key={c.id} onClick={() => setSelComp(c.id)}
+                        className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-[10px] transition-all ${selectedComp === c.id ? 'bg-indigo-500/15 text-indigo-300' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40'}`}>
+                        <Icon className="w-3 h-3 shrink-0" />
+                        <span className="truncate font-bold">{item?.label || c.type}</span>
+                        <span className="ml-auto text-zinc-700">{i + 1}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
   // ── Редактор ──────────────────────────────────────────────────
   return (
