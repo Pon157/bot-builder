@@ -1571,11 +1571,14 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
         const appsRes = await fetch(`/api/miniapps/list-by-bot/${bot.id}`);
         if (appsRes.ok) {
           const serverApps = await appsRes.json();
+          // Server already maps snake_case → camelCase in list-by-bot endpoint,
+          // but we fall back to snake_case variants in case of direct DB response
           setApps(serverApps.map((a: any) => ({
             ...a,
-            webhookType: a.webhook_type || 'webhook',
-            formWebhook: a.form_webhook || '',
-            sheetsUrl: a.sheets_url || '',
+            webhookType: a.webhookType || a.webhook_type || 'bot',
+            formWebhook: a.formWebhook || a.form_webhook || '',
+            sheetsUrl:   a.sheetsUrl   || a.sheets_url   || '',
+            bot_id:      a.bot_id      || '',
           })));
           return;
         }
