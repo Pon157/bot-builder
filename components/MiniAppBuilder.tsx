@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
 import {
   Plus, Trash2, ChevronUp, ChevronDown, Settings2, Eye, EyeOff,
   Type, MousePointerClick, Link2, TextCursorInput, AlignLeft,
