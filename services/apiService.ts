@@ -492,6 +492,29 @@ adminLogin: async (login: string, pass: string) => {
       return null;
     }
   },
+
+  // --- MINI APPS UPDATES ---
+  listMiniApps: async (ownerId: string) => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/miniapps/list/${ownerId}`);
+      return response.ok ? await response.json() : [];
+    } catch (e) {
+      return [];
+    }
+  },
+
+  submitMiniAppForm: async (appId: string, botId: string | undefined, formData: any) => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/miniapps/submit`, {
+        method: 'POST',
+        body: JSON.stringify({ app_id: appId, bot_id: botId, data: formData })
+      });
+      return response.ok;
+    } catch (e) {
+      console.error("Direct submit error", e);
+      return false;
+    }
+  },
   
   // --- BOT MANAGEMENT ---
 
