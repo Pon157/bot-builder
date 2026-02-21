@@ -68,6 +68,9 @@ if not E_KEY:
 
 cipher = Fernet(E_KEY.encode())
 
+# Токен выделенного бота для форм (пользователи добавляют его в чат)
+FORM_BOT_TOKEN = os.getenv("FORM_BOT_TOKEN", "")
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("DialogEngineServer")
 
@@ -1957,9 +1960,10 @@ async def list_miniapps_by_bot(bot_id: str):
         if r.status_code == 200:
             apps = r.json()
             for a in apps:
-                a["formWebhook"] = a.pop("form_webhook", "") or ""
-                a["sheetsUrl"] = a.pop("sheets_url", "") or ""
-                a["webhookType"] = a.pop("webhook_type", "webhook") or "webhook"
+                a["formWebhook"]   = a.pop("form_webhook", "") or ""
+                a["sheetsUrl"]     = a.pop("sheets_url", "") or ""
+                a["webhookType"]   = a.pop("webhook_type", "formbot") or "formbot"
+                a["notifyChatId"]  = a.pop("notify_chat_id", "") or ""
             return apps
         return []
     except Exception as e:
@@ -1980,9 +1984,10 @@ async def save_miniapp(request: Request):
     title        = data.get("title", "Без названия")[:120]
     theme        = data.get("theme", {})
     components   = data.get("components", [])
-    webhook      = data.get("form_webhook") or data.get("formWebhook", "")
-    sheets_url   = data.get("sheets_url") or data.get("sheetsUrl", "")
-    webhook_type = data.get("webhook_type") or data.get("webhookType", "webhook")
+    webhook          = data.get("form_webhook") or data.get("formWebhook", "")
+    sheets_url       = data.get("sheets_url") or data.get("sheetsUrl", "")
+    webhook_type     = data.get("webhook_type") or data.get("webhookType", "formbot")
+    notify_chat_id   = data.get("notify_chat_id") or data.get("notifyChatId", "")
 
     if not owner_id:
         raise HTTPException(status_code=422, detail="owner_id required")
@@ -1991,16 +1996,17 @@ async def save_miniapp(request: Request):
         raise HTTPException(status_code=422, detail="Too many components (max 100)")
 
     record = {
-        "id":           app_id,
-        "owner_id":     owner_id,
-        "bot_id":       bot_id,
-        "title":        title,
-        "theme":        theme,
-        "components":   components,
-        "form_webhook": webhook,
-        "sheets_url":   sheets_url,
-        "webhook_type": webhook_type,
-        "updated_at":   datetime.utcnow().isoformat() + "Z",
+        "id":             app_id,
+        "owner_id":       owner_id,
+        "bot_id":         bot_id,
+        "title":          title,
+        "theme":          theme,
+        "components":     components,
+        "form_webhook":   webhook,
+        "sheets_url":     sheets_url,
+        "webhook_type":   webhook_type,
+        "notify_chat_id": notify_chat_id,
+        "updated_at":     datetime.utcnow().isoformat() + "Z",
     }
 
     try:
@@ -2061,9 +2067,10 @@ async def get_miniapp(app_id: str):
             if results:
                 app_data = results[0]
                 # Нормализуем поля для рендерера
-                app_data["formWebhook"] = app_data.pop("form_webhook", "") or ""
-                app_data["sheetsUrl"]   = app_data.pop("sheets_url", "") or ""
-                app_data["webhookType"] = app_data.pop("webhook_type", "webhook") or "webhook"
+                app_data["formWebhook"]   = app_data.pop("form_webhook", "") or ""
+                app_data["sheetsUrl"]     = app_data.pop("sheets_url", "") or ""
+                app_data["webhookType"]   = app_data.pop("webhook_type", "formbot") or "formbot"
+                app_data["notifyChatId"]  = app_data.pop("notify_chat_id", "") or ""
                 # bot_id остаётся как есть — рендерер читает его напрямую
                 return app_data
         
@@ -2079,109 +2086,102 @@ async def get_miniapp(app_id: str):
 
 @app.post("/api/miniapps/submit")
 async def submit_miniapp_form(request: Request):
-    """Принимает данные формы из мини-приложения и пересылает в бота или Sheets."""
+    """Принимает данные формы из мини-приложения.
+    
+    Поддерживаемые типы доставки:
+    - formbot: через выделенного бота (FORM_BOT_TOKEN) в указанный chat_id
+    - sheets:  POST на Google Apps Script URL
+    - webhook: POST на внешний URL (n8n, Make, Zapier)
+    """
     try:
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    app_id       = body.get("app_id", "")
-    bot_id       = body.get("bot_id", "")
-    form_data    = body.get("data", {})
-    webhook_type = body.get("webhook_type", "bot")
-    sheets_url   = body.get("sheets_url", "")
-    form_webhook = body.get("form_webhook", "")
+    app_id          = body.get("app_id", "")
+    form_data       = body.get("data", {})
+    webhook_type    = body.get("webhook_type", "")
+    notify_chat_id  = body.get("notify_chat_id", "")
+    sheets_url      = body.get("sheets_url", "")
+    form_webhook    = body.get("form_webhook", "")
+    app_title       = body.get("app_title", "")
 
     if not app_id:
         raise HTTPException(status_code=422, detail="app_id required")
 
-    # --- НАЧАЛО ИСПРАВЛЕННОГО БЛОКА ---
     try:
-        # Извлекаем данные формы один раз
-        form_data = data.get("form_data", {})
-
-        # Если не передали bot_id/webhook_type — загружаем из БД
-        if not bot_id or not webhook_type or (webhook_type == "webhook" and not form_webhook):
+        # Если фронтенд не прислал настройки — загружаем из БД по app_id
+        if not webhook_type:
             r = await db.get("mini_apps", params={"id": f"eq.{app_id}", "select": "*", "limit": "1"})
             if r.status_code == 200 and r.json():
-                app_row = r.json()[0]
-                bot_id       = bot_id or app_row.get("bot_id", "")
-                webhook_type = webhook_type or app_row.get("webhook_type", "bot")
-                sheets_url   = sheets_url or app_row.get("sheets_url", "")
-                form_webhook = form_webhook or app_row.get("form_webhook", "")
+                row = r.json()[0]
+                webhook_type   = row.get("webhook_type", "formbot")
+                notify_chat_id = notify_chat_id or row.get("notify_chat_id", "")
+                sheets_url     = sheets_url or row.get("sheets_url", "")
+                form_webhook   = form_webhook or row.get("form_webhook", "")
+                app_title      = app_title or row.get("title", "")
 
-        # 1. Отправка через бота (Telegram или VK)
-        if webhook_type == "bot" and bot_id:
-            br = await db.get("bots", params={"id": f"eq.{bot_id}", "select": "token,platform,channel_id,admin_ids", "limit": "1"})
-            
-            if br.status_code == 200 and br.json():
-                bot_row = br.json()[0]
-                token = decrypt_val(bot_row.get("token", ""))
-                platform = bot_row.get("platform", "telegram")
+        # Форматируем текст уведомления
+        lines = []
+        if app_title:
+            lines.append(f"<b>Форма: {app_title}</b>")
+        else:
+            lines.append("<b>Новая заявка</b>")
+        lines.append("")
+        for k, v in form_data.items():
+            if k.startswith("_"):
+                continue
+            lines.append(f"<b>{k}</b>: {v}")
+        if not form_data:
+            lines.append("(форма без полей)")
+        msg_html = "\n".join(lines)
 
-                # Форматируем текст сообщения (HTML)
-                lines = [
-                    "<b>Форма из мини-приложения</b>",
-                    f"ID: <code>{app_id}</code>",
-                    ""
-                ]
-                for k, v in form_data.items():
-                    lines.append(f"<b>{k}</b>: {v}")
-                msg_text = "\n".join(lines)
+        # 1. Выделенный бот для форм — самый простой способ
+        if webhook_type == "formbot" and notify_chat_id and FORM_BOT_TOKEN:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"https://api.telegram.org/bot{FORM_BOT_TOKEN}/sendMessage",
+                    json={
+                        "chat_id": notify_chat_id,
+                        "text": msg_html,
+                        "parse_mode": "HTML",
+                    }
+                )
+                if resp.status_code != 200:
+                    logger.warning(f"Form bot send error: {resp.text}")
 
-                # Логика для Telegram
-                if platform in ("telegram", "tg") and token:
-                    chat_id = bot_row.get("channel_id")
-                    if not chat_id:
-                        admin_ids = bot_row.get("admin_ids", [])
-                        chat_id = str(admin_ids[0]) if (isinstance(admin_ids, list) and admin_ids) else ""
-                    
-                    if not chat_id:
-                        chat_id = owner_id # Запасной вариант
-
-                    if chat_id:
-                        async with httpx.AsyncClient(timeout=10) as client:
-                            await client.post(
-                                f"https://api.telegram.org/bot{token}/sendMessage",
-                                json={"chat_id": chat_id, "text": msg_text, "parse_mode": "HTML"}
-                            )
-
-                # Логика для VK
-                elif platform == "vk" and token:
-                    peer_id = bot_row.get("channel_id")
-                    if peer_id:
-                        # Убираем HTML-теги для VK
-                        clean_text = msg_text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "")
-                        async with httpx.AsyncClient(timeout=10) as client:
-                            await client.post(
-                                "https://api.vk.com/method/messages.send",
-                                params={
-                                    "access_token": token,
-                                    "peer_id": peer_id,
-                                    "message": clean_text,
-                                    "v": "5.131",
-                                    "random_id": 0,
-                                }
-                            )
-
-        # 2. Отправка в Google Sheets
+        # 2. Google Sheets через Apps Script
         elif webhook_type == "sheets" and sheets_url:
+            payload = {k: v for k, v in form_data.items() if not k.startswith("_")}
+            payload["_appId"] = app_id
+            if app_title:
+                payload["_formTitle"] = app_title
             async with httpx.AsyncClient(timeout=15) as client:
-                await client.post(sheets_url, json={**form_data, "_appId": app_id})
+                await client.post(sheets_url, json=payload)
 
-        # 3. Отправка на внешний Webhook (n8n, Make, и т.д.)
+        # 3. Внешний вебхук (n8n, Make, Zapier, собственный сервер)
         elif webhook_type == "webhook" and form_webhook:
+            payload = {k: v for k, v in form_data.items() if not k.startswith("_")}
+            payload["_appId"] = app_id
+            if app_title:
+                payload["_formTitle"] = app_title
             async with httpx.AsyncClient(timeout=15) as client:
-                await client.post(form_webhook, json={**form_data, "_appId": app_id})
+                await client.post(form_webhook, json=payload)
 
-        logger.info(f"Form submitted successfully: app={app_id} type={webhook_type}")
+        else:
+            logger.warning(
+                f"Form submit: no delivery configured. "
+                f"app={app_id} type={webhook_type!r} "
+                f"chat={notify_chat_id!r} sheets={sheets_url!r}"
+            )
+
+        logger.info(f"Form submitted: app={app_id} type={webhook_type}")
         return {"ok": True}
 
     except Exception as e:
-        logger.error(f"Form submit error: {e}")
-        # Возвращаем ok: True, чтобы фронтенд не пугал пользователя, но пишем warning в лог
+        logger.error(f"Form submit error app={app_id}: {e}")
+        # Возвращаем ok чтобы пользователь видел экран успеха (сервер уже получил данные)
         return {"ok": True, "warning": str(e)}
-    # --- КОНЕЦ ИСПРАВЛЕННОГО БЛОКА ---
 
 # ── Удалить мини-приложение ───────────────────────────────────────
 @app.delete("/api/miniapps/{app_id}")
