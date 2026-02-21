@@ -1225,6 +1225,43 @@ class BotInstance:
                 await self.bot.send_message(
                     uid_cb,
                     "✅ Диалог с ИИ завершён.",
+
+        # 6. Закрытие тикета пользователем
+        @self.router.callback_query(lambda c: c.data == 'ticket_close')
+        async def on_ticket_close(cb: CallbackQuery):
+            uid_cb = cb.from_user.id
+            user_cb = next((u for u in self.users_list if u['id'] == uid_cb), None)
+
+            if user_cb:
+                user_cb.pop('_in_ticket', None)
+                # Уведомляем администратора о закрытии
+                if self.admin_chat_id:
+                    thread_id = user_cb.get("last_topic_id")
+                    name = user_cb.get("first_name", str(uid_cb))
+                    username = user_cb.get("username")
+                    user_line = f"{name}"
+                    if username:
+                        user_line += f" (@{username})"
+                    user_line += f" | ID: <code>{uid_cb}</code>"
+                    try:
+                        await self.bot.send_message(
+                            self.admin_chat_id,
+                            f"Обращение закрыто пользователем.\n{user_line}",
+                            message_thread_id=thread_id
+                        )
+                    except Exception:
+                        pass
+
+            try:
+                await cb.message.delete()
+            except Exception:
+                pass
+
+            await cb.answer("Обращение закрыто.")
+            try:
+                await self.bot.send_message(
+                    uid_cb,
+                    "Обращение закрыто.",
                     reply_markup=self.get_main_keyboard()
                 )
             except Exception:
