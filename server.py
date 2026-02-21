@@ -2238,33 +2238,38 @@ async def handle_form_submit(request: Request):
 
         app_row = r.json()[0]
         
-        # 2. Проверяем, куда слать (в твой forms_bot)
+        # 2. Проверяем, куда слать
         webhook_type = app_row.get("webhook_type")
-        chat_id = app_row.get("notify_chat_id") # Ту колонку, что мы добавляли
+        chat_id = app_row.get("notify_chat_id")
 
-        if webhook_type == "bot" and chat_id:
+        # Добавили проверку на 'formbot'
+        if webhook_type in ["bot", "formbot"] and chat_id:
             bot_token = os.getenv("FORM_BOT_TOKEN")
             if not bot_token:
                 logger.error("FORM_BOT_TOKEN не найден в .env")
-                return {"ok": True, "warning": "Бот не настроен на сервере"}
+                return {"ok": True, "warning": "Бот не настроен"}
 
             # Формируем текст сообщения
-            text = f"<b>📩 Новая заявка!</b>\nID: <code>{app_id}</code>\n\n"
+            text = f"<b>Новая форма!</b>\nID: <code>{app_id}</code>\n"
+            text += "---" * 5 + "\n"
             for key, value in form_data.items():
                 text += f"<b>{key}:</b> {value}\n"
 
             # Отправляем через httpx
             async with httpx.AsyncClient() as client:
-                await client.post(
+                response = await client.post(
                     f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                    json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+                    json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+                    timeout=10.0
                 )
-            logger.info(f"Уведомление отправлено в чат {chat_id}")
+                
+                # Проверка результата отправки
+                if response.status_code == 200:
+                    logger.info(f"Уведомление отправлено в чат {chat_id}")
+                else:
+                    logger.error(f"Ошибка Telegram API: {response.status_code} {response.text}")
 
         return {"ok": True}
-    except Exception as e:
-        logger.error(f"Ошибка при обработке формы: {e}")
-        return {"ok": False, "error": str(e)}
 # ==========================================
 # 9. СИСТЕМНЫЕ
 # ==========================================
