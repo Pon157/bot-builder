@@ -2095,101 +2095,93 @@ async def submit_miniapp_form(request: Request):
     if not app_id:
         raise HTTPException(status_code=422, detail="app_id required")
 
-    # Если не передали bot_id/webhook_type — загружаем из БД
-    if not bot_id or not webhook_type or webhook_type == "webhook" and not form_webhook:
-        r = await db.get("mini_apps", params={"id": f"eq.{app_id}", "select": "*", "limit": "1"})
-        if r.status_code == 200 and r.json():
-            app_row = r.json()[0]
-            bot_id       = bot_id or app_row.get("bot_id", "")
-            webhook_type = webhook_type or app_row.get("webhook_type", "bot")
-            sheets_url   = sheets_url or app_row.get("sheets_url", "")
-            form_webhook = form_webhook or app_row.get("form_webhook", "")
+    # --- НАЧАЛО ИСПРАВЛЕННОГО БЛОКА ---
+    try:
+        # Извлекаем данные формы один раз
+        form_data = data.get("form_data", {})
 
-    if webhook_type == "bot" and bot_id:
-            # 1. Получаем данные бота
-            br = await db.get("bots", params={"id": f"eq.{bot_id}", "select": "token,platform,channel_id", "limit": "1"})
+        # Если не передали bot_id/webhook_type — загружаем из БД
+        if not bot_id or not webhook_type or (webhook_type == "webhook" and not form_webhook):
+            r = await db.get("mini_apps", params={"id": f"eq.{app_id}", "select": "*", "limit": "1"})
+            if r.status_code == 200 and r.json():
+                app_row = r.json()[0]
+                bot_id       = bot_id or app_row.get("bot_id", "")
+                webhook_type = webhook_type or app_row.get("webhook_type", "bot")
+                sheets_url   = sheets_url or app_row.get("sheets_url", "")
+                form_webhook = form_webhook or app_row.get("form_webhook", "")
+
+        # 1. Отправка через бота (Telegram или VK)
+        if webhook_type == "bot" and bot_id:
+            br = await db.get("bots", params={"id": f"eq.{bot_id}", "select": "token,platform,channel_id,admin_ids", "limit": "1"})
             
             if br.status_code == 200 and br.json():
                 bot_row = br.json()[0]
-                # Берем токен из .env или из зашифрованного поля в БД
                 token = decrypt_val(bot_row.get("token", ""))
                 platform = bot_row.get("platform", "telegram")
 
-                # 2. Собираем данные формы (извлекаем их из пришедшего JSON)
-                form_data = data.get("form_data", {}) # Убедись, что берешь данные отсюда
-                
-                # 3. Форматируем сообщение
+                # Форматируем текст сообщения (HTML)
                 lines = [
                     "<b>Форма из мини-приложения</b>",
                     f"ID: <code>{app_id}</code>",
                     ""
                 ]
-                
                 for k, v in form_data.items():
                     lines.append(f"<b>{k}</b>: {v}")
-                
-                # Соединяем строки через обычный символ переноса
                 msg_text = "\n".join(lines)
 
-                # 4. Отправка в Telegram (пример)
-                if platform == "telegram" and token:
-                    chat_id = bot_row.get("channel_id") or owner_id # или куда слать
-                    async with httpx.AsyncClient() as client:
-                        await client.post(
-                            f"https://api.telegram.org/bot{token}/sendMessage",
-                            json={
-                                "chat_id": chat_id,
-                                "text": msg_text,
-                                "parse_mode": "HTML"
-                            }
-                        )
-                        
-                if platform in ("telegram", "tg"):
-                    # Читаем channel_id как chat для уведомлений, если не задан — используем owner
-                    chat_id = bot_row.get("channel_id") or ""
+                # Логика для Telegram
+                if platform in ("telegram", "tg") and token:
+                    chat_id = bot_row.get("channel_id")
                     if not chat_id:
-                        # Находим admin_ids бота
-                        admin_ids = bot_row.get("admin_ids", []) if isinstance(bot_row.get("admin_ids"), list) else []
-                        chat_id = str(admin_ids[0]) if admin_ids else ""
+                        admin_ids = bot_row.get("admin_ids", [])
+                        chat_id = str(admin_ids[0]) if (isinstance(admin_ids, list) and admin_ids) else ""
+                    
+                    if not chat_id:
+                        chat_id = owner_id # Запасной вариант
+
                     if chat_id:
                         async with httpx.AsyncClient(timeout=10) as client:
                             await client.post(
                                 f"https://api.telegram.org/bot{token}/sendMessage",
                                 json={"chat_id": chat_id, "text": msg_text, "parse_mode": "HTML"}
                             )
-                elif platform == "vk":
-                    # VK Messages API
-                    async with httpx.AsyncClient(timeout=10) as client:
-                        peer_id = bot_row.get("channel_id") or ""
-                        if peer_id:
+
+                # Логика для VK
+                elif platform == "vk" and token:
+                    peer_id = bot_row.get("channel_id")
+                    if peer_id:
+                        # Убираем HTML-теги для VK
+                        clean_text = msg_text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "")
+                        async with httpx.AsyncClient(timeout=10) as client:
                             await client.post(
                                 "https://api.vk.com/method/messages.send",
                                 params={
                                     "access_token": token,
                                     "peer_id": peer_id,
-                                    "message": msg_text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", ""),
+                                    "message": clean_text,
                                     "v": "5.131",
                                     "random_id": 0,
                                 }
                             )
 
+        # 2. Отправка в Google Sheets
         elif webhook_type == "sheets" and sheets_url:
-            # Пересылаем на Google Apps Script
             async with httpx.AsyncClient(timeout=15) as client:
                 await client.post(sheets_url, json={**form_data, "_appId": app_id})
 
+        # 3. Отправка на внешний Webhook (n8n, Make, и т.д.)
         elif webhook_type == "webhook" and form_webhook:
-            # Внешний вебхук (n8n, Make, Zapier)
             async with httpx.AsyncClient(timeout=15) as client:
                 await client.post(form_webhook, json={**form_data, "_appId": app_id})
 
-        logger.info(f"Form submitted: app={app_id} type={webhook_type}")
+        logger.info(f"Form submitted successfully: app={app_id} type={webhook_type}")
         return {"ok": True}
 
     except Exception as e:
         logger.error(f"Form submit error: {e}")
-        # Не возвращаем ошибку пользователю — форма уже отправлена
+        # Возвращаем ok: True, чтобы фронтенд не пугал пользователя, но пишем warning в лог
         return {"ok": True, "warning": str(e)}
+    # --- КОНЕЦ ИСПРАВЛЕННОГО БЛОКА ---
 
 # ── Удалить мини-приложение ───────────────────────────────────────
 @app.delete("/api/miniapps/{app_id}")
