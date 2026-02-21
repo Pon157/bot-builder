@@ -669,35 +669,66 @@ async def cb_verify_mapp(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("adm_mapp_ok_"))
 async def cb_admin_approve_mapp(cb: CallbackQuery):
-    """Администратор выдаёт мини-апп ключ."""
+    """Администратор выдаёт мини-апп ключ пользователю."""
+    await cb.answer()
     try:
+        # Формат: adm_mapp_ok_{uid}_{months}
+        # uid — числовой Telegram ID, не содержит подчёркиваний
+        # Берём с конца: последний элемент — months, предпоследний — uid
         parts = cb.data.split("_")
         if len(parts) < 5:
-            await cb.answer("❌ Ошибка данных", show_alert=True)
+            await cb.message.edit_text("Ошибка: неверный формат данных кнопки.")
             return
-        uid = parts[3]
-        months = int(parts[4])
-        prices = {1: 90, 3: 240}
-        price = prices.get(months, 90)
 
-        # Генерируем ключ через сервер
-        r = requests.post(f"{SRV_URL}/api/admin/generate-miniapp-key",
+        months = int(parts[-1])
+        uid    = parts[-2]          # Telegram user ID
+        prices = {1: 90, 3: 240}
+        price  = prices.get(months, 90)
+
+        # Сначала генерируем ключ — потом уже обновляем сообщение
+        await cb.message.edit_text(f"Генерирую ключ для пользователя {uid}...")
+
+        r = requests.post(
+            f"{SRV_URL}/api/admin/generate-miniapp-key",
             json={"months": months, "price_rub": price},
-            headers={"x-admin-token": ADM_SECRET}, timeout=15)
-        if r.status_code == 200:
-            key = r.json().get("key")
-            msg = (f"🎉 <b>Оплата подтверждена!</b>\n\n"
-                   f"Ваш ключ мини-апп: <code>{key}</code>\n\n"
-                   f"Срок: <b>{months} мес.</b>\n\n"
-                   "Активируйте в боте через «📱 Мини-приложения → Активировать ключ».\n"
-                   "Или прямо в редакторе бота на вкладке «Мини-апп».")
-            await bot.send_message(uid, msg, parse_mode="HTML")
-            await cb.message.edit_text(f"✅ Ключ выдан: <code>{key}</code>", parse_mode="HTML")
-        else:
-            await cb.message.edit_text(f"❌ Ошибка API: {r.status_code} {r.text}")
+            headers={"x-admin-token": ADM_SECRET},
+            timeout=15
+        )
+
+        if r.status_code != 200:
+            await cb.message.edit_text(
+                f"Ошибка генерации ключа: {r.status_code}\n{r.text[:200]}"
+            )
+            return
+
+        key = r.json().get("key")
+        if not key:
+            await cb.message.edit_text("Ошибка: сервер не вернул ключ.")
+            return
+
+        # Отправляем ключ пользователю
+        user_msg = (
+            f"<b>Оплата подтверждена!</b>\n\n"
+            f"Ваш ключ мини-апп: <code>{key}</code>\n\n"
+            f"Срок: <b>{months} мес.</b>\n\n"
+            "Активация:\n"
+            "1. Откройте редактор нужного бота.\n"
+            "2. Перейдите на вкладку «Мини-апп».\n"
+            "3. Введите ключ в поле активации.\n\n"
+            "Или активируйте через бот командой в разделе «Мини-приложения»."
+        )
+        await bot.send_message(int(uid), user_msg, parse_mode="HTML")
+        await cb.message.edit_text(
+            f"Готово. Ключ <code>{key}</code> выдан пользователю {uid}.",
+            parse_mode="HTML"
+        )
+
     except Exception as e:
-        logger.error(f"🔴 Ошибка в cb_admin_approve_mapp: {e}")
-        await cb.message.edit_text(f"❌ Ошибка: {e}")
+        logger.error(f"cb_admin_approve_mapp error: {e}")
+        try:
+            await cb.message.edit_text(f"Ошибка: {e}")
+        except Exception:
+            pass
 
 @dp.callback_query(F.data == "activate_mapp_key")
 async def cb_activate_mapp_key(cb: CallbackQuery, state: FSMContext):
