@@ -1838,151 +1838,36 @@ async def delete_application(app_id: str, x_admin_token: str = Header(None)):
         raise HTTPException(status_code=500, detail="Server error")
 
 # ── Сохранить / обновить мини-приложение ─────────────────────────
-# ══════════════════════════════════════════════════════════════════════════════
-# 8. МИНИ-ПРИЛОЖЕНИЯ  
-# ══════════════════════════════════════════════════════════════════════════════
-
-@app.post("/api/admin/generate-miniapp-key")
-async def gen_miniapp_key(d: dict, x_admin_token: str = Header(None)):
-    """Генерация ключа подписки на мини-апп. Формат MAPP-XXXXXX-NNN"""
-    if x_admin_token != A_SECRET:
-        raise HTTPException(401, "Admin only")
-    months = int(d.get("months", 1))
-    price_rub = int(d.get("price_rub", 90))
-    key = f"MAPP-{secrets.token_hex(3).upper()}-{random.randint(100,999)}"
-    payload = {
-        "key": key,
-        "months": months,
-        "price_rub": price_rub,
-        "used": False,
-        "created_at": datetime.utcnow().isoformat() + "Z",
-    }
-    res = await db.post("miniapp_keys", json=payload)
-    if res.status_code not in [200, 201]:
-        raise HTTPException(500, f"DB error: {res.text}")
-    return {"key": key, "months": months, "price_rub": price_rub}
-
-@app.get("/api/admin/miniapp-keys")
-async def get_miniapp_keys(x_admin_token: str = Header(None)):
-    if x_admin_token != A_SECRET:
-        raise HTTPException(401)
-    res = await db.get("miniapp_keys?select=*&order=created_at.desc")
-    return res.json()
-
-@app.post("/api/miniapps/activate")
-async def activate_miniapp(req: dict):
-    """Активация ключа мини-апп для конкретного бота."""
-    key_code = req.get("key", "").strip().upper()
-    bot_id   = req.get("botId", "").strip()
-    if not key_code or not bot_id:
-        return {"status": "error", "message": "Ключ и botId обязательны"}
-
-    rk = await db.get("miniapp_keys", params={"key": f"eq.{key_code}", "used": "eq.false"})
-    keys_found = rk.json()
-    if not keys_found:
-        return {"status": "error", "message": "Ключ недействителен или уже использован"}
-    k_data = keys_found[0]
-    months = int(k_data.get("months", 1))
-    added_ms = months * 30 * 86400 * 1000
-
-    # Проверяем существующую лицензию мини-апп
-    lic_r = await db.get("miniapp_licenses", params={"bot_id": f"eq.{bot_id}"})
-    lics = lic_r.json()
-    curr_time = int(time.time() * 1000)
-
-    if lics:
-        cur_expiry = lics[0].get("expires_at", 0) or 0
-        new_expiry = max(cur_expiry, curr_time) + added_ms
-        await db.patch("miniapp_licenses", params={"bot_id": f"eq.{bot_id}"},
-                       json={"expires_at": new_expiry, "active": True})
-    else:
-        new_expiry = curr_time + added_ms
-        await db.post("miniapp_licenses", json={
-            "bot_id": bot_id, "expires_at": new_expiry, "active": True
-        })
-
-    await db.patch("miniapp_keys", params={"key": f"eq.{key_code}"},
-                   json={"used": True, "used_by_bot": bot_id})
-
-    logger.info(f"✅ MiniApp ключ активирован: {key_code} → бот {bot_id}, до {new_expiry}")
-    return {"status": "ok", "expires_at": new_expiry, "months_added": months}
-
-@app.get("/api/miniapps/license/{bot_id}")
-async def get_miniapp_license(bot_id: str):
-    """Проверяет активность лицензии мини-апп для бота."""
-    try:
-        r = await db.get("miniapp_licenses", params={"bot_id": f"eq.{bot_id}", "limit": "1"})
-        lics = r.json()
-        if not lics:
-            return {"active": False, "expires_at": 0}
-        lic = lics[0]
-        expires_at = lic.get("expires_at", 0) or 0
-        active = expires_at > int(time.time() * 1000)
-        # Обновляем флаг active в БД если истекла
-        if not active and lic.get("active"):
-            await db.patch("miniapp_licenses", params={"bot_id": f"eq.{bot_id}"},
-                           json={"active": False})
-        return {"active": active, "expires_at": expires_at}
-    except Exception as e:
-        logger.error(f"miniapp license check error: {e}")
-        return {"active": False, "expires_at": 0}
-
-@app.get("/api/miniapps/list-by-bot/{bot_id}")
-async def list_miniapps_by_bot(bot_id: str):
-    """Получить все мини-приложения конкретного бота (для редактора)."""
-    try:
-        r = await db.get("mini_apps", params={
-            "bot_id": f"eq.{bot_id}",
-            "select": "*",
-            "order": "updated_at.desc",
-            "limit": "50",
-        })
-        if r.status_code == 200:
-            apps = r.json()
-            for a in apps:
-                a["formWebhook"] = a.pop("form_webhook", "") or ""
-                a["sheetsUrl"] = a.pop("sheets_url", "") or ""
-                a["webhookType"] = a.pop("webhook_type", "webhook") or "webhook"
-            return apps
-        return []
-    except Exception as e:
-        logger.error(f"list_miniapps_by_bot error: {e}")
-        return []
-
 @app.post("/api/miniapps/save")
 async def save_miniapp(request: Request):
-    """Сохраняет мини-приложение."""
+    """Сохраняет мини-приложение. Публичный (аутентификация по owner_id из тела)."""
     try:
         data = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    app_id       = data.get("id") or str(uuid.uuid4())
-    owner_id     = data.get("owner_id", "")
-    bot_id       = data.get("bot_id", "")
-    title        = data.get("title", "Без названия")[:120]
-    theme        = data.get("theme", {})
-    components   = data.get("components", [])
-    webhook      = data.get("form_webhook") or data.get("formWebhook", "")
-    sheets_url   = data.get("sheets_url") or data.get("sheetsUrl", "")
-    webhook_type = data.get("webhook_type") or data.get("webhookType", "webhook")
+    app_id     = data.get("id") or str(uuid.uuid4())
+    owner_id   = data.get("owner_id", "")
+    title      = data.get("title", "Без названия")[:120]
+    theme      = data.get("theme", {})
+    components = data.get("components", [])
+    # Приводим к snake_case для БД
+    webhook    = data.get("formWebhook") or data.get("form_webhook", "")
 
     if not owner_id:
         raise HTTPException(status_code=422, detail="owner_id required")
 
+    # Ограничение на количество компонентов
     if len(components) > 100:
         raise HTTPException(status_code=422, detail="Too many components (max 100)")
 
     record = {
         "id":           app_id,
         "owner_id":     owner_id,
-        "bot_id":       bot_id,
         "title":        title,
         "theme":        theme,
         "components":   components,
         "form_webhook": webhook,
-        "sheets_url":   sheets_url,
-        "webhook_type": webhook_type,
         "updated_at":   datetime.utcnow().isoformat() + "Z",
     }
 
@@ -2034,27 +1919,86 @@ async def get_miniapp(app_id: str):
         raise HTTPException(status_code=500, detail="Server error")
 
 
-# ── Список мини-приложений пользователя ──────────────────────────
+# ── Список мини-приложений пользователя (ИЗМЕНЕНО) ───────────────
 @app.get("/api/miniapps/list/{owner_id}")
 async def list_miniapps(owner_id: str):
-    """Получить все мини-приложения пользователя."""
+    """Получить все мини-приложения пользователя (теперь забираем ВСЕ данные)."""
     try:
         r = await db.get(
             "mini_apps",
             params={
                 "owner_id": f"eq.{owner_id}",
-                "select":   "id,title,updated_at",
+                "select":   "*", # Раньше было "id,title,updated_at", из-за этого редактор не видел блоки!
                 "order":    "updated_at.desc",
                 "limit":    "50",
             }
         )
         if r.status_code == 200:
-            return r.json()
+            apps = r.json()
+            # Мапим form_webhook обратно для фронта
+            for a in apps:
+                a["formWebhook"] = a.pop("form_webhook", "")
+            return apps
         return []
     except Exception as e:
         logger.error(f"Miniapp list error: {e}")
         return []
 
+# ── НОВЫЙ ЭНДПОИНТ: Отправка формы прямо в бота ──────────────────
+@app.post("/api/miniapps/submit")
+async def submit_miniapp_form(req: Request):
+    """Принимает данные формы и отправляет админу в ТГ или ВК."""
+    data = await req.json()
+    app_id = data.get("app_id")
+    form_data = data.get("data", {})
+    bot_id = data.get("bot_id")
+
+    if not bot_id:
+        return {"error": "Бот не привязан к этому приложению"}
+
+    try:
+        # 1. Ищем бота в базе
+        b_req = await db.get("bots", params={"id": f"eq.{bot_id}"})
+        if not b_req.json():
+            return {"error": "Бот не найден"}
+            
+        bot_db = b_req.json()[0]
+        platform = bot_db.get("platform", "telegram")
+        token = decrypt_val(bot_db.get("token", ""))
+        
+        # Берем чат, куда слать уведомления
+        admin_id = bot_db.get("admin_chat_id") or bot_db.get("vk_group_id")
+        
+        if not admin_id:
+            return {"error": "У бота не настроен ID группы/админа"}
+
+        # 2. Формируем красивое сообщение
+        msg = "<b>🔔 Новая заявка из формы (Mini App)</b>\n\n"
+        for key, val in form_data.items():
+            if not str(key).startswith("_") and val:
+                msg += f"▪️ <b>{key}</b>: {val}\n"
+
+        # 3. Отправляем сообщение
+        async with httpx.AsyncClient() as client:
+            if platform == 'vk':
+                await client.post("https://api.vk.com/method/messages.send", data={
+                    "peer_id": admin_id,
+                    "message": msg.replace("<b>", "").replace("</b>", ""), # ВК не любит HTML
+                    "random_id": random.randint(1, 2147483647),
+                    "access_token": token,
+                    "v": "5.199"
+                })
+            else:
+                await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                    "chat_id": admin_id,
+                    "text": msg,
+                    "parse_mode": "HTML"
+                })
+
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Miniapp direct submit error: {e}")
+        raise HTTPException(500, "Ошибка при отправке")
 
 # ── Удалить мини-приложение ───────────────────────────────────────
 @app.delete("/api/miniapps/{app_id}")
@@ -2091,6 +2035,8 @@ async def delete_miniapp(app_id: str, request: Request):
 # ==========================================
 
 @app.get("/api/ping")
+async def ping_pong():
+    return {"status": "online", "server_time": time.time()}
 
 if __name__ == "__main__":
     import uvicorn
