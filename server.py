@@ -2027,29 +2027,6 @@ async def save_miniapp(request: Request):
 
 
 # ── Получить мини-приложение по ID (публичный) ─────────────────────
-@app.get("/api/miniapps/{app_id}")
-async def get_miniapp(app_id: str):
-    """Публичный endpoint для рендера мини-приложения."""
-    try:
-        r = await db.get(
-            "mini_apps",
-            params={"id": f"eq.{app_id}", "select": "*", "limit": "1"}
-        )
-        if r.status_code == 200:
-            results = r.json()
-            if results:
-                app_data = results[0]
-                # Мапим обратно для фронтенда
-                app_data["formWebhook"] = app_data.pop("form_webhook", "")
-                return app_data
-        
-        raise HTTPException(status_code=404, detail="App not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Miniapp get error: {e}")
-        raise HTTPException(status_code=500, detail="Server error")
-
 
 # ── Список мини-приложений пользователя ──────────────────────────
 @app.get("/api/miniapps/list/{owner_id}")
@@ -2071,7 +2048,125 @@ async def list_miniapps(owner_id: str):
     except Exception as e:
         logger.error(f"Miniapp list error: {e}")
         return []
+@app.get("/api/miniapps/{app_id}")
+async def get_miniapp(app_id: str):
+    """Публичный endpoint для рендера мини-приложения."""
+    try:
+        r = await db.get(
+            "mini_apps",
+            params={"id": f"eq.{app_id}", "select": "*", "limit": "1"}
+        )
+        if r.status_code == 200:
+            results = r.json()
+            if results:
+                app_data = results[0]
+                # Нормализуем поля для рендерера
+                app_data["formWebhook"] = app_data.pop("form_webhook", "") or ""
+                app_data["sheetsUrl"]   = app_data.pop("sheets_url", "") or ""
+                app_data["webhookType"] = app_data.pop("webhook_type", "webhook") or "webhook"
+                # bot_id остаётся как есть — рендерер читает его напрямую
+                return app_data
+        
+        raise HTTPException(status_code=404, detail="App not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Miniapp get error: {e}")
+        raise HTTPException(status_code=500, detail="Server error")
 
+
+
+
+@app.post("/api/miniapps/submit")
+async def submit_miniapp_form(request: Request):
+    """Принимает данные формы из мини-приложения и пересылает в бота или Sheets."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    app_id       = body.get("app_id", "")
+    bot_id       = body.get("bot_id", "")
+    form_data    = body.get("data", {})
+    webhook_type = body.get("webhook_type", "bot")
+    sheets_url   = body.get("sheets_url", "")
+    form_webhook = body.get("form_webhook", "")
+
+    if not app_id:
+        raise HTTPException(status_code=422, detail="app_id required")
+
+    # Если не передали bot_id/webhook_type — загружаем из БД
+    if not bot_id or not webhook_type or webhook_type == "webhook" and not form_webhook:
+        r = await db.get("mini_apps", params={"id": f"eq.{app_id}", "select": "*", "limit": "1"})
+        if r.status_code == 200 and r.json():
+            app_row = r.json()[0]
+            bot_id       = bot_id or app_row.get("bot_id", "")
+            webhook_type = webhook_type or app_row.get("webhook_type", "bot")
+            sheets_url   = sheets_url or app_row.get("sheets_url", "")
+            form_webhook = form_webhook or app_row.get("form_webhook", "")
+
+    try:
+        if webhook_type == "bot" and bot_id:
+            # Получаем токен бота и пересылаем данные
+            br = await db.get("bots", params={"id": f"eq.{bot_id}", "select": "token,platform,channel_id", "limit": "1"})
+            if br.status_code == 200 and br.json():
+                bot_row  = br.json()[0]
+                token    = decrypt_val(bot_row.get("token", ""))
+                platform = bot_row.get("platform", "telegram")
+
+                # Форматируем данные для сообщения
+                lines = [f"<b>Форма из мини-приложения</b>", f"ID: <code>{app_id}</code>", ""]
+                for k, v in form_data.items():
+                    lines.append(f"<b>{k}</b>: {v}")
+                msg_text = "
+".join(lines)
+
+                if platform in ("telegram", "tg"):
+                    # Читаем channel_id как chat для уведомлений, если не задан — используем owner
+                    chat_id = bot_row.get("channel_id") or ""
+                    if not chat_id:
+                        # Находим admin_ids бота
+                        admin_ids = bot_row.get("admin_ids", []) if isinstance(bot_row.get("admin_ids"), list) else []
+                        chat_id = str(admin_ids[0]) if admin_ids else ""
+                    if chat_id:
+                        async with httpx.AsyncClient(timeout=10) as client:
+                            await client.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": chat_id, "text": msg_text, "parse_mode": "HTML"}
+                            )
+                elif platform == "vk":
+                    # VK Messages API
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        peer_id = bot_row.get("channel_id") or ""
+                        if peer_id:
+                            await client.post(
+                                "https://api.vk.com/method/messages.send",
+                                params={
+                                    "access_token": token,
+                                    "peer_id": peer_id,
+                                    "message": msg_text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", ""),
+                                    "v": "5.131",
+                                    "random_id": 0,
+                                }
+                            )
+
+        elif webhook_type == "sheets" and sheets_url:
+            # Пересылаем на Google Apps Script
+            async with httpx.AsyncClient(timeout=15) as client:
+                await client.post(sheets_url, json={**form_data, "_appId": app_id})
+
+        elif webhook_type == "webhook" and form_webhook:
+            # Внешний вебхук (n8n, Make, Zapier)
+            async with httpx.AsyncClient(timeout=15) as client:
+                await client.post(form_webhook, json={**form_data, "_appId": app_id})
+
+        logger.info(f"Form submitted: app={app_id} type={webhook_type}")
+        return {"ok": True}
+
+    except Exception as e:
+        logger.error(f"Form submit error: {e}")
+        # Не возвращаем ошибку пользователю — форма уже отправлена
+        return {"ok": True, "warning": str(e)}
 
 # ── Удалить мини-приложение ───────────────────────────────────────
 @app.delete("/api/miniapps/{app_id}")
