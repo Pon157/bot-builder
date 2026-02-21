@@ -2105,22 +2105,45 @@ async def submit_miniapp_form(request: Request):
             sheets_url   = sheets_url or app_row.get("sheets_url", "")
             form_webhook = form_webhook or app_row.get("form_webhook", "")
 
-    try:
-        if webhook_type == "bot" and bot_id:
-            # Получаем токен бота и пересылаем данные
+    if webhook_type == "bot" and bot_id:
+            # 1. Получаем данные бота
             br = await db.get("bots", params={"id": f"eq.{bot_id}", "select": "token,platform,channel_id", "limit": "1"})
+            
             if br.status_code == 200 and br.json():
-                bot_row  = br.json()[0]
-                token    = decrypt_val(bot_row.get("token", ""))
+                bot_row = br.json()[0]
+                # Берем токен из .env или из зашифрованного поля в БД
+                token = decrypt_val(bot_row.get("token", ""))
                 platform = bot_row.get("platform", "telegram")
 
-                # Форматируем данные для сообщения
-                lines = [f"<b>Форма из мини-приложения</b>", f"ID: <code>{app_id}</code>", ""]
+                # 2. Собираем данные формы (извлекаем их из пришедшего JSON)
+                form_data = data.get("form_data", {}) # Убедись, что берешь данные отсюда
+                
+                # 3. Форматируем сообщение
+                lines = [
+                    "<b>Форма из мини-приложения</b>",
+                    f"ID: <code>{app_id}</code>",
+                    ""
+                ]
+                
                 for k, v in form_data.items():
                     lines.append(f"<b>{k}</b>: {v}")
-                msg_text = "
-".join(lines)
+                
+                # Соединяем строки через обычный символ переноса
+                msg_text = "\n".join(lines)
 
+                # 4. Отправка в Telegram (пример)
+                if platform == "telegram" and token:
+                    chat_id = bot_row.get("channel_id") or owner_id # или куда слать
+                    async with httpx.AsyncClient() as client:
+                        await client.post(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={
+                                "chat_id": chat_id,
+                                "text": msg_text,
+                                "parse_mode": "HTML"
+                            }
+                        )
+                        
                 if platform in ("telegram", "tg"):
                     # Читаем channel_id как chat для уведомлений, если не задан — используем owner
                     chat_id = bot_row.get("channel_id") or ""
