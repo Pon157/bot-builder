@@ -2091,10 +2091,12 @@ async def delete_miniapp(app_id: str, request: Request):
 # ==========================================
 
 @app.get("/api/ping")
-
-if __name__ == "__main__":
-    import uvicorn
-    # Запуск сервера на порту 8000
-    uvicorn.run(app, host="0.0.0.0", port=8000)
 async def ping_pong():
     return {"status": "online", "server_time": time.time()}
+
+# Блок запуска всегда должен быть в конце файла
+if __name__ == "__main__":
+    import uvicorn
+    import time # Не забудьте импортировать time, если он не импортирован выше
+    # Запуск сервера на порту 8000
+    uvicorn.run(app, host="0.0.0.0", port=8000)
