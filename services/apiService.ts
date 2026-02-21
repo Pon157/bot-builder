@@ -442,6 +442,24 @@ adminLogin: async (login: string, pass: string) => {
     }
   },
 
+  // --- MINI APPS ---
+  saveMiniApp: async (appData: any) => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/miniapps/save`, {
+        method: 'POST',
+        body: JSON.stringify(appData)
+      });
+      if (!response.ok) {
+        console.error("Ошибка сохранения MiniApp:", await response.text());
+        return false;
+      }
+      return await response.json();
+    } catch (e) {
+      console.error("Network error on saveMiniApp:", e);
+      return false;
+    }
+  },
+
   // Сохранение или обновление MiniApp
   saveMiniApp: async (appData: any) => {
     try {
