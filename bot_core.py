@@ -760,36 +760,6 @@ class BotInstance:
             )
             return True
 
-        # 🔍 ПОИСК ПОЛЬЗОВАТЕЛЯ ПО ID (/whois <id>)
-        elif command == "whois":
-            if len(cmd_parts) < 2:
-                await m.reply("Использование: <code>/whois &lt;user_id&gt;</code>")
-                return True
-            try:
-                lookup_id = int(cmd_parts[1])
-            except ValueError:
-                await m.reply("ID должен быть числом.")
-                return True
-            found = next((u for u in self.users_list if int(u['id']) == lookup_id), None)
-            if not found:
-                await m.reply(f"Пользователь <code>{lookup_id}</code> не найден в базе.")
-                return True
-            username = found.get("username")
-            name_line = found.get("first_name", "—")
-            if username:
-                name_line += f" (@{username})"
-            joined = datetime.fromtimestamp(found.get("joined_at", 0)).strftime("%d.%m.%Y %H:%M") if found.get("joined_at") else "—"
-            last_seen = datetime.fromtimestamp(found.get("last_seen", 0)).strftime("%d.%m.%Y %H:%M") if found.get("last_seen") else "—"
-            await m.reply(
-                f"🔍 <b>Пользователь <code>{lookup_id}</code>:</b>\n\n"
-                f"Имя: {name_line}\n"
-                f"Забанен: {'Да' if found.get('is_banned') else 'Нет'}\n"
-                f"Варнов: {found.get('warns', 0)}\n"
-                f"Зашёл: {joined}\n"
-                f"Последняя активность: {last_seen}"
-            )
-            return True
-
         # 📢 РАССЫЛКА
         elif command == "broadcast":
             if m.reply_to_message:
@@ -867,6 +837,24 @@ class BotInstance:
 
         uid = target_user['id']
         ban_limit = self.config.get("settings", {}).get("autoBanThreshold", 3)
+
+        # 🔍 ИНФО О ПОЛЬЗОВАТЕЛЕ (/whois)
+        if command == "whois":
+            username = target_user.get("username")
+            name_line = target_user.get("first_name", "—")
+            if username:
+                name_line += f" (@{username})"
+            joined = datetime.fromtimestamp(target_user.get("joined_at", 0)).strftime("%d.%m.%Y %H:%M") if target_user.get("joined_at") else "—"
+            last_seen = datetime.fromtimestamp(target_user.get("last_seen", 0)).strftime("%d.%m.%Y %H:%M") if target_user.get("last_seen") else "—"
+            await m.reply(
+                f"🔍 <b>Пользователь <code>{uid}</code>:</b>\n\n"
+                f"Имя: {name_line}\n"
+                f"Забанен: {'Да' if target_user.get('is_banned') else 'Нет'}\n"
+                f"Варнов: {target_user.get('warns', 0)}\n"
+                f"Зашёл: {joined}\n"
+                f"Активность: {last_seen}"
+            )
+            return True
 
         # 🚫 БАН
         if command == "ban":
@@ -1043,8 +1031,31 @@ class BotInstance:
             uid = user['id']
 
             # ── РЕЖИМ АКТИВНОГО ТИКЕТА ──
-            # Пока обращение не закрыто — всё пересылается в чат, клавиатура скрыта
+            # Пока обращение не закрыто — все сообщения пересылаются в чат
             if user.get('_in_ticket'):
+                # Кнопка закрытия — единственное исключение
+                if m.text and m.text.strip() == "Закрыть обращение":
+                    user.pop('_in_ticket', None)
+                    # Уведомляем администратора
+                    if self.admin_chat_id:
+                        thread_id = user.get("last_topic_id")
+                        name = user.get("first_name", str(uid))
+                        username_str = user.get("username")
+                        user_line = name
+                        if username_str:
+                            user_line += f" (@{username_str})"
+                        user_line += f" | ID: <code>{uid}</code>"
+                        try:
+                            await self.bot.send_message(
+                                self.admin_chat_id,
+                                f"Обращение закрыто пользователем.\n{user_line}",
+                                message_thread_id=thread_id
+                            )
+                        except Exception:
+                            pass
+                    await m.answer("Обращение закрыто.", reply_markup=self.get_main_keyboard())
+                    return
+                # Всё остальное — пересылаем оператору
                 await self.forward_to_admin(m, user)
                 await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
                 return
@@ -1088,18 +1099,16 @@ class BotInstance:
                         await m.answer(resp or "Выберите вариант:", reply_markup=child_kb)
                     else:
                         if matched_btn.get('type') == 'request':
-                            # ── ОТКРЫТИЕ ТИКЕТА: убираем клавиатуру до закрытия обращения ──
+                            # ── ОТКРЫТИЕ ТИКЕТА: клавиатура с единственной кнопкой закрытия ──
                             user['_in_ticket'] = True
                             await self.forward_to_admin(m, user, btn_text=matched_btn['text'])
                             resp_text = matched_btn.get('response', 'Ваше обращение принято. Ожидайте ответа оператора.')
-                            # Убираем Reply-клавиатуру
-                            await m.answer(resp_text, reply_markup=ReplyKeyboardRemove())
-                            # Отдельным сообщением — инлайн-кнопка закрытия (без смайликов)
-                            close_ticket_kb = InlineKeyboardMarkup(inline_keyboard=[[
-                                InlineKeyboardButton(text="Закрыть обращение", callback_data="ticket_close")
-                            ]])
+                            close_ticket_kb = ReplyKeyboardMarkup(
+                                keyboard=[[KeyboardButton(text="Закрыть обращение")]],
+                                resize_keyboard=True
+                            )
                             await m.answer(
-                                "Вы можете продолжать писать сообщения — они будут доставлены оператору.",
+                                f"{resp_text}\n\nВы можете продолжать писать — сообщения будут доставлены оператору.",
                                 reply_markup=close_ticket_kb
                             )
                         else:
@@ -1216,47 +1225,6 @@ class BotInstance:
                 await self.bot.send_message(
                     uid_cb,
                     "✅ Диалог с ИИ завершён.",
-                    reply_markup=self.get_main_keyboard()
-                )
-            except Exception:
-                pass
-
-        # 6. Закрытие тикета пользователем
-        @self.router.callback_query(lambda c: c.data == 'ticket_close')
-        async def on_ticket_close(cb: CallbackQuery):
-            uid_cb = cb.from_user.id
-            user_cb = next((u for u in self.users_list if u['id'] == uid_cb), None)
-
-            if user_cb:
-                user_cb.pop('_in_ticket', None)
-                # Уведомляем администратора о закрытии
-                if self.admin_chat_id:
-                    thread_id = user_cb.get("last_topic_id")
-                    name = user_cb.get("first_name", str(uid_cb))
-                    username = user_cb.get("username")
-                    user_line = f"{name}"
-                    if username:
-                        user_line += f" (@{username})"
-                    user_line += f" | ID: <code>{uid_cb}</code>"
-                    try:
-                        await self.bot.send_message(
-                            self.admin_chat_id,
-                            f"Обращение закрыто пользователем.\n{user_line}",
-                            message_thread_id=thread_id
-                        )
-                    except Exception:
-                        pass
-
-            try:
-                await cb.message.delete()
-            except Exception:
-                pass
-
-            await cb.answer("Обращение закрыто.")
-            try:
-                await self.bot.send_message(
-                    uid_cb,
-                    "Обращение закрыто.",
                     reply_markup=self.get_main_keyboard()
                 )
             except Exception:
