@@ -436,14 +436,22 @@ const PropertiesPanel: React.FC<{
       )}
 
       {/* SPACER ──────────────────────────── */}
-      {comp.type === 'spacer' && (
-        <PropInput label="Высота (px)">
-          <PInput type="number" min={4} max={300} value={p.height || 32} onChange={e => up({ height: Number(e.target.value) })} />
-        </PropInput>
-      )}
-    </div>
-  );
-};
+{comp.type === 'spacer' && (
+  <PropInput label="Высота (px)">
+    <PInput 
+      type="number" 
+      min={4} 
+      max={300} 
+      // Добавляем fallback значение, чтобы input не стал "uncontrolled"
+      value={p.height ?? 32} 
+      // Явно приводим к числу и проверяем на NaN для надежности
+      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+        const val = parseInt(e.target.value, 10);
+        up({ height: isNaN(val) ? 32 : val });
+      }} 
+    </PInput>
+  </PropInput>
+)}
 
 // ─── Theme Panel ──────────────────────────────────────────────────────────────
 
