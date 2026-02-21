@@ -285,9 +285,13 @@ const MiniAppRenderer: React.FC = () => {
     setFormData(p => ({ ...p, [name]: value }));
   };
 
+  const handleFormChange = (name: string, value: string) => {
+    setFormData(p => ({ ...p, [name]: value }));
+  };
+
   const handleSubmit = async () => {
     if (submitting) return;
-    
+
     if (Object.keys(formData).length === 0) {
       alert("Пожалуйста, заполните форму");
       return;
@@ -295,12 +299,13 @@ const MiniAppRenderer: React.FC = () => {
 
     setSubmitting(true);
     try {
+      // Отправляем данные на наш новый эндпоинт
       const response = await fetch('/api/forms/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           app_id: appId,
-          form_data: formData,
+          form_data: formData, // Бэкенд ждет именно этот ключ
         }),
       });
 
@@ -309,51 +314,16 @@ const MiniAppRenderer: React.FC = () => {
       if (response.ok && result.ok) {
         setSubmitted(true);
       } else {
-        alert("Ошибка: " + (result.error || "Не удалось отправить"));
+        alert("Ошибка: " + (result.error || "Не удалось отправить данные"));
       }
     } catch (err) {
       console.error("Submit error:", err);
-      alert("Ошибка сети");
+      alert("Ошибка сети. Проверьте соединение с сервером.");
     } finally {
       setSubmitting(false);
     }
   };
 
-      } else if (wtype === 'sheets' && appData?.sheetsUrl) {
-        // Google Apps Script — через наш сервер чтобы не было CORS
-        await fetch('/api/miniapps/submit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            app_id: appId,
-            webhook_type: 'sheets',
-            sheets_url: appData.sheetsUrl,
-            data: formData,
-          }),
-        });
-
-      } else if (wtype === 'webhook' && appData?.formWebhook) {
-        // Внешний вебхук через наш сервер (избегаем CORS/no-cors)
-        await fetch('/api/miniapps/submit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            app_id: appId,
-            webhook_type: 'webhook',
-            form_webhook: appData.formWebhook,
-            data: formData,
-          }),
-        });
-      }
-
-      setSubmitted(true);
-    } catch {
-      // Показываем успех даже при сетевой ошибке — сервер уже получил данные
-      setSubmitted(true);
-    } finally {
-      setSubmitting(false);
-    }
-  };
   if (loading) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0a0a0f' }}>
