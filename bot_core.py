@@ -1213,18 +1213,26 @@ class BotInstance:
         async def on_ai_close(cb: CallbackQuery):
             uid_cb = cb.from_user.id
             user_cb = next((u for u in self.users_list if u['id'] == uid_cb), None)
+            
             if user_cb:
                 user_cb.pop('_ai_session', None)
                 self.clear_ai_context(uid_cb)
+            
             try:
                 await cb.message.delete()
             except Exception:
                 pass
+            
             await cb.answer("Диалог с ИИ закрыт.")
+            
+            # ИСПРАВЛЕНО: корректный вызов метода (убраны лишние скобки и запятые)
             try:
-                await self.bot.send_message()
-                    uid_cb,
-                    "✅ Диалог с ИИ завершён.",
+                await self.bot.send_message(
+                    chat_id=uid_cb,
+                    text="✅ Диалог с ИИ завершён."
+                )
+            except Exception:
+                pass
 
         # 6. Закрытие тикета пользователем
         @self.router.callback_query(lambda c: c.data == 'ticket_close')
@@ -1234,20 +1242,25 @@ class BotInstance:
 
             if user_cb:
                 user_cb.pop('_in_ticket', None)
+                
                 # Уведомляем администратора о закрытии
+                # Напоминаю: admin_chat_id берется из настроек, указанных в .env
                 if self.admin_chat_id:
                     thread_id = user_cb.get("last_topic_id")
                     name = user_cb.get("first_name", str(uid_cb))
                     username = user_cb.get("username")
-                    user_line = f"{name}"
+                    
+                    user_line = f"<b>{name}</b>"
                     if username:
                         user_line += f" (@{username})"
                     user_line += f" | ID: <code>{uid_cb}</code>"
+                    
                     try:
                         await self.bot.send_message(
-                            self.admin_chat_id,
-                            f"Обращение закрыто пользователем.\n{user_line}",
-                            message_thread_id=thread_id
+                            chat_id=self.admin_chat_id,
+                            text=f"Обращение закрыто пользователем.\n{user_line}",
+                            message_thread_id=thread_id,
+                            parse_mode="HTML" # Добавлено для работы тегов <b> и <code>
                         )
                     except Exception:
                         pass
@@ -1256,6 +1269,9 @@ class BotInstance:
                 await cb.message.delete()
             except Exception:
                 pass
+            
+            await cb.answer("Тикет закрыт.")
+            await self.bot.send_message(uid_cb, "Вы вышли из диалога")
 
             await cb.answer("Обращение закрыто.")
             try:
