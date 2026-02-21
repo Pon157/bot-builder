@@ -8,7 +8,10 @@ import {
   Ticket, Plus, MessageSquare, User, CheckSquare,
   Square, Zap, Layout, ShieldAlert, Lock, Trash2, AlertCircle, Globe,
   Send, Shuffle, Hash, Users, Link, Smartphone, ChevronDown,
-  Brain, Image, ExternalLink, ArrowRight, Layers, Coins, Upload
+  Brain, Image, ExternalLink, ArrowRight, Layers, Coins, Upload,
+  AppWindow, Palette, AlignLeft, AlignCenter, AlignRight,
+  Type, MousePointerClick, Link2, TextCursorInput, Minus,
+  MoveVertical, Check, ChevronUp, Copy
 } from 'lucide-react';
 
 interface BotEditorProps {
@@ -19,7 +22,7 @@ interface BotEditorProps {
 }
 
 const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminMode }) => {
-  const [activeTab, setActiveTab] = useState<'settings' | 'logic' | 'interface' | 'ai' | 'logs' | 'stats'>('settings');
+  const [activeTab, setActiveTab] = useState<'settings' | 'logic' | 'interface' | 'ai' | 'logs' | 'stats' | 'miniapps'>('settings');
   const [isProcessing, setIsProcessing] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
@@ -117,6 +120,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
     { id: 'interface',  label: 'Интерфейс',    icon: Ticket,    show: isSupportBot  },
     { id: 'logic',      label: 'Логика',       icon: Zap,       show: isSupportBot  },
     { id: 'ai',         label: 'ИИ-Ассистент', icon: Brain,     show: isSupportBot  },
+    { id: 'miniapps',   label: 'Мини-апп',     icon: AppWindow, show: isSupportBot  },
     { id: 'stats',      label: 'Аналитика',    icon: BarChart3, show: true          },
     { id: 'logs',       label: 'Терминал',     icon: Terminal,  show: true          },
   ].filter((t: any) => t.show);
@@ -1215,6 +1219,14 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
         </div>
       )}
 
+      {/* ════════════════════════════════════════════
+          ВКЛАДКА: МИНИ-ПРИЛОЖЕНИЯ
+      ════════════════════════════════════════════ */}
+      {activeTab === 'miniapps' && isSupportBot && (
+        <MiniAppsTab bot={bot} onUpdate={handleLocalUpdate} isVK={isVK} />
+      )}
+
+
       {/* Аналитика и логи */}
       {activeTab === 'stats' && <BotStatsView bot={bot} onUpdate={onUpdate} />}
       {activeTab === 'logs'  && <BotConsole botId={bot.id} />}
@@ -1222,5 +1234,628 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
     </div>
   );
 };
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  МИНИ-ПРИЛОЖЕНИЯ — встроенный конструктор в BotEditor
+// ══════════════════════════════════════════════════════════════════════════════
+
+type MiniCompType = 'heading' | 'text' | 'button' | 'linkButton' | 'input' | 'textarea' | 'divider' | 'spacer' | 'image';
+
+interface MiniCompProps {
+  text?: string; level?: 'h1' | 'h2' | 'h3'; fontSize?: number; fontWeight?: string;
+  color?: string; align?: 'left' | 'center' | 'right'; italic?: boolean;
+  bgColor?: string; textColor?: string; action?: 'link' | 'submit' | 'none'; url?: string;
+  placeholder?: string; label?: string; required?: boolean; inputType?: string; name?: string;
+  src?: string; alt?: string; width?: string; height?: number; dividerColor?: string;
+}
+
+interface MiniComp { id: string; type: MiniCompType; props: MiniCompProps; }
+
+interface MiniTheme {
+  bg: string; surface: string; primary: string;
+  textPrimary: string; textSecondary: string; radius: number; font: string; gradient?: string;
+}
+
+interface MiniApp {
+  id: string; title: string; theme: MiniTheme; components: MiniComp[]; formWebhook?: string;
+}
+
+const MINI_PALETTE: { type: MiniCompType; label: string; icon: React.ElementType }[] = [
+  { type: 'heading',    label: 'Заголовок', icon: Type },
+  { type: 'text',       label: 'Текст',     icon: AlignLeft },
+  { type: 'button',     label: 'Кнопка',    icon: MousePointerClick },
+  { type: 'linkButton', label: 'Ссылка',    icon: Link2 },
+  { type: 'input',      label: 'Поле',      icon: TextCursorInput },
+  { type: 'textarea',   label: 'Textarea',  icon: Square },
+  { type: 'image',      label: 'Фото',      icon: Image },
+  { type: 'divider',    label: 'Линия',     icon: Minus },
+  { type: 'spacer',     label: 'Отступ',    icon: MoveVertical },
+];
+
+const MINI_PRESETS: { label: string; theme: Partial<MiniTheme> }[] = [
+  { label: '🌑 Ночь',  theme: { bg: '#0a0a0f', surface: '#13131c', primary: '#6366f1', textPrimary: '#f8fafc', textSecondary: '#94a3b8', gradient: 'radial-gradient(ellipse at 30% 0%, #312e8155 0%, transparent 60%)' } },
+  { label: '❄️ Лёд',   theme: { bg: '#f0f9ff', surface: '#ffffff',  primary: '#0ea5e9', textPrimary: '#0f172a', textSecondary: '#64748b', gradient: '' } },
+  { label: '🔥 Закат', theme: { bg: '#1c0d2b', surface: '#251238',  primary: '#f97316', textPrimary: '#fff7ed', textSecondary: '#d1a27c', gradient: 'radial-gradient(ellipse at 80% 0%, #7c2d8840 0%, transparent 60%)' } },
+  { label: '🌿 Лес',   theme: { bg: '#0d1f12', surface: '#142419',  primary: '#22c55e', textPrimary: '#f0fdf4', textSecondary: '#86efac', gradient: '' } },
+  { label: '🌸 Роза',  theme: { bg: '#fff1f2', surface: '#ffffff',  primary: '#f43f5e', textPrimary: '#1c1917', textSecondary: '#78716c', gradient: '' } },
+];
+
+const DEFAULT_MINI_THEME: MiniTheme = {
+  bg: '#0a0a0f', surface: '#13131c', primary: '#6366f1',
+  textPrimary: '#f8fafc', textSecondary: '#94a3b8',
+  radius: 12, font: "'Manrope', sans-serif",
+  gradient: "radial-gradient(ellipse at 30% 0%, #312e8155 0%, transparent 60%)",
+};
+
+const mkMiniId = () => Math.random().toString(36).slice(2, 9);
+
+const newMiniComp = (type: MiniCompType): MiniComp => {
+  const id = mkMiniId();
+  switch (type) {
+    case 'heading':    return { id, type, props: { text: 'Заголовок', level: 'h2', fontSize: 28, fontWeight: '800', color: '', align: 'left' } };
+    case 'text':       return { id, type, props: { text: 'Опишите здесь что угодно — информацию, оффер, инструкции.', fontSize: 15, color: '', align: 'left' } };
+    case 'button':     return { id, type, props: { text: 'Нажать', bgColor: '', textColor: '#fff', action: 'none' } };
+    case 'linkButton': return { id, type, props: { text: 'Перейти →', bgColor: '', textColor: '#fff', url: 'https://', action: 'link' } };
+    case 'input':      return { id, type, props: { label: 'Ваше имя', placeholder: 'Имя...', inputType: 'text', name: 'name', required: true } };
+    case 'textarea':   return { id, type, props: { label: 'Сообщение', placeholder: 'Текст...', name: 'message', required: false } };
+    case 'image':      return { id, type, props: { src: 'https://picsum.photos/seed/app/800/300', alt: '', width: '100%' } };
+    case 'divider':    return { id, type, props: { dividerColor: '' } };
+    case 'spacer':     return { id, type, props: { height: 24 } };
+    default:           return { id, type, props: {} };
+  }
+};
+
+// ── Превью компонента ─────────────────────────────────────────────────────────
+const MiniPreviewComp: React.FC<{ comp: MiniComp; theme: MiniTheme; selected?: boolean; onClick?: () => void }> = ({ comp, theme, selected, onClick }) => {
+  const { type, props: p } = comp;
+  const wrap = (el: React.ReactNode) => (
+    <div
+      onClick={onClick}
+      style={{
+        outline: selected ? `2px solid ${theme.primary}` : 'none',
+        outlineOffset: 2, borderRadius: 4, cursor: onClick ? 'pointer' : 'default',
+      }}
+    >{el}</div>
+  );
+
+  if (type === 'heading') {
+    const Tag = (p.level || 'h2') as 'h1' | 'h2' | 'h3';
+    return wrap(<Tag style={{ fontSize: p.fontSize || 28, fontWeight: p.fontWeight || '800', color: p.color || theme.textPrimary, textAlign: p.align || 'left', margin: 0, lineHeight: 1.2, fontFamily: theme.font }}>{p.text || 'Заголовок'}</Tag>);
+  }
+  if (type === 'text') {
+    return wrap(<p style={{ fontSize: p.fontSize || 15, color: p.color || theme.textSecondary, textAlign: p.align || 'left', margin: 0, lineHeight: 1.65, fontFamily: theme.font }}>{p.text || 'Текст'}</p>);
+  }
+  if (type === 'button' || type === 'linkButton') {
+    return wrap(<div style={{ textAlign: 'center' }}><span style={{ display: 'inline-block', background: p.bgColor || theme.primary, color: p.textColor || '#fff', borderRadius: theme.radius, fontWeight: '700', fontSize: 14, padding: '10px 24px', fontFamily: theme.font }}>{p.text || 'Кнопка'}</span></div>);
+  }
+  if (type === 'input') {
+    return wrap(<div>
+      {p.label && <span style={{ display: 'block', fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.08em', fontFamily: theme.font }}>{p.label}{p.required ? ' *' : ''}</span>}
+      <div style={{ background: theme.surface, border: `1px solid ${theme.textSecondary}30`, borderRadius: theme.radius * 0.6, padding: '9px 13px', fontSize: 13, color: theme.textSecondary + '80', fontFamily: theme.font }}>{p.placeholder || 'Введите...'}</div>
+    </div>);
+  }
+  if (type === 'textarea') {
+    return wrap(<div>
+      {p.label && <span style={{ display: 'block', fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.08em', fontFamily: theme.font }}>{p.label}{p.required ? ' *' : ''}</span>}
+      <div style={{ background: theme.surface, border: `1px solid ${theme.textSecondary}30`, borderRadius: theme.radius * 0.6, padding: '9px 13px', fontSize: 13, color: theme.textSecondary + '80', fontFamily: theme.font, minHeight: 64 }}>{p.placeholder || 'Введите...'}</div>
+    </div>);
+  }
+  if (type === 'image') {
+    return wrap(<img src={p.src} alt={p.alt || ''} style={{ width: p.width || '100%', borderRadius: theme.radius, display: 'block', maxWidth: '100%' }} onError={e => { (e.currentTarget as HTMLImageElement).style.opacity = '0.3'; }} />);
+  }
+  if (type === 'divider') return wrap(<hr style={{ border: 'none', borderTop: `1px solid ${p.dividerColor || theme.textSecondary + '30'}`, margin: '2px 0' }} />);
+  if (type === 'spacer') return wrap(<div style={{ height: p.height || 24 }} />);
+  return wrap(<div />);
+};
+
+// ── Панель свойств (компактная) ───────────────────────────────────────────────
+const MiniPropsPanel: React.FC<{ comp: MiniComp | null; theme: MiniTheme; onChange: (id: string, p: Partial<MiniCompProps>) => void }> = ({ comp, theme, onChange }) => {
+  if (!comp) return (
+    <div className="flex flex-col items-center justify-center py-12 gap-2 opacity-20">
+      <Layers className="w-8 h-8 text-zinc-500" />
+      <p className="text-[9px] text-zinc-500 font-black uppercase tracking-widest">Выберите блок</p>
+    </div>
+  );
+  const p = comp.props;
+  const up = (patch: Partial<MiniCompProps>) => onChange(comp.id, patch);
+  const inp = (className = '') => `w-full bg-black border border-zinc-800 focus:border-indigo-500 text-white text-xs p-2.5 rounded-xl outline-none transition-all ${className}`;
+
+  return (
+    <div className="p-4 space-y-3">
+      <p className="text-[8px] font-black text-indigo-400 uppercase tracking-[0.2em] mb-3">{comp.type}</p>
+
+      {(comp.type === 'heading' || comp.type === 'text') && (<>
+        <label className="block">
+          <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">Текст</span>
+          <textarea value={p.text || ''} rows={3} onChange={e => up({ text: e.target.value })} className={inp('resize-none')} />
+        </label>
+        {comp.type === 'heading' && (
+          <label className="block">
+            <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">Уровень</span>
+            <select value={p.level || 'h2'} onChange={e => up({ level: e.target.value as any })} className={inp('cursor-pointer')}>
+              <option value="h1">H1 — Главный</option><option value="h2">H2 — Средний</option><option value="h3">H3 — Малый</option>
+            </select>
+          </label>
+        )}
+        <label className="block">
+          <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">Размер (px)</span>
+          <input type="number" min={10} max={80} value={p.fontSize || 16} onChange={e => up({ fontSize: Number(e.target.value) })} className={inp()} />
+        </label>
+        <label className="block">
+          <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">Выравнивание</span>
+          <div className="flex gap-1">
+            {(['left','center','right'] as const).map(a => (
+              <button key={a} onClick={() => up({ align: a })}
+                className={`flex-1 py-2 rounded-lg border text-[9px] font-black uppercase transition-all ${p.align===a ? 'bg-indigo-500/20 border-indigo-500/40 text-indigo-400' : 'border-zinc-800 text-zinc-600 hover:border-zinc-700'}`}>{a[0].toUpperCase()}{a.slice(1)}</button>
+            ))}
+          </div>
+        </label>
+        <label className="block">
+          <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">Цвет текста</span>
+          <div className="flex gap-2">
+            <input type="color" value={p.color || theme.textPrimary} onChange={e => up({ color: e.target.value })} className="w-9 h-9 rounded-lg border border-zinc-800 bg-black cursor-pointer p-0.5" />
+            <input value={p.color || ''} placeholder="авто" onChange={e => up({ color: e.target.value })} className={inp()} />
+          </div>
+        </label>
+      </>)}
+
+      {(comp.type === 'button' || comp.type === 'linkButton') && (<>
+        <label className="block">
+          <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">Текст</span>
+          <input value={p.text || ''} onChange={e => up({ text: e.target.value })} className={inp()} />
+        </label>
+        <label className="block">
+          <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">Цвет фона</span>
+          <div className="flex gap-2">
+            <input type="color" value={p.bgColor || theme.primary} onChange={e => up({ bgColor: e.target.value })} className="w-9 h-9 rounded-lg border border-zinc-800 bg-black cursor-pointer p-0.5" />
+            <input value={p.bgColor || ''} placeholder="авто (акцент)" onChange={e => up({ bgColor: e.target.value })} className={inp()} />
+          </div>
+        </label>
+        {comp.type === 'linkButton' && (
+          <label className="block">
+            <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">URL</span>
+            <input type="url" value={p.url || ''} placeholder="https://" onChange={e => up({ url: e.target.value })} className={inp()} />
+          </label>
+        )}
+        {comp.type === 'button' && (
+          <label className="block">
+            <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">Действие</span>
+            <select value={p.action || 'none'} onChange={e => up({ action: e.target.value as any })} className={inp('cursor-pointer')}>
+              <option value="none">Нет</option><option value="submit">Отправить форму</option><option value="link">Открыть ссылку</option>
+            </select>
+          </label>
+        )}
+        {comp.type === 'button' && p.action === 'link' && (
+          <label className="block">
+            <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">URL</span>
+            <input type="url" value={p.url || ''} placeholder="https://" onChange={e => up({ url: e.target.value })} className={inp()} />
+          </label>
+        )}
+      </>)}
+
+      {(comp.type === 'input' || comp.type === 'textarea') && (<>
+        <label className="block">
+          <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">Подпись</span>
+          <input value={p.label || ''} onChange={e => up({ label: e.target.value })} className={inp()} />
+        </label>
+        <label className="block">
+          <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">Placeholder</span>
+          <input value={p.placeholder || ''} onChange={e => up({ placeholder: e.target.value })} className={inp()} />
+        </label>
+        <label className="block">
+          <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">name (для формы)</span>
+          <input value={p.name || ''} onChange={e => up({ name: e.target.value })} className={inp()} />
+        </label>
+        {comp.type === 'input' && (
+          <label className="block">
+            <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">Тип</span>
+            <select value={p.inputType || 'text'} onChange={e => up({ inputType: e.target.value })} className={inp('cursor-pointer')}>
+              <option value="text">Текст</option><option value="email">Email</option><option value="tel">Телефон</option><option value="number">Число</option>
+            </select>
+          </label>
+        )}
+        <div className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-900/50 border border-zinc-800">
+          <span className="text-[9px] font-black text-zinc-400">Обязательное</span>
+          <button onClick={() => up({ required: !p.required })} className={`w-9 h-5 rounded-full relative transition-all ${p.required ? 'bg-indigo-500' : 'bg-zinc-700'}`}>
+            <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${p.required ? 'left-4' : 'left-0.5'}`} />
+          </button>
+        </div>
+      </>)}
+
+      {comp.type === 'image' && (<>
+        <label className="block">
+          <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">URL фото</span>
+          <input value={p.src || ''} onChange={e => up({ src: e.target.value })} placeholder="https://..." className={inp()} />
+        </label>
+        <label className="block">
+          <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">Ширина</span>
+          <select value={p.width || '100%'} onChange={e => up({ width: e.target.value })} className={inp('cursor-pointer')}>
+            <option value="100%">100%</option><option value="75%">75%</option><option value="50%">50%</option><option value="auto">Авто</option>
+          </select>
+        </label>
+      </>)}
+
+      {comp.type === 'spacer' && (
+        <label className="block">
+          <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-1">Высота (px)</span>
+          <input type="number" min={4} max={300} value={p.height || 24} onChange={e => up({ height: Number(e.target.value) })} className={inp()} />
+        </label>
+      )}
+    </div>
+  );
+};
+
+// ── Главный компонент вкладки ─────────────────────────────────────────────────
+const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isVK: boolean }> = ({ bot, onUpdate, isVK }) => {
+  const [apps, setApps] = React.useState<MiniApp[]>(() => {
+    try { return JSON.parse(localStorage.getItem(`miniapps_${bot.id}`) || '[]'); } catch { return []; }
+  });
+  const [editingId, setEditingId]   = React.useState<string | null>(null);
+  const [selectedComp, setSelComp]  = React.useState<string | null>(null);
+  const [rightTab, setRightTab]     = React.useState<'props' | 'theme'>('props');
+  const [saving, setSaving]         = React.useState(false);
+  const [saved, setSaved]           = React.useState(false);
+  const [copiedId, setCopiedId]     = React.useState<string | null>(null);
+  const [previewMode, setPreviewMode] = React.useState(false);
+
+  const editing = apps.find(a => a.id === editingId) || null;
+  const selComp = editing?.components.find(c => c.id === selectedComp) || null;
+
+  const persist = (next: MiniApp[]) => {
+    setApps(next);
+    localStorage.setItem(`miniapps_${bot.id}`, JSON.stringify(next));
+  };
+
+  const saveToServer = async (app: MiniApp) => {
+    setSaving(true);
+    try {
+      await fetch('/api/miniapps/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...app, owner_id: bot.owner_id }),
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch { /* тихо, работаем локально */ } finally { setSaving(false); }
+  };
+
+  const createApp = () => {
+    const app: MiniApp = {
+      id: mkMiniId(),
+      title: 'Новое приложение',
+      theme: { ...DEFAULT_MINI_THEME },
+      components: [newMiniComp('heading'), newMiniComp('text'), newMiniComp('button')],
+      formWebhook: '',
+    };
+    const next = [...apps, app];
+    persist(next);
+    setEditingId(app.id);
+    setSelComp(null);
+    setPreviewMode(false);
+  };
+
+  const deleteApp = (id: string) => {
+    if (!window.confirm('Удалить это мини-приложение?')) return;
+    const next = apps.filter(a => a.id !== id);
+    persist(next);
+    if (editingId === id) setEditingId(null);
+  };
+
+  const updateApp = (patch: Partial<MiniApp>) => {
+    if (!editingId) return;
+    const next = apps.map(a => a.id === editingId ? { ...a, ...patch } : a);
+    persist(next);
+  };
+
+  const addComp = (type: MiniCompType) => {
+    if (!editing) return;
+    const c = newMiniComp(type);
+    updateApp({ components: [...editing.components, c] });
+    setSelComp(c.id);
+  };
+
+  const removeComp = (id: string) => {
+    if (!editing) return;
+    updateApp({ components: editing.components.filter(c => c.id !== id) });
+    if (selectedComp === id) setSelComp(null);
+  };
+
+  const moveComp = (id: string, dir: -1 | 1) => {
+    if (!editing) return;
+    const comps = [...editing.components];
+    const idx = comps.findIndex(c => c.id === id);
+    const to = idx + dir;
+    if (to < 0 || to >= comps.length) return;
+    [comps[idx], comps[to]] = [comps[to], comps[idx]];
+    updateApp({ components: comps });
+  };
+
+  const updateCompProps = (id: string, props: Partial<MiniCompProps>) => {
+    if (!editing) return;
+    updateApp({ components: editing.components.map(c => c.id === id ? { ...c, props: { ...c.props, ...props } } : c) });
+  };
+
+  const copyUrl = (id: string) => {
+    const url = `${window.location.origin}/app/${id}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    });
+  };
+
+  const theme = editing?.theme || DEFAULT_MINI_THEME;
+
+  // ── Список приложений ─────────────────────────────────────────
+  if (!editingId) return (
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-black text-white uppercase">Мини-приложения</h2>
+          <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-widest">Веб-страницы с формами и кнопками, доступные по ссылке</p>
+        </div>
+        <button onClick={createApp}
+          className="bg-indigo-600 hover:bg-indigo-500 px-6 py-4 rounded-2xl text-[11px] font-black text-white uppercase flex items-center gap-2 shadow-lg shadow-indigo-600/20 transition-all">
+          <Plus className="w-4 h-4" /> Создать
+        </button>
+      </div>
+
+      {/* Инфо-плашка */}
+      <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-2xl p-5 flex gap-4 items-start">
+        <div className="w-9 h-9 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center shrink-0 mt-0.5">
+          <AppWindow className="w-4 h-4 text-indigo-400" />
+        </div>
+        <div>
+          <p className="text-xs font-black text-indigo-300 mb-1">Что такое мини-приложение?</p>
+          <p className="text-[10px] text-zinc-500 leading-relaxed">
+            Создайте красивую веб-страницу с кнопками, формами, текстом и изображениями. Поделитесь ссылкой с пользователями бота — они смогут открыть её прямо в браузере. Отправки форм приходят на ваш webhook.
+            {isVK && ' Для VK: ссылку можно прикрепить как OpenLink-кнопку к любому ответу.'}
+          </p>
+        </div>
+      </div>
+
+      {apps.length === 0 ? (
+        <div className="border-2 border-dashed border-zinc-800 rounded-[2.5rem] p-16 text-center">
+          <AppWindow className="w-12 h-12 text-zinc-800 mx-auto mb-4" />
+          <p className="text-zinc-600 font-black text-sm uppercase tracking-widest">Нет мини-приложений</p>
+          <p className="text-zinc-700 text-[10px] mt-2">Нажмите «Создать» — будет готово за пару минут</p>
+          <button onClick={createApp}
+            className="mt-6 bg-indigo-600 hover:bg-indigo-500 px-8 py-3.5 rounded-2xl text-[11px] font-black text-white uppercase inline-flex items-center gap-2 transition-all">
+            <Plus className="w-4 h-4" /> Создать первое
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          {apps.map(app => (
+            <div key={app.id}
+              style={{ borderColor: app.theme.primary + '30', background: app.theme.bg + '20' }}
+              className="border rounded-[2rem] overflow-hidden group hover:scale-[1.01] transition-all">
+              {/* Превью-хедер с живой темой */}
+              <div style={{ background: app.theme.bg, minHeight: 90, position: 'relative', overflow: 'hidden' }}>
+                {app.theme.gradient && <div style={{ position: 'absolute', inset: 0, background: app.theme.gradient }} />}
+                <div className="relative z-10 p-5 flex items-end h-full">
+                  <div>
+                    <p style={{ color: app.theme.textSecondary, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 4 }}>
+                      {app.components.length} блоков
+                    </p>
+                    <p style={{ color: app.theme.textPrimary, fontWeight: 800, fontSize: 16, fontFamily: app.theme.font }}>
+                      {app.title}
+                    </p>
+                  </div>
+                  <div className="ml-auto">
+                    <span style={{ background: app.theme.primary, color: '#fff', fontSize: 9, fontWeight: 800, padding: '4px 10px', borderRadius: app.theme.radius * 0.5, textTransform: 'uppercase' }}>
+                      {app.components.filter(c => c.type === 'button' || c.type === 'linkButton').length} кнопок
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="p-4 flex items-center gap-2 bg-zinc-900/50 border-t border-zinc-800/50">
+                <button onClick={() => { setEditingId(app.id); setSelComp(null); setPreviewMode(false); }}
+                  className="flex-1 text-[9px] font-black uppercase text-zinc-400 hover:text-white bg-zinc-800 hover:bg-zinc-700 py-2.5 rounded-xl transition-all flex items-center justify-center gap-1.5">
+                  <Palette className="w-3 h-3" /> Редактировать
+                </button>
+                <button onClick={() => copyUrl(app.id)}
+                  className={`flex items-center gap-1.5 text-[9px] font-black uppercase py-2.5 px-3 rounded-xl transition-all ${copiedId === app.id ? 'bg-emerald-500/20 text-emerald-400' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white'}`}>
+                  {copiedId === app.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  {copiedId === app.id ? 'Скопировано' : 'Ссылка'}
+                </button>
+                <a href={`/app/${app.id}`} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 text-[9px] font-black uppercase py-2.5 px-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white transition-all">
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+                <button onClick={() => deleteApp(app.id)}
+                  className="text-[9px] py-2.5 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 transition-all">
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  // ── Редактор ──────────────────────────────────────────────────
+  return (
+    <div className="flex flex-col gap-0 animate-in fade-in duration-300 -mx-0" style={{ minHeight: 700 }}>
+
+      {/* Топ-бар редактора */}
+      <div className="flex items-center gap-3 mb-5 flex-wrap">
+        <button onClick={() => { setEditingId(null); setSelComp(null); }}
+          className="flex items-center gap-1.5 text-zinc-500 hover:text-white text-[10px] font-black uppercase tracking-widest transition-colors group">
+          <ArrowRight className="w-3 h-3 rotate-180 group-hover:-translate-x-1 transition-transform" /> Все приложения
+        </button>
+        <div className="h-4 w-px bg-zinc-800" />
+        <input
+          value={editing!.title}
+          onChange={e => updateApp({ title: e.target.value })}
+          className="text-white font-black text-sm bg-transparent outline-none border-b border-transparent focus:border-indigo-500 transition-all flex-1 min-w-0"
+          placeholder="Название"
+        />
+        <button onClick={() => setPreviewMode(p => !p)}
+          className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[9px] font-black uppercase tracking-wider transition-all ${previewMode ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30' : 'bg-zinc-800 text-zinc-400 border border-zinc-700'}`}>
+          {previewMode ? <ChevronUp className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+          {previewMode ? 'Редактор' : 'Превью'}
+        </button>
+        <button onClick={() => saveToServer(editing!)} disabled={saving}
+          className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-wider transition-all shadow-lg ${saved ? 'bg-emerald-600 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/20'}`}>
+          {saved ? <Check className="w-3 h-3" /> : <Save className="w-3 h-3" />}
+          {saved ? 'Готово!' : saving ? '...' : 'Сохранить'}
+        </button>
+        <button onClick={() => copyUrl(editing!.id)}
+          className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[9px] font-black uppercase tracking-wider transition-all border ${copiedId === editing!.id ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-zinc-800 text-zinc-400 border-zinc-700 hover:text-white'}`}>
+          {copiedId === editing!.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+          {copiedId === editing!.id ? 'Скопировано!' : 'Скопировать ссылку'}
+        </button>
+      </div>
+
+      <div className="flex gap-5 min-h-0" style={{ minHeight: 640 }}>
+
+        {/* ── Левая: палитра ── */}
+        {!previewMode && (
+          <div className="w-36 shrink-0 space-y-1">
+            <p className="text-[8px] font-black text-zinc-600 uppercase tracking-[0.2em] mb-2 px-1">Блоки</p>
+            {MINI_PALETTE.map(item => {
+              const Icon = item.icon;
+              return (
+                <button key={item.type} onClick={() => addComp(item.type)}
+                  className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl text-zinc-500 hover:text-white hover:bg-zinc-800/60 transition-all text-left group">
+                  <div className="w-6 h-6 rounded-lg bg-indigo-500/10 flex items-center justify-center shrink-0 group-hover:bg-indigo-500/20 transition-all">
+                    <Icon className="w-3 h-3 text-indigo-400" />
+                  </div>
+                  <span className="text-[10px] font-bold">{item.label}</span>
+                </button>
+              );
+            })}
+            <div className="pt-3 border-t border-zinc-800/50 mt-3">
+              <p className="text-[8px] font-black text-zinc-600 uppercase tracking-[0.2em] mb-2 px-1">Webhook</p>
+              <input
+                value={editing!.formWebhook || ''}
+                onChange={e => updateApp({ formWebhook: e.target.value })}
+                placeholder="https://..."
+                className="w-full bg-black border border-zinc-800 focus:border-indigo-500 text-white text-[9px] p-2 rounded-lg outline-none transition-all"
+              />
+              <p className="text-[7px] text-zinc-700 mt-1 leading-relaxed px-1">POST-запрос при отправке формы</p>
+            </div>
+          </div>
+        )}
+
+        {/* ── Центр: канвас ── */}
+        <div className="flex-1 min-w-0 overflow-y-auto rounded-[1.5rem] border border-zinc-800" onClick={() => !previewMode && setSelComp(null)}>
+          <div style={{ background: theme.bg, minHeight: '100%', position: 'relative' }}>
+            {theme.gradient && <div style={{ position: 'absolute', inset: 0, background: theme.gradient, pointerEvents: 'none', zIndex: 0 }} />}
+            <div style={{ position: 'relative', zIndex: 1, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {editing!.components.length === 0 && (
+                <div style={{ textAlign: 'center', padding: '40px 0', opacity: 0.3 }}>
+                  <p style={{ color: theme.textSecondary, fontSize: 12, fontFamily: theme.font }}>Добавьте блоки слева</p>
+                </div>
+              )}
+              {editing!.components.map((comp, idx) => (
+                <div key={comp.id} style={{ position: 'relative' }} onClick={e => { if (!previewMode) { e.stopPropagation(); setSelComp(comp.id); }}}>
+                  <MiniPreviewComp comp={comp} theme={theme} selected={!previewMode && selectedComp === comp.id} />
+                  {!previewMode && selectedComp === comp.id && (
+                    <div className="absolute -top-2 -right-2 flex gap-0.5 z-10">
+                      <button onClick={e => { e.stopPropagation(); moveComp(comp.id, -1); }} disabled={idx === 0}
+                        className="w-5 h-5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 flex items-center justify-center disabled:opacity-30 shadow text-[8px]">
+                        <ChevronUp className="w-2.5 h-2.5" />
+                      </button>
+                      <button onClick={e => { e.stopPropagation(); moveComp(comp.id, 1); }} disabled={idx === editing!.components.length - 1}
+                        className="w-5 h-5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 flex items-center justify-center disabled:opacity-30 shadow">
+                        <ChevronDown className="w-2.5 h-2.5" />
+                      </button>
+                      <button onClick={e => { e.stopPropagation(); removeComp(comp.id); }}
+                        className="w-5 h-5 rounded bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center shadow">
+                        <X className="w-2.5 h-2.5" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* ── Правая: свойства/тема ── */}
+        {!previewMode && (
+          <div className="w-52 shrink-0 bg-[#0d0d0d] border border-zinc-800 rounded-[1.5rem] overflow-hidden flex flex-col">
+            <div className="flex border-b border-zinc-800">
+              {[{ id: 'props', icon: Settings, label: 'Свойства' }, { id: 'theme', icon: Palette, label: 'Тема' }].map(tab => (
+                <button key={tab.id} onClick={() => setRightTab(tab.id as any)}
+                  className={`flex-1 flex items-center justify-center gap-1 py-3 text-[8px] font-black uppercase tracking-widest border-b-2 transition-all ${rightTab === tab.id ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-zinc-600 hover:text-zinc-400'}`}>
+                  <tab.icon className="w-3 h-3" /> {tab.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {rightTab === 'props' ? (
+                <MiniPropsPanel comp={selComp} theme={theme} onChange={updateCompProps} />
+              ) : (
+                <div className="p-3 space-y-3">
+                  <p className="text-[8px] font-black text-indigo-400 uppercase tracking-[0.2em] mb-3">Тема</p>
+                  {/* Пресеты */}
+                  <p className="text-[8px] font-black text-zinc-600 uppercase tracking-widest mb-1">Пресеты</p>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {MINI_PRESETS.map(pt => (
+                      <button key={pt.label} onClick={() => updateApp({ theme: { ...theme, ...pt.theme } })}
+                        style={{ background: pt.theme.bg, borderColor: pt.theme.primary + '50' }}
+                        className="border rounded-xl p-1.5 text-[8px] font-black transition-all hover:scale-105">
+                        <span style={{ color: pt.theme.textPrimary }}>{pt.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="h-px bg-zinc-800 my-2" />
+                  {/* Цвета */}
+                  {[
+                    { label: 'Фон',         key: 'bg' as keyof MiniTheme },
+                    { label: 'Акцент',      key: 'primary' as keyof MiniTheme },
+                    { label: 'Текст (осн)', key: 'textPrimary' as keyof MiniTheme },
+                    { label: 'Текст (доп)', key: 'textSecondary' as keyof MiniTheme },
+                  ].map(({ label, key }) => (
+                    <label key={key} className="block">
+                      <span className="text-[8px] font-black text-zinc-600 uppercase tracking-widest block mb-1">{label}</span>
+                      <div className="flex gap-1.5">
+                        <input type="color" value={(theme as any)[key] || '#000000'} onChange={e => updateApp({ theme: { ...theme, [key]: e.target.value } })}
+                          className="w-7 h-7 rounded-lg border border-zinc-800 bg-black cursor-pointer p-0.5" />
+                        <input value={(theme as any)[key] || ''} onChange={e => updateApp({ theme: { ...theme, [key]: e.target.value } })}
+                          className="flex-1 bg-black border border-zinc-800 text-white text-[9px] p-2 rounded-lg outline-none focus:border-indigo-500 transition-all min-w-0" />
+                      </div>
+                    </label>
+                  ))}
+                  <label className="block">
+                    <span className="text-[8px] font-black text-zinc-600 uppercase tracking-widest block mb-1">Скругление {theme.radius}px</span>
+                    <input type="range" min={0} max={32} value={theme.radius} onChange={e => updateApp({ theme: { ...theme, radius: Number(e.target.value) } })}
+                      className="w-full accent-indigo-500" />
+                  </label>
+                </div>
+              )}
+            </div>
+            {/* Слои */}
+            {rightTab === 'props' && editing!.components.length > 0 && (
+              <div className="border-t border-zinc-800 p-2 shrink-0">
+                <p className="text-[7px] font-black text-zinc-700 uppercase tracking-widest mb-1.5 px-1">Слои</p>
+                <div className="space-y-0.5 max-h-24 overflow-y-auto">
+                  {editing!.components.map((c, i) => {
+                    const itm = MINI_PALETTE.find(p => p.type === c.type);
+                    const Ic = itm?.icon || Square;
+                    return (
+                      <button key={c.id} onClick={() => setSelComp(c.id)}
+                        className={`w-full flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[9px] font-bold transition-all ${selectedComp === c.id ? 'bg-indigo-500/15 text-indigo-300' : 'text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800/40'}`}>
+                        <Ic className="w-2.5 h-2.5 shrink-0" />
+                        <span className="truncate">{itm?.label || c.type}</span>
+                        <span className="ml-auto text-zinc-700">{i+1}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 
 export default BotEditor;
