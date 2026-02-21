@@ -2237,41 +2237,43 @@ async def handle_form_submit(request: Request):
             return {"ok": False, "error": "Приложение не найдено"}
 
         app_row = r.json()[0]
-        
-        # 2. Проверяем, куда слать
         webhook_type = app_row.get("webhook_type")
-        chat_id = app_row.get("notify_chat_id")
-
-        if webhook_type in ["bot", "formbot"] and chat_id:
-            bot_token = os.getenv("FORM_BOT_TOKEN")
-            if not bot_token:
-                logger.error("FORM_BOT_TOKEN не найден в .env")
-                return {"ok": True, "warning": "Бот не настроен"}
-
-            # Формируем текст сообщения
-            text = f"<b>🔔 Новая заявка!</b>\nID: <code>{app_id}</code>\n"
-            text += "—" * 10 + "\n"
-            for key, value in form_data.items():
-                text += f"<b>{key}:</b> {value}\n"
-
-            # Отправляем через httpx
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                    json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
-                    timeout=10.0
-                )
+        
+        async with httpx.AsyncClient() as client:
+            # --- ЛОГИКА ДЛЯ TELEGRAM БОТА ---
+            if webhook_type in ["bot", "formbot"]:
+                chat_id = app_row.get("notify_chat_id")
+                bot_token = os.getenv("FORM_BOT_TOKEN") # Токен берем из .env
                 
-                if response.status_code == 200:
-                    logger.info(f"Уведомление отправлено в чат {chat_id}")
+                if chat_id and bot_token:
+                    text = f"<b>🔔 Новая заявка!</b>\nID: <code>{app_id}</code>\n"
+                    text += "—" * 10 + "\n"
+                    for key, value in form_data.items():
+                        text += f"<b>{key}:</b> {value}\n"
+
+                    await client.post(
+                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                        json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+                        timeout=10.0
+                    )
+                    logger.info(f"Уведомление отправлено в TG: {chat_id}")
+
+            # --- ЛОГИКА ДЛЯ GOOGLE SHEETS (НОВИНКА) ---
+            elif webhook_type == "sheets":
+                sheets_url = app_row.get("sheets_url")
+                if sheets_url:
+                    logger.info(f"Отправка данных в Google Sheets: {sheets_url}")
+                    # Отправляем данные формы напрямую в Google Apps Script
+                    res = await client.post(sheets_url, json=form_data, timeout=15.0)
+                    logger.info(f"Ответ от Google Sheets: {res.status_code}")
                 else:
-                    logger.error(f"Ошибка Telegram API: {response.status_code} {response.text}")
+                    logger.warning(f"Тип 'sheets' указан, но sheets_url пуст для {app_id}")
 
         return {"ok": True}
+        
     except Exception as e:
         logger.error(f"Ошибка при обработке формы: {e}")
         return {"ok": False, "error": str(e)}
-
 # ==========================================
 # 9. СИСТЕМНЫЕ
 # ==========================================
