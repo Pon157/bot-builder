@@ -11,7 +11,7 @@ import {
   Brain, Image, ExternalLink, ArrowRight, Layers, Coins, Upload,
   AppWindow, Palette, AlignLeft, AlignCenter, AlignRight,
   Type, MousePointerClick, Link2, TextCursorInput, Minus,
-  MoveVertical, Check, ChevronUp, Copy
+  MoveVertical, Check, ChevronUp, Copy, Eye, EyeOff
 } from 'lucide-react';
 
 interface BotEditorProps {
