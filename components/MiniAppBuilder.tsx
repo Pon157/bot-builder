@@ -1,12 +1,11 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState } from 'react';
 import {
   Plus, Trash2, ChevronUp, ChevronDown, Settings2, Eye, EyeOff,
   Type, MousePointerClick, Link2, TextCursorInput, AlignLeft,
-  Minus, Image as ImageIcon, Save, Copy, ExternalLink, Palette,
-  Code2, X, MoveVertical, Square, Layers, Globe, Zap, Check,
-  AlignCenter, AlignRight, Bold, Italic, Layout
+  Minus, Image as ImageIcon, Save, Palette,
+  X, MoveVertical, Square, Layers, Globe, Check,
+  AlignCenter, AlignRight, Layout
 } from 'lucide-react';
-import { api } from '../services/apiService';
 import { User } from '../types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -306,154 +305,189 @@ const PropertiesPanel: React.FC<{
   const p = comp.props;
   const up = (patch: Partial<CompProps>) => onChange(comp.id, patch);
 
+  const ALIGN_OPTIONS: [string, React.ElementType][] = [
+    ['left', AlignLeft], ['center', AlignCenter], ['right', AlignRight],
+  ];
+
   return (
     <div className="p-4 space-y-4 text-sm">
       <div className="text-[9px] font-black uppercase tracking-[0.2em] text-indigo-400 mb-4 flex items-center gap-2">
         <Settings2 className="w-3 h-3" /> Свойства: {comp.type}
       </div>
 
-      {/* TEXT / HEADING ─────────────────── */}
-      {(comp.type === 'heading' || comp.type === 'text') && (<>
-        <PropInput label="Текст">
-          <textarea
-            value={p.text || ''}
-            rows={3}
-            onChange={e => up({ text: e.target.value })}
-            className="w-full bg-black border border-zinc-800 focus:border-indigo-500 text-white text-sm p-2.5 rounded-lg outline-none transition-all resize-none"
-          />
-        </PropInput>
-        {comp.type === 'heading' && (
-          <PropInput label="Уровень">
-            <PSelect value={p.level || 'h2'} onChange={e => up({ level: e.target.value as any })}
-              options={[{ value: 'h1', label: 'H1 — Главный' }, { value: 'h2', label: 'H2 — Средний' }, { value: 'h3', label: 'H3 — Малый' }]} />
+      {/* ── HEADING ───────────────────────────────────── */}
+      {comp.type === 'heading' && (
+        <>
+          <PropInput label="Текст">
+            <textarea value={p.text || ''} rows={3} onChange={e => up({ text: e.target.value })}
+              className="w-full bg-black border border-zinc-800 focus:border-indigo-500 text-white text-sm p-2.5 rounded-lg outline-none transition-all resize-none" />
           </PropInput>
-        )}
-        <PropInput label="Размер шрифта (px)">
-          <PInput type="number" min={10} max={80} value={p.fontSize || 16} onChange={e => up({ fontSize: Number(e.target.value) })} />
-        </PropInput>
-        <PropInput label="Жирность">
-          <PSelect value={p.fontWeight || '400'} onChange={e => up({ fontWeight: e.target.value })}
-            options={[{ value: '400', label: 'Обычный' }, { value: '600', label: 'Полужирный' }, { value: '700', label: 'Жирный' }, { value: '800', label: 'Очень жирный' }, { value: '900', label: 'Черный' }]} />
-        </PropInput>
-        <PropInput label="Выравнивание">
-  <div className="flex gap-1">
-    {[
-      ['left', AlignLeft], 
-      ['center', AlignCenter], 
-      ['right', AlignRight]
-    ].map(([val, Icon]) => {
-      // Создаем локальную переменную с большой буквы для JSX
-      const BtnIcon = Icon as React.ElementType;
+          <PropInput label="Уровень">
+            <PSelect value={p.level || 'h2'} onChange={e => up({ level: e.target.value as 'h1'|'h2'|'h3' })}
+              options={[{value:'h1',label:'H1 — Главный'},{value:'h2',label:'H2 — Средний'},{value:'h3',label:'H3 — Малый'}]} />
+          </PropInput>
+          <PropInput label="Размер шрифта (px)">
+            <PInput type="number" min={10} max={80} value={p.fontSize || 28} onChange={e => up({ fontSize: Number(e.target.value) })} />
+          </PropInput>
+          <PropInput label="Жирность">
+            <PSelect value={p.fontWeight || '800'} onChange={e => up({ fontWeight: e.target.value })}
+              options={[{value:'400',label:'Обычный'},{value:'600',label:'Полужирный'},{value:'700',label:'Жирный'},{value:'800',label:'Очень жирный'},{value:'900',label:'Черный'}]} />
+          </PropInput>
+          <PropInput label="Выравнивание">
+            <div className="flex gap-1">
+              {ALIGN_OPTIONS.map(([val, Icon]) => (
+                <button key={val} onClick={() => up({ align: val as 'left'|'center'|'right' })}
+                  className={`flex-1 p-2.5 rounded-lg border text-xs font-bold transition-all flex items-center justify-center ${p.align===val?'bg-indigo-500/20 border-indigo-500/50 text-indigo-400':'border-zinc-800 text-zinc-600 hover:border-zinc-700'}`}>
+                  <Icon className="w-3.5 h-3.5" />
+                </button>
+              ))}
+            </div>
+          </PropInput>
+          <ColorRow label="Цвет текста (пусто = авто)" value={p.color || ''} placeholder={theme.textPrimary} onChange={v => up({ color: v })} />
+        </>
+      )}
 
-      return (
-        <button 
-          key={val as string} 
-          onClick={() => up({ align: val as any })}
-          className={`flex-1 p-2.5 rounded-lg border text-xs font-bold transition-all flex items-center justify-center ${p.align === val ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-400' : 'border-zinc-800 text-zinc-600 hover:border-zinc-700'}`}
-        >
-          {/* Используем новую переменную */}
-          <BtnIcon className="w-3.5 h-3.5" />
-        </button>
-      );
-    })}
-  </div>
-</PropInput>
-<ColorRow 
-  label="Цвет текста (пусто = авто)" 
-  value={p.color || ''} 
-  placeholder={theme.textPrimary} 
-  onChange={v => up({ color: v })} 
-/>
+      {/* ── TEXT ──────────────────────────────────────── */}
+      {comp.type === 'text' && (
+        <>
+          <PropInput label="Текст">
+            <textarea value={p.text || ''} rows={4} onChange={e => up({ text: e.target.value })}
+              className="w-full bg-black border border-zinc-800 focus:border-indigo-500 text-white text-sm p-2.5 rounded-lg outline-none transition-all resize-none" />
+          </PropInput>
+          <PropInput label="Размер шрифта (px)">
+            <PInput type="number" min={10} max={60} value={p.fontSize || 16} onChange={e => up({ fontSize: Number(e.target.value) })} />
+          </PropInput>
+          <PropInput label="Жирность">
+            <PSelect value={p.fontWeight || '400'} onChange={e => up({ fontWeight: e.target.value })}
+              options={[{value:'400',label:'Обычный'},{value:'600',label:'Полужирный'},{value:'700',label:'Жирный'}]} />
+          </PropInput>
+          <PropInput label="Выравнивание">
+            <div className="flex gap-1">
+              {ALIGN_OPTIONS.map(([val, Icon]) => (
+                <button key={val} onClick={() => up({ align: val as 'left'|'center'|'right' })}
+                  className={`flex-1 p-2.5 rounded-lg border text-xs font-bold transition-all flex items-center justify-center ${p.align===val?'bg-indigo-500/20 border-indigo-500/50 text-indigo-400':'border-zinc-800 text-zinc-600 hover:border-zinc-700'}`}>
+                  <Icon className="w-3.5 h-3.5" />
+                </button>
+              ))}
+            </div>
+          </PropInput>
+          <ColorRow label="Цвет текста (пусто = авто)" value={p.color || ''} placeholder={theme.textSecondary} onChange={v => up({ color: v })} />
+        </>
+      )}
 
-      {/* BUTTON / LINK BUTTON ────────────── */}
-      {(comp.type === 'button' || comp.type === 'linkButton') && (<>
-        <PropInput label="Текст кнопки">
-          <PInput value={p.text || ''} onChange={e => up({ text: e.target.value })} />
-        </PropInput>
-        <ColorRow label="Цвет фона (пусто = акцент)" value={p.bgColor || ''} placeholder={theme.primary} onChange={v => up({ bgColor: v })} />
-        <ColorRow label="Цвет текста" value={p.textColor || '#ffffff'} onChange={v => up({ textColor: v })} />
-        {comp.type === 'linkButton' && (
+      {/* ── BUTTON ────────────────────────────────────── */}
+      {comp.type === 'button' && (
+        <>
+          <PropInput label="Текст кнопки">
+            <PInput value={p.text || ''} onChange={e => up({ text: e.target.value })} />
+          </PropInput>
+          <ColorRow label="Цвет фона (пусто = акцент)" value={p.bgColor || ''} placeholder={theme.primary} onChange={v => up({ bgColor: v })} />
+          <ColorRow label="Цвет текста" value={p.textColor || '#ffffff'} onChange={v => up({ textColor: v })} />
+          <PropInput label="Действие">
+            <PSelect value={p.action || 'none'} onChange={e => up({ action: e.target.value as 'link'|'submit'|'none' })}
+              options={[{value:'none',label:'Нет'},{value:'submit',label:'Отправить форму'},{value:'link',label:'Открыть ссылку'}]} />
+          </PropInput>
+          {p.action === 'link' && (
+            <PropInput label="URL">
+              <PInput type="url" value={p.url || ''} placeholder="https://" onChange={e => up({ url: e.target.value })} />
+            </PropInput>
+          )}
+        </>
+      )}
+
+      {/* ── LINK BUTTON ───────────────────────────────── */}
+      {comp.type === 'linkButton' && (
+        <>
+          <PropInput label="Текст кнопки">
+            <PInput value={p.text || ''} onChange={e => up({ text: e.target.value })} />
+          </PropInput>
           <PropInput label="URL">
             <PInput type="url" value={p.url || ''} placeholder="https://example.com" onChange={e => up({ url: e.target.value })} />
           </PropInput>
-        )}
-        {comp.type === 'button' && (
-          <PropInput label="Действие">
-            <PSelect value={p.action || 'none'} onChange={e => up({ action: e.target.value as any })}
-              options={[{ value: 'none', label: 'Нет' }, { value: 'submit', label: 'Отправить форму' }, { value: 'link', label: 'Открыть ссылку' }]} />
-          </PropInput>
-        )}
-        {comp.type === 'button' && p.action === 'link' && (
-          <PropInput label="URL">
-            <PInput type="url" value={p.url || ''} placeholder="https://" onChange={e => up({ url: e.target.value })} />
-          </PropInput>
-        )}
-      </>)}
+          <ColorRow label="Цвет фона (пусто = акцент)" value={p.bgColor || ''} placeholder={theme.primary} onChange={v => up({ bgColor: v })} />
+          <ColorRow label="Цвет текста" value={p.textColor || '#ffffff'} onChange={v => up({ textColor: v })} />
+        </>
+      )}
 
-      {/* INPUT / TEXTAREA ────────────────── */}
-      {(comp.type === 'input' || comp.type === 'textarea') && (<>
-        <PropInput label="Подпись поля">
-          <PInput value={p.label || ''} onChange={e => up({ label: e.target.value })} />
-        </PropInput>
-        <PropInput label="Placeholder">
-          <PInput value={p.placeholder || ''} onChange={e => up({ placeholder: e.target.value })} />
-        </PropInput>
-        <PropInput label="Имя поля (name)">
-          <PInput value={p.name || ''} onChange={e => up({ name: e.target.value })} />
-        </PropInput>
-        {comp.type === 'input' && (
+      {/* ── INPUT ─────────────────────────────────────── */}
+      {comp.type === 'input' && (
+        <>
+          <PropInput label="Подпись поля">
+            <PInput value={p.label || ''} onChange={e => up({ label: e.target.value })} />
+          </PropInput>
+          <PropInput label="Placeholder">
+            <PInput value={p.placeholder || ''} onChange={e => up({ placeholder: e.target.value })} />
+          </PropInput>
+          <PropInput label="Имя поля (name)">
+            <PInput value={p.name || ''} onChange={e => up({ name: e.target.value })} />
+          </PropInput>
           <PropInput label="Тип">
             <PSelect value={p.inputType || 'text'} onChange={e => up({ inputType: e.target.value })}
-              options={[{ value: 'text', label: 'Текст' }, { value: 'email', label: 'Email' }, { value: 'tel', label: 'Телефон' }, { value: 'number', label: 'Число' }, { value: 'url', label: 'URL' }]} />
+              options={[{value:'text',label:'Текст'},{value:'email',label:'Email'},{value:'tel',label:'Телефон'},{value:'number',label:'Число'},{value:'url',label:'URL'}]} />
           </PropInput>
-        )}
-        <div className="flex items-center justify-between p-3 rounded-lg bg-zinc-900/50 border border-zinc-800">
-          <span className="text-xs font-bold text-zinc-400">Обязательное поле</span>
-          <button onClick={() => up({ required: !p.required })}
-            className={`w-10 h-5 rounded-full relative transition-all ${p.required ? 'bg-indigo-500' : 'bg-zinc-700'}`}>
-            <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${p.required ? 'left-5' : 'left-0.5'}`} />
-          </button>
-        </div>
-      </>)}
+          <div className="flex items-center justify-between p-3 rounded-lg bg-zinc-900/50 border border-zinc-800">
+            <span className="text-xs font-bold text-zinc-400">Обязательное поле</span>
+            <button onClick={() => up({ required: !p.required })}
+              className={`w-10 h-5 rounded-full relative transition-all ${p.required ? 'bg-indigo-500' : 'bg-zinc-700'}`}>
+              <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${p.required ? 'left-5' : 'left-0.5'}`} />
+            </button>
+          </div>
+        </>
+      )}
 
-      {/* IMAGE ───────────────────────────── */}
-      {comp.type === 'image' && (<>
-        <PropInput label="URL изображения">
-          <PInput value={p.src || ''} placeholder="https://..." onChange={e => up({ src: e.target.value })} />
-        </PropInput>
-        <PropInput label="Alt текст">
-          <PInput value={p.alt || ''} onChange={e => up({ alt: e.target.value })} />
-        </PropInput>
-        <PropInput label="Ширина">
-          <PSelect value={p.width || '100%'} onChange={e => up({ width: e.target.value })}
-            options={[{ value: '100%', label: 'Полная ширина' }, { value: '75%', label: '75%' }, { value: '50%', label: '50%' }, { value: '25%', label: '25%' }, { value: 'auto', label: 'Авто' }]} />
-        </PropInput>
-      </>)}
+      {/* ── TEXTAREA ──────────────────────────────────── */}
+      {comp.type === 'textarea' && (
+        <>
+          <PropInput label="Подпись поля">
+            <PInput value={p.label || ''} onChange={e => up({ label: e.target.value })} />
+          </PropInput>
+          <PropInput label="Placeholder">
+            <PInput value={p.placeholder || ''} onChange={e => up({ placeholder: e.target.value })} />
+          </PropInput>
+          <PropInput label="Имя поля (name)">
+            <PInput value={p.name || ''} onChange={e => up({ name: e.target.value })} />
+          </PropInput>
+          <div className="flex items-center justify-between p-3 rounded-lg bg-zinc-900/50 border border-zinc-800">
+            <span className="text-xs font-bold text-zinc-400">Обязательное поле</span>
+            <button onClick={() => up({ required: !p.required })}
+              className={`w-10 h-5 rounded-full relative transition-all ${p.required ? 'bg-indigo-500' : 'bg-zinc-700'}`}>
+              <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${p.required ? 'left-5' : 'left-0.5'}`} />
+            </button>
+          </div>
+        </>
+      )}
 
-      {/* DIVIDER ─────────────────────────── */}
+      {/* ── IMAGE ─────────────────────────────────────── */}
+      {comp.type === 'image' && (
+        <>
+          <PropInput label="URL изображения">
+            <PInput value={p.src || ''} placeholder="https://..." onChange={e => up({ src: e.target.value })} />
+          </PropInput>
+          <PropInput label="Alt текст">
+            <PInput value={p.alt || ''} onChange={e => up({ alt: e.target.value })} />
+          </PropInput>
+          <PropInput label="Ширина">
+            <PSelect value={p.width || '100%'} onChange={e => up({ width: e.target.value })}
+              options={[{value:'100%',label:'Полная ширина'},{value:'75%',label:'75%'},{value:'50%',label:'50%'},{value:'25%',label:'25%'},{value:'auto',label:'Авто'}]} />
+          </PropInput>
+        </>
+      )}
+
+      {/* ── DIVIDER ───────────────────────────────────── */}
       {comp.type === 'divider' && (
         <ColorRow label="Цвет линии" value={p.dividerColor || ''} placeholder="#334155" onChange={v => up({ dividerColor: v })} />
       )}
 
-      {/* SPACER ──────────────────────────── */}
+      {/* ── SPACER ────────────────────────────────────── */}
       {comp.type === 'spacer' && (
         <PropInput label="Высота (px)">
-          <PInput 
-            type="number" 
-            min={4} 
-            max={300} 
-            value={p.height ?? 32} 
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-              const val = parseInt(e.target.value, 10);
-              up({ height: isNaN(val) ? 32 : val });
-            }} 
-          /> 
+          <PInput type="number" min={4} max={300} value={p.height ?? 32}
+            onChange={e => { const v = parseInt(e.target.value, 10); up({ height: isNaN(v) ? 32 : v }); }} />
         </PropInput>
       )}
-
-    </div> // 1. Закрываем основной div контейнера настроек
-  );       // 2. Закрываем return основного компонента
-};         // 3. Закрываем саму функцию MiniAppBuilder (или как называется основной компонент)
+    </div>
+  );
+};
 
 // ─── Theme Panel ──────────────────────────────────────────────────────────────
 // Теперь этот компонент стоит на "ровном месте", вне другого кода
@@ -530,9 +564,6 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ user }) => {
   const [saving, setSaving]           = useState(false);
   const [saved, setSaved]             = useState(false);
   const [publishedUrl, setPublishedUrl] = useState<string | null>(null);
-  const [savedApps, setSavedApps]     = useState<MiniAppData[]>([]);
-  const [loadingApps, setLoadingApps] = useState(false);
-  const [showSaved, setShowSaved]     = useState(false);
 
   const selected = app.components.find(c => c.id === selectedId) || null;
 
