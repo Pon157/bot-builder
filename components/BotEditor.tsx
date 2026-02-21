@@ -1568,7 +1568,7 @@ const MiniThemePanel: React.FC<{
 
 // ── Настройки доставки формы ──────────────────────────────────────────────────
 
-const FORM_BOT_USERNAME = '@de_forms_bot'; // заменить на актуальный username
+const FORM_BOT_USERNAME = '@formsdialoge_bot'; // заменить на актуальный username
 
 const MiniFormSettings: React.FC<{
   app: MiniApp; onChange: (patch: Partial<MiniApp>) => void;
