@@ -442,17 +442,16 @@ const PropertiesPanel: React.FC<{
       type="number" 
       min={4} 
       max={300} 
-      // Добавляем fallback значение, чтобы input не стал "uncontrolled"
       value={p.height ?? 32} 
-      // Явно приводим к числу и проверяем на NaN для надежности
       onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
         const val = parseInt(e.target.value, 10);
         up({ height: isNaN(val) ? 32 : val });
       }} 
+    > {/* <--- ВОТ ЭТА СКОБКА БЫЛА ПРОПУЩЕНА */}
     </PInput>
   </PropInput>
 )}
-
+        
 // ─── Theme Panel ──────────────────────────────────────────────────────────────
 
 const ThemePanel: React.FC<{ theme: AppTheme; onChange: (t: Partial<AppTheme>) => void }> = ({ theme, onChange }) => (
