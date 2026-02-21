@@ -2221,7 +2221,50 @@ async def delete_miniapp(app_id: str, request: Request):
         logger.error(f"Miniapp delete error: {e}")
         raise HTTPException(status_code=500, detail="Server error")
 
-            
+
+@app.post("/api/forms/submit")
+async def handle_form_submit(request: Request):
+    try:
+        data = await request.json()
+        app_id = data.get("app_id")
+        form_data = data.get("form_data", {})
+
+        logger.info(f"Получена форма для приложения: {app_id}")
+
+        # 1. Достаем настройки приложения из БД
+        r = await db.get("mini_apps", params={"id": f"eq.{app_id}", "select": "*", "limit": "1"})
+        if r.status_code != 200 or not r.json():
+            return {"ok": False, "error": "Приложение не найдено"}
+
+        app_row = r.json()[0]
+        
+        # 2. Проверяем, куда слать (в твой forms_bot)
+        webhook_type = app_row.get("webhook_type")
+        chat_id = app_row.get("notify_chat_id") # Ту колонку, что мы добавляли
+
+        if webhook_type == "bot" and chat_id:
+            bot_token = os.getenv("FORM_BOT_TOKEN")
+            if not bot_token:
+                logger.error("FORM_BOT_TOKEN не найден в .env")
+                return {"ok": True, "warning": "Бот не настроен на сервере"}
+
+            # Формируем текст сообщения
+            text = f"<b>📩 Новая заявка!</b>\nID: <code>{app_id}</code>\n\n"
+            for key, value in form_data.items():
+                text += f"<b>{key}:</b> {value}\n"
+
+            # Отправляем через httpx
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                    json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+                )
+            logger.info(f"Уведомление отправлено в чат {chat_id}")
+
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Ошибка при обработке формы: {e}")
+        return {"ok": False, "error": str(e)}
 # ==========================================
 # 9. СИСТЕМНЫЕ
 # ==========================================
