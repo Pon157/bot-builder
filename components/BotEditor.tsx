@@ -1275,11 +1275,11 @@ const MINI_PALETTE: { type: MiniCompType; label: string; icon: React.ElementType
 ];
 
 const MINI_PRESETS: { label: string; theme: Partial<MiniTheme> }[] = [
-  { label: '🌑 Ночь',  theme: { bg: '#0a0a0f', surface: '#13131c', primary: '#6366f1', textPrimary: '#f8fafc', textSecondary: '#94a3b8', gradient: 'radial-gradient(ellipse at 30% 0%, #312e8155 0%, transparent 60%)' } },
-  { label: '❄️ Лёд',   theme: { bg: '#f0f9ff', surface: '#ffffff',  primary: '#0ea5e9', textPrimary: '#0f172a', textSecondary: '#64748b', gradient: '' } },
-  { label: '🔥 Закат', theme: { bg: '#1c0d2b', surface: '#251238',  primary: '#f97316', textPrimary: '#fff7ed', textSecondary: '#d1a27c', gradient: 'radial-gradient(ellipse at 80% 0%, #7c2d8840 0%, transparent 60%)' } },
-  { label: '🌿 Лес',   theme: { bg: '#0d1f12', surface: '#142419',  primary: '#22c55e', textPrimary: '#f0fdf4', textSecondary: '#86efac', gradient: '' } },
-  { label: '🌸 Роза',  theme: { bg: '#fff1f2', surface: '#ffffff',  primary: '#f43f5e', textPrimary: '#1c1917', textSecondary: '#78716c', gradient: '' } },
+  { label: 'Ночь',  theme: { bg: '#0a0a0f', surface: '#13131c', primary: '#6366f1', textPrimary: '#f8fafc', textSecondary: '#94a3b8', gradient: 'radial-gradient(ellipse at 30% 0%, #312e8155 0%, transparent 60%)' } },
+  { label: 'Лёд',   theme: { bg: '#f0f9ff', surface: '#ffffff',  primary: '#0ea5e9', textPrimary: '#0f172a', textSecondary: '#64748b', gradient: '' } },
+  { label: 'Закат', theme: { bg: '#1c0d2b', surface: '#251238',  primary: '#f97316', textPrimary: '#fff7ed', textSecondary: '#d1a27c', gradient: 'radial-gradient(ellipse at 80% 0%, #7c2d8840 0%, transparent 60%)' } },
+  { label: 'Лес',   theme: { bg: '#0d1f12', surface: '#142419',  primary: '#22c55e', textPrimary: '#f0fdf4', textSecondary: '#86efac', gradient: '' } },
+  { label: 'Роза',  theme: { bg: '#fff1f2', surface: '#ffffff',  primary: '#f43f5e', textPrimary: '#1c1917', textSecondary: '#78716c', gradient: '' } },
 ];
 
 const DEFAULT_MINI_THEME: MiniTheme = {
