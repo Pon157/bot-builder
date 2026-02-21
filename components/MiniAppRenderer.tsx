@@ -288,58 +288,36 @@ const MiniAppRenderer: React.FC = () => {
   const handleSubmit = async () => {
     if (submitting) return;
     
-    // Проверяем, что в форме есть хоть какие-то данные
     if (Object.keys(formData).length === 0) {
-      alert("Пожалуйста, заполните хотя бы одно поле");
+      alert("Пожалуйста, заполните форму");
       return;
     }
 
     setSubmitting(true);
     try {
-      // Отправляем запрос на наш Python бэкенд
       const response = await fetch('/api/forms/submit', {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json' 
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           app_id: appId,
-          form_data: formData  // Важно: именно form_data, как ждет сервер
+          form_data: formData,
         }),
       });
 
       const result = await response.json();
 
       if (response.ok && result.ok) {
-        // Если сервер ответил успехом, показываем экран с галочкой
         setSubmitted(true);
       } else {
-        // Если сервер вернул ошибку (например, приложение не найдено)
-        alert("Ошибка: " + (result.error || "Не удалось отправить форму"));
+        alert("Ошибка: " + (result.error || "Не удалось отправить"));
       }
     } catch (err) {
       console.error("Submit error:", err);
-      alert("Ошибка сети. Проверьте соединение с сервером.");
-    } finally {
-      setSubmitting(false);
-    }
-  }; // <--- Вот эта скобка закрывает handleSubmit
-
-      const result = await response.json();
-
-      if (response.ok && result.ok) {
-        setSubmitted(true);
-      } else {
-        alert("Ошибка сервера: " + (result.error || "Не удалось отправить форму"));
-      }
-    } catch (err) {
-      console.error("Submit error:", err);
-      alert("Ошибка сети. Проверьте соединение с сервером.");
+      alert("Ошибка сети");
     } finally {
       setSubmitting(false);
     }
   };
-        });
 
       } else if (wtype === 'sheets' && appData?.sheetsUrl) {
         // Google Apps Script — через наш сервер чтобы не было CORS
