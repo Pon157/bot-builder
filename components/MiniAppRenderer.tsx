@@ -288,23 +288,42 @@ const MiniAppRenderer: React.FC = () => {
   const handleSubmit = async () => {
     if (submitting) return;
     
-    // Простая валидация: не отправлять пустую форму
+    // Проверяем, что в форме есть хоть какие-то данные
     if (Object.keys(formData).length === 0) {
-      alert("Пожалуйста, заполните форму");
+      alert("Пожалуйста, заполните хотя бы одно поле");
       return;
     }
 
     setSubmitting(true);
     try {
-      // Используем путь /api/forms/submit как в server.py
+      // Отправляем запрос на наш Python бэкенд
       const response = await fetch('/api/forms/submit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json' 
+        },
         body: JSON.stringify({
           app_id: appId,
-          form_data: formData, // Называем поле form_data, как ждет бэкенд
+          form_data: formData  // Важно: именно form_data, как ждет сервер
         }),
       });
+
+      const result = await response.json();
+
+      if (response.ok && result.ok) {
+        // Если сервер ответил успехом, показываем экран с галочкой
+        setSubmitted(true);
+      } else {
+        // Если сервер вернул ошибку (например, приложение не найдено)
+        alert("Ошибка: " + (result.error || "Не удалось отправить форму"));
+      }
+    } catch (err) {
+      console.error("Submit error:", err);
+      alert("Ошибка сети. Проверьте соединение с сервером.");
+    } finally {
+      setSubmitting(false);
+    }
+  }; // <--- Вот эта скобка закрывает handleSubmit
 
       const result = await response.json();
 
