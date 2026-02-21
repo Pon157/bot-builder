@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-
+import { api } from '../services/apiService';
 
 // ─── Types (duplicated for standalone use) ────────────────────────────────────
 
@@ -287,21 +287,39 @@ const MiniAppRenderer: React.FC = () => {
 
   const handleSubmit = async () => {
     if (submitting) return;
+    
+    // Простая валидация: не отправлять пустую форму
+    if (Object.keys(formData).length === 0) {
+      alert("Пожалуйста, заполните форму");
+      return;
+    }
+
     setSubmitting(true);
     try {
-      const wtype = appData?.webhookType || 'bot';
+      // Используем путь /api/forms/submit как в server.py
+      const response = await fetch('/api/forms/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          app_id: appId,
+          form_data: formData, // Называем поле form_data, как ждет бэкенд
+        }),
+      });
 
-      if (wtype === 'bot') {
-        // Сервер сам найдёт бота по app_id и перешлёт данные
-        await fetch('/api/miniapps/submit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            app_id: appId,
-            bot_id: appData?.bot_id || '',
-            webhook_type: 'bot',
-            data: formData,
-          }),
+      const result = await response.json();
+
+      if (response.ok && result.ok) {
+        setSubmitted(true);
+      } else {
+        alert("Ошибка сервера: " + (result.error || "Не удалось отправить форму"));
+      }
+    } catch (err) {
+      console.error("Submit error:", err);
+      alert("Ошибка сети. Проверьте соединение с сервером.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
         });
 
       } else if (wtype === 'sheets' && appData?.sheetsUrl) {
