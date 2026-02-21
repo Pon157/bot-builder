@@ -1919,27 +1919,86 @@ async def get_miniapp(app_id: str):
         raise HTTPException(status_code=500, detail="Server error")
 
 
-# ── Список мини-приложений пользователя ──────────────────────────
+# ── Список мини-приложений пользователя (ИЗМЕНЕНО) ───────────────
 @app.get("/api/miniapps/list/{owner_id}")
 async def list_miniapps(owner_id: str):
-    """Получить все мини-приложения пользователя."""
+    """Получить все мини-приложения пользователя (теперь забираем ВСЕ данные)."""
     try:
         r = await db.get(
             "mini_apps",
             params={
                 "owner_id": f"eq.{owner_id}",
-                "select":   "id,title,updated_at",
+                "select":   "*", # Раньше было "id,title,updated_at", из-за этого редактор не видел блоки!
                 "order":    "updated_at.desc",
                 "limit":    "50",
             }
         )
         if r.status_code == 200:
-            return r.json()
+            apps = r.json()
+            # Мапим form_webhook обратно для фронта
+            for a in apps:
+                a["formWebhook"] = a.pop("form_webhook", "")
+            return apps
         return []
     except Exception as e:
         logger.error(f"Miniapp list error: {e}")
         return []
 
+# ── НОВЫЙ ЭНДПОИНТ: Отправка формы прямо в бота ──────────────────
+@app.post("/api/miniapps/submit")
+async def submit_miniapp_form(req: Request):
+    """Принимает данные формы и отправляет админу в ТГ или ВК."""
+    data = await req.json()
+    app_id = data.get("app_id")
+    form_data = data.get("data", {})
+    bot_id = data.get("bot_id")
+
+    if not bot_id:
+        return {"error": "Бот не привязан к этому приложению"}
+
+    try:
+        # 1. Ищем бота в базе
+        b_req = await db.get("bots", params={"id": f"eq.{bot_id}"})
+        if not b_req.json():
+            return {"error": "Бот не найден"}
+            
+        bot_db = b_req.json()[0]
+        platform = bot_db.get("platform", "telegram")
+        token = decrypt_val(bot_db.get("token", ""))
+        
+        # Берем чат, куда слать уведомления
+        admin_id = bot_db.get("admin_chat_id") or bot_db.get("vk_group_id")
+        
+        if not admin_id:
+            return {"error": "У бота не настроен ID группы/админа"}
+
+        # 2. Формируем красивое сообщение
+        msg = "<b>🔔 Новая заявка из формы (Mini App)</b>\n\n"
+        for key, val in form_data.items():
+            if not str(key).startswith("_") and val:
+                msg += f"▪️ <b>{key}</b>: {val}\n"
+
+        # 3. Отправляем сообщение
+        async with httpx.AsyncClient() as client:
+            if platform == 'vk':
+                await client.post("https://api.vk.com/method/messages.send", data={
+                    "peer_id": admin_id,
+                    "message": msg.replace("<b>", "").replace("</b>", ""), # ВК не любит HTML
+                    "random_id": random.randint(1, 2147483647),
+                    "access_token": token,
+                    "v": "5.199"
+                })
+            else:
+                await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                    "chat_id": admin_id,
+                    "text": msg,
+                    "parse_mode": "HTML"
+                })
+
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Miniapp direct submit error: {e}")
+        raise HTTPException(500, "Ошибка при отправке")
 
 # ── Удалить мини-приложение ───────────────────────────────────────
 @app.delete("/api/miniapps/{app_id}")
