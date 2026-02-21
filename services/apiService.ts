@@ -513,7 +513,8 @@ adminLogin: async (login: string, pass: string) => {
     return await response.json();
   } catch (e) {
     console.error("submitForm error:", e);
-    return { ok: False, error: 'Ошибка сети' };
+    // В JS/TS пишем false с маленькой буквы!
+    return { ok: false, error: 'Ошибка сети' }; 
   }
 },
 
