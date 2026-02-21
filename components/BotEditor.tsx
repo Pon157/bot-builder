@@ -1509,14 +1509,19 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
   const saveToServer = async (app: MiniApp) => {
     setSaving(true);
     try {
-      await fetch('/api/miniapps/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...app, owner_id: bot.owner_id }),
-      });
+      // Используем apiService, чтобы URL формировался правильно
+      const res = await api.saveMiniApp({ ...app, owner_id: bot.owner_id });
+      
+      if (!res) throw new Error("Сервер вернул ошибку");
+      
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch { /* тихо, работаем локально */ } finally { setSaving(false); }
+    } catch (err) { 
+      console.error("Ошибка при сохранении в БД:", err);
+      alert("Не удалось сохранить в базу. Проверьте консоль.");
+    } finally { 
+      setSaving(false); 
+    }
   };
 
   const createApp = () => {
