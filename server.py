@@ -1874,33 +1874,50 @@ async def activate_miniapp(req: dict):
     """Активация ключа мини-апп для конкретного бота."""
     key_code = req.get("key", "").strip().upper()
     bot_id   = req.get("botId", "").strip()
+    
     if not key_code or not bot_id:
         return {"status": "error", "message": "Ключ и botId обязательны"}
 
+    # 1. Проверяем ключ
     rk = await db.get("miniapp_keys", params={"key": f"eq.{key_code}", "used": "eq.false"})
     keys_found = rk.json()
-    if not keys_found:
+    
+    if not keys_found or not isinstance(keys_found, list):
         return {"status": "error", "message": "Ключ недействителен или уже использован"}
+    
     k_data = keys_found[0]
     months = int(k_data.get("months", 1))
     added_ms = months * 30 * 86400 * 1000
 
-    # Проверяем существующую лицензию мини-апп
+    # 2. Проверяем существующую лицензию
     lic_r = await db.get("miniapp_licenses", params={"bot_id": f"eq.{bot_id}"})
     lics = lic_r.json()
     curr_time = int(time.time() * 1000)
 
-    if lics:
-        cur_expiry = lics[0].get("expires_at", 0) or 0
+    # Безопасная проверка: lics должен быть списком и не быть пустым
+    if isinstance(lics, list) and len(lics) > 0:
+        # Лицензия уже есть, продлеваем
+        lic_item = lics[0]
+        # Используем .get() и проверяем на None/0
+        cur_expiry = lic_item.get("expires_at")
+        if not cur_expiry:
+            cur_expiry = 0
+            
         new_expiry = max(cur_expiry, curr_time) + added_ms
-        await db.patch("miniapp_licenses", params={"bot_id": f"eq.{bot_id}"},
+        
+        await db.patch("miniapp_licenses", 
+                       params={"bot_id": f"eq.{bot_id}"},
                        json={"expires_at": new_expiry, "active": True})
     else:
+        # Лицензии нет, создаем новую
         new_expiry = curr_time + added_ms
         await db.post("miniapp_licenses", json={
-            "bot_id": bot_id, "expires_at": new_expiry, "active": True
+            "bot_id": bot_id, 
+            "expires_at": new_expiry, 
+            "active": True
         })
 
+    # 3. Помечаем ключ как использованный
     await db.patch("miniapp_keys", params={"key": f"eq.{key_code}"},
                    json={"used": True, "used_by_bot": bot_id})
 
