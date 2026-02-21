@@ -436,30 +436,33 @@ const PropertiesPanel: React.FC<{
       )}
 
       {/* SPACER ──────────────────────────── */}
-{comp.type === 'spacer' && (
-  <PropInput label="Высота (px)">
-    <PInput 
-      type="number" 
-      min={4} 
-      max={300} 
-      value={p.height ?? 32} 
-      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-        const val = parseInt(e.target.value, 10);
-        up({ height: isNaN(val) ? 32 : val });
-      }} 
-    > {/* <--- ВОТ ЭТА СКОБКА БЫЛА ПРОПУЩЕНА */}
-    </PInput>
-  </PropInput>
-)}
-        
-// ─── Theme Panel ──────────────────────────────────────────────────────────────
+      {comp.type === 'spacer' && (
+        <PropInput label="Высота (px)">
+          <PInput 
+            type="number" 
+            min={4} 
+            max={300} 
+            value={p.height ?? 32} 
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+              const val = parseInt(e.target.value, 10);
+              up({ height: isNaN(val) ? 32 : val });
+            }} 
+          /> 
+        </PropInput>
+      )}
 
+    </div> // 1. Закрываем основной div контейнера настроек
+  );       // 2. Закрываем return основного компонента
+};         // 3. Закрываем саму функцию MiniAppBuilder (или как называется основной компонент)
+
+// ─── Theme Panel ──────────────────────────────────────────────────────────────
+// Теперь этот компонент стоит на "ровном месте", вне другого кода
 const ThemePanel: React.FC<{ theme: AppTheme; onChange: (t: Partial<AppTheme>) => void }> = ({ theme, onChange }) => (
   <div className="p-4 space-y-4">
     <div className="text-[9px] font-black uppercase tracking-[0.2em] text-indigo-400 mb-4 flex items-center gap-2">
       <Palette className="w-3 h-3" /> Тема приложения
     </div>
-
+    
     {/* Presets */}
     <div>
       <span className="block text-[9px] font-black text-zinc-500 uppercase tracking-widest mb-2">Пресеты</span>
