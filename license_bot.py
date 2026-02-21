@@ -89,6 +89,9 @@ class PromoState(StatesGroup):
 class AiActivateState(StatesGroup):
     waiting_bot_id = State()
 
+class MiniappActivateState(StatesGroup):
+    waiting_bot_id = State()
+
 # ==========================================
 # 2. ЭКОНОМИЧЕСКАЯ МОДЕЛЬ
 # ==========================================
@@ -251,6 +254,7 @@ async def send_main_menu(m):
     kb = InlineKeyboardBuilder()
     kb.row(InlineKeyboardButton(text="🔑 Лицензия бота",    callback_data="menu_license"))
     kb.row(InlineKeyboardButton(text="🤖 AI-токены",         callback_data="menu_ai"))
+    kb.row(InlineKeyboardButton(text="📱 Мини-приложения",   callback_data="menu_miniapps"))
     text = "👋 <b>Добро пожаловать!</b>\n\nВыберите раздел:"
     fn = m.answer if isinstance(m, Message) else m.message.edit_text
     await fn(text, reply_markup=kb.as_markup(), parse_mode="HTML")
@@ -600,6 +604,137 @@ async def process_ai_activation(m: Message, state: FSMContext):
             await m.answer(
                 f"✅ <b>Активировано!</b>\n\n"
                 f"Бот <code>{bot_id}</code> получил <b>{tokens:,}</b> AI-токенов.",
+                parse_mode="HTML"
+            )
+        else:
+            await m.answer(f"❌ {res.get('message', 'Ошибка')}")
+    except Exception as e:
+        await m.answer(f"❌ Ошибка сервера: {e}")
+
+@dp.callback_query(F.data == "menu_miniapps")
+async def cb_menu_miniapps(cb: CallbackQuery):
+    """Меню мини-приложений."""
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(
+        text="📱 1 месяц — 90 ₽",
+        callback_data="buymapp_1"
+    ))
+    kb.row(InlineKeyboardButton(
+        text="📱 3 месяца — 240 ₽",
+        callback_data="buymapp_3"
+    ))
+    kb.row(InlineKeyboardButton(text="🔑 Активировать ключ", callback_data="activate_mapp_key"))
+    kb.row(InlineKeyboardButton(text="🏠 Назад",             callback_data="back_main"))
+    text = ("📱 <b>Мини-приложения</b>\n\n"
+            "Создавайте красивые веб-страницы прямо в боте.\n"
+            "Формы, кнопки, текст, картинки — всё настраивается.\n\n"
+            "Данные форм приходят через бота, в Google Sheets или на вебхук.\n\n"
+            "Подписка на <b>1 бота</b>:")
+    await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("buymapp_"))
+async def cb_buy_mapp(cb: CallbackQuery):
+    months = int(cb.data.replace("buymapp_", ""))
+    prices = {1: 90, 3: 240}
+    price = prices.get(months, 90)
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="💳 Оплатить", url="https://www.donationalerts.com/r/dialoge_engine"))
+    kb.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"verifymapp_{months}"))
+    kb.row(InlineKeyboardButton(text="◀️ Назад", callback_data="menu_miniapps"))
+    buy_text = (f"📱 <b>Мини-апп — {months} мес.</b>\n\n"
+                f"Сумма: <b>{price} ₽</b>\n\n"
+                "1. Переведите сумму по ссылке.\n"
+                "2. В комментарии укажите ваш Telegram ID.\n"
+                "3. Нажмите «Я оплатил».")
+    await cb.message.edit_text(buy_text, reply_markup=kb.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("verifymapp_"))
+async def cb_verify_mapp(cb: CallbackQuery):
+    months = int(cb.data.replace("verifymapp_", ""))
+    prices = {1: 90, 3: 240}
+    price = prices.get(months, 90)
+    akb = InlineKeyboardBuilder()
+    akb.row(
+        InlineKeyboardButton(text="✅ Выдать ключ", callback_data=f"adm_mapp_ok_{cb.from_user.id}_{months}"),
+        InlineKeyboardButton(text="❌ Отказ",       callback_data=f"adm_no_{cb.from_user.id}")
+    )
+    try:
+        notify_text = (f"📱 <b>Заявка Мини-апп</b>\n"
+                       f"Юзер: {cb.from_user.full_name} (<code>{cb.from_user.id}</code>)\n"
+                       f"Срок: {months} мес. | Сумма: {price} ₽")
+        await bot.send_message(ADM_CHAT, notify_text, reply_markup=akb.as_markup(), parse_mode="HTML")
+        await cb.message.edit_text("⏳ Заявка отправлена. Ожидайте подтверждения.")
+    except Exception as e:
+        await cb.answer("Ошибка отправки", show_alert=True)
+
+@dp.callback_query(F.data.startswith("adm_mapp_ok_"))
+async def cb_admin_approve_mapp(cb: CallbackQuery):
+    """Администратор выдаёт мини-апп ключ."""
+    try:
+        parts = cb.data.split("_")
+        if len(parts) < 5:
+            await cb.answer("❌ Ошибка данных", show_alert=True)
+            return
+        uid = parts[3]
+        months = int(parts[4])
+        prices = {1: 90, 3: 240}
+        price = prices.get(months, 90)
+
+        # Генерируем ключ через сервер
+        r = requests.post(f"{SRV_URL}/api/admin/generate-miniapp-key",
+            json={"months": months, "price_rub": price},
+            headers={"x-admin-token": ADM_SECRET}, timeout=15)
+        if r.status_code == 200:
+            key = r.json().get("key")
+            msg = (f"🎉 <b>Оплата подтверждена!</b>\n\n"
+                   f"Ваш ключ мини-апп: <code>{key}</code>\n\n"
+                   f"Срок: <b>{months} мес.</b>\n\n"
+                   "Активируйте в боте через «📱 Мини-приложения → Активировать ключ».\n"
+                   "Или прямо в редакторе бота на вкладке «Мини-апп».")
+            await bot.send_message(uid, msg, parse_mode="HTML")
+            await cb.message.edit_text(f"✅ Ключ выдан: <code>{key}</code>", parse_mode="HTML")
+        else:
+            await cb.message.edit_text(f"❌ Ошибка API: {r.status_code} {r.text}")
+    except Exception as e:
+        logger.error(f"🔴 Ошибка в cb_admin_approve_mapp: {e}")
+        await cb.message.edit_text(f"❌ Ошибка: {e}")
+
+@dp.callback_query(F.data == "activate_mapp_key")
+async def cb_activate_mapp_key(cb: CallbackQuery, state: FSMContext):
+    """Запрашиваем ключ мини-апп и bot_id."""
+    text = (
+        "🔑 <b>Активация мини-апп ключа</b>\n\n"
+        "Отправьте сообщение в формате:\n"
+        "<code>MAPP-XXXXXX-NNN bot_id</code>\n\n"
+        "Ключ и ID бота через пробел.\n"
+        "ID бота найдёте в настройках бота в редакторе."
+    )
+    await cb.message.edit_text(text, parse_mode="HTML")
+    await state.set_state(MiniappActivateState.waiting_bot_id)
+
+@dp.message(MiniappActivateState.waiting_bot_id)
+async def process_mapp_activation(m: Message, state: FSMContext):
+    parts = m.text.strip().split()
+    if len(parts) < 2:
+        await m.answer(
+            "Укажите ключ и ID бота через пробел.\n"
+            "Пример: <code>MAPP-ABC123-456 bot_a1b2c3d4</code>",
+            parse_mode="HTML"
+        )
+        return
+    key_code = parts[0].upper()
+    bot_id   = parts[1].strip()
+    await state.clear()
+    try:
+        r = requests.post(f"{SRV_URL}/api/miniapps/activate",
+            json={"key": key_code, "botId": bot_id}, timeout=15)
+        res = r.json()
+        if res.get("status") == "ok":
+            exp = res.get("expires_at", 0)
+            await m.answer(
+                f"✅ <b>Мини-апп активированы!</b>\n\n"
+                f"Бот <code>{bot_id}</code>\n"
+                f"До: <b>{datetime.fromtimestamp(exp/1000).strftime('%d.%m.%Y')}</b>",
                 parse_mode="HTML"
             )
         else:
