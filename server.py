@@ -1837,6 +1837,125 @@ async def delete_application(app_id: str, x_admin_token: str = Header(None)):
         logger.error(f"Applications delete error: {e}")
         raise HTTPException(status_code=500, detail="Server error")
 
+# ── Сохранить / обновить мини-приложение ─────────────────────────
+@app.post("/api/miniapps/save")
+async def save_miniapp(request: Request):
+    """Сохраняет мини-приложение. Публичный (аутентификация по owner_id из тела)."""
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    app_id    = data.get("id") or str(uuid.uuid4())
+    owner_id  = data.get("owner_id", "")
+    title     = data.get("title", "Без названия")[:120]
+    theme     = data.get("theme", {})
+    components = data.get("components", [])
+    webhook   = data.get("formWebhook", "")
+
+    if not owner_id:
+        raise HTTPException(status_code=422, detail="owner_id required")
+
+    # Не даём хранить более 100 компонентов
+    if len(components) > 100:
+        raise HTTPException(status_code=422, detail="Too many components (max 100)")
+
+    record = {
+        "id":           app_id,
+        "owner_id":     owner_id,
+        "title":        title,
+        "theme":        theme,
+        "components":   components,
+        "form_webhook": webhook,
+        "updated_at":   datetime.utcnow().isoformat() + "Z",
+    }
+
+    try:
+        # Upsert (вставить или обновить если id уже есть)
+        r = await db.post(
+            "mini_apps",
+            json=record,
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
+        )
+        if r.status_code not in (200, 201):
+            logger.error(f"Miniapp save error: {r.status_code} {r.text}")
+            raise HTTPException(status_code=500, detail="DB error")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Miniapp save exception: {e}")
+        raise HTTPException(status_code=500, detail="Server error")
+
+    logger.info(f"💾 Мини-приложение сохранено: {app_id} ({title}) owner={owner_id}")
+    return {"ok": True, "id": app_id}
+
+
+# ── Получить мини-приложение по ID (публичный) ─────────────────────
+@app.get("/api/miniapps/{app_id}")
+async def get_miniapp(app_id: str):
+    """Публичный endpoint для рендера мини-приложения."""
+    try:
+        r = await db.get(
+            "mini_apps",
+            params={"id": f"eq.{app_id}", "select": "*", "limit": "1"}
+        )
+        if r.status_code == 200:
+            results = r.json()
+            if results:
+                app_data = results[0]
+                # Переименовываем form_webhook → formWebhook для фронта
+                app_data["formWebhook"] = app_data.pop("form_webhook", "")
+                return app_data
+        raise HTTPException(status_code=404, detail="App not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Miniapp get error: {e}")
+        raise HTTPException(status_code=500, detail="Server error")
+
+
+# ── Список мини-приложений пользователя ──────────────────────────
+@app.get("/api/miniapps/list/{owner_id}")
+async def list_miniapps(owner_id: str):
+    """Получить все мини-приложения пользователя."""
+    try:
+        r = await db.get(
+            "mini_apps",
+            params={
+                "owner_id": f"eq.{owner_id}",
+                "select":   "id,title,updated_at",
+                "order":    "updated_at.desc",
+                "limit":    "50",
+            }
+        )
+        return r.json() if r.status_code == 200 else []
+    except Exception as e:
+        logger.error(f"Miniapp list error: {e}")
+        return []
+
+
+# ── Удалить мини-приложение ───────────────────────────────────────
+@app.delete("/api/miniapps/{app_id}")
+async def delete_miniapp(app_id: str, request: Request):
+    """Удалить мини-приложение. Проверяем owner_id из тела."""
+    try:
+        body = await request.json()
+        owner_id = body.get("owner_id", "")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    try:
+        r = await db.delete(
+            f"mini_apps?id=eq.{app_id}&owner_id=eq.{owner_id}"
+        )
+        if r.status_code in (200, 204):
+            return {"ok": True}
+        raise HTTPException(status_code=403, detail="Forbidden or not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Miniapp delete error: {e}")
+        raise HTTPException(status_code=500, detail="Server error")
 
             
 # ==========================================
