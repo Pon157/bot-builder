@@ -683,32 +683,33 @@ class BotInstance:
         return user, is_first_time
 
     async def resolve_thread(self, user: dict, force_new: bool = False):
-        if not self.use_topics or not self.admin_chat_id: return None
+        if not self.use_topics or not self.admin_chat_id: 
+            return None
         
         tid = user.get("last_topic_id")
         
-        # Если принудительное создание не требуется и ID есть — возвращаем его
+        # Если топик есть и мы не заставляем создавать новый — возвращаем старый
         if tid and not force_new:
             return tid
 
-        # Если попали сюда, значит либо force_new=True, либо tid=None
+        # Создаем новый топик
         try:
             is_anon = self.settings.get('anonymousTopics', False)
             topic_name = f"#{get_anon_id(user['id'])}" if is_anon else f"{user['first_name']} [{user['id']}]"
             
-            # Создаем новый топик в Telegram
+            # Сама команда создания в Telegram
             new_topic = await self.bot.create_forum_topic(self.admin_chat_id, topic_name)
             
-            # Сохраняем новый ID в объект пользователя и в базу
+            # Сохраняем и синхронизируем с БД (важно для Supabase)
             user["last_topic_id"] = new_topic.message_thread_id
             await self.sync_queue.put(("sync_state", None))
             
-            logger.info(f"Created new topic for user {user['id']}: {new_topic.message_thread_id}")
+            logger.info(f"Successfully created new topic {new_topic.message_thread_id} for user {user['id']}")
             return new_topic.message_thread_id
         except Exception as e:
-            logger.error(f"Topic Creation Error: {e}")
+            logger.error(f"Critical Topic Creation Error: {e}")
             return None
-
+            
     async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = "", is_ai_request: bool = False):
         if not self.admin_chat_id: return
         
@@ -720,27 +721,26 @@ class BotInstance:
             header_text = header_text.rstrip('\n') + "\n<b>[ИИ-запрос · не отвечать]</b>\n"
         
         try:
-            # Первая попытка отправки
+            # Если по какой-то причине thread_id пустой, а топики включены - пробуем создать
+            if not thread_id and self.use_topics:
+                thread_id = await self.resolve_thread(user, force_new=True)
+
             await self._send_content_to_admin(m, thread_id, header_text, user)
             
         except TelegramBadRequest as e:
-            # Если топик удален администратором
             if "message thread not found" in e.message:
-                logger.warning(f"Thread {thread_id} deleted. Recreating for user {user['id']}...")
-                
-                # Сбрасываем старый ID и вызываем resolve_thread с флагом force_new
+                logger.warning(f"Thread {thread_id} was deleted. Re-creating...")
+                # СБРОС: удаляем битый ID из памяти пользователя
                 user["last_topic_id"] = None
-                new_thread_id = await self.resolve_thread(user, force_new=True)
+                # Создаем новый топик ПРИНУДИТЕЛЬНО
+                new_tid = await self.resolve_thread(user, force_new=True)
                 
-                # Вторая попытка в новый топик
-                try:
-                    await self._send_content_to_admin(m, new_thread_id, header_text, user)
-                except Exception as retry_e:
-                    logger.error(f"Failed to send even to new topic: {retry_e}")
+                if new_tid:
+                    await self._send_content_to_admin(m, new_tid, header_text, user)
+                else:
+                    logger.error("Could not recreate topic, message might go to General or fail.")
             else:
                 logger.error(f"Forwarding Error: {e}")
-        except Exception as e:
-            logger.error(f"General Forwarding Error: {e}")
 
     # НЕ ЗАБУДЬТЕ ДОБАВИТЬ ЭТОТ МЕТОД, иначе forward_to_admin выдаст ошибку отсутствия атрибута
     async def _send_content_to_admin(self, m: Message, thread_id: int, header_text: str, user: dict):
