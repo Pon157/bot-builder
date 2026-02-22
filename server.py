@@ -2793,14 +2793,13 @@ async def chat_start_conversation(slug: str, d: dict):
     return conv
 
 @app.get("/api/chat/site/{slug}/messages/{conv_id}")
-async def chat_get_messages(
-    slug: str, 
-    conv_id: str, 
-    role: Optional[str] = None, 
-    session_id: Optional[str] = None
-):
-    # Теперь, если session_id будет отсутствовать, сервер вернет 200 (или вашу ошибку 404),
-    # но не упадет на этапе валидации FastAPI.
+async def chat_get_messages(slug: str, conv_id: str, since: Optional[str] = "0", **kwargs):
+    params = {"conversation_id": f"eq.{conv_id}", "is_deleted": "eq.false", "order": "created_at.asc", "limit": "300"}
+    try:
+        ts = int(since) if since and since != "undefined" else 0
+        if ts > 0: params["created_at"] = f"gt.{ts}"
+    except: pass
+    return await _sb_get("chat_site_messages", params)
 
 @app.post("/api/chat/site/{slug}/message")
 @app.post("/api/chat/site/{slug}/message/")
@@ -3580,4 +3579,3 @@ if __name__ == "__main__":
     import uvicorn
     # Запуск сервера на порту 8000
     uvicorn.run(app, host="0.0.0.0", port=8000)
-            
