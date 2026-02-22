@@ -2284,49 +2284,56 @@ async def ping_pong():
 
 # Блок запуска
 
-# ==========================================
-# 10. CHAT PLATFORM — CHAT SITES
-# ==========================================
-#
-# Supabase SQL (выполнить в SQL Editor):
-#
-# CREATE TABLE IF NOT EXISTS chat_sites (
-#   id TEXT PRIMARY KEY,
-#   owner_id TEXT NOT NULL,
-#   name TEXT NOT NULL,
-#   slug TEXT UNIQUE NOT NULL,
-#   config JSONB DEFAULT '{}',
-#   admin_login TEXT,
-#   admin_password TEXT,
-#   owner_login TEXT NOT NULL,
-#   owner_password TEXT NOT NULL,
-#   created_at BIGINT,
-#   is_active BOOLEAN DEFAULT true
-# );
-#
-# CREATE TABLE IF NOT EXISTS chat_site_users (
-#   id TEXT PRIMARY KEY,
-#   site_id TEXT NOT NULL,
-#   username TEXT NOT NULL,
-#   password TEXT NOT NULL,
-#   is_banned BOOLEAN DEFAULT false,
-#   created_at BIGINT,
-#   last_seen BIGINT
-# );
-#
-# CREATE TABLE IF NOT EXISTS chat_site_messages (
-#   id TEXT PRIMARY KEY,
-#   site_id TEXT NOT NULL,
-#   from_id TEXT NOT NULL,
-#   from_name TEXT NOT NULL,
-#   from_role TEXT NOT NULL,
-#   to_user_id TEXT,
-#   text TEXT NOT NULL,
-#   created_at BIGINT,
-#   is_read BOOLEAN DEFAULT false
-# );
 
-def _cs_auth_headers():
+
+# ==========================================
+# CHAT PLATFORM v2 — Полные эндпоинты
+# ==========================================
+# Заменяет предыдущий блок "10. CHAT PLATFORM"
+# Добавить вместо/после него в server.py
+
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+GMAIL_EMAIL    = os.getenv("GMAIL_EMAIL", "")
+GMAIL_PASSWORD = os.getenv("GMAIL_PASSWORD", "")
+SMTP_SERVER    = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT      = int(os.getenv("SMTP_PORT", "587"))
+
+def send_chat_verification_email(to_email: str, code: str, site_name: str) -> bool:
+    """Отправка кода верификации для чат-сайта через Gmail."""
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"Код подтверждения — {site_name}"
+        msg["From"]    = GMAIL_EMAIL
+        msg["To"]      = to_email
+
+        html = f"""
+        <div style="font-family:system-ui,sans-serif;max-width:400px;margin:0 auto;padding:32px;background:#09090b;border-radius:24px;">
+          <h2 style="color:#fff;margin:0 0 8px">{site_name}</h2>
+          <p style="color:#71717a;font-size:14px;margin:0 0 24px">Подтвердите email для регистрации</p>
+          <div style="background:#18181b;border-radius:16px;padding:24px;text-align:center;">
+            <p style="color:#71717a;font-size:12px;text-transform:uppercase;letter-spacing:2px;margin:0 0 12px">Ваш код</p>
+            <p style="color:#fff;font-size:36px;font-weight:900;letter-spacing:8px;margin:0">{code}</p>
+          </div>
+          <p style="color:#52525b;font-size:12px;margin:24px 0 0">Код действителен 10 минут. Если вы не запрашивали — игнорируйте это письмо.</p>
+        </div>
+        """
+        msg.attach(MIMEText(html, "html"))
+
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(GMAIL_EMAIL, GMAIL_PASSWORD)
+            server.sendmail(GMAIL_EMAIL, to_email, msg.as_string())
+        return True
+    except Exception as e:
+        logger.error(f"Chat email error: {e}")
+        return False
+
+
+def _cs_h():
+    """Supabase headers helper."""
     return {
         "apikey": S_KEY,
         "Authorization": f"Bearer {S_KEY}",
@@ -2334,35 +2341,56 @@ def _cs_auth_headers():
         "Prefer": "return=representation"
     }
 
-def _gen_site_id():
-    return f"cs_{secrets.token_hex(6)}"
 
-def _gen_slug(name: str) -> str:
+def _gen_id(prefix="cs"):
+    return f"{prefix}_{secrets.token_hex(6)}"
+
+
+def _slug(name: str) -> str:
     import re
-    slug = re.sub(r'[^a-z0-9\-]', '-', name.lower().strip())
-    slug = re.sub(r'-+', '-', slug).strip('-')
-    slug = slug[:32] or "site"
-    return f"{slug}-{secrets.token_hex(3)}"
+    s = re.sub(r'[^a-z0-9\-]', '-', name.lower().strip())
+    s = re.sub(r'-+', '-', s).strip('-')[:28] or "site"
+    return f"{s}-{secrets.token_hex(3)}"
 
-# ── Создать чат-сайт ──────────────────────────────────────────────────────────
+
+async def _sb_get(table: str, params: dict) -> list:
+    async with httpx.AsyncClient() as c:
+        r = await c.get(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), params=params)
+        return r.json() if r.status_code == 200 else []
+
+
+async def _sb_post(table: str, data: dict) -> dict | None:
+    async with httpx.AsyncClient() as c:
+        r = await c.post(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), json=data)
+        d = r.json()
+        return d[0] if isinstance(d, list) and d else None
+
+
+async def _sb_patch(table: str, params: dict, data: dict) -> bool:
+    async with httpx.AsyncClient() as c:
+        r = await c.patch(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), params=params, json=data)
+        return r.status_code in (200, 204)
+
+
+async def _sb_delete(table: str, params: dict) -> bool:
+    async with httpx.AsyncClient() as c:
+        r = await c.delete(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), params=params)
+        return r.status_code in (200, 204)
+
+
+# ─── Создать сайт ──────────────────────────────────────────────────────────────
 
 @app.post("/api/chat/sites")
-async def create_chat_site(d: dict):
-    owner_id = d.get("owner_id")
-    name = (d.get("name") or "").strip()
+async def chat_create_site(d: dict):
+    owner_id = d.get("owner_id", "").strip()
+    name = d.get("name", "").strip()
     if not owner_id or not name:
         raise HTTPException(400, "owner_id и name обязательны")
 
-    site_id = _gen_site_id()
-    slug = _gen_slug(name)
-
-    # Генерируем суперкреды для владельца
-    owner_login = f"owner_{secrets.token_hex(4)}"
-    owner_pass_raw = secrets.token_urlsafe(12)
-
-    # Генерируем кредо для администратора (можно поменять позже)
-    admin_login_raw = d.get("admin_login") or f"admin_{secrets.token_hex(3)}"
-    admin_pass_raw = d.get("admin_password") or secrets.token_urlsafe(10)
+    site_id = _gen_id("cs")
+    slug = _slug(name)
+    owner_login_raw   = f"owner_{secrets.token_hex(4)}"
+    owner_pass_raw    = secrets.token_urlsafe(14)
 
     row = {
         "id": site_id,
@@ -2372,477 +2400,702 @@ async def create_chat_site(d: dict):
         "config": d.get("config", {
             "primaryColor": "#6366f1",
             "bgColor": "#09090b",
-            "fontFamily": "Manrope",
+            "fontFamily": "Manrope, sans-serif",
             "welcomeMessage": "Чем можем помочь?",
             "commands": [],
             "logoText": name,
+            "requireEmailVerification": False,
+            "showOnlineStatus": True,
         }),
-        "admin_login": admin_login_raw,
-        "admin_password": hash_pwd(admin_pass_raw),
-        "owner_login": owner_login,
+        "owner_login": owner_login_raw,
         "owner_password": hash_pwd(owner_pass_raw),
         "created_at": int(time.time() * 1000),
-        "is_active": True
+        "is_active": True,
     }
 
-    async with httpx.AsyncClient() as client:
-        res = await client.post(
-            f"{S_URL}/rest/v1/chat_sites",
-            headers=_cs_auth_headers(),
-            json=row
-        )
-        if res.status_code not in (200, 201):
-            raise HTTPException(500, f"Ошибка создания: {res.text}")
+    async with httpx.AsyncClient() as c:
+        r = await c.post(f"{S_URL}/rest/v1/chat_sites", headers=_cs_h(), json=row)
+        if r.status_code not in (200, 201):
+            raise HTTPException(500, f"Ошибка БД: {r.text}")
+
+    # Создаём первого дефолтного администратора
+    admin_login_raw = d.get("admin_login") or f"admin"
+    admin_pass_raw  = d.get("admin_password") or secrets.token_urlsafe(10)
+    admin_name      = d.get("admin_name") or "Поддержка"
+    admin_id        = _gen_id("csa")
+
+    admin_row = {
+        "id": admin_id,
+        "site_id": site_id,
+        "display_name": admin_name,
+        "login": admin_login_raw,
+        "password": hash_pwd(admin_pass_raw),
+        "avatar_color": "#6366f1",
+        "bio": "Готов помочь!",
+        "is_active": True,
+        "is_online": False,
+        "last_seen": int(time.time() * 1000),
+        "created_at": int(time.time() * 1000),
+    }
+    await _sb_post("chat_site_admins", admin_row)
 
     return {
         **row,
-        # Возвращаем пароли в открытом виде ТОЛЬКО при создании
-        "owner_login": owner_login,
         "owner_password_plain": owner_pass_raw,
         "admin_login": admin_login_raw,
         "admin_password_plain": admin_pass_raw,
+        "admin_name": admin_name,
+        "admin_id": admin_id,
     }
 
-# ── Список сайтов владельца ───────────────────────────────────────────────────
 
 @app.get("/api/chat/sites/owner/{owner_id}")
-async def list_chat_sites(owner_id: str):
-    async with httpx.AsyncClient() as client:
-        res = await client.get(
-            f"{S_URL}/rest/v1/chat_sites",
-            headers=_cs_auth_headers(),
-            params={"owner_id": f"eq.{owner_id}", "order": "created_at.desc"}
-        )
-        return res.json() if res.status_code == 200 else []
+async def chat_list_sites(owner_id: str):
+    return await _sb_get("chat_sites", {"owner_id": f"eq.{owner_id}", "order": "created_at.desc"})
 
-# ── Получить сайт по slug (публично, без секретов) ───────────────────────────
-
-@app.get("/api/chat/site/{slug}/public")
-async def get_chat_site_public(slug: str):
-    async with httpx.AsyncClient() as client:
-        res = await client.get(
-            f"{S_URL}/rest/v1/chat_sites",
-            headers=_cs_auth_headers(),
-            params={"slug": f"eq.{slug}", "is_active": "eq.true"}
-        )
-        data = res.json()
-        if not data:
-            raise HTTPException(404, "Сайт не найден")
-        s = data[0]
-        # Скрываем пароли
-        return {
-            "id": s["id"],
-            "name": s["name"],
-            "slug": s["slug"],
-            "config": s.get("config", {}),
-            "admin_login": s.get("admin_login"),
-        }
-
-# ── Получить сайт для владельца (полный) ─────────────────────────────────────
 
 @app.get("/api/chat/sites/{site_id}")
-async def get_chat_site_full(site_id: str, owner_id: str):
-    async with httpx.AsyncClient() as client:
-        res = await client.get(
-            f"{S_URL}/rest/v1/chat_sites",
-            headers=_cs_auth_headers(),
-            params={"id": f"eq.{site_id}", "owner_id": f"eq.{owner_id}"}
-        )
-        data = res.json()
-        if not data:
-            raise HTTPException(404, "Сайт не найден")
-        return data[0]
+async def chat_get_site(site_id: str, owner_id: str):
+    rows = await _sb_get("chat_sites", {"id": f"eq.{site_id}", "owner_id": f"eq.{owner_id}"})
+    if not rows: raise HTTPException(404)
+    return rows[0]
 
-# ── Обновить настройки сайта ──────────────────────────────────────────────────
+
+@app.get("/api/chat/site/{slug}/public")
+async def chat_site_public(slug: str):
+    rows = await _sb_get("chat_sites", {"slug": f"eq.{slug}", "is_active": "eq.true"})
+    if not rows: raise HTTPException(404, "Сайт не найден")
+    s = rows[0]
+    return {"id": s["id"], "name": s["name"], "slug": s["slug"], "config": s.get("config", {})}
+
 
 @app.patch("/api/chat/sites/{site_id}")
-async def update_chat_site(site_id: str, d: dict):
+async def chat_update_site(site_id: str, d: dict):
     owner_id = d.get("owner_id")
-    if not owner_id:
-        raise HTTPException(400, "owner_id обязателен")
+    if not owner_id: raise HTTPException(400, "owner_id required")
+    payload = {}
+    if "name"   in d: payload["name"]   = d["name"]
+    if "config" in d: payload["config"] = d["config"]
+    ok = await _sb_patch("chat_sites", {"id": f"eq.{site_id}", "owner_id": f"eq.{owner_id}"}, payload)
+    return {"ok": ok}
 
-    update_payload = {}
-    if "name" in d: update_payload["name"] = d["name"]
-    if "config" in d: update_payload["config"] = d["config"]
-
-    # Обновление кредов администратора
-    if "admin_login" in d: update_payload["admin_login"] = d["admin_login"]
-    if "admin_password" in d: update_payload["admin_password"] = hash_pwd(d["admin_password"])
-
-    async with httpx.AsyncClient() as client:
-        res = await client.patch(
-            f"{S_URL}/rest/v1/chat_sites",
-            headers=_cs_auth_headers(),
-            params={"id": f"eq.{site_id}", "owner_id": f"eq.{owner_id}"},
-            json=update_payload
-        )
-        return {"ok": res.status_code in (200, 204)}
-
-# ── Удалить сайт ──────────────────────────────────────────────────────────────
 
 @app.delete("/api/chat/sites/{site_id}")
-async def delete_chat_site(site_id: str, owner_id: str):
-    async with httpx.AsyncClient() as client:
-        # Удаляем все сообщения и пользователей каскадно
-        await client.delete(
-            f"{S_URL}/rest/v1/chat_site_messages",
-            headers=_cs_auth_headers(),
-            params={"site_id": f"eq.{site_id}"}
-        )
-        await client.delete(
-            f"{S_URL}/rest/v1/chat_site_users",
-            headers=_cs_auth_headers(),
-            params={"site_id": f"eq.{site_id}"}
-        )
-        res = await client.delete(
-            f"{S_URL}/rest/v1/chat_sites",
-            headers=_cs_auth_headers(),
-            params={"id": f"eq.{site_id}", "owner_id": f"eq.{owner_id}"}
-        )
-        return {"ok": res.status_code in (200, 204)}
+async def chat_delete_site(site_id: str, owner_id: str):
+    for t in ["chat_site_messages", "chat_conversations", "chat_site_users", "chat_site_admins", "chat_broadcasts"]:
+        await _sb_delete(t, {"site_id": f"eq.{site_id}"})
+    ok = await _sb_delete("chat_sites", {"id": f"eq.{site_id}", "owner_id": f"eq.{owner_id}"})
+    return {"ok": ok}
 
-# ── Регистрация пользователя на сайте ─────────────────────────────────────────
+
+# ─── Управление администраторами ───────────────────────────────────────────────
+
+@app.get("/api/chat/sites/{site_id}/admins")
+async def chat_list_admins(site_id: str, owner_id: str):
+    sites = await _sb_get("chat_sites", {"id": f"eq.{site_id}", "owner_id": f"eq.{owner_id}"})
+    if not sites: raise HTTPException(403)
+    admins = await _sb_get("chat_site_admins", {"site_id": f"eq.{site_id}", "order": "created_at.asc"})
+    # Скрываем пароли
+    return [{k: v for k, v in a.items() if k != "password"} for a in admins]
+
+
+@app.get("/api/chat/site/{slug}/admins")
+async def chat_admins_public(slug: str):
+    """Публичный список активных администраторов для выбора пользователем."""
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}", "is_active": "eq.true"})
+    if not sites: raise HTTPException(404)
+    admins = await _sb_get("chat_site_admins", {
+        "site_id": f"eq.{sites[0]['id']}",
+        "is_active": "eq.true",
+        "order": "created_at.asc"
+    })
+    return [{"id": a["id"], "display_name": a["display_name"], "bio": a.get("bio", ""),
+             "avatar_color": a.get("avatar_color", "#6366f1"),
+             "is_online": a.get("is_online", False)} for a in admins]
+
+
+@app.post("/api/chat/sites/{site_id}/admins")
+async def chat_create_admin(site_id: str, d: dict):
+    owner_id = d.get("owner_id")
+    sites = await _sb_get("chat_sites", {"id": f"eq.{site_id}", "owner_id": f"eq.{owner_id}"})
+    if not sites: raise HTTPException(403)
+
+    login = d.get("login", "").strip()
+    password = d.get("password", "").strip()
+    if not login or not password: raise HTTPException(400, "login и password обязательны")
+
+    admin_row = {
+        "id": _gen_id("csa"),
+        "site_id": site_id,
+        "display_name": d.get("display_name", "Администратор"),
+        "login": login,
+        "password": hash_pwd(password),
+        "avatar_color": d.get("avatar_color", "#6366f1"),
+        "bio": d.get("bio", ""),
+        "is_active": True,
+        "is_online": False,
+        "last_seen": int(time.time() * 1000),
+        "created_at": int(time.time() * 1000),
+    }
+    result = await _sb_post("chat_site_admins", admin_row)
+    if not result: raise HTTPException(500, "Ошибка создания")
+    return {k: v for k, v in result.items() if k != "password"}
+
+
+@app.patch("/api/chat/sites/{site_id}/admins/{admin_id}")
+async def chat_update_admin(site_id: str, admin_id: str, d: dict):
+    owner_id = d.get("owner_id")
+    sites = await _sb_get("chat_sites", {"id": f"eq.{site_id}", "owner_id": f"eq.{owner_id}"})
+    if not sites: raise HTTPException(403)
+
+    payload = {}
+    for field in ["display_name", "bio", "avatar_color", "is_active"]:
+        if field in d: payload[field] = d[field]
+    if "password" in d and d["password"]:
+        payload["password"] = hash_pwd(d["password"])
+    if "login" in d: payload["login"] = d["login"]
+
+    ok = await _sb_patch("chat_site_admins", {"id": f"eq.{admin_id}", "site_id": f"eq.{site_id}"}, payload)
+    return {"ok": ok}
+
+
+@app.delete("/api/chat/sites/{site_id}/admins/{admin_id}")
+async def chat_delete_admin(site_id: str, admin_id: str, owner_id: str):
+    sites = await _sb_get("chat_sites", {"id": f"eq.{site_id}", "owner_id": f"eq.{owner_id}"})
+    if not sites: raise HTTPException(403)
+    ok = await _sb_delete("chat_site_admins", {"id": f"eq.{admin_id}", "site_id": f"eq.{site_id}"})
+    return {"ok": ok}
+
+
+@app.post("/api/chat/sites/{site_id}/admins/{admin_id}/online")
+async def chat_admin_set_online(site_id: str, admin_id: str, d: dict):
+    """Обновление статуса онлайн для администратора."""
+    is_online = d.get("is_online", True)
+    payload = {"is_online": is_online, "last_seen": int(time.time() * 1000)}
+    ok = await _sb_patch("chat_site_admins", {"id": f"eq.{admin_id}", "site_id": f"eq.{site_id}"}, payload)
+    return {"ok": ok}
+
+
+# ─── Авторизация ───────────────────────────────────────────────────────────────
+
+@app.post("/api/chat/site/{slug}/verify-email")
+async def chat_request_email_verify(slug: str, d: dict):
+    email = (d.get("email") or "").strip().lower()
+    if not email or "@" not in email: raise HTTPException(400, "Некорректный email")
+
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404)
+    site = sites[0]
+
+    code = str(random.randint(100000, 999999))
+    await _sb_patch("chat_verify_codes",
+        {"email": f"eq.{email}", "site_id": f"eq.{site['id']}"},
+        {"code": code, "created_at": int(time.time() * 1000)})
+
+    # Upsert
+    async with httpx.AsyncClient() as c:
+        await c.post(f"{S_URL}/rest/v1/chat_verify_codes",
+            headers={**_cs_h(), "Prefer": "resolution=merge-duplicates"},
+            json={"email": email, "site_id": site["id"], "code": code, "created_at": int(time.time() * 1000)})
+
+    success = await run_in_threadpool(
+        send_chat_verification_email, email, code, site.get("name", "Чат")
+    )
+    if not success:
+        raise HTTPException(500, "Ошибка отправки письма")
+    return {"ok": True}
+
 
 @app.post("/api/chat/site/{slug}/register")
-async def chat_site_register(slug: str, d: dict):
+async def chat_register(slug: str, d: dict):
     username = (d.get("username") or "").strip()
     password = (d.get("password") or "").strip()
-    if not username or not password:
-        raise HTTPException(400, "username и password обязательны")
-    if len(username) < 3:
-        raise HTTPException(400, "Имя должно быть не менее 3 символов")
+    email    = (d.get("email") or "").strip().lower()
+    verify_code = (d.get("verify_code") or "").strip()
 
-    async with httpx.AsyncClient() as client:
-        # Проверяем сайт
-        site_res = await client.get(
-            f"{S_URL}/rest/v1/chat_sites",
-            headers=_cs_auth_headers(),
-            params={"slug": f"eq.{slug}"}
-        )
-        sites = site_res.json()
-        if not sites:
-            raise HTTPException(404, "Сайт не найден")
-        site = sites[0]
+    if not username or not password: raise HTTPException(400, "username и password обязательны")
+    if len(username) < 2: raise HTTPException(400, "Имя минимум 2 символа")
 
-        # Проверяем уникальность username на этом сайте
-        exist_res = await client.get(
-            f"{S_URL}/rest/v1/chat_site_users",
-            headers=_cs_auth_headers(),
-            params={"site_id": f"eq.{site['id']}", "username": f"eq.{username}"}
-        )
-        if exist_res.json():
-            raise HTTPException(409, "Пользователь с таким именем уже существует")
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404)
+    site = sites[0]
+    config = site.get("config", {})
 
-        user_id = f"csu_{secrets.token_hex(6)}"
-        now = int(time.time() * 1000)
-        user_row = {
-            "id": user_id,
-            "site_id": site["id"],
-            "username": username,
-            "password": hash_pwd(password),
-            "is_banned": False,
-            "created_at": now,
-            "last_seen": now
-        }
-        await client.post(
-            f"{S_URL}/rest/v1/chat_site_users",
-            headers=_cs_auth_headers(),
-            json=user_row
-        )
+    # Проверяем email-верификацию если включена
+    is_verified = False
+    if config.get("requireEmailVerification") and email:
+        if not verify_code: raise HTTPException(400, "Требуется код подтверждения email")
+        codes = await _sb_get("chat_verify_codes", {"email": f"eq.{email}", "site_id": f"eq.{site['id']}"})
+        if not codes or codes[0]["code"] != verify_code:
+            raise HTTPException(400, "Неверный код подтверждения")
+        # Удаляем использованный код
+        await _sb_delete("chat_verify_codes", {"email": f"eq.{email}", "site_id": f"eq.{site['id']}"})
+        is_verified = True
+    elif email:
+        is_verified = False  # email указан, но верификация не обязательна
 
-        return {
-            "id": user_id,
-            "username": username,
-            "site_id": site["id"],
-            "role": "user",
-            "token": f"user:{user_id}:{secrets.token_hex(8)}"
-        }
+    # Проверяем уникальность
+    exist = await _sb_get("chat_site_users", {"site_id": f"eq.{site['id']}", "username": f"eq.{username}"})
+    if exist: raise HTTPException(409, "Имя пользователя уже занято")
 
-# ── Авторизация (user / admin / owner) ───────────────────────────────────────
+    now = int(time.time() * 1000)
+    user_id = _gen_id("csu")
+    user_row = {
+        "id": user_id,
+        "site_id": site["id"],
+        "username": username,
+        "email": email or None,
+        "password": hash_pwd(password),
+        "is_banned": False,
+        "is_verified": is_verified,
+        "created_at": now,
+        "last_seen": now,
+    }
+    result = await _sb_post("chat_site_users", user_row)
+    if not result: raise HTTPException(500, "Ошибка регистрации")
+
+    return {
+        "id": user_id,
+        "username": username,
+        "site_id": site["id"],
+        "role": "user",
+        "token": f"user:{user_id}:{secrets.token_hex(8)}",
+    }
+
 
 @app.post("/api/chat/site/{slug}/auth")
-async def chat_site_auth(slug: str, d: dict):
-    login = (d.get("login") or "").strip()
+async def chat_auth(slug: str, d: dict):
+    login    = (d.get("login") or "").strip()
     password = (d.get("password") or "").strip()
-    if not login or not password:
-        raise HTTPException(400, "Логин и пароль обязательны")
+    if not login or not password: raise HTTPException(400, "Логин и пароль обязательны")
 
-    async with httpx.AsyncClient() as client:
-        site_res = await client.get(
-            f"{S_URL}/rest/v1/chat_sites",
-            headers=_cs_auth_headers(),
-            params={"slug": f"eq.{slug}"}
-        )
-        sites = site_res.json()
-        if not sites:
-            raise HTTPException(404, "Сайт не найден")
-        site = sites[0]
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404, "Сайт не найден")
+    site = sites[0]
+    hpwd = hash_pwd(password)
 
-        hpwd = hash_pwd(password)
+    # 1. Проверка владельца
+    if login == site["owner_login"] and hpwd == site["owner_password"]:
+        return {
+            "id": f"owner_{site['id']}",
+            "username": "Владелец",
+            "display_name": "Владелец",
+            "site_id": site["id"],
+            "role": "owner",
+            "token": f"owner:{site['id']}:{secrets.token_hex(8)}",
+        }
 
-        # Проверяем владельца
-        if login == site["owner_login"] and hpwd == site["owner_password"]:
-            return {
-                "id": f"owner_{site['id']}",
-                "username": "Владелец",
-                "site_id": site["id"],
-                "role": "owner",
-                "token": f"owner:{site['id']}:{secrets.token_hex(8)}"
-            }
+    # 2. Проверка администратора (chat_site_admins)
+    admins = await _sb_get("chat_site_admins", {
+        "site_id": f"eq.{site['id']}",
+        "login": f"eq.{login}",
+        "is_active": "eq.true"
+    })
+    if admins and admins[0]["password"] == hpwd:
+        a = admins[0]
+        # Обновляем онлайн статус
+        await _sb_patch("chat_site_admins", {"id": f"eq.{a['id']}"}, {
+            "is_online": True,
+            "last_seen": int(time.time() * 1000)
+        })
+        return {
+            "id": a["id"],
+            "username": a["display_name"],
+            "display_name": a["display_name"],
+            "avatar_color": a.get("avatar_color", "#6366f1"),
+            "site_id": site["id"],
+            "role": "admin",
+            "token": f"admin:{a['id']}:{secrets.token_hex(8)}",
+        }
 
-        # Проверяем администратора
-        if login == site.get("admin_login") and hpwd == site.get("admin_password"):
-            return {
-                "id": f"admin_{site['id']}",
-                "username": "Администратор",
-                "site_id": site["id"],
-                "role": "admin",
-                "token": f"admin:{site['id']}:{secrets.token_hex(8)}"
-            }
-
-        # Проверяем обычного пользователя
-        user_res = await client.get(
-            f"{S_URL}/rest/v1/chat_site_users",
-            headers=_cs_auth_headers(),
-            params={"site_id": f"eq.{site['id']}", "username": f"eq.{login}", "password": f"eq.{hpwd}"}
-        )
-        users = user_res.json()
-        if users:
-            u = users[0]
-            if u.get("is_banned"):
-                raise HTTPException(403, "Вы заблокированы на этом сайте")
-            # Обновляем last_seen
-            await client.patch(
-                f"{S_URL}/rest/v1/chat_site_users",
-                headers=_cs_auth_headers(),
-                params={"id": f"eq.{u['id']}"},
-                json={"last_seen": int(time.time() * 1000)}
-            )
-            return {
-                "id": u["id"],
-                "username": u["username"],
-                "site_id": site["id"],
-                "role": "user",
-                "token": f"user:{u['id']}:{secrets.token_hex(8)}"
-            }
+    # 3. Проверка пользователя
+    users = await _sb_get("chat_site_users", {
+        "site_id": f"eq.{site['id']}",
+        "username": f"eq.{login}",
+        "password": f"eq.{hpwd}"
+    })
+    if users:
+        u = users[0]
+        if u.get("is_banned"):
+            raise HTTPException(403, f"Вы заблокированы. {u.get('ban_reason', '')}")
+        await _sb_patch("chat_site_users", {"id": f"eq.{u['id']}"}, {"last_seen": int(time.time() * 1000)})
+        return {
+            "id": u["id"],
+            "username": u["username"],
+            "display_name": u["username"],
+            "site_id": site["id"],
+            "role": "user",
+            "token": f"user:{u['id']}:{secrets.token_hex(8)}",
+        }
 
     raise HTTPException(401, "Неверный логин или пароль")
 
-# ── Получить сообщения ─────────────────────────────────────────────────────────
 
-@app.get("/api/chat/site/{slug}/messages")
-async def get_chat_messages(slug: str, role: str, user_id: str, since: int = 0):
-    async with httpx.AsyncClient() as client:
-        site_res = await client.get(
-            f"{S_URL}/rest/v1/chat_sites",
-            headers=_cs_auth_headers(),
-            params={"slug": f"eq.{slug}"}
-        )
-        sites = site_res.json()
-        if not sites:
-            raise HTTPException(404, "Сайт не найден")
-        site_id = sites[0]["id"]
+# ─── Диалоги ───────────────────────────────────────────────────────────────────
 
-        params = {
+@app.post("/api/chat/site/{slug}/conversations")
+async def chat_start_conversation(slug: str, d: dict):
+    """Начать или получить диалог пользователя с конкретным администратором."""
+    user_id   = d.get("user_id")
+    admin_id  = d.get("admin_id")
+    user_name = d.get("user_name", "")
+    if not user_id or not admin_id: raise HTTPException(400, "user_id и admin_id обязательны")
+
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404)
+    site_id = sites[0]["id"]
+
+    # Ищем существующий диалог
+    existing = await _sb_get("chat_conversations", {
+        "site_id": f"eq.{site_id}",
+        "user_id": f"eq.{user_id}",
+        "admin_id": f"eq.{admin_id}"
+    })
+    if existing:
+        return existing[0]
+
+    # Получаем имя администратора
+    admins = await _sb_get("chat_site_admins", {"id": f"eq.{admin_id}"})
+    admin_name = admins[0]["display_name"] if admins else "Администратор"
+
+    now = int(time.time() * 1000)
+    conv = {
+        "id": _gen_id("ccv"),
+        "site_id": site_id,
+        "user_id": user_id,
+        "admin_id": admin_id,
+        "user_name": user_name,
+        "admin_name": admin_name,
+        "created_at": now,
+        "last_message_at": now,
+        "last_message_preview": "",
+        "unread_admin": 0,
+        "unread_user": 0,
+    }
+    result = await _sb_post("chat_conversations", conv)
+    return result or conv
+
+
+@app.get("/api/chat/site/{slug}/conversations")
+async def chat_get_conversations(slug: str, role: str, session_id: str):
+    """
+    Список диалогов:
+    - user: его диалоги (можно несколько с разными admin)
+    - admin/owner: все диалоги с этим admin_id (или все для owner)
+    """
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404)
+    site_id = sites[0]["id"]
+
+    if role == "user":
+        convs = await _sb_get("chat_conversations", {
             "site_id": f"eq.{site_id}",
-            "order": "created_at.asc",
-            "limit": "200"
-        }
-        if since > 0:
-            params["created_at"] = f"gt.{since}"
+            "user_id": f"eq.{session_id}",
+            "order": "last_message_at.desc"
+        })
+    elif role == "admin":
+        convs = await _sb_get("chat_conversations", {
+            "site_id": f"eq.{site_id}",
+            "admin_id": f"eq.{session_id}",
+            "order": "last_message_at.desc"
+        })
+    else:  # owner — видит всё
+        convs = await _sb_get("chat_conversations", {
+            "site_id": f"eq.{site_id}",
+            "order": "last_message_at.desc"
+        })
+    return convs
 
-        if role == "user":
-            # Пользователь видит только свои сообщения и ответы администратора ему
-            # to_user_id is null (broadcast) OR from_id = user_id OR to_user_id = user_id
-            params["or"] = f"(to_user_id.is.null,from_id.eq.{user_id},to_user_id.eq.{user_id})"
 
-        res = await client.get(
-            f"{S_URL}/rest/v1/chat_site_messages",
-            headers=_cs_auth_headers(),
-            params=params
-        )
-        return res.json() if res.status_code == 200 else []
+# ─── Сообщения ─────────────────────────────────────────────────────────────────
 
-# ── Отправить сообщение ────────────────────────────────────────────────────────
+@app.get("/api/chat/site/{slug}/conversations/{conv_id}/messages")
+async def chat_get_messages(slug: str, conv_id: str, since: int = 0):
+    params = {
+        "conversation_id": f"eq.{conv_id}",
+        "is_deleted": "eq.false",
+        "order": "created_at.asc",
+        "limit": "300",
+    }
+    if since > 0:
+        params["created_at"] = f"gt.{since}"
+    return await _sb_get("chat_site_messages", params)
 
-@app.post("/api/chat/site/{slug}/messages")
-async def send_chat_message(slug: str, d: dict):
-    text = (d.get("text") or "").strip()
-    from_id = d.get("from_id")
+
+@app.post("/api/chat/site/{slug}/conversations/{conv_id}/messages")
+async def chat_send_message(slug: str, conv_id: str, d: dict):
+    from_id   = d.get("from_id")
     from_name = d.get("from_name", "")
-    from_role = d.get("from_role", "user")  # user | admin | owner
-    to_user_id = d.get("to_user_id")       # None = broadcast, user_id = личное
+    from_role = d.get("from_role", "user")
+    text      = (d.get("text") or "").strip()
+    media_url  = d.get("media_url")
+    media_type = d.get("media_type")
+    sticker_emoji = d.get("sticker_emoji")
 
-    if not text or not from_id:
-        raise HTTPException(400, "text и from_id обязательны")
+    if not from_id: raise HTTPException(400, "from_id required")
+    if not text and not media_url and not sticker_emoji:
+        raise HTTPException(400, "Пустое сообщение")
 
-    async with httpx.AsyncClient() as client:
-        site_res = await client.get(
-            f"{S_URL}/rest/v1/chat_sites",
-            headers=_cs_auth_headers(),
-            params={"slug": f"eq.{slug}"}
-        )
-        sites = site_res.json()
-        if not sites:
-            raise HTTPException(404, "Сайт не найден")
-        site_id = sites[0]["id"]
+    # Проверяем что пользователь не забанен
+    if from_role == "user":
+        users = await _sb_get("chat_site_users", {"id": f"eq.{from_id}"})
+        if users and users[0].get("is_banned"):
+            raise HTTPException(403, "Вы заблокированы")
 
-        # Проверяем что юзер не забанен
-        if from_role == "user":
-            check = await client.get(
-                f"{S_URL}/rest/v1/chat_site_users",
-                headers=_cs_auth_headers(),
-                params={"id": f"eq.{from_id}"}
-            )
-            check_data = check.json()
-            if check_data and check_data[0].get("is_banned"):
-                raise HTTPException(403, "Вы заблокированы")
+    now = int(time.time() * 1000)
+    msg = {
+        "id": _gen_id("csm"),
+        "site_id": (await _sb_get("chat_conversations", {"id": f"eq.{conv_id}"}) or [{}])[0].get("site_id", ""),
+        "conversation_id": conv_id,
+        "from_id": from_id,
+        "from_name": from_name,
+        "from_role": from_role,
+        "text": text or None,
+        "media_url": media_url,
+        "media_type": media_type,
+        "sticker_emoji": sticker_emoji,
+        "created_at": now,
+        "is_read": False,
+        "is_deleted": False,
+    }
+    result = await _sb_post("chat_site_messages", msg)
 
-        msg_id = f"csm_{secrets.token_hex(8)}"
-        msg = {
-            "id": msg_id,
-            "site_id": site_id,
-            "from_id": from_id,
-            "from_name": from_name,
-            "from_role": from_role,
-            "to_user_id": to_user_id,
-            "text": text,
-            "created_at": int(time.time() * 1000),
-            "is_read": False
-        }
-        await client.post(
-            f"{S_URL}/rest/v1/chat_site_messages",
-            headers=_cs_auth_headers(),
-            json=msg
-        )
-        return msg
+    # Обновляем диалог: last_message_at, unread счётчик, превью
+    preview = sticker_emoji or (text[:60] if text else f"[{media_type}]")
+    unread_field = "unread_admin" if from_role == "user" else "unread_user"
 
-# ── Список пользователей (admin/owner) ────────────────────────────────────────
+    convs = await _sb_get("chat_conversations", {"id": f"eq.{conv_id}"})
+    if convs:
+        conv = convs[0]
+        new_unread = (conv.get(unread_field) or 0) + 1
+        await _sb_patch("chat_conversations", {"id": f"eq.{conv_id}"}, {
+            "last_message_at": now,
+            "last_message_preview": preview,
+            unread_field: new_unread,
+        })
 
-@app.get("/api/chat/site/{slug}/users")
-async def get_chat_site_users(slug: str, role: str):
-    if role not in ("admin", "owner"):
-        raise HTTPException(403, "Доступ запрещён")
-    async with httpx.AsyncClient() as client:
-        site_res = await client.get(
-            f"{S_URL}/rest/v1/chat_sites",
-            headers=_cs_auth_headers(),
-            params={"slug": f"eq.{slug}"}
-        )
-        sites = site_res.json()
-        if not sites:
-            raise HTTPException(404)
-        site_id = sites[0]["id"]
+    return result or msg
 
-        res = await client.get(
-            f"{S_URL}/rest/v1/chat_site_users",
-            headers=_cs_auth_headers(),
-            params={"site_id": f"eq.{site_id}", "order": "last_seen.desc"}
-        )
-        users = res.json() if res.status_code == 200 else []
-        # Скрываем пароли
-        return [{k: v for k, v in u.items() if k != "password"} for u in users]
 
-# ── Забанить / разбанить пользователя ─────────────────────────────────────────
+@app.post("/api/chat/site/{slug}/conversations/{conv_id}/read")
+async def chat_mark_read(slug: str, conv_id: str, d: dict):
+    """Сбросить счётчик непрочитанных для стороны."""
+    role = d.get("role", "admin")
+    field = "unread_user" if role == "user" else "unread_admin"
+    await _sb_patch("chat_conversations", {"id": f"eq.{conv_id}"}, {field: 0})
+    return {"ok": True}
 
-@app.post("/api/chat/site/{slug}/users/{user_id}/ban")
-async def ban_chat_user(slug: str, user_id: str, d: dict):
-    role = d.get("role")
-    is_banned = d.get("is_banned", True)
-    if role not in ("admin", "owner"):
-        raise HTTPException(403, "Доступ запрещён")
-    async with httpx.AsyncClient() as client:
-        res = await client.patch(
-            f"{S_URL}/rest/v1/chat_site_users",
-            headers=_cs_auth_headers(),
-            params={"id": f"eq.{user_id}"},
-            json={"is_banned": is_banned}
-        )
-        return {"ok": res.status_code in (200, 204)}
 
-# ── Рассылка всем пользователям ───────────────────────────────────────────────
+# ─── Рассылка ──────────────────────────────────────────────────────────────────
 
 @app.post("/api/chat/site/{slug}/broadcast")
-async def chat_site_broadcast(slug: str, d: dict):
+async def chat_broadcast(slug: str, d: dict):
+    role      = d.get("role")
+    from_id   = d.get("from_id", "")
+    from_name = d.get("from_name", "Администрация")
+    text      = (d.get("text") or "").strip()
+    if role not in ("admin", "owner"): raise HTTPException(403)
+    if not text: raise HTTPException(400)
+
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404)
+    site_id = sites[0]["id"]
+
+    now = int(time.time() * 1000)
+    broadcast = {
+        "id": _gen_id("csb"),
+        "site_id": site_id,
+        "from_name": from_name,
+        "from_role": role,
+        "text": text,
+        "created_at": now,
+    }
+    await _sb_post("chat_broadcasts", broadcast)
+    return {"ok": True, **broadcast}
+
+
+@app.get("/api/chat/site/{slug}/broadcasts")
+async def chat_get_broadcasts(slug: str, since: int = 0):
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404)
+    params = {"site_id": f"eq.{sites[0]['id']}", "order": "created_at.asc"}
+    if since > 0: params["created_at"] = f"gt.{since}"
+    return await _sb_get("chat_broadcasts", params)
+
+
+# ─── Пользователи (управление) ─────────────────────────────────────────────────
+
+@app.get("/api/chat/site/{slug}/users")
+async def chat_get_users(slug: str, role: str):
+    if role not in ("admin", "owner"): raise HTTPException(403)
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404)
+    users = await _sb_get("chat_site_users", {
+        "site_id": f"eq.{sites[0]['id']}",
+        "order": "last_seen.desc"
+    })
+    return [{k: v for k, v in u.items() if k not in ("password",)} for u in users]
+
+
+@app.post("/api/chat/site/{slug}/users/{user_id}/ban")
+async def chat_ban_user(slug: str, user_id: str, d: dict):
     role = d.get("role")
-    from_id = d.get("from_id")
-    from_name = d.get("from_name", "Администратор")
-    text = (d.get("text") or "").strip()
-    if role not in ("admin", "owner"):
-        raise HTTPException(403, "Доступ запрещён")
-    if not text:
-        raise HTTPException(400, "text обязателен")
+    if role not in ("admin", "owner"): raise HTTPException(403)
+    is_banned  = d.get("is_banned", True)
+    ban_reason = d.get("ban_reason", "")
+    ok = await _sb_patch("chat_site_users", {"id": f"eq.{user_id}"}, {
+        "is_banned": is_banned,
+        "ban_reason": ban_reason if is_banned else None
+    })
+    return {"ok": ok}
 
-    async with httpx.AsyncClient() as client:
-        site_res = await client.get(
-            f"{S_URL}/rest/v1/chat_sites",
-            headers=_cs_auth_headers(),
-            params={"slug": f"eq.{slug}"}
-        )
-        sites = site_res.json()
-        if not sites:
-            raise HTTPException(404)
-        site_id = sites[0]["id"]
 
-        msg_id = f"csm_{secrets.token_hex(8)}"
-        msg = {
-            "id": msg_id,
-            "site_id": site_id,
-            "from_id": from_id or f"admin_{site_id}",
-            "from_name": from_name,
-            "from_role": role,
-            "to_user_id": None,  # broadcast
-            "text": text,
-            "created_at": int(time.time() * 1000),
-            "is_read": False
-        }
-        await client.post(
-            f"{S_URL}/rest/v1/chat_site_messages",
-            headers=_cs_auth_headers(),
-            json=msg
-        )
-        return {"ok": True}
+# ─── Загрузка медиафайлов (использует существующий /api/upload) ────────────────
 
-# ── Статистика сайта ──────────────────────────────────────────────────────────
+@app.post("/api/chat/media/upload")
+async def chat_upload_media(request: Request):
+    """Прокси для загрузки файлов в чате. Использует тот же механизм что /api/upload."""
+    from fastapi import UploadFile, File
+    import aiofiles
 
-@app.get("/api/chat/site/{slug}/stats")
-async def get_chat_site_stats(slug: str, role: str):
-    if role not in ("admin", "owner"):
-        raise HTTPException(403, "Доступ запрещён")
-    async with httpx.AsyncClient() as client:
-        site_res = await client.get(
-            f"{S_URL}/rest/v1/chat_sites",
-            headers=_cs_auth_headers(),
-            params={"slug": f"eq.{slug}"}
-        )
-        sites = site_res.json()
-        if not sites:
-            raise HTTPException(404)
-        site_id = sites[0]["id"]
+    form = await request.form()
+    file_field = form.get("file")
+    if not file_field:
+        raise HTTPException(400, "file required")
 
-        users_res = await client.get(
-            f"{S_URL}/rest/v1/chat_site_users",
-            headers=_cs_auth_headers(),
-            params={"site_id": f"eq.{site_id}"}
-        )
-        msgs_res = await client.get(
-            f"{S_URL}/rest/v1/chat_site_messages",
-            headers=_cs_auth_headers(),
-            params={"site_id": f"eq.{site_id}"}
-        )
-        users = users_res.json() if users_res.status_code == 200 else []
-        msgs = msgs_res.json() if msgs_res.status_code == 200 else []
+    filename = getattr(file_field, "filename", f"upload_{int(time.time())}")
+    content  = await file_field.read()
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
 
-        day_ago = (int(time.time()) - 86400) * 1000
-        return {
+    media_type_map = {
+        "jpg": "image", "jpeg": "image", "png": "image", "gif": "image", "webp": "image",
+        "mp4": "video", "mov": "video", "webm": "video",
+        "mp3": "audio", "ogg": "audio", "wav": "audio", "m4a": "audio",
+    }
+    media_type = media_type_map.get(ext, "file")
+
+    os.makedirs("uploads/chat", exist_ok=True)
+    save_name = f"{int(time.time())}_{secrets.token_hex(4)}.{ext}"
+    save_path = f"uploads/chat/{save_name}"
+
+    async with aiofiles.open(save_path, "wb") as f:
+        await f.write(content)
+
+    return {"url": f"/uploads/chat/{save_name}", "media_type": media_type, "filename": filename}
+
+
+# ─── Аналитика ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/chat/site/{slug}/analytics")
+async def chat_analytics(slug: str, role: str, days: int = 30):
+    if role not in ("admin", "owner"): raise HTTPException(403)
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404)
+    site_id = sites[0]["id"]
+
+    users    = await _sb_get("chat_site_users", {"site_id": f"eq.{site_id}"})
+    admins   = await _sb_get("chat_site_admins", {"site_id": f"eq.{site_id}"})
+    convs    = await _sb_get("chat_conversations", {"site_id": f"eq.{site_id}"})
+    msgs     = await _sb_get("chat_site_messages", {"site_id": f"eq.{site_id}", "is_deleted": "eq.false"})
+
+    now_ms    = int(time.time() * 1000)
+    day_ms    = 86_400_000
+    cutoff_ms = now_ms - days * day_ms
+
+    def ts_to_day(ts: int) -> str:
+        return datetime.fromtimestamp(ts / 1000).strftime("%d.%m")
+
+    # Сообщения по дням
+    msg_by_day: dict[str, dict] = {}
+    for m in msgs:
+        ts = m.get("created_at", 0)
+        if ts < cutoff_ms: continue
+        day = ts_to_day(ts)
+        if day not in msg_by_day:
+            msg_by_day[day] = {"day": day, "user": 0, "admin": 0, "total": 0}
+        fr = m.get("from_role", "user")
+        if fr == "user":
+            msg_by_day[day]["user"] += 1
+        else:
+            msg_by_day[day]["admin"] += 1
+        msg_by_day[day]["total"] += 1
+
+    # Пользователи по дням (регистрации)
+    reg_by_day: dict[str, int] = {}
+    for u in users:
+        ts = u.get("created_at", 0)
+        if ts < cutoff_ms: continue
+        day = ts_to_day(ts)
+        reg_by_day[day] = reg_by_day.get(day, 0) + 1
+
+    # Часы активности
+    hours: dict[int, int] = {i: 0 for i in range(24)}
+    for m in msgs:
+        ts = m.get("created_at", 0)
+        if ts < cutoff_ms: continue
+        h = datetime.fromtimestamp(ts / 1000).hour
+        hours[h] += 1
+
+    # Статистика по администраторам
+    admin_stats = []
+    for a in admins:
+        aid = a["id"]
+        a_convs = [c for c in convs if c.get("admin_id") == aid]
+        a_msgs  = [m for m in msgs if m.get("from_id") == aid]
+        admin_stats.append({
+            "id": aid,
+            "name": a["display_name"],
+            "avatar_color": a.get("avatar_color", "#6366f1"),
+            "is_online": a.get("is_online", False),
+            "conversations": len(a_convs),
+            "messages_sent": len(a_msgs),
+        })
+
+    # Время ответа (упрощённо)
+    response_times = []
+    for conv in convs:
+        conv_msgs = sorted([m for m in msgs if m.get("conversation_id") == conv["id"]], key=lambda x: x["created_at"])
+        last_user_ts = None
+        for m in conv_msgs:
+            if m["from_role"] == "user":
+                last_user_ts = m["created_at"]
+            elif m["from_role"] in ("admin", "owner") and last_user_ts:
+                rt = (m["created_at"] - last_user_ts) / 60000  # минуты
+                if 0 < rt < 1440:  # до 24 часов
+                    response_times.append(rt)
+                last_user_ts = None
+
+    avg_response = round(sum(response_times) / len(response_times), 1) if response_times else 0
+
+    # Сортируем по дате
+    def sort_key(day_str):
+        try:
+            d_num, m_num = day_str.split(".")
+            return int(m_num) * 100 + int(d_num)
+        except: return 0
+
+    msg_chart = sorted(msg_by_day.values(), key=lambda x: sort_key(x["day"]))
+    reg_chart = [{"day": k, "count": v} for k, v in sorted(reg_by_day.items(), key=lambda x: sort_key(x[0]))]
+    hours_chart = [{"hour": h, "count": cnt} for h, cnt in hours.items()]
+
+    day_ago = now_ms - day_ms
+    return {
+        "overview": {
             "total_users": len(users),
-            "banned_users": sum(1 for u in users if u.get("is_banned")),
             "active_24h": sum(1 for u in users if (u.get("last_seen") or 0) > day_ago),
+            "banned": sum(1 for u in users if u.get("is_banned")),
+            "total_conversations": len(convs),
             "total_messages": len(msgs),
             "user_messages": sum(1 for m in msgs if m.get("from_role") == "user"),
             "admin_messages": sum(1 for m in msgs if m.get("from_role") in ("admin", "owner")),
-            "unread": sum(1 for m in msgs if not m.get("is_read") and m.get("from_role") == "user"),
-        }
+            "avg_response_min": avg_response,
+            "admins_count": len(admins),
+        },
+        "msg_chart": msg_chart,
+        "reg_chart": reg_chart,
+        "hours_chart": hours_chart,
+        "admin_stats": admin_stats,
+    }
 
 
 if __name__ == "__main__":
