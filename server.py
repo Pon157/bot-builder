@@ -2819,73 +2819,78 @@ async def chat_start_conversation(slug: str, d: dict):
     return conv
 
 
-    # ─── СООБЩЕНИЯ (Messages) ──────────────────────────────────────────────────────
-    
-    @app.get("/api/chat/site/{slug}/messages/{conv_id}")
-    async def chat_get_messages(
-        slug: str, 
-        conv_id: str, 
-        since: Optional[str] = "0", # Принимаем как строку, чтобы не было ошибки 422
-        role: Optional[str] = None, 
-        session_id: Optional[str] = None
-    ):
-        """
-        Загрузить историю сообщений. 
-        Использует ручной парсинг since для стабильности.
-        """
-        params = {
-            "conversation_id": f"eq.{conv_id}",
-            "is_deleted": "eq.false",
-            "order": "created_at.asc",
-            "limit": "300",
-        }
-        
-        # Безопасное приведение к числу для Supabase
-        try:
-            ts_since = int(since) if since else 0
-            if ts_since > 0:
-                params["created_at"] = f"gt.{ts_since}"
-        except: 
-            pass 
-            
-        return await _sb_get("chat_site_messages", params)
-    
-    
-    @app.post("/api/chat/site/{slug}/message") # ИСПРАВЛЯЕТ 404 (Фронт шлет сюда)
-    async def chat_send_message_alias(slug: str, d: dict):
-        """Главный эндпоинт отправки сообщения (по логам фронта)."""
-        conv_id = d.get("conversation_id") or d.get("conv_id")
-        if not conv_id: 
-            raise HTTPException(400, "ID диалога не указан")
-        return await chat_send_message_logic(slug, conv_id, d)
-    
-    
-    @app.post("/api/chat/site/{slug}/conversation/{conv_id}/messages")
-    async def chat_send_message_full(slug: str, conv_id: str, d: dict):
-        """Запасной эндпоинт отправки сообщения."""
-        return await chat_send_message_logic(slug, conv_id, d)
-    
-    
-    async def chat_send_message_logic(slug: str, conv_id: str, d: dict):
-        """
-        ЕДИНАЯ ЛОГИКА: Сохранение сообщения + уведомление диалога.
-        Здесь исправлено отображение 0:00 (сохраняем duration).
-        """
-        from_id   = d.get("from_id")
-        from_role = d.get("from_role", "user")
-        from_name = d.get("from_name") or "Гость"
-        text      = (d.get("text") or "").strip()
-        
-        if not from_id: 
-            raise HTTPException(400, "from_id обязателен")
-        
-        # 1. Проверка на бан (только для юзеров)
-        if from_role == "user":
-            u_check = await _sb_get("chat_site_users", {"id": f"eq.{from_id}"})
-            if u_check and u_check[0].get("is_banned"):
-                raise HTTPException(403, "Вы заблокированы")
+    # ==============================================================================
+# ─── СООБЩЕНИЯ (Messages) ──────────────────────────────────────────────────────
+# ==============================================================================
 
-    # 2. Получаем диалог для синхронизации
+@app.get("/api/chat/site/{slug}/messages/{conv_id}")
+async def chat_get_messages(
+    slug: str, 
+    conv_id: str, 
+    since: Optional[str] = "0", 
+    role: Optional[str] = None, 
+    session_id: Optional[str] = None
+):
+    """Загрузить историю сообщений."""
+    params = {
+        "conversation_id": f"eq.{conv_id}",
+        "is_deleted": "eq.false",
+        "order": "created_at.asc",
+        "limit": "300",
+    }
+    try:
+        # Обработка 'undefined' или пустых строк от фронта
+        ts = int(since) if since and since != "undefined" else 0
+        if ts > 0:
+            params["created_at"] = f"gt.{ts}"
+    except:
+        pass
+        
+    return await _sb_get("chat_site_messages", params)
+
+
+@app.post("/api/chat/site/{slug}/message")
+@app.post("/api/chat/site/{slug}/message/")
+async def chat_send_message_alias(slug: str, d: dict):
+    """Главный эндпоинт отправки сообщения (фиксит 404)."""
+    conv_id = d.get("conversation_id") or d.get("conv_id")
+    if not conv_id: 
+        raise HTTPException(400, "ID диалога не указан")
+    return await chat_send_message_logic(slug, conv_id, d)
+
+
+@app.post("/api/chat/site/{slug}/conversation/{conv_id}/messages")
+async def chat_send_message_full(slug: str, conv_id: str, d: dict):
+    """Запасной эндпоинт отправки сообщения."""
+    return await chat_send_message_logic(slug, conv_id, d)
+
+
+@app.post("/api/chat/site/{slug}/conversation/{conv_id}/read")
+async def chat_mark_read(slug: str, conv_id: str, d: dict):
+    """Сбросить счетчик непрочитанных."""
+    role = d.get("role", "admin")
+    field = "unread_user" if role == "user" else "unread_admin"
+    await _sb_patch("chat_conversations", {"id": f"eq.{conv_id}"}, {field: 0})
+    return {"ok": True}
+
+
+async def chat_send_message_logic(slug: str, conv_id: str, d: dict):
+    """Единая логика сохранения сообщения и обновления превью."""
+    from_id   = d.get("from_id")
+    from_role = d.get("from_role", "user")
+    from_name = d.get("from_name") or "Гость"
+    text      = (d.get("text") or "").strip()
+    
+    if not from_id: 
+        raise HTTPException(400, "from_id обязателен")
+    
+    # 1. Проверка на бан
+    if from_role == "user":
+        u_check = await _sb_get("chat_site_users", {"id": f"eq.{from_id}"})
+        if u_check and u_check[0].get("is_banned"):
+            raise HTTPException(403, "Вы заблокированы")
+
+    # 2. Получаем диалог
     convs = await _sb_get("chat_conversations", {"id": f"eq.{conv_id}"})
     if not convs: 
         raise HTTPException(404, "Диалог не найден")
@@ -2893,7 +2898,7 @@ async def chat_start_conversation(slug: str, d: dict):
 
     now = int(time.time() * 1000)
     
-    # 3. Сохраняем сообщение (Добавлено поле duration!)
+    # 3. Сохраняем сообщение (с duration для войсов)
     msg = {
         "id": _gen_id("csm"),
         "site_id": conv.get("site_id"),
@@ -2905,7 +2910,7 @@ async def chat_start_conversation(slug: str, d: dict):
         "media_url": d.get("media_url"),
         "media_type": d.get("media_type"),
         "sticker_emoji": d.get("sticker_emoji"),
-        "duration": d.get("duration"), # <--- ИСПРАВЛЕНИЕ 0:00: сохраняем длительность
+        "duration": d.get("duration"), # Чтобы не было 0:00
         "created_at": now,
         "is_read": False,
         "is_deleted": False,
@@ -2913,30 +2918,20 @@ async def chat_start_conversation(slug: str, d: dict):
     
     await _sb_post("chat_site_messages", msg)
 
-    # 4. Обновляем диалог: текст превью и счетчик непрочитанных
+    # 4. Обновляем диалог (превью и счетчик)
     is_voice = d.get("media_type") == "voice"
-    preview = d.get("sticker_emoji") or (text[:60] if text else ("🎤 Голосовое сообщение" if is_voice else "[Файл]"))
+    preview = d.get("sticker_emoji") or (text[:60] if text else ("🎤 Голос" if is_voice else "[Файл]"))
     
-    # Кто не прочитал? Если пишет юзер — не прочитал админ, и наоборот.
     unread_field = "unread_admin" if from_role == "user" else "unread_user"
-    new_unread_count = (conv.get(unread_field) or 0) + 1
+    new_count = (conv.get(unread_field) or 0) + 1
 
     await _sb_patch("chat_conversations", {"id": f"eq.{conv_id}"}, {
         "last_message_at": now,
         "last_message_preview": preview,
-        unread_field: new_unread_count,
+        unread_field: new_count,
     })
 
     return msg
-
-
-@app.post("/api/chat/site/{slug}/conversation/{conv_id}/read")
-async def chat_mark_read(slug: str, conv_id: str, d: dict):
-    """Сбросить счетчик непрочитанных при открытии диалога."""
-    role = d.get("role", "admin")
-    field = "unread_user" if role == "user" else "unread_admin"
-    await _sb_patch("chat_conversations", {"id": f"eq.{conv_id}"}, {field: 0})
-    return {"ok": True}
     
 # ─── Рассылка ──────────────────────────────────────────────────────────────────
 
