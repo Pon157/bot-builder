@@ -595,9 +595,12 @@ const GroupChat: React.FC<{ site: PublicSite; session: ChatSession }> = ({ site,
     await apiFetch(`${API}/chat/site/${site.slug}/group`, {
       method: 'POST',
       body: JSON.stringify({
-        from_id: session.id, from_name: session.display_name,
-        from_role: session.role, text: text || null,
-        media_url: mediaUrl, media_type: mediaType,
+        from_id: session.id, 
+        from_name: session.display_name || session.username || "Пользователь", // Исправлено здесь!
+        from_role: session.role, 
+        text: text || null,
+        media_url: mediaUrl, 
+        media_type: mediaType,
         sticker_emoji: sticker
       })
     });
@@ -1002,9 +1005,14 @@ const UserChat: React.FC<{
     await apiFetch(`${API}/chat/site/${site.slug}/message`, {
       method: 'POST',
       body: JSON.stringify({
-        conversation_id: conversation.id, from_id: session.id,
-        from_name: session.display_name, from_role: session.role,
-        text: text || null, media_url: mediaUrl, media_type: mediaType, sticker_emoji: sticker
+        conversation_id: conversation.id, 
+        from_id: session.id,
+        from_name: session.display_name || session.username || "Пользователь", // И здесь!
+        from_role: session.role,
+        text: text || null, 
+        media_url: mediaUrl, 
+        media_type: mediaType, 
+        sticker_emoji: sticker
       })
     });
     await loadMessages();
