@@ -47,12 +47,10 @@ from fastapi import UploadFile, File, Form
 
 MAX_FILE_SIZE = 25 * 1024 * 1024
 
-import secrets
-
 def _gen_id(prefix: str) -> str:
-    """Генерирует случайный ID, например csm_8f2d1a3b9c0e"""
+    """Генерирует уникальный ID с заданным префиксом."""
+    import secrets
     return f"{prefix}_{secrets.token_hex(6)}"
-    
 # ==========================================
 # 1. ИНИЦИАЛИЗАЦИЯ И БЕЗОПАСНОСТЬ
 # ==========================================
