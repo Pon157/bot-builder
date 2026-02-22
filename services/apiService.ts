@@ -518,6 +518,41 @@ adminLogin: async (login: string, pass: string) => {
   }
 },
 
+  // ─── CHAT PLATFORM ─────────────────────────────────────────────────────────
+
+  chatSites: {
+    list: async (ownerId: string) => {
+      try {
+        const res = await fetchWithTimeout(`${getApiBase()}/chat/sites/owner/${ownerId}`);
+        return res.ok ? await res.json() : [];
+      } catch { return []; }
+    },
+    create: async (ownerId: string, name: string, adminLogin?: string, adminPassword?: string) => {
+      try {
+        const res = await fetchWithTimeout(`${getApiBase()}/chat/sites`, {
+          method: 'POST',
+          body: JSON.stringify({ owner_id: ownerId, name, admin_login: adminLogin, admin_password: adminPassword })
+        });
+        return res.ok ? await res.json() : null;
+      } catch { return null; }
+    },
+    update: async (siteId: string, ownerId: string, payload: object) => {
+      try {
+        const res = await fetchWithTimeout(`${getApiBase()}/chat/sites/${siteId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ owner_id: ownerId, ...payload })
+        });
+        return res.ok;
+      } catch { return false; }
+    },
+    delete: async (siteId: string, ownerId: string) => {
+      try {
+        const res = await fetchWithTimeout(`${getApiBase()}/chat/sites/${siteId}?owner_id=${ownerId}`, { method: 'DELETE' });
+        return res.ok;
+      } catch { return false; }
+    },
+  },
+
   // --- BOT MANAGEMENT ---
 
   // --- ДОБАВИТЬ В api.ts ---
