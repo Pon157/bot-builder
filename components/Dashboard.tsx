@@ -1,19 +1,47 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { BotConfig } from '../types';
+import { MessageSquare, Plus, Globe, ExternalLink, ChevronRight } from 'lucide-react';
 
 interface DashboardProps {
   bots: BotConfig[];
   onSelectBot: (id: string) => void;
   onAddBot: () => void;
+  onNavigate?: (path: string) => void;
+}
+
+// Мини-тип для превью чат-сайтов
+interface ChatSitePreview {
+  id: string;
+  name: string;
+  slug: string;
+  is_active: boolean;
+  config?: { primaryColor?: string; bgColor?: string; logoText?: string };
 }
 
 const Dashboard: React.FC<DashboardProps> = ({ bots, onSelectBot, onAddBot }) => {
-  // Состояние для управления модальным окном FAQ
+  const navigate = useNavigate();
   const [isFaqOpen, setIsFaqOpen] = useState(false);
+  const [chatSites, setChatSites] = useState<ChatSitePreview[]>([]);
 
   const totalUsers = bots.reduce((acc, b) => acc + (b.connectedUsers?.length || 0), 0);
   const totalMessages = bots.reduce((acc, b) => acc + (b.stats?.totalMessages || 0), 0);
   const activeBots = bots.filter(b => b.status === 'RUNNING').length;
+
+  // Загружаем чат-сайты владельца (если есть userId в storage)
+  useEffect(() => {
+    const loadSites = async () => {
+      try {
+        const userStr = localStorage.getItem('active_session_user');
+        if (!userStr) return;
+        const u = JSON.parse(userStr);
+        const res = await fetch(`/api/chat/sites/owner/${u.id}`);
+        const data = await res.json();
+        setChatSites(Array.isArray(data) ? data.slice(0, 6) : []);
+      } catch { }
+    };
+    loadSites();
+  }, []);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500 relative">
@@ -118,6 +146,80 @@ const Dashboard: React.FC<DashboardProps> = ({ bots, onSelectBot, onAddBot }) =>
           </div>
       ))}
   </div>
+</section>
+
+{/* ─── Секция чат-платформ ─── */}
+<section className="space-y-5">
+  <div className="flex items-center justify-between">
+    <div>
+      <h2 className="text-xl font-black text-white">Чат-платформы</h2>
+      <p className="text-zinc-600 text-xs font-medium mt-0.5">Публичные мессенджеры с регистрацией пользователей</p>
+    </div>
+    <button
+      onClick={() => navigate('/chatplatform')}
+      className="flex items-center gap-1.5 text-blue-500 text-xs font-bold uppercase tracking-widest hover:underline"
+    >
+      Управление <ChevronRight className="w-3.5 h-3.5" />
+    </button>
+  </div>
+
+  {chatSites.length === 0 ? (
+    <div
+      className="border-2 border-dashed border-zinc-800 rounded-[2.5rem] p-10 text-center cursor-pointer hover:border-blue-500/30 transition-all group"
+      onClick={() => navigate('/chatplatform')}
+    >
+      <MessageSquare className="w-8 h-8 text-zinc-700 group-hover:text-blue-500/50 mx-auto mb-3 transition-colors" />
+      <p className="text-zinc-600 text-xs font-black uppercase tracking-widest mb-2">Нет чат-сайтов</p>
+      <span className="text-blue-500 text-xs font-bold hover:underline inline-flex items-center gap-1">
+        <Plus className="w-3.5 h-3.5" /> Создать первый
+      </span>
+    </div>
+  ) : (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+      {chatSites.map(site => {
+        const primary = site.config?.primaryColor || '#6366f1';
+        const bg = site.config?.bgColor || '#09090b';
+        const siteUrl = `/chat/${site.slug}`;
+        return (
+          <div key={site.id}
+            className="bg-[#111] border border-zinc-800 rounded-[2rem] overflow-hidden hover:border-zinc-700 transition-all group cursor-pointer"
+            onClick={() => navigate('/chatplatform')}>
+            {/* Превью шапки сайта */}
+            <div className="h-14 flex items-center px-5 gap-2" style={{ background: bg }}>
+              <div className="w-2 h-2 rounded-full shrink-0" style={{ background: primary }} />
+              <span className="font-black text-sm truncate" style={{ color: primary }}>
+                {site.config?.logoText || site.name}
+              </span>
+              <div className="ml-auto flex gap-1">
+                {[0, 1, 2].map(i => <div key={i} className="w-1.5 h-1.5 rounded-full bg-white/10" />)}
+              </div>
+            </div>
+            <div className="p-5 flex items-center justify-between">
+              <div>
+                <p className="text-white font-black text-sm group-hover:text-blue-400 transition-colors">{site.name}</p>
+                <p className="text-zinc-600 text-[9px] font-mono mt-0.5">/chat/{site.slug}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full ${site.is_active ? 'bg-emerald-500' : 'bg-zinc-600'}`} />
+                <a href={siteUrl} target="_blank" rel="noopener noreferrer"
+                  onClick={e => e.stopPropagation()}
+                  className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 transition-all">
+                  <ExternalLink className="w-3 h-3 text-zinc-500 hover:text-white transition-colors" />
+                </a>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      {/* Плашка «Добавить ещё» */}
+      <div
+        onClick={() => navigate('/chatplatform')}
+        className="border-2 border-dashed border-zinc-800 rounded-[2rem] p-8 flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-blue-500/30 transition-all group">
+        <Plus className="w-6 h-6 text-zinc-700 group-hover:text-blue-500/50 transition-colors" />
+        <span className="text-zinc-600 text-[9px] font-black uppercase tracking-widest">Новый сайт</span>
+      </div>
+    </div>
+  )}
 </section>
 
       {/* OVERLAY: Просмотр PDF документа */}
