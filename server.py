@@ -3421,10 +3421,25 @@ async def chat_activate_key(site_id: str, d: dict):
     if sites[0].get("owner_id") != owner_id: raise HTTPException(403)
 
     # Проверяем ключ
-    keys = await _sb_get("chat_site_keys", {"key_code": f"eq.{key_code}", "is_active": "eq.true"})
-    if not keys: raise HTTPException(404, "Ключ не найден или уже использован")
+    keys = await _sb_get("chat_site_keys", {"key_code": f"eq.{key_code}"})
+    if not keys: raise HTTPException(404, "Ключ не найден")
     key = keys[0]
-    if key.get("site_id"): raise HTTPException(409, "Ключ уже активирован")
+    
+    # 1 ключ = 1 сайт: ключ уже привязан к другому сайту
+    existing_site_id = key.get("site_id")
+    if existing_site_id and existing_site_id != site_id:
+        raise HTTPException(409, "Этот ключ уже активирован для другого сайта")
+    # Ключ уже активирован для ЭТОГО сайта — просто вернуть OK (идемпотентно)
+    if existing_site_id == site_id and key.get("is_active"):
+        now_check = int(time.time() * 1000)
+        expires_at_check = key.get("expires_at") or 0
+        if expires_at_check > now_check:
+            days_left = max(0, int((expires_at_check - now_check) / 86_400_000))
+            return {"ok": True, "already_active": True, "days_left": days_left,
+                    "expires_at": expires_at_check, "expires_formatted": datetime.fromtimestamp(expires_at_check/1000).strftime("%d.%m.%Y")}
+    # Ключ не активирован — проверяем что он не использован
+    if not key.get("is_active") and existing_site_id:
+        raise HTTPException(410, "Ключ истёк или деактивирован")
 
     now = int(time.time() * 1000)
     duration_ms = key["duration_days"] * 86_400_000
