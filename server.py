@@ -2453,10 +2453,18 @@ async def chat_create_site(d: dict):
         "is_active": True,
     }
 
-    async with httpx.AsyncClient() as c:
-        r = await c.post(f"{S_URL}/rest/v1/chat_sites", headers=_cs_h(), json=row)
-        if r.status_code not in (200, 201):
-            raise HTTPException(500, f"Ошибка БД: {r.text}")
+    result = await _sb_post("chat_sites", row)
+    if result is None:
+        # _sb_post логирует ошибку внутри — пробуем напрямую для получения детального ответа
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.post(
+                f"{S_URL}/rest/v1/chat_sites",
+                headers={**_cs_h(), "Prefer": "return=representation"},
+                json=row
+            )
+            if r.status_code not in (200, 201):
+                logger.error(f"chat_create_site DB error: {r.status_code} {r.text[:500]}")
+                raise HTTPException(500, f"Ошибка БД при создании сайта: {r.text[:200]}")
 
     # Создаём первого дефолтного администратора
     admin_login_raw = d.get("admin_login") or f"admin"
