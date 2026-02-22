@@ -247,21 +247,26 @@ const MessageBubble: React.FC<{
           <div className="rounded-2xl overflow-hidden border" style={{ borderColor: primary + '20' }}>
             {msg.media_type === 'image' && (
               <img src={msg.media_url} alt="img" className="max-w-[200px] sm:max-w-xs max-h-64 object-cover cursor-pointer"
-                onClick={() => window.open(msg.media_url!, '_blank')} />
+                onClick={() => { const a = document.createElement('a'); a.href = msg.media_url!; a.target = '_blank'; a.rel = 'noopener noreferrer'; document.body.appendChild(a); a.click(); document.body.removeChild(a); }} />
             )}
             {msg.media_type === 'video' && (
               <video src={msg.media_url} controls className="max-w-[200px] sm:max-w-xs max-h-64" />
             )}
             {msg.media_type === 'audio' && (
-              <div className="flex items-center gap-2 px-3 py-3 bg-white/5 min-w-[160px]">
+              <div className="flex items-center gap-2 px-3 py-3 bg-white/5 min-w-[180px]">
                 <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: primary + '30' }}>
                   <Volume2 className="w-4 h-4" style={{ color: primary }} />
                 </div>
-                <audio src={msg.media_url} controls className="w-32 sm:w-44 h-8" style={{ accentColor: primary }} />
+                <div className="flex flex-col gap-0.5 flex-1">
+                  <audio src={msg.media_url} controls className="w-full h-8" style={{ accentColor: primary }} />
+                  {(msg as any).duration && (msg as any).duration > 0 && (
+                    <span className="text-[9px] text-zinc-500">{`${Math.floor((msg as any).duration / 60)}:${String((msg as any).duration % 60).padStart(2,'0')}`}</span>
+                  )}
+                </div>
               </div>
             )}
             {(msg.media_type === 'file' || (!msg.media_type && msg.media_url)) && (
-              <a href={msg.media_url} download className="flex items-center gap-3 px-4 py-3 bg-white/5 hover:bg-white/10 transition-all min-w-[160px]">
+              <a href={msg.media_url} download target="_blank" rel="noopener noreferrer" className="flex items-center gap-3 px-4 py-3 bg-white/5 hover:bg-white/10 transition-all min-w-[160px]" onClick={e => { e.preventDefault(); const a = document.createElement('a'); a.href = msg.media_url!; a.download = (msg.media_url || '').split('/').pop() || 'file'; document.body.appendChild(a); a.click(); document.body.removeChild(a); }}>
                 <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0" style={{ background: primary + '20' }}>
                   <FileIcon className="w-4 h-4" style={{ color: primary }} />
                 </div>
@@ -335,7 +340,7 @@ const MessageBubble: React.FC<{
 // ─── Voice Recorder ─────────────────────────────────────────────────────────────
 
 const VoiceRecorder: React.FC<{
-  onRecorded: (blob: Blob) => void;
+  onRecorded: (blob: Blob, duration: number) => void;
   primary: string;
 }> = ({ onRecorded, primary }) => {
   const [recording, setRecording] = useState(false);
@@ -343,6 +348,7 @@ const VoiceRecorder: React.FC<{
   const mediaRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<NodeJS.Timeout>();
+  const startTimeRef = useRef<number>(0);
 
   const start = async () => {
     try {
@@ -352,11 +358,13 @@ const VoiceRecorder: React.FC<{
       mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       mr.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-        onRecorded(blob);
+        const durationSec = Math.max(1, Math.round((Date.now() - startTimeRef.current) / 1000));
+        onRecorded(blob, durationSec);
         stream.getTracks().forEach(t => t.stop());
       };
       mr.start(100);
       mediaRef.current = mr;
+      startTimeRef.current = Date.now();
       setRecording(true);
       setSeconds(0);
       timerRef.current = setInterval(() => setSeconds(s => s + 1), 1000);
@@ -413,7 +421,7 @@ const VoiceRecorder: React.FC<{
 // ─── Message Input ──────────────────────────────────────────────────────────────
 
 const MessageInput: React.FC<{
-  onSend: (text: string, mediaUrl?: string, mediaType?: string, sticker?: string) => Promise<void>;
+  onSend: (text: string, mediaUrl?: string, mediaType?: string, sticker?: string, duration?: number) => Promise<void>;
   primary: string; commands: string[]; placeholder?: string; cfg?: SiteConfig;
 }> = ({ onSend, primary, commands, placeholder = 'Напишите сообщение...', cfg }) => {
   const [text, setText] = useState('');
@@ -459,7 +467,7 @@ const MessageInput: React.FC<{
     finally { setUploading(false); }
   };
 
-  const handleVoice = async (blob: Blob) => {
+  const handleVoice = async (blob: Blob, duration?: number) => {
     setUploading(true);
     try {
       const fd = new FormData();
@@ -468,7 +476,7 @@ const MessageInput: React.FC<{
       const r = await fetch(`${API}/chat/media/upload`, { method: 'POST', body: fd });
       if (!r.ok) throw new Error('Ошибка загрузки голосового');
       const { url } = await r.json();
-      await onSend('', url, 'audio');
+      await onSend('', url, 'audio', undefined, duration || 1);
     } catch (e: any) { alert(e.message || 'Ошибка'); }
     finally { setUploading(false); }
   };
@@ -591,17 +599,18 @@ const GroupChat: React.FC<{ site: PublicSite; session: ChatSession }> = ({ site,
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages.length]);
 
-  const handleSend = async (text: string, mediaUrl?: string, mediaType?: string, sticker?: string) => {
+  const handleSend = async (text: string, mediaUrl?: string, mediaType?: string, sticker?: string, duration?: number) => {
     await apiFetch(`${API}/chat/site/${site.slug}/group`, {
       method: 'POST',
       body: JSON.stringify({
         from_id: session.id, 
-        from_name: session.display_name || session.username || "Пользователь", // Исправлено здесь!
+        from_name: session.display_name || session.username || "Пользователь",
         from_role: session.role, 
         text: text || null,
         media_url: mediaUrl, 
         media_type: mediaType,
-        sticker_emoji: sticker
+        sticker_emoji: sticker,
+        duration: duration || null
       })
     });
     await loadMessages();
@@ -1001,7 +1010,7 @@ const UserChat: React.FC<{
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages.length]);
 
-  const handleSend = async (text: string, mediaUrl?: string, mediaType?: string, sticker?: string) => {
+  const handleSend = async (text: string, mediaUrl?: string, mediaType?: string, sticker?: string, duration?: number) => {
     await apiFetch(`${API}/chat/site/${site.slug}/message`, {
       method: 'POST',
       body: JSON.stringify({
@@ -1012,7 +1021,8 @@ const UserChat: React.FC<{
         text: text || null, 
         media_url: mediaUrl, 
         media_type: mediaType, 
-        sticker_emoji: sticker
+        sticker_emoji: sticker,
+        duration: duration || null
       })
     });
     await loadMessages();
@@ -1166,14 +1176,15 @@ const AdminChatPanel: React.FC<{
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages.length]);
 
-  const handleSend = async (text: string, mediaUrl?: string, mediaType?: string, sticker?: string) => {
+  const handleSend = async (text: string, mediaUrl?: string, mediaType?: string, sticker?: string, duration?: number) => {
     if (!selectedConv) return;
     await apiFetch(`${API}/chat/site/${site.slug}/message`, {
       method: 'POST',
       body: JSON.stringify({
         conversation_id: selectedConv.id, from_id: session.id,
         from_name: session.display_name, from_role: session.role,
-        text: text || null, media_url: mediaUrl, media_type: mediaType, sticker_emoji: sticker
+        text: text || null, media_url: mediaUrl, media_type: mediaType, sticker_emoji: sticker,
+        duration: duration || null
       })
     });
     await loadMessages(selectedConv.id);
