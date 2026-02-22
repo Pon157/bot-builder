@@ -231,7 +231,7 @@ const MessageBubble: React.FC<{
     );
   }
 
-  if (msg.media_url) {
+  if (msg.media_url && String(msg.media_url).trim()) {
     return (
       <div className={`flex gap-2 mb-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
         {!isOwn && <Avatar name={msg.from_name} color={isAdminMsg ? primary : '#71717a'} />}
@@ -248,7 +248,7 @@ const MessageBubble: React.FC<{
             {msg.media_type === 'image' && (
               <div className="relative">
                 <img
-                  src={msg.media_url || ''}
+                  src={msg.media_url ? (msg.media_url.startsWith('http') ? msg.media_url : window.location.origin + msg.media_url) : ''}
                   alt="img"
                   className="max-w-[200px] sm:max-w-xs max-h-64 object-cover cursor-pointer block"
                   loading="lazy"
@@ -693,7 +693,7 @@ const GroupChat: React.FC<{ site: PublicSite; session: ChatSession }> = ({ site,
     <div className="flex flex-col h-full" style={{ fontFamily: site.config.fontFamily || 'Manrope, sans-serif' }}>
       {/* Pinned messages bar */}
       {pinned.length > 0 && (
-        <div className="px-4 py-2 border-b cursor-pointer hover:bg-white/5 transition-all"
+        <div className="px-4 py-2 border-b cursor-pointer hover:bg-white/5 transition-all shrink-0"
           style={{ borderColor: p + '20' }}
           onClick={() => setShowPinned(v => !v)}>
           <div className="flex items-center gap-2">
@@ -920,7 +920,7 @@ const AdminPicker: React.FC<{
   };
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: bg, fontFamily: font }}>
+    <div className="flex flex-col h-screen overflow-hidden" style={{ background: bg, fontFamily: font }}>
       {/* Header */}
       <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b" style={{ borderColor: p + '20' }}>
         <div className="flex items-center gap-2.5">
@@ -1026,8 +1026,8 @@ const UserChat: React.FC<{
   // If group chat
   if (conversation.id === '__group__') {
     return (
-      <div className="min-h-screen flex flex-col" style={{ background: cfg.bgColor || '#09090b', fontFamily: cfg.fontFamily || 'Manrope, sans-serif' }}>
-        <div className="flex items-center gap-3 px-4 sm:px-5 py-3 border-b" style={{ borderColor: p + '20' }}>
+      <div className="flex flex-col h-screen overflow-hidden" style={{ background: cfg.bgColor || '#09090b', fontFamily: cfg.fontFamily || 'Manrope, sans-serif' }}>
+        <div className="flex items-center gap-3 px-4 sm:px-5 py-3 border-b shrink-0" style={{ borderColor: p + '20' }}>
           <button onClick={onBack} className="p-2 rounded-xl hover:bg-white/10 transition-all"><ArrowLeft className="w-4 h-4" style={{ color: p }} /></button>
           <div className="w-8 h-8 rounded-full flex items-center justify-center text-lg" style={{ background: p + '20' }}>💬</div>
           <div className="flex-1">
@@ -1037,7 +1037,7 @@ const UserChat: React.FC<{
           <button onClick={onLogout} className="p-2 rounded-xl hover:bg-white/10 transition-all"><LogOut className="w-4 h-4" style={{ color: p + '60' }} /></button>
         </div>
         <div className="flex-1 flex flex-col min-h-0">
-          <GroupChat site={site} session={session} />
+          <div className="flex-1 overflow-hidden"><GroupChat site={site} session={session} /></div>
         </div>
       </div>
     );
@@ -1086,9 +1086,9 @@ const UserChat: React.FC<{
   }
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: cfg.bgColor || '#09090b', fontFamily: cfg.fontFamily || 'Manrope, sans-serif' }}>
-      {/* Header */}
-      <div className="flex items-center gap-3 px-3 sm:px-5 py-3 border-b" style={{ borderColor: p + '20' }}>
+    <div className="flex flex-col h-screen overflow-hidden" style={{ background: cfg.bgColor || '#09090b', fontFamily: cfg.fontFamily || 'Manrope, sans-serif' }}>
+      {/* Header — sticky, не прокручивается */}
+      <div className="flex items-center gap-3 px-3 sm:px-5 py-3 border-b shrink-0" style={{ borderColor: p + '20' }}>
         <button onClick={onBack} className="p-2 rounded-xl hover:bg-white/10 transition-all"><ArrowLeft className="w-4 h-4" style={{ color: p }} /></button>
         {admin ? (
           <Avatar name={admin.display_name} color={admin.avatar_color} size="w-9 h-9"
@@ -1110,7 +1110,7 @@ const UserChat: React.FC<{
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-3 sm:p-4">
+      <div className="flex-1 overflow-y-auto p-3 sm:p-4 min-h-0">
         {loading ? (
           <div className="flex justify-center py-8"><RefreshCw className="w-5 h-5 text-white/20 animate-spin" /></div>
         ) : messages.length === 0 ? (
@@ -1289,7 +1289,7 @@ const AdminChatPanel: React.FC<{
   ] as const;
 
   return (
-    <div className="flex flex-col h-screen" style={{ background: bg, fontFamily: font }}>
+    <div className="flex flex-col h-screen overflow-hidden" style={{ background: bg, fontFamily: font }}>
       {/* Header */}
       <div className="flex items-center gap-3 px-3 sm:px-5 py-3 border-b shrink-0" style={{ borderColor: p + '20' }}>
         <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -1412,7 +1412,7 @@ const AdminChatPanel: React.FC<{
                     <p className="text-white font-black text-sm truncate">{selectedConv.user_name}</p>
                   </div>
                 </div>
-                <div className="flex-1 overflow-y-auto p-3 sm:p-4">
+                <div className="flex-1 overflow-y-auto p-3 sm:p-4 min-h-0">
                   {messages.length === 0 ? (
                     <div className="flex items-center justify-center h-full">
                       <p className="text-xs font-bold" style={{ color: 'rgba(255,255,255,0.2)' }}>Начните диалог</p>
@@ -1453,13 +1453,13 @@ const AdminChatPanel: React.FC<{
         {/* ── Group chat tab ── */}
         {tab === 'group' && (
           <div className="flex-1 flex flex-col min-w-0">
-            <GroupChat site={site} session={session} />
+            <div className="flex-1 overflow-hidden h-full"><GroupChat site={site} session={session} /></div>
           </div>
         )}
 
         {/* ── Users ── */}
         {tab === 'users' && (
-          <div className="flex-1 overflow-y-auto p-3 sm:p-5">
+          <div className="flex-1 overflow-y-auto p-3 sm:p-5 min-h-0">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-black text-white">Пользователи ({users.length})</h2>
             </div>
