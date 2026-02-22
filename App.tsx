@@ -13,6 +13,8 @@ import Landing from './components/Landing';
 import Careers from './components/Careers';
 import MiniAppBuilder from './components/MiniAppBuilder';
 import MiniAppRenderer from './components/MiniAppRenderer';
+import ChatPlatform from './components/ChatPlatform';
+import ChatSiteApp from './components/ChatSiteApp';
 import { api } from './services/apiService';
 import { Menu, X, ArrowLeft } from 'lucide-react';
 
@@ -348,6 +350,9 @@ const App: React.FC = () => {
         {/* Публичный рендер мини-приложения */}
         <Route path="/app/:appId" element={<MiniAppRenderer />} />
 
+        {/* Публичный чат-сайт */}
+        <Route path="/chat/:slug" element={<ChatSiteApp />} />
+
         {/* 1а. Страница вакансий */}
         <Route path="/careers" element={<Careers />} />
 
@@ -387,7 +392,8 @@ const App: React.FC = () => {
                     <Dashboard 
                       bots={bots} 
                       onSelectBot={(id) => { setSelectedBotId(id); }} 
-                      onAddBot={() => setIsModalOpen(true)} 
+                      onAddBot={() => setIsModalOpen(true)}
+                      onNavigate={(path) => { /* handled by Sidebar */ }}
                     />
                   } />
                   
@@ -422,6 +428,7 @@ const App: React.FC = () => {
                   
                   <Route path="/broadcast" element={<BroadcastManager bots={bots} />} />
                   <Route path="/miniapps" element={<MiniAppBuilder user={user} />} />
+                  <Route path="/chatplatform" element={<ChatPlatform user={user} />} />
                   
                   <Route path="/dashboard" element={<Navigate to="/dashboard" replace />} />
                 </Routes>
