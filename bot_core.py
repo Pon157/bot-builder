@@ -687,17 +687,23 @@ class BotInstance:
         
         tid = user.get("last_topic_id")
         
-        # Если топик есть, проверим его «на вшивость» простым действием
+        # Если принудительное создание не требуется и ID есть — возвращаем его
         if tid and not force_new:
             return tid
 
+        # Если попали сюда, значит либо force_new=True, либо tid=None
         try:
             is_anon = self.settings.get('anonymousTopics', False)
-            # Убедитесь, что функция get_anon_id определена в вашем файле или импортирована
             topic_name = f"#{get_anon_id(user['id'])}" if is_anon else f"{user['first_name']} [{user['id']}]"
+            
+            # Создаем новый топик в Telegram
             new_topic = await self.bot.create_forum_topic(self.admin_chat_id, topic_name)
+            
+            # Сохраняем новый ID в объект пользователя и в базу
             user["last_topic_id"] = new_topic.message_thread_id
             await self.sync_queue.put(("sync_state", None))
+            
+            logger.info(f"Created new topic for user {user['id']}: {new_topic.message_thread_id}")
             return new_topic.message_thread_id
         except Exception as e:
             logger.error(f"Topic Creation Error: {e}")
@@ -706,32 +712,31 @@ class BotInstance:
     async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = "", is_ai_request: bool = False):
         if not self.admin_chat_id: return
         
-        # 1. Определяем необходимость нового топика и получаем текущий ID
         force_new_topic = self.topic_per_req and (btn_text != "" or is_first)
         thread_id = await self.resolve_thread(user, force_new=force_new_topic)
         header_text = format_admin_header(m, self.settings, is_first, btn_text)
 
         if is_ai_request:
-            ai_tag = "\n<b>[ИИ-запрос · не отвечать]</b>\n"
-            header_text = header_text.rstrip('\n') + ai_tag + "\n"
+            header_text = header_text.rstrip('\n') + "\n<b>[ИИ-запрос · не отвечать]</b>\n"
         
         try:
+            # Первая попытка отправки
             await self._send_content_to_admin(m, thread_id, header_text, user)
             
         except TelegramBadRequest as e:
-            # 2. Если Telegram говорит, что ветка не найдена
+            # Если топик удален администратором
             if "message thread not found" in e.message:
-                logger.warning(f"Thread {thread_id} not found for user {user['id']}. Resetting and retrying...")
+                logger.warning(f"Thread {thread_id} deleted. Recreating for user {user['id']}...")
                 
-                # Сбрасываем невалидный ID и создаем новый топик принудительно
+                # Сбрасываем старый ID и вызываем resolve_thread с флагом force_new
                 user["last_topic_id"] = None
                 new_thread_id = await self.resolve_thread(user, force_new=True)
                 
+                # Вторая попытка в новый топик
                 try:
-                    # Повторная попытка отправки в новый топик
                     await self._send_content_to_admin(m, new_thread_id, header_text, user)
                 except Exception as retry_e:
-                    logger.error(f"Retry Forwarding Error: {retry_e}")
+                    logger.error(f"Failed to send even to new topic: {retry_e}")
             else:
                 logger.error(f"Forwarding Error: {e}")
         except Exception as e:
