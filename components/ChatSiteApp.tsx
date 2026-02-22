@@ -396,18 +396,20 @@ const VoiceRecorder: React.FC<{
       (mr as any)._ext = ext;
       (mr as any)._mime = mr.mimeType || 'audio/webm';
       mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      const recordingStarted = Date.now();  // closure var — 100% accurate
       mr.onstop = () => {
+        const durationMs = Date.now() - recordingStarted;
+        const durationSec = Math.max(1, Math.round(durationMs / 1000));
         const finalMime = (mr as any)._mime || 'audio/webm';
         const finalExt = (mr as any)._ext || 'webm';
         const blob = new Blob(chunksRef.current, { type: finalMime });
         (blob as any)._ext = finalExt;
-        const durationSec = Math.max(1, Math.round((Date.now() - startTimeRef.current) / 1000));
         onRecorded(blob, durationSec);
         stream.getTracks().forEach(t => t.stop());
       };
+      startTimeRef.current = Date.now();  // ← MUST be before start()
       mr.start(100);
       mediaRef.current = mr;
-      startTimeRef.current = Date.now();
       setRecording(true);
       setSeconds(0);
       timerRef.current = setInterval(() => setSeconds(s => s + 1), 1000);
@@ -417,6 +419,9 @@ const VoiceRecorder: React.FC<{
   };
 
   const stop = () => {
+    if (mediaRef.current && mediaRef.current.state === 'recording') {
+      mediaRef.current.requestData();  // flush remaining chunks
+    }
     mediaRef.current?.stop();
     clearInterval(timerRef.current);
     setRecording(false);
