@@ -2795,35 +2795,42 @@ async def chat_start_conversation(slug: str, d: dict):
     await _sb_post("chat_conversations", conv)
     return conv
 
-@app.get("/api/chat/site/{slug}/messages/{conv_id}")
-async def chat_get_messages(
-    slug: str, 
-    conv_id: str, 
-    role: str = Query(None), 
-    session_id: str = Query(None)
-):
-    # Теперь FastAPI поймет, что эти параметры берутся из ?role=...&session_id=...
-    if not role or not session_id:
-         return [] # или вернуть ошибку
+@app.get("/api/chat/site/{slug}/messages/{conversation_id}")
+async def chat_get_messages(slug: str, conversation_id: str, role: str = Query(None), session_id: str = Query(None)):
+    try:
+        # ВАЖНО: используем conversation_id вместо conv_id
+        res = supabase.table("chat_site_messages") \
+            .select("*") \
+            .eq("conversation_id", conversation_id) \
+            .order("created_at", desc=False) \
+            .execute()
+        
+        # Логируем для отладки
+        print(f"DEBUG: Found {len(res.data)} messages for {conversation_id}")
+        
+        return res.data
+    except Exception as e:
+        print(f"ERROR fetching messages: {e}")
+        return []
 
 @app.post("/api/chat/site/{slug}/message")
 @app.post("/api/chat/site/{slug}/message/")
 async def chat_send_message_alias(slug: str, d: dict):
-    conv_id = d.get("conversation_id") or d.get("conv_id")
-    if not conv_id: raise HTTPException(400, "Missing conv_id")
-    return await chat_send_message_logic(slug, conv_id, d)
+    conversation_id = d.get("conversation_id") or d.get("conversation_id")
+    if not conversation_id: raise HTTPException(400, "Missing conversation_id")
+    return await chat_send_message_logic(slug, conversation_id, d)
 
-@app.post("/api/chat/site/{slug}/conversation/{conv_id}/messages")
-async def chat_send_message_full(slug: str, conv_id: str, d: dict):
-    return await chat_send_message_logic(slug, conv_id, d)
+@app.post("/api/chat/site/{slug}/conversation/{conversation_id}/messages")
+async def chat_send_message_full(slug: str, conversation_id: str, d: dict):
+    return await chat_send_message_logic(slug, conversation_id, d)
 
-@app.post("/api/chat/site/{slug}/conversation/{conv_id}/read")
-async def chat_mark_read(slug: str, conv_id: str, d: dict):
+@app.post("/api/chat/site/{slug}/conversation/{conversation_id}/read")
+async def chat_mark_read(slug: str, conversation_id: str, d: dict):
     field = "unread_user" if d.get("role", "admin") == "user" else "unread_admin"
-    await _sb_patch("chat_conversations", {"id": f"eq.{conv_id}"}, {field: 0})
+    await _sb_patch("chat_conversations", {"id": f"eq.{conversation_id}"}, {field: 0})
     return {"ok": True}
 
-async def chat_send_message_logic(slug: str, conv_id: str, d: dict):
+async def chat_send_message_logic(slug: str, conversation_id: str, d: dict):
     from_id = d.get("from_id")
     from_role = d.get("from_role", "user")
     text = (d.get("text") or "").strip()
@@ -2834,16 +2841,16 @@ async def chat_send_message_logic(slug: str, conv_id: str, d: dict):
         u = await _sb_get("chat_site_users", {"id": f"eq.{from_id}"})
         if u and u[0].get("is_banned"): raise HTTPException(403, "Banned")
 
-    convs = await _sb_get("chat_conversations", {"id": f"eq.{conv_id}"})
+    convs = await _sb_get("chat_conversations", {"id": f"eq.{conversation_id}"})
     if not convs:
         # Логируем, чтобы точно знать, почему вылетело 404
-        logger.error(f"!!! ДИАЛОГ НЕ НАЙДЕН В БАЗЕ: conv_id={conv_id} !!!")
+        logger.error(f"!!! ДИАЛОГ НЕ НАЙДЕН В БАЗЕ: conversation_id={conversation_id} !!!")
         raise HTTPException(404, "Диалог не найден")
     conv = convs[0]
 
     now = int(time.time() * 1000)
     msg = {
-        "id": _gen_id("csm"), "site_id": conv["site_id"], "conversation_id": conv_id,
+        "id": _gen_id("csm"), "site_id": conv["site_id"], "conversation_id": conversation_id,
         "from_id": from_id, "from_name": d.get("from_name", "Гость"), "from_role": from_role,
         "text": text or None, "media_url": d.get("media_url"), "media_type": d.get("media_type"),
         "sticker_emoji": d.get("sticker_emoji"), "duration": d.get("duration"),
@@ -2855,7 +2862,7 @@ async def chat_send_message_logic(slug: str, conv_id: str, d: dict):
     preview = d.get("sticker_emoji") or (text[:60] if text else ("🎤 Голос" if is_voice else "[Файл]"))
     field = "unread_admin" if from_role == "user" else "unread_user"
     
-    await _sb_patch("chat_conversations", {"id": f"eq.{conv_id}"}, {
+    await _sb_patch("chat_conversations", {"id": f"eq.{conversation_id}"}, {
         "last_message_at": now, "last_message_preview": preview, field: (conv.get(field) or 0) + 1
     })
     return msg
