@@ -2342,6 +2342,8 @@ def send_chat_verification_email(to_email: str, code: str, site_name: str) -> bo
         return False
 
 
+# --- ИСПРАВЛЕННЫЕ ХЕЛПЕРЫ SUPABASE ---
+
 def _cs_h():
     """Supabase headers helper."""
     return {
@@ -2351,41 +2353,39 @@ def _cs_h():
         "Prefer": "return=representation"
     }
 
-
-def _gen_id(prefix="cs"):
-    return f"{prefix}_{secrets.token_hex(6)}"
-
-
-def _slug(name: str) -> str:
-    import re
-    s = re.sub(r'[^a-z0-9\-]', '-', name.lower().strip())
-    s = re.sub(r'-+', '-', s).strip('-')[:28] or "site"
-    return f"{s}-{secrets.token_hex(3)}"
-
-
 async def _sb_get(table: str, params: dict) -> list:
-    async with httpx.AsyncClient() as c:
-        r = await c.get(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), params=params)
+    # Используем глобальный db вместо 'async with'
+    try:
+        r = await db.get(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), params=params)
         return r.json() if r.status_code == 200 else []
-
+    except Exception as e:
+        logging.error(f"SB GET ERROR: {e}")
+        return []
 
 async def _sb_post(table: str, data: dict) -> dict | None:
-    async with httpx.AsyncClient() as c:
-        r = await c.post(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), json=data)
+    try:
+        r = await db.post(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), json=data)
         d = r.json()
-        return d[0] if isinstance(d, list) and d else None
-
+        return d[0] if isinstance(d, list) and d else d if isinstance(d, dict) else None
+    except Exception as e:
+        logging.error(f"SB POST ERROR: {e}")
+        return None
 
 async def _sb_patch(table: str, params: dict, data: dict) -> bool:
-    async with httpx.AsyncClient() as c:
-        r = await c.patch(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), params=params, json=data)
+    try:
+        r = await db.patch(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), params=params, json=data)
         return r.status_code in (200, 204)
-
+    except Exception as e:
+        logging.error(f"SB PATCH ERROR: {e}")
+        return False
 
 async def _sb_delete(table: str, params: dict) -> bool:
-    async with httpx.AsyncClient() as c:
-        r = await c.delete(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), params=params)
+    try:
+        r = await db.delete(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), params=params)
         return r.status_code in (200, 204)
+    except Exception as e:
+        logging.error(f"SB DELETE ERROR: {e}")
+        return False
 
 
 # ─── Создать сайт ──────────────────────────────────────────────────────────────
