@@ -4,36 +4,43 @@ import {
   Send, LogOut, Ban, Megaphone, RefreshCw, MessageCircle, UserPlus,
   ChevronRight, Check, X, Shield, AlertCircle, Image, Smile,
   ArrowLeft, BarChart3, Users, Hash, AtSign, Mail, Eye, EyeOff,
-  Paperclip, Play, File as FileIcon, Star, Plus
+  Paperclip, Play, File as FileIcon, Star, Plus, Mic, MicOff,
+  Volume2, VolumeX, Pin, AlertTriangle, Layers, Circle, StopCircle,
+  WifiOff, Wifi
 } from 'lucide-react';
 
-// ─── Constants ─────────────────────────────────────────────────────────────────
+// ─── Constants ──────────────────────────────────────────────────────────────────
 
 const API = '/api';
 const POLL = 2500;
 
 const EMOJI_CATEGORIES = [
-  { name: 'Лица', icon: '😊', emojis: ['😀','😃','😄','😁','😆','😅','😂','🤣','😊','😇','🥰','😍','🤩','😘','😗','😙','😚','🙂','🤗','🤔','🤐','😐','😑','😶','😏','😒','🙄','😬','😔','😪','😴','😷','🤒','🤕','🤢','🤧','🥵','🥶','🥴','😵','🤯','🥳','😎','🤓','😕','😟','🙁','😮','😯','😲','😳','🥺','😦','😧','😨','😰','😥','😢','😭','😱','😖','😣','😞','😓','😩','😫','😤','😡','😠','🤬','😈','💀','👻','👾','🤖','💩','🤡'] },
-  { name: 'Жесты', icon: '👋', emojis: ['👋','🤚','🖐','✋','🖖','👌','✌️','🤞','🤟','🤘','🤙','👈','👉','👆','👇','☝️','👍','👎','✊','👊','🤛','🤜','👏','🙌','👐','🤲','🤝','🙏','💪','🦾','👀','👄','💋','❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💞','💓','💗','💖','💘','💝','💯','💢','💥','💫','✨','🔥','💧','💦','⚡'] },
-  { name: 'Животные', icon: '🐶', emojis: ['🐶','🐱','🐭','🐹','🐰','🦊','🐻','🐼','🐨','🐯','🦁','🐮','🐷','🐸','🐵','🐔','🐧','🐦','🦆','🦅','🦉','🦇','🐺','🐗','🐴','🦄','🐝','🐛','🦋','🐌','🐞','🐜','🐢','🐍','🦎','🐙','🦑','🦐','🦀','🐡','🐠','🐟','🐬','🐳','🦈','🐊','🐅','🐆','🦓','🦍','🐘','🦛','🦏','🐪','🦒','🦘','🐄','🐑','🐐','🦃','🦚','🦜','🦢','🕊️','🐇','🦝','🦡','🦦','🐁','🐀','🐿️','🦔'] },
-  { name: 'Еда', icon: '🍕', emojis: ['🍏','🍎','🍐','🍊','🍋','🍌','🍉','🍇','🍓','🫐','🍒','🍑','🥭','🍍','🥥','🥝','🍅','🥑','🥦','🥒','🌽','🍄','🍞','🥐','🧀','🥚','🍳','🥞','🧇','🥓','🍗','🍖','🌭','🍔','🍟','🍕','🥪','🌮','🌯','🍝','🍜','🍲','🍛','🍣','🍱','🍤','🍙','🍚','🧁','🍰','🎂','🍮','🍭','🍬','🍫','🍿','🍩','🍪','🌰','🍯','🧃','🥤','☕','🍵','🍺','🍻','🥂','🍷','🍸','🍹','🧉','🍾'] },
-  { name: 'Объекты', icon: '💡', emojis: ['🎁','🎀','🎊','🎉','🎈','🎏','🎑','🧧','💌','📱','💻','🖥️','📷','📹','🎥','📞','☎️','📺','📻','💡','🔦','🕯️','💰','💳','💎','📿','💍','💄','👑','👒','🎩','🎒','👜','👛','👝','🛡️','🔑','🗝️','🔨','🔧','🔩','🔫','🏹','⚗️','🔭','🔬','💊','🩺','🩻','🧬','🧪','🧫','📝','✏️','🖊️','📏','📐','✂️','🔒','🔓','🔔','🔕','🎵','🎶','🎼','🎹','🎸','🎺','🎻','🥁','🎮','🎲','🎯','🎱','🎳','⚽','🏀','🏈','⚾','🎾','🏐','🏉','🎿','🛷','🥌'] },
-  { name: 'Символы', icon: '❤️', emojis: ['❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💞','💓','💗','💖','💘','💝','💟','☮️','✝️','☪️','🕉️','☸️','✡️','☯️','🛐','⛎','♈','♉','♊','♋','♌','♍','♎','♏','♐','♑','♒','♓','🔅','🔆','⚠️','♻️','✅','❌','⭕','🛑','⛔','📛','🚫','💯','❗','❕','❓','❔','‼️','⁉️','🔃','🔄','🔙','🔛','🔝','🔚','✔️','🔀','🔁','🔂','▶️','⏩','⏭️','⏯️','◀️','⏪','⏮️'] },
+  { name: 'Лица', icon: '😊', emojis: ['😀','😃','😄','😁','😆','😅','😂','🤣','😊','😇','🥰','😍','🤩','😘','😙','😚','🙂','🤗','🤔','😐','😑','😏','😒','🙄','😔','😪','😴','😷','🤒','🤕','🤢','🥵','🥶','🥴','😵','🤯','🥳','😎','😕','😟','🙁','😮','😯','😲','😳','🥺','😦','😧','😨','😰','😥','😢','😭','😱','😖','😣','😞','😓','😩','😫','😤','😡','😠','🤬','😈','💀','👻','👾','🤖','💩','🤡'] },
+  { name: 'Жесты', icon: '👋', emojis: ['👋','🤚','🖐','✋','🖖','👌','✌️','🤞','🤟','🤘','🤙','👈','👉','👆','👇','☝️','👍','👎','✊','👊','🤛','🤜','👏','🙌','👐','🤲','🤝','🙏','💪','👀','👄','💋','❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💞','💓','💗','💖','💘','💝','💯','💢','💥','💫','✨','🔥','💧','💦','⚡'] },
+  { name: 'Животные', icon: '🐶', emojis: ['🐶','🐱','🐭','🐹','🐰','🦊','🐻','🐼','🐨','🐯','🦁','🐮','🐷','🐸','🐵','🐔','🐧','🐦','🦆','🦅','🦉','🐺','🐴','🦄','🐝','🦋','🐢','🐍','🦎','🐙','🦑','🦐','🦀','🐡','🐠','🐟','🐬','🐳','🦈','🐘','🦒','🦘','🐄','🐑','🐈','🦁','🐾'] },
+  { name: 'Еда', icon: '🍕', emojis: ['🍏','🍎','🍊','🍋','🍌','🍉','🍇','🍓','🍒','🍑','🥭','🍍','🥥','🥝','🍅','🥑','🥦','🌽','🍄','🍞','🥐','🧀','🥚','🍳','🥞','🍗','🍖','🌭','🍔','🍟','🍕','🥪','🌮','🌯','🍝','🍜','🍣','🍱','🍤','🍙','🍚','🧁','🍰','🎂','🍭','🍬','🍫','🍿','🍩','🍪','☕','🍵','🍺','🍻','🥂','🍷','🍸','🍹','🍾'] },
+  { name: 'Объекты', icon: '💡', emojis: ['🎁','🎀','🎊','🎉','🎈','💌','📱','💻','📷','📹','📞','📺','💡','🔦','💰','💎','👑','🎒','🛡️','🔑','🔨','🔧','🔫','🔭','🔬','💊','📝','✏️','📏','✂️','🔒','🔓','🔔','🎵','🎶','🎹','🎸','🎺','🥁','🎮','🎲','🎯','🎱','⚽','🏀','🏈','⚾','🎾','🏐','🎿','🛷'] },
+  { name: 'Символы', icon: '❤️', emojis: ['❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💞','💓','💗','💖','💘','💝','💟','☮️','✝️','☪️','🕉️','☯️','✅','❌','⭕','🛑','⛔','📛','🚫','💯','❗','❕','❓','❔','‼️','⁉️','✔️','🔀','🔁','🔂','▶️','⏩','⏭️','◀️','⏪','⏮️'] },
 ];
 
 const STICKER_PACKS = [
-  { name: 'Реакции', stickers: ['😂','🤣','😭','😍','🥰','🤩','😤','🤯','🥳','🎉','💪','👏','🙌','✨','💥','🔥','❤️','💔','😘','🫶','💯','🤦','🤷','🙆','🙅','💁','🤦‍♂️','🤷‍♀️','🫠','😮‍💨'] },
+  { name: 'Реакции', stickers: ['😂','🤣','😭','😍','🥰','🤩','😤','🤯','🥳','🎉','💪','👏','🙌','✨','💥','🔥','❤️','💔','😘','🫶','💯','🤦','🤷','🙆','🙅','💁','🫠','😮‍💨'] },
   { name: 'Поддержка', stickers: ['💪','🤝','🫂','🙏','❤️','🫶','🌟','⭐','✨','🎯','🏆','🥇','👑','🌈','🎊','🎉','🎈','💐','🌸','🌺'] },
   { name: 'Грусть/Радость', stickers: ['😢','😭','😿','💧','😊','😁','😄','🎊','🎉','🥳','🤗','😂','🤣','😅','😌','😔','😞','😟','😤','😡'] },
   { name: 'Коты', stickers: ['😺','😸','😹','😻','😼','😽','🙀','😿','😾','🐱','🐈','🐈‍⬛','🐾','🦁','🐯','🦊','🦝','🐻','🐻‍❄️','🐨'] },
 ];
 
-// ─── Types ─────────────────────────────────────────────────────────────────────
+// ─── Types ──────────────────────────────────────────────────────────────────────
 
 interface SiteConfig {
   primaryColor: string; bgColor: string; fontFamily: string;
   welcomeMessage: string; commands: string[]; logoText: string;
   requireEmailVerification?: boolean; showOnlineStatus?: boolean;
+  borderRadius?: string;
+  fontScale?: string;
+  autoReplies?: { command: string; reply: string }[];
+  groupChatEnabled?: boolean;
+  maxWarnsBeforeBan?: number;
 }
 
 interface PublicSite { id: string; name: string; slug: string; config: SiteConfig; }
@@ -62,14 +69,46 @@ interface Message {
   text: string | null; media_url: string | null;
   media_type: 'image' | 'video' | 'audio' | 'file' | 'sticker' | null;
   sticker_emoji: string | null; created_at: number; is_read: boolean;
+  is_pinned?: boolean; pinned_by?: string;
+}
+
+interface GroupMessage {
+  id: string; site_id: string; from_id: string; from_name: string;
+  from_role: 'user' | 'admin' | 'owner' | 'system';
+  text: string | null; media_url: string | null;
+  media_type: string | null; sticker_emoji: string | null;
+  is_pinned: boolean; pinned_by: string | null;
+  created_at: number; is_deleted: boolean;
 }
 
 interface SiteUser {
   id: string; username: string; email: string | null;
-  is_banned: boolean; ban_reason: string | null; last_seen: number; created_at: number;
+  is_banned: boolean; ban_reason: string | null;
+  muted_until: number; warn_count: number;
+  last_seen: number; created_at: number;
 }
 
-// ─── Helpers ───────────────────────────────────────────────────────────────────
+// ─── CSS radius helper ──────────────────────────────────────────────────────────
+const getRadius = (cfg?: SiteConfig) => {
+  const map: Record<string,string> = {
+    none: '4px', md: '8px', xl: '14px', '2xl': '20px', full: '999px'
+  };
+  return map[cfg?.borderRadius || '2xl'] || '20px';
+};
+
+const getBubbleRadius = (isOwn: boolean, cfg?: SiteConfig) => {
+  const r = getRadius(cfg);
+  if (cfg?.borderRadius === 'none') return r;
+  if (cfg?.borderRadius === 'full') return isOwn ? '20px 20px 4px 20px' : '20px 20px 20px 4px';
+  return isOwn ? `${r} ${r} 4px ${r}` : `${r} ${r} ${r} 4px`;
+};
+
+const getFontSize = (cfg?: SiteConfig) => {
+  const map: Record<string,string> = { sm: '13px', md: '14px', lg: '16px' };
+  return map[cfg?.fontScale || 'md'] || '14px';
+};
+
+// ─── Helpers ────────────────────────────────────────────────────────────────────
 
 const fmtTime = (ts: number) => new Date(ts).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' });
 const fmtDate = (ts: number) => {
@@ -86,7 +125,7 @@ async function apiFetch(url: string, opts: RequestInit = {}) {
   return r.json();
 }
 
-// ─── Avatar ────────────────────────────────────────────────────────────────────
+// ─── Avatar ─────────────────────────────────────────────────────────────────────
 
 const Avatar: React.FC<{ name: string; color?: string; size?: string; online?: boolean }> = ({
   name, color = '#6366f1', size = 'w-8 h-8', online
@@ -100,12 +139,12 @@ const Avatar: React.FC<{ name: string; color?: string; size?: string; online?: b
   </div>
 );
 
-// ─── Emoji Picker ──────────────────────────────────────────────────────────────
+// ─── Emoji Picker ───────────────────────────────────────────────────────────────
 
 const EmojiPicker: React.FC<{ onSelect: (e: string) => void; primary: string }> = ({ onSelect, primary }) => {
   const [cat, setCat] = useState(0);
   return (
-    <div className="bg-[#111] border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden w-72">
+    <div className="bg-[#111] border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden w-64 sm:w-72">
       <div className="flex border-b border-zinc-800 overflow-x-auto no-scrollbar">
         {EMOJI_CATEGORIES.map((c, i) => (
           <button key={i} onClick={() => setCat(i)}
@@ -115,7 +154,7 @@ const EmojiPicker: React.FC<{ onSelect: (e: string) => void; primary: string }> 
           </button>
         ))}
       </div>
-      <div className="p-2 grid grid-cols-8 gap-0.5 max-h-44 overflow-y-auto no-scrollbar">
+      <div className="p-2 grid grid-cols-7 sm:grid-cols-8 gap-0.5 max-h-44 overflow-y-auto no-scrollbar">
         {EMOJI_CATEGORIES[cat].emojis.map(e => (
           <button key={e} onClick={() => onSelect(e)}
             className="w-7 h-7 flex items-center justify-center text-lg hover:bg-white/10 rounded-lg transition-all hover:scale-125">
@@ -127,16 +166,16 @@ const EmojiPicker: React.FC<{ onSelect: (e: string) => void; primary: string }> 
   );
 };
 
-// ─── Sticker Picker ────────────────────────────────────────────────────────────
+// ─── Sticker Picker ─────────────────────────────────────────────────────────────
 
 const StickerPicker: React.FC<{ onSelect: (s: string) => void; primary: string }> = ({ onSelect, primary }) => {
   const [pack, setPack] = useState(0);
   return (
-    <div className="bg-[#111] border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden w-72">
+    <div className="bg-[#111] border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden w-64 sm:w-72">
       <div className="flex border-b border-zinc-800 overflow-x-auto no-scrollbar">
         {STICKER_PACKS.map((p, i) => (
           <button key={i} onClick={() => setPack(i)}
-            className="px-3 py-2 text-[9px] font-black uppercase tracking-wider shrink-0 transition-all whitespace-nowrap"
+            className="px-2 sm:px-3 py-2 text-[9px] font-black uppercase tracking-wider shrink-0 transition-all whitespace-nowrap"
             style={{ color: pack === i ? primary : 'rgba(255,255,255,0.3)', borderBottom: `2px solid ${pack === i ? primary : 'transparent'}` }}>
             {p.name}
           </button>
@@ -145,7 +184,7 @@ const StickerPicker: React.FC<{ onSelect: (s: string) => void; primary: string }
       <div className="p-3 grid grid-cols-5 gap-2 max-h-48 overflow-y-auto no-scrollbar">
         {STICKER_PACKS[pack].stickers.map((s, i) => (
           <button key={i} onClick={() => onSelect(s)}
-            className="w-12 h-12 flex items-center justify-center text-3xl hover:bg-white/10 rounded-xl transition-all hover:scale-125">
+            className="w-11 h-11 sm:w-12 sm:h-12 flex items-center justify-center text-3xl hover:bg-white/10 rounded-xl transition-all hover:scale-125">
             {s}
           </button>
         ))}
@@ -154,12 +193,18 @@ const StickerPicker: React.FC<{ onSelect: (s: string) => void; primary: string }
   );
 };
 
-// ─── Message Bubble ────────────────────────────────────────────────────────────
+// ─── Message Bubble ─────────────────────────────────────────────────────────────
 
-const MessageBubble: React.FC<{ msg: Message; session: ChatSession; primary: string }> = ({ msg, session, primary }) => {
+const MessageBubble: React.FC<{
+  msg: Message | GroupMessage; session: ChatSession; primary: string; cfg?: SiteConfig;
+  isAdmin?: boolean; onPin?: (id: string, pin: boolean) => void;
+}> = ({ msg, session, primary, cfg, onPin }) => {
   const isOwn = msg.from_id === session.id;
   const isSystem = msg.from_role === 'system';
-  const isAdmin = msg.from_role === 'admin' || msg.from_role === 'owner';
+  const isAdminMsg = msg.from_role === 'admin' || msg.from_role === 'owner';
+  const canPin = (session.role === 'admin' || session.role === 'owner') && onPin;
+  const bubbleRadius = getBubbleRadius(isOwn, cfg);
+  const fontSize = getFontSize(cfg);
 
   if (isSystem) {
     return (
@@ -173,78 +218,110 @@ const MessageBubble: React.FC<{ msg: Message; session: ChatSession; primary: str
     );
   }
 
-  // Стикер
   if (msg.media_type === 'sticker' && msg.sticker_emoji) {
     return (
       <div className={`flex gap-2 mb-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
-        {!isOwn && <Avatar name={msg.from_name} color={isAdmin ? primary : '#71717a'} />}
+        {!isOwn && <Avatar name={msg.from_name} color={isAdminMsg ? primary : '#71717a'} />}
         <div className="flex flex-col gap-1" style={{ alignItems: isOwn ? 'flex-end' : 'flex-start' }}>
-          {!isOwn && <span className="text-[9px] font-black uppercase px-1" style={{ color: isAdmin ? primary : 'rgba(255,255,255,0.35)' }}>{msg.from_name}</span>}
-          <div className="text-6xl leading-none">{msg.sticker_emoji}</div>
+          {!isOwn && <span className="text-[9px] font-black uppercase px-1" style={{ color: isAdminMsg ? primary : 'rgba(255,255,255,0.35)' }}>{msg.from_name}</span>}
+          <div className="text-5xl sm:text-6xl leading-none">{msg.sticker_emoji}</div>
           <span className="text-[9px] px-1" style={{ color: 'rgba(255,255,255,0.25)' }}>{fmtTime(msg.created_at)}</span>
         </div>
       </div>
     );
   }
 
-  // Медиа
   if (msg.media_url) {
     return (
       <div className={`flex gap-2 mb-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
-        {!isOwn && <Avatar name={msg.from_name} color={isAdmin ? primary : '#71717a'} />}
-        <div className="flex flex-col gap-1 max-w-[60%]" style={{ alignItems: isOwn ? 'flex-end' : 'flex-start' }}>
-          {!isOwn && <span className="text-[9px] font-black uppercase px-1" style={{ color: isAdmin ? primary : 'rgba(255,255,255,0.35)' }}>{msg.from_name}</span>}
+        {!isOwn && <Avatar name={msg.from_name} color={isAdminMsg ? primary : '#71717a'} />}
+        <div className="flex flex-col gap-1 max-w-[80%] sm:max-w-[65%]" style={{ alignItems: isOwn ? 'flex-end' : 'flex-start' }}>
+          {!isOwn && <span className="text-[9px] font-black uppercase px-1" style={{ color: isAdminMsg ? primary : 'rgba(255,255,255,0.35)' }}>{msg.from_name}</span>}
+          
+          {'is_pinned' in msg && msg.is_pinned && (
+            <div className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[8px] font-bold" style={{ background: primary + '20', color: primary }}>
+              <Pin className="w-2.5 h-2.5" /> Закреплено
+            </div>
+          )}
+          
           <div className="rounded-2xl overflow-hidden border" style={{ borderColor: primary + '20' }}>
             {msg.media_type === 'image' && (
-              <img src={msg.media_url} alt="img" className="max-w-xs max-h-64 object-cover cursor-pointer"
+              <img src={msg.media_url} alt="img" className="max-w-[200px] sm:max-w-xs max-h-64 object-cover cursor-pointer"
                 onClick={() => window.open(msg.media_url!, '_blank')} />
             )}
             {msg.media_type === 'video' && (
-              <video src={msg.media_url} controls className="max-w-xs max-h-64" />
+              <video src={msg.media_url} controls className="max-w-[200px] sm:max-w-xs max-h-64" />
             )}
             {msg.media_type === 'audio' && (
-              <div className="flex items-center gap-3 px-4 py-3 bg-white/5">
-                <Play className="w-4 h-4" style={{ color: primary }} />
-                <audio src={msg.media_url} controls className="w-48 h-8" />
+              <div className="flex items-center gap-2 px-3 py-3 bg-white/5 min-w-[160px]">
+                <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: primary + '30' }}>
+                  <Volume2 className="w-4 h-4" style={{ color: primary }} />
+                </div>
+                <audio src={msg.media_url} controls className="w-32 sm:w-44 h-8" style={{ accentColor: primary }} />
               </div>
             )}
-            {(msg.media_type === 'file' || !msg.media_type) && (
-              <a href={msg.media_url} download className="flex items-center gap-3 px-4 py-3 bg-white/5 hover:bg-white/10 transition-all">
-                <FileIcon className="w-5 h-5" style={{ color: primary }} />
-                <span className="text-xs text-white/70 truncate max-w-[160px]">{msg.media_url.split('/').pop()}</span>
+            {(msg.media_type === 'file' || (!msg.media_type && msg.media_url)) && (
+              <a href={msg.media_url} download className="flex items-center gap-3 px-4 py-3 bg-white/5 hover:bg-white/10 transition-all min-w-[160px]">
+                <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0" style={{ background: primary + '20' }}>
+                  <FileIcon className="w-4 h-4" style={{ color: primary }} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-white text-xs font-bold truncate max-w-[120px]">{(msg.media_url || '').split('/').pop()?.split('_').slice(2).join('_') || 'Файл'}</p>
+                  <p className="text-zinc-600 text-[9px]">Скачать</p>
+                </div>
               </a>
             )}
           </div>
           {msg.text && (
-            <div className="px-4 py-2.5 rounded-2xl text-sm text-white/90"
-              style={{ background: isOwn ? primary : 'rgba(255,255,255,0.07)' }}>
+            <div className="px-3 py-2.5 text-sm text-white/90" style={{ background: isOwn ? primary : 'rgba(255,255,255,0.07)', borderRadius: bubbleRadius }}>
               {msg.text}
             </div>
           )}
-          <span className="text-[9px] px-1" style={{ color: 'rgba(255,255,255,0.25)' }}>{fmtTime(msg.created_at)}</span>
+          <div className="flex items-center gap-2 px-1">
+            <span className="text-[9px]" style={{ color: 'rgba(255,255,255,0.25)' }}>{fmtTime(msg.created_at)}</span>
+            {canPin && (
+              <button onClick={() => onPin!(msg.id, !('is_pinned' in msg && msg.is_pinned))}
+                className="opacity-0 group-hover:opacity-100 transition-opacity">
+                <Pin className="w-2.5 h-2.5 text-zinc-600 hover:text-white" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
     );
   }
 
-  // Обычное текстовое сообщение
   return (
-    <div className={`flex gap-2 mb-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
-      {!isOwn && <Avatar name={msg.from_name} color={isAdmin ? primary : '#71717a'} />}
-      <div className="flex flex-col gap-1 max-w-[72%]" style={{ alignItems: isOwn ? 'flex-end' : 'flex-start' }}>
+    <div className={`flex gap-2 mb-2 group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
+      {!isOwn && <Avatar name={msg.from_name} color={isAdminMsg ? primary : '#71717a'} />}
+      <div className="flex flex-col gap-1 max-w-[85%] sm:max-w-[72%]" style={{ alignItems: isOwn ? 'flex-end' : 'flex-start' }}>
         {!isOwn && (
           <span className="text-[9px] font-black uppercase tracking-wider px-1"
-            style={{ color: isAdmin ? primary : 'rgba(255,255,255,0.35)' }}>
+            style={{ color: isAdminMsg ? primary : 'rgba(255,255,255,0.35)' }}>
             {msg.from_name}
           </span>
         )}
-        <div className="px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words"
-          style={{
-            background: isOwn ? primary : isAdmin ? primary + '18' : 'rgba(255,255,255,0.08)',
-            color: '#fff',
-            borderRadius: isOwn ? '20px 20px 4px 20px' : '20px 20px 20px 4px',
-          }}>
-          {msg.text}
+        {'is_pinned' in msg && msg.is_pinned && (
+          <div className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[8px] font-bold" style={{ background: primary + '20', color: primary }}>
+            <Pin className="w-2.5 h-2.5" /> Закреплено
+          </div>
+        )}
+        <div className="relative">
+          <div className="px-3 sm:px-4 py-2.5 sm:py-3 leading-relaxed whitespace-pre-wrap break-words"
+            style={{
+              background: isOwn ? primary : isAdminMsg ? primary + '18' : 'rgba(255,255,255,0.08)',
+              color: '#fff',
+              borderRadius: bubbleRadius,
+              fontSize,
+            }}>
+            {msg.text}
+          </div>
+          {canPin && (
+            <button onClick={() => onPin!(msg.id, !('is_pinned' in msg && msg.is_pinned))}
+              className="absolute -top-2 right-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 bg-zinc-800 rounded-lg">
+              <Pin className="w-2.5 h-2.5 text-zinc-400 hover:text-white" />
+            </button>
+          )}
         </div>
         <span className="text-[9px] px-1 flex items-center gap-1" style={{ color: 'rgba(255,255,255,0.25)' }}>
           {fmtTime(msg.created_at)}
@@ -255,12 +332,90 @@ const MessageBubble: React.FC<{ msg: Message; session: ChatSession; primary: str
   );
 };
 
-// ─── Message Input ─────────────────────────────────────────────────────────────
+// ─── Voice Recorder ─────────────────────────────────────────────────────────────
+
+const VoiceRecorder: React.FC<{
+  onRecorded: (blob: Blob) => void;
+  primary: string;
+}> = ({ onRecorded, primary }) => {
+  const [recording, setRecording] = useState(false);
+  const [seconds, setSeconds] = useState(0);
+  const mediaRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<NodeJS.Timeout>();
+
+  const start = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      chunksRef.current = [];
+      mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      mr.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        onRecorded(blob);
+        stream.getTracks().forEach(t => t.stop());
+      };
+      mr.start(100);
+      mediaRef.current = mr;
+      setRecording(true);
+      setSeconds(0);
+      timerRef.current = setInterval(() => setSeconds(s => s + 1), 1000);
+    } catch {
+      alert('Нет доступа к микрофону');
+    }
+  };
+
+  const stop = () => {
+    mediaRef.current?.stop();
+    clearInterval(timerRef.current);
+    setRecording(false);
+    setSeconds(0);
+  };
+
+  const cancel = () => {
+    if (mediaRef.current?.state === 'recording') {
+      mediaRef.current.ondataavailable = null;
+      mediaRef.current.onstop = null;
+      mediaRef.current.stop();
+      mediaRef.current.stream?.getTracks().forEach(t => t.stop());
+    }
+    clearInterval(timerRef.current);
+    setRecording(false);
+    setSeconds(0);
+  };
+
+  if (recording) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2 rounded-xl animate-pulse" style={{ background: primary + '15' }}>
+        <div className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+        <span className="text-white text-xs font-mono">{String(Math.floor(seconds / 60)).padStart(2,'0')}:{String(seconds % 60).padStart(2,'0')}</span>
+        <button onClick={cancel} className="p-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all">
+          <X className="w-3.5 h-3.5 text-zinc-400" />
+        </button>
+        <button onClick={stop}
+          className="w-8 h-8 rounded-full flex items-center justify-center"
+          style={{ background: primary }}>
+          <Check className="w-4 h-4 text-white" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button onClick={start}
+      className="w-9 h-9 rounded-xl flex items-center justify-center transition-all"
+      style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.4)' }}>
+      <Mic className="w-4 h-4" />
+    </button>
+  );
+};
+
+// ─── Message Input ──────────────────────────────────────────────────────────────
 
 const MessageInput: React.FC<{
   onSend: (text: string, mediaUrl?: string, mediaType?: string, sticker?: string) => Promise<void>;
-  primary: string; commands: string[]; placeholder?: string;
-}> = ({ onSend, primary, commands, placeholder = 'Напишите сообщение...' }) => {
+  primary: string; commands: string[]; placeholder?: string; cfg?: SiteConfig;
+}> = ({ onSend, primary, commands, placeholder = 'Напишите сообщение...', cfg }) => {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
@@ -269,6 +424,7 @@ const MessageInput: React.FC<{
   const [showCommands, setShowCommands] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const pickersRef = useRef<HTMLDivElement>(null);
 
   const filteredCmds = text.startsWith('/') ? commands.filter(c => c.startsWith(text)) : [];
 
@@ -295,10 +451,25 @@ const MessageInput: React.FC<{
     try {
       const fd = new FormData(); fd.append('file', file);
       const r = await fetch(`${API}/chat/media/upload`, { method: 'POST', body: fd });
+      if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || 'Ошибка загрузки'); }
       const { url, media_type } = await r.json();
       await onSend(text.trim() || '', url, media_type);
       setText('');
-    } catch { alert('Ошибка загрузки файла'); }
+    } catch (e: any) { alert(e.message || 'Ошибка загрузки файла'); }
+    finally { setUploading(false); }
+  };
+
+  const handleVoice = async (blob: Blob) => {
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', new File([blob], `voice_${Date.now()}.webm`, { type: 'audio/webm' }));
+      fd.append('is_voice', 'true');
+      const r = await fetch(`${API}/chat/media/upload`, { method: 'POST', body: fd });
+      if (!r.ok) throw new Error('Ошибка загрузки голосового');
+      const { url } = await r.json();
+      await onSend('', url, 'audio');
+    } catch (e: any) { alert(e.message || 'Ошибка'); }
     finally { setUploading(false); }
   };
 
@@ -307,60 +478,57 @@ const MessageInput: React.FC<{
     if (e.key === 'Escape') { setShowEmoji(false); setShowStickers(false); setShowCommands(false); }
   };
 
+  const r = getRadius(cfg);
+
   return (
     <div className="relative">
       {/* Команды-подсказки */}
       {showCommands && filteredCmds.length > 0 && (
-        <div className="absolute bottom-full mb-1 left-0 right-0 bg-[#111] border border-zinc-800 rounded-2xl overflow-hidden shadow-xl">
+        <div className="absolute bottom-full mb-1 left-0 right-0 bg-[#111] border border-zinc-800 rounded-2xl overflow-hidden shadow-xl z-10">
           {filteredCmds.map(cmd => (
             <button key={cmd} onClick={() => { setText(cmd + ' '); setShowCommands(false); inputRef.current?.focus(); }}
               className="flex items-center gap-2 w-full px-4 py-2.5 hover:bg-white/5 transition-colors text-left text-xs">
               <Hash className="w-3 h-3" style={{ color: primary }} />
-              <span className="font-mono" style={{ color: primary }}>{cmd}</span>
+              <span className="text-white font-mono">{cmd}</span>
             </button>
           ))}
         </div>
       )}
 
-      {/* Emoji попап */}
-      {showEmoji && (
-        <div className="absolute bottom-full mb-2 left-0 z-10">
-          <EmojiPicker onSelect={e => { setText(t => t + e); setShowEmoji(false); inputRef.current?.focus(); }} primary={primary} />
+      {/* Emoji / Sticker picker */}
+      {(showEmoji || showStickers) && (
+        <div ref={pickersRef} className="absolute bottom-full mb-2 left-0 z-20">
+          {showEmoji && <EmojiPicker onSelect={e => { setText(t => t + e); setShowEmoji(false); inputRef.current?.focus(); }} primary={primary} />}
+          {showStickers && <StickerPicker onSelect={doSticker} primary={primary} />}
         </div>
       )}
 
-      {/* Sticker попап */}
-      {showStickers && (
-        <div className="absolute bottom-full mb-2 left-10 z-10">
-          <StickerPicker onSelect={doSticker} primary={primary} />
-        </div>
-      )}
+      {/* Upload input */}
+      <input ref={fileRef} type="file" className="hidden" accept="*/*"
+        onChange={e => { const f = e.target.files?.[0]; if (f) { handleFile(f); e.target.value = ''; } }} />
 
-      <input ref={fileRef as any} type="file" className="hidden"
-        accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.zip"
-        onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])} />
-
-      <div className="flex gap-2 items-end p-3 border-t" style={{ borderColor: primary + '15' }}>
-        {/* Кнопки медиа */}
+      <div className="flex gap-1.5 sm:gap-2 items-end p-2 sm:p-3 border-t" style={{ borderColor: primary + '15' }}>
         <div className="flex gap-1 shrink-0">
           <button onClick={() => { setShowEmoji(v => !v); setShowStickers(false); }}
-            className="w-9 h-9 rounded-xl flex items-center justify-center transition-all text-lg"
+            className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition-all text-base sm:text-lg"
             style={{ background: showEmoji ? primary + '30' : 'rgba(255,255,255,0.06)', color: showEmoji ? primary : 'rgba(255,255,255,0.4)' }}>
             😊
           </button>
           <button onClick={() => { setShowStickers(v => !v); setShowEmoji(false); }}
-            className="w-9 h-9 rounded-xl flex items-center justify-center transition-all text-lg"
+            className="hidden sm:flex w-9 h-9 rounded-xl items-center justify-center transition-all text-lg"
             style={{ background: showStickers ? primary + '30' : 'rgba(255,255,255,0.06)', color: showStickers ? primary : 'rgba(255,255,255,0.4)' }}>
             🌟
           </button>
           <button onClick={() => fileRef.current?.click()} disabled={uploading}
-            className="w-9 h-9 rounded-xl flex items-center justify-center transition-all disabled:opacity-40"
+            className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition-all disabled:opacity-40"
             style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.4)' }}>
-            {uploading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
+            {uploading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Paperclip className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
           </button>
+          {!text.trim() && (
+            <VoiceRecorder onRecorded={handleVoice} primary={primary} />
+          )}
         </div>
 
-        {/* Инпут */}
         <textarea
           ref={inputRef}
           value={text}
@@ -368,26 +536,166 @@ const MessageInput: React.FC<{
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           rows={1}
-          className="flex-1 px-4 py-2.5 rounded-2xl text-sm text-white placeholder-white/20 outline-none resize-none overflow-hidden leading-relaxed"
-          style={{ background: 'rgba(255,255,255,0.06)', border: `1.5px solid ${primary}25`, maxHeight: '120px', caretColor: primary }}
+          className="flex-1 px-3 sm:px-4 py-2 sm:py-2.5 text-sm text-white placeholder-white/20 outline-none resize-none overflow-hidden leading-relaxed"
+          style={{
+            background: 'rgba(255,255,255,0.06)',
+            border: `1.5px solid ${primary}25`,
+            borderRadius: r,
+            maxHeight: '120px',
+            caretColor: primary,
+            fontSize: getFontSize(cfg)
+          }}
           onInput={e => { const el = e.target as HTMLTextAreaElement; el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }}
         />
 
         <button onClick={doSend} disabled={!text.trim() || sending}
-          className="w-10 h-10 rounded-[14px] flex items-center justify-center transition-all disabled:opacity-30 shrink-0"
-          style={{ background: primary, boxShadow: `0 4px 14px ${primary}50` }}>
-          {sending ? <RefreshCw className="w-4 h-4 text-white animate-spin" /> : <Send className="w-4 h-4 text-white" />}
+          className="w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center transition-all disabled:opacity-30 shrink-0"
+          style={{ background: primary, borderRadius: r, boxShadow: `0 4px 14px ${primary}50` }}>
+          {sending ? <RefreshCw className="w-4 h-4 text-white animate-spin" /> : <Send className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white" />}
         </button>
       </div>
     </div>
   );
 };
 
-// ─── Auth Screen ────────────────────────────────────────────────────────────────
+// ─── Group Chat ─────────────────────────────────────────────────────────────────
+
+const GroupChat: React.FC<{ site: PublicSite; session: ChatSession }> = ({ site, session }) => {
+  const [messages, setMessages] = useState<GroupMessage[]>([]);
+  const [pinned, setPinned] = useState<GroupMessage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showPinned, setShowPinned] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const p = site.config.primaryColor || '#6366f1';
+
+  const loadMessages = useCallback(async () => {
+    try {
+      const data = await apiFetch(`${API}/chat/site/${site.slug}/group?limit=100`);
+      setMessages(Array.isArray(data) ? data : []);
+    } catch { } finally { setLoading(false); }
+  }, [site.slug]);
+
+  const loadPinned = async () => {
+    try {
+      const data = await apiFetch(`${API}/chat/site/${site.slug}/group/pinned`);
+      setPinned(Array.isArray(data) ? data : []);
+    } catch { }
+  };
+
+  useEffect(() => {
+    loadMessages();
+    loadPinned();
+    const interval = setInterval(loadMessages, POLL);
+    return () => clearInterval(interval);
+  }, [loadMessages]);
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages.length]);
+
+  const handleSend = async (text: string, mediaUrl?: string, mediaType?: string, sticker?: string) => {
+    await apiFetch(`${API}/chat/site/${site.slug}/group`, {
+      method: 'POST',
+      body: JSON.stringify({
+        from_id: session.id, from_name: session.display_name,
+        from_role: session.role, text: text || null,
+        media_url: mediaUrl, media_type: mediaType,
+        sticker_emoji: sticker
+      })
+    });
+    await loadMessages();
+  };
+
+  const handlePin = async (msgId: string, pin: boolean) => {
+    await apiFetch(`${API}/chat/site/${site.slug}/group/${msgId}/pin`, {
+      method: 'POST',
+      body: JSON.stringify({ role: session.role, pin, pinned_by: session.display_name })
+    });
+    await loadMessages();
+    await loadPinned();
+  };
+
+  const handleDelete = async (msgId: string) => {
+    if (session.role !== 'admin' && session.role !== 'owner') return;
+    await fetch(`${API}/chat/site/${site.slug}/group/${msgId}?role=${session.role}`, { method: 'DELETE' });
+    setMessages(prev => prev.filter(m => m.id !== msgId));
+  };
+
+  // Group by date
+  const grouped: { date: string; msgs: GroupMessage[] }[] = [];
+  for (const msg of messages) {
+    const d = fmtDate(msg.created_at);
+    if (!grouped.length || grouped[grouped.length-1].date !== d) grouped.push({ date: d, msgs: [] });
+    grouped[grouped.length-1].msgs.push(msg);
+  }
+
+  return (
+    <div className="flex flex-col h-full" style={{ fontFamily: site.config.fontFamily || 'Manrope, sans-serif' }}>
+      {/* Pinned messages bar */}
+      {pinned.length > 0 && (
+        <div className="px-4 py-2 border-b cursor-pointer hover:bg-white/5 transition-all"
+          style={{ borderColor: p + '20' }}
+          onClick={() => setShowPinned(v => !v)}>
+          <div className="flex items-center gap-2">
+            <Pin className="w-3.5 h-3.5" style={{ color: p }} />
+            <span className="text-[10px] font-black uppercase tracking-widest" style={{ color: p }}>
+              {pinned.length} закреплённых
+            </span>
+            <ChevronRight className={`w-3 h-3 text-zinc-600 ml-auto transition-transform ${showPinned ? 'rotate-90' : ''}`} />
+          </div>
+          {showPinned && (
+            <div className="mt-2 space-y-1.5 max-h-32 overflow-y-auto">
+              {pinned.map(m => (
+                <div key={m.id} className="px-3 py-2 rounded-xl text-xs text-white/80 border" style={{ background: p + '08', borderColor: p + '20' }}>
+                  <span className="font-black text-[9px] uppercase" style={{ color: p }}>{m.from_name}: </span>
+                  {m.text || (m.media_type === 'image' ? '🖼 Изображение' : '📎 Файл')}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-0.5">
+        {loading ? (
+          <div className="flex justify-center py-8"><RefreshCw className="w-5 h-5 text-white/20 animate-spin" /></div>
+        ) : messages.length === 0 ? (
+          <div className="text-center py-16">
+            <MessageCircle className="w-10 h-10 mx-auto mb-3" style={{ color: p + '30' }} />
+            <p className="font-bold text-sm" style={{ color: 'rgba(255,255,255,0.2)' }}>Групповой чат пуст</p>
+            <p className="text-xs mt-1" style={{ color: 'rgba(255,255,255,0.1)' }}>Напишите первым!</p>
+          </div>
+        ) : grouped.map(({ date, msgs }) => (
+          <div key={date}>
+            <div className="flex justify-center my-4">
+              <span className="text-[10px] font-bold px-3 py-1 rounded-full" style={{ background: p + '15', color: p + 'aa' }}>{date}</span>
+            </div>
+            {msgs.map(msg => (
+              <div key={msg.id} className="group relative">
+                <MessageBubble msg={msg} session={session} primary={p} cfg={site.config}
+                  onPin={(session.role === 'admin' || session.role === 'owner') ? handlePin : undefined} />
+                {(session.role === 'admin' || session.role === 'owner') && !msg.is_deleted && (
+                  <button onClick={() => handleDelete(msg.id)}
+                    className="absolute top-0 right-0 opacity-0 group-hover:opacity-100 p-1 rounded-lg bg-rose-500/20 text-rose-400 transition-all text-[9px]">
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        ))}
+        <div ref={bottomRef} />
+      </div>
+
+      <MessageInput onSend={handleSend} primary={p} commands={site.config.commands || []} placeholder="Написать в чат..." cfg={site.config} />
+    </div>
+  );
+};
+
+// ─── Auth Screen ─────────────────────────────────────────────────────────────────
 
 const AuthScreen: React.FC<{ site: PublicSite; forceAdmin?: boolean; onAuth: (s: ChatSession) => void }> = ({ site, forceAdmin, onAuth }) => {
   const cfg = site.config;
-  const [mode, setMode] = useState<'login' | 'register'>(forceAdmin ? 'login' : 'login');
+  const [mode, setMode] = useState<'login' | 'register'>('login');
   const [login, setLogin] = useState('');
   const [password, setPassword] = useState('');
   const [email, setEmail] = useState('');
@@ -400,15 +708,13 @@ const AuthScreen: React.FC<{ site: PublicSite; forceAdmin?: boolean; onAuth: (s:
   const p = cfg.primaryColor || '#6366f1';
   const bg = cfg.bgColor || '#09090b';
   const font = cfg.fontFamily || 'Manrope, sans-serif';
-  const requireEmail = cfg.requireEmailVerification && mode === 'register';
+  const r = getRadius(cfg);
 
   const sendCode = async () => {
     if (!email || !email.includes('@')) { setError('Введите корректный email'); return; }
     setLoading(true); setError('');
     try {
-      await apiFetch(`${API}/chat/site/${site.slug}/verify-email`, {
-        method: 'POST', body: JSON.stringify({ email })
-      });
+      await apiFetch(`${API}/chat/site/${site.slug}/verify-email`, { method: 'POST', body: JSON.stringify({ email }) });
       setCodeSent(true);
     } catch (e: any) { setError(e.message); }
     finally { setLoading(false); }
@@ -436,18 +742,18 @@ const AuthScreen: React.FC<{ site: PublicSite; forceAdmin?: boolean; onAuth: (s:
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-4" style={{ background: bg, fontFamily: font }}>
-      <div className="mb-10 text-center">
+      <div className="mb-8 text-center">
         <div className="inline-flex items-center gap-3 mb-2">
-          <div className="w-4 h-4 rounded-full" style={{ background: p }} />
-          <span className="text-3xl font-black" style={{ color: p }}>{cfg.logoText || site.name}</span>
+          <div className="w-3.5 h-3.5 rounded-full" style={{ background: p }} />
+          <span className="text-2xl sm:text-3xl font-black" style={{ color: p }}>{cfg.logoText || site.name}</span>
         </div>
         {!forceAdmin && <p className="text-sm mt-1" style={{ color: p + '70' }}>{cfg.welcomeMessage || 'Чем можем помочь?'}</p>}
         {forceAdmin && <p className="text-xs mt-1 font-bold uppercase tracking-widest" style={{ color: p + '70' }}>Панель администратора</p>}
       </div>
 
-      <div className="w-full max-w-sm rounded-[2.5rem] p-8 backdrop-blur-sm" style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${p}25` }}>
+      <div className="w-full max-w-sm rounded-[2rem] p-6 sm:p-8 backdrop-blur-sm" style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${p}25` }}>
         {!forceAdmin && (
-          <div className="flex rounded-2xl overflow-hidden border mb-6" style={{ borderColor: p + '20' }}>
+          <div className="flex rounded-2xl overflow-hidden border mb-5" style={{ borderColor: p + '20' }}>
             {(['login', 'register'] as const).map(m => (
               <button key={m} onClick={() => { setMode(m); setError(''); }}
                 className="flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all"
@@ -465,8 +771,8 @@ const AuthScreen: React.FC<{ site: PublicSite; forceAdmin?: boolean; onAuth: (s:
             </label>
             <input value={login} onChange={e => setLogin(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSubmit()}
               placeholder={mode === 'register' ? 'Никнейм' : 'Введите логин'} autoFocus
-              className="w-full bg-white/5 border text-white text-sm p-3.5 rounded-2xl outline-none transition-all placeholder-white/20"
-              style={{ borderColor: p + '30' }} />
+              className="w-full bg-white/5 border text-white text-sm p-3.5 outline-none transition-all placeholder-white/20"
+              style={{ borderColor: p + '30', borderRadius: r }} />
           </div>
 
           {mode === 'register' && (
@@ -474,55 +780,52 @@ const AuthScreen: React.FC<{ site: PublicSite; forceAdmin?: boolean; onAuth: (s:
               <label className="text-[9px] font-black uppercase tracking-widest block mb-1.5" style={{ color: p + '80' }}>Email (опционально)</label>
               <div className="flex gap-2">
                 <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="you@example.com"
-                  className="flex-1 bg-white/5 border text-white text-sm p-3.5 rounded-2xl outline-none transition-all placeholder-white/20"
-                  style={{ borderColor: p + '30' }} />
-                {requireEmail && (
+                  className="flex-1 bg-white/5 border text-white text-sm p-3.5 outline-none transition-all placeholder-white/20"
+                  style={{ borderColor: p + '30', borderRadius: r }} />
+                {cfg.requireEmailVerification && (
                   <button onClick={sendCode} disabled={loading || codeSent}
-                    className="px-3 py-2 rounded-2xl text-[9px] font-black uppercase tracking-wider disabled:opacity-40 whitespace-nowrap transition-all"
-                    style={{ background: p + '20', color: p, border: `1px solid ${p}30` }}>
-                    {codeSent ? '✓ Отправлен' : 'Код'}
+                    className="px-3 py-2 text-[9px] font-black uppercase tracking-wider disabled:opacity-40 whitespace-nowrap transition-all"
+                    style={{ background: p + '20', color: p, border: `1px solid ${p}30`, borderRadius: r }}>
+                    {codeSent ? '✓' : 'Код'}
                   </button>
                 )}
               </div>
             </div>
           )}
 
-          {requireEmail && codeSent && (
+          {cfg.requireEmailVerification && codeSent && (
             <div>
               <label className="text-[9px] font-black uppercase tracking-widest block mb-1.5" style={{ color: p + '80' }}>Код из письма</label>
               <input value={verifyCode} onChange={e => setVerifyCode(e.target.value)} placeholder="123456" maxLength={6}
-                className="w-full bg-white/5 border text-white text-sm p-3.5 rounded-2xl outline-none transition-all placeholder-white/20 font-mono tracking-[0.3em] text-center"
-                style={{ borderColor: p + '30' }} />
+                className="w-full bg-white/5 border text-white text-sm p-3.5 outline-none transition-all placeholder-white/20 font-mono tracking-[0.3em] text-center"
+                style={{ borderColor: p + '30', borderRadius: r }} />
             </div>
           )}
 
           <div>
             <label className="text-[9px] font-black uppercase tracking-widest block mb-1.5" style={{ color: p + '80' }}>Пароль</label>
             <div className="relative">
-              <input type={showPass ? 'text' : 'password'} value={password}
-                onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+              <input type={showPass ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSubmit()}
                 placeholder="••••••••"
-                className="w-full bg-white/5 border text-white text-sm p-3.5 rounded-2xl outline-none transition-all placeholder-white/20 pr-12"
-                style={{ borderColor: p + '30' }} />
-              <button onClick={() => setShowPass(v => !v)}
-                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60 transition-colors">
+                className="w-full bg-white/5 border text-white text-sm p-3.5 outline-none transition-all placeholder-white/20 pr-12"
+                style={{ borderColor: p + '30', borderRadius: r }} />
+              <button onClick={() => setShowPass(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: p + '60' }}>
                 {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
           </div>
 
           {error && (
-            <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 rounded-xl p-3">
-              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-              <span className="text-red-400 text-xs">{error}</span>
+            <div className="flex items-center gap-2 py-2.5 px-3 rounded-2xl text-xs" style={{ background: '#ef444415', border: '1px solid #ef444430', color: '#f87171' }}>
+              <AlertCircle className="w-4 h-4 shrink-0" /> {error}
             </div>
           )}
 
           <button onClick={handleSubmit} disabled={loading}
-            className="w-full py-4 rounded-2xl font-black text-[11px] uppercase tracking-widest transition-all disabled:opacity-50 flex items-center justify-center gap-2 mt-2"
-            style={{ background: p, color: '#fff', boxShadow: `0 8px 24px ${p}40` }}>
-            {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : mode === 'login' ? <ChevronRight className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
-            {loading ? 'Подождите...' : mode === 'login' ? 'Войти' : 'Создать аккаунт'}
+            className="w-full py-4 font-black text-[10px] uppercase tracking-widest text-white transition-all disabled:opacity-50 flex items-center justify-center gap-2 mt-1"
+            style={{ background: p, borderRadius: r, boxShadow: `0 6px 20px ${p}40` }}>
+            {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : null}
+            {loading ? 'Загрузка...' : mode === 'login' ? 'Войти' : 'Зарегистрироваться'}
           </button>
         </div>
       </div>
@@ -530,576 +833,652 @@ const AuthScreen: React.FC<{ site: PublicSite; forceAdmin?: boolean; onAuth: (s:
   );
 };
 
-// ─── Admin Picker ──────────────────────────────────────────────────────────────
+// ─── Admin Picker (User selects admin) ──────────────────────────────────────────
 
 const AdminPicker: React.FC<{
-  site: PublicSite; session: ChatSession;
-  existingConvs: Conversation[]; admins: AdminInfo[];
-  onSelect: (conv: Conversation) => void;
-  onLogout: () => void;
+  site: PublicSite; session: ChatSession; existingConvs: Conversation[];
+  admins: AdminInfo[]; onSelect: (conv: Conversation) => void; onLogout: () => void;
 }> = ({ site, session, existingConvs, admins, onSelect, onLogout }) => {
   const cfg = site.config;
   const p = cfg.primaryColor || '#6366f1';
-  const [starting, setStarting] = useState<string | null>(null);
+  const bg = cfg.bgColor || '#09090b';
+  const font = cfg.fontFamily || 'Manrope, sans-serif';
+  const r = getRadius(cfg);
 
-  const startConv = async (adminId: string) => {
-    setStarting(adminId);
+  const startOrOpenConv = async (admin: AdminInfo) => {
+    const ex = existingConvs.find(c => c.admin_id === admin.id);
+    if (ex) { onSelect(ex); return; }
     try {
-      const conv = await apiFetch(`${API}/chat/site/${site.slug}/conversations`, {
+      const data = await apiFetch(`${API}/chat/site/${site.slug}/conversation`, {
         method: 'POST',
-        body: JSON.stringify({ user_id: session.id, admin_id: adminId, user_name: session.username })
+        body: JSON.stringify({ user_id: session.id, user_name: session.display_name, admin_id: admin.id })
       });
-      onSelect(conv);
-    } catch { }
-    finally { setStarting(null); }
+      onSelect(data);
+    } catch (e: any) { alert(e.message); }
   };
 
-  const existingConvMap = new Map(existingConvs.map(c => [c.admin_id, c]));
-
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: cfg.bgColor || '#09090b', fontFamily: cfg.fontFamily }}>
-      {/* Шапка */}
-      <div className="flex items-center justify-between px-6 py-5 border-b" style={{ borderColor: p + '20' }}>
-        <div className="flex items-center gap-3">
-          <div className="w-3 h-3 rounded-full" style={{ background: p }} />
-          <span className="font-black text-white text-lg">{cfg.logoText || site.name}</span>
+    <div className="min-h-screen flex flex-col" style={{ background: bg, fontFamily: font }}>
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b" style={{ borderColor: p + '20' }}>
+        <div className="flex items-center gap-2.5">
+          <div className="w-2.5 h-2.5 rounded-full" style={{ background: p }} />
+          <span className="font-black" style={{ color: p, fontSize: getFontSize(cfg) }}>{cfg.logoText || site.name}</span>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-[10px] font-bold text-white/40">{session.username}</span>
-          <button onClick={onLogout} className="p-2 rounded-xl text-white/30 hover:text-white/70 hover:bg-white/5 transition-all">
-            <LogOut className="w-4 h-4" />
-          </button>
-        </div>
+        <button onClick={onLogout} className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest transition-colors" style={{ color: p + '60' }}>
+          <LogOut className="w-3.5 h-3.5" /> Выйти
+        </button>
       </div>
 
-      <div className="flex-1 p-6 max-w-2xl mx-auto w-full">
-        {/* Приветствие */}
-        <div className="mb-8">
-          <h2 className="text-2xl font-black text-white mb-1">Привет, {session.username}!</h2>
-          <p className="text-white/40 text-sm">{cfg.welcomeMessage || 'Выберите, с кем хотите поговорить'}</p>
+      <div className="flex-1 p-4 sm:p-6 max-w-lg mx-auto w-full">
+        <div className="mb-6">
+          <h2 className="font-black text-white text-lg mb-1">Выберите специалиста</h2>
+          <p className="text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>Выберите администратора для начала диалога</p>
         </div>
 
-        {/* Активные диалоги */}
-        {existingConvs.length > 0 && (
-          <div className="mb-6">
-            <p className="text-[9px] font-black uppercase tracking-widest mb-3" style={{ color: p + '80' }}>Ваши диалоги</p>
-            <div className="space-y-2">
-              {existingConvs.map(conv => {
-                const admin = admins.find(a => a.id === conv.admin_id);
-                const unread = conv.unread_user || 0;
-                return (
-                  <button key={conv.id} onClick={() => onSelect(conv)}
-                    className="w-full flex items-center gap-4 p-4 rounded-2xl border transition-all text-left hover:scale-[1.01]"
-                    style={{ background: 'rgba(255,255,255,0.04)', borderColor: p + '20' }}>
-                    <Avatar name={admin?.display_name || conv.admin_name} color={admin?.avatar_color || p} size="w-12 h-12" online={admin?.is_online} />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-black text-white text-sm">{admin?.display_name || conv.admin_name}</span>
-                        <span className="text-[9px] text-white/30">{conv.last_message_at ? fmtDate(conv.last_message_at) : ''}</span>
-                      </div>
-                      <p className="text-xs text-white/40 truncate">{conv.last_message_preview || 'Нет сообщений'}</p>
-                    </div>
-                    {unread > 0 && (
-                      <div className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-black text-white shrink-0"
-                        style={{ background: p }}>
-                        {unread}
-                      </div>
-                    )}
-                    <ChevronRight className="w-4 h-4 text-white/20 shrink-0" />
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Начать новый диалог */}
-        <p className="text-[9px] font-black uppercase tracking-widest mb-3" style={{ color: p + '80' }}>
-          {existingConvs.length > 0 ? 'Начать новый диалог с' : 'Выберите специалиста'}
-        </p>
         <div className="space-y-3">
-          {admins.map(admin => {
-            const hasConv = existingConvMap.has(admin.id);
+          {admins.filter(a => a).map(admin => {
+            const hasConv = existingConvs.some(c => c.admin_id === admin.id);
             return (
-              <button key={admin.id} onClick={() => startConv(admin.id)} disabled={starting === admin.id}
-                className="w-full flex items-center gap-4 p-5 rounded-2xl border transition-all text-left group hover:scale-[1.01] disabled:opacity-60"
-                style={{ background: hasConv ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.05)', borderColor: p + '30' }}>
-                <Avatar name={admin.display_name} color={admin.avatar_color} size="w-12 h-12" online={admin.is_online} />
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <span className="font-black text-white">{admin.display_name}</span>
-                    {admin.is_online && (
-                      <span className="text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full"
-                        style={{ background: '#10b98120', color: '#10b981' }}>Онлайн</span>
-                    )}
-                  </div>
-                  {admin.bio && <p className="text-xs text-white/40">{admin.bio}</p>}
+              <button key={admin.id} onClick={() => startOrOpenConv(admin)}
+                className="w-full flex items-center gap-4 p-4 sm:p-5 transition-all text-left"
+                style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${p}20`, borderRadius: r }}>
+                <Avatar name={admin.display_name} color={admin.avatar_color} size="w-12 h-12"
+                  online={cfg.showOnlineStatus ? admin.is_online : undefined} />
+                <div className="flex-1 min-w-0">
+                  <p className="font-black text-white text-sm">{admin.display_name}</p>
+                  {admin.bio && <p className="text-xs mt-0.5 truncate" style={{ color: 'rgba(255,255,255,0.35)' }}>{admin.bio}</p>}
+                  {cfg.showOnlineStatus && (
+                    <div className={`flex items-center gap-1.5 mt-1 text-[9px] font-bold uppercase ${admin.is_online ? 'text-emerald-400' : 'text-zinc-600'}`}>
+                      <div className={`w-1.5 h-1.5 rounded-full ${admin.is_online ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+                      {admin.is_online ? 'Онлайн' : 'Офлайн'}
+                    </div>
+                  )}
                 </div>
-                <div className="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-all group-hover:scale-110"
-                  style={{ background: starting === admin.id ? p + '30' : p }}>
-                  {starting === admin.id ? <RefreshCw className="w-3.5 h-3.5 text-white animate-spin" /> : <Plus className="w-3.5 h-3.5 text-white" />}
+                <div className="flex items-center gap-2 shrink-0">
+                  {hasConv && <div className="w-2 h-2 rounded-full" style={{ background: p }} />}
+                  <ChevronRight className="w-4 h-4" style={{ color: p + '50' }} />
                 </div>
               </button>
             );
           })}
+
+          {/* Групповой чат */}
+          {cfg.groupChatEnabled && (
+            <button onClick={() => onSelect({ id: '__group__', site_id: site.id, user_id: session.id, admin_id: '__group__', user_name: session.display_name, admin_name: 'Чат', last_message_at: 0, last_message_preview: '', unread_admin: 0, unread_user: 0 })}
+              className="w-full flex items-center gap-4 p-4 sm:p-5 transition-all text-left"
+              style={{ background: p + '10', border: `1px solid ${p}30`, borderRadius: r }}>
+              <div className="w-12 h-12 rounded-full flex items-center justify-center text-2xl" style={{ background: p + '20' }}>💬</div>
+              <div className="flex-1">
+                <p className="font-black text-white text-sm">Общий чат</p>
+                <p className="text-xs mt-0.5" style={{ color: p + '80' }}>Все участники вместе</p>
+              </div>
+              <Layers className="w-4 h-4" style={{ color: p + '60' }} />
+            </button>
+          )}
         </div>
-      </div>
-    </div>
-  );
-};
 
-// ─── User Chat View ─────────────────────────────────────────────────────────────
-
-const UserChat: React.FC<{
-  site: PublicSite; session: ChatSession;
-  conversation: Conversation; admins: AdminInfo[];
-  onBack: () => void; onLogout: () => void;
-}> = ({ site, session, conversation, admins, onBack, onLogout }) => {
-  const cfg = site.config;
-  const p = cfg.primaryColor || '#6366f1';
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [lastTs, setLastTs] = useState(0);
-  const [broadcasts, setBroadcasts] = useState<any[]>([]);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const convId = conversation.id;
-  const admin = admins.find(a => a.id === conversation.admin_id);
-
-  const fetchMsgs = useCallback(async (since = lastTs) => {
-    try {
-      const data: Message[] = await apiFetch(`${API}/chat/site/${site.slug}/conversations/${convId}/messages?since=${since}`);
-      if (data.length) {
-        setMessages(prev => {
-          const ids = new Set(prev.map(m => m.id));
-          const fresh = data.filter(m => !ids.has(m.id));
-          return fresh.length ? [...prev, ...fresh] : prev;
-        });
-        setLastTs(Math.max(...data.map(m => m.created_at)));
-      }
-    } catch { }
-  }, [convId, lastTs]);
-
-  useEffect(() => {
-    // Initial load
-    apiFetch(`${API}/chat/site/${site.slug}/conversations/${convId}/messages?since=0`)
-      .then((data: Message[]) => { setMessages(data); if (data.length) setLastTs(Math.max(...data.map(m => m.created_at))); })
-      .catch(() => {});
-    // Рассылки
-    apiFetch(`${API}/chat/site/${site.slug}/broadcasts`).then(setBroadcasts).catch(() => {});
-    // Mark read
-    fetch(`${API}/chat/site/${site.slug}/conversations/${convId}/read`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ role: 'user' }) });
-    const int = setInterval(fetchMsgs, POLL);
-    return () => clearInterval(int);
-  }, [convId]);
-
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, broadcasts]);
-
-  const handleSend = async (text: string, mediaUrl?: string, mediaType?: string, sticker?: string) => {
-    const r = await apiFetch(`${API}/chat/site/${site.slug}/conversations/${convId}/messages`, {
-      method: 'POST',
-      body: JSON.stringify({
-        from_id: session.id, from_name: session.username, from_role: 'user',
-        text: text || null, media_url: mediaUrl, media_type: mediaType,
-        sticker_emoji: sticker, sticker_type: sticker ? 'sticker' : undefined,
-        ...(sticker ? { media_type: 'sticker' } : {})
-      })
-    });
-    setMessages(prev => [...prev, r]);
-    setLastTs(r.created_at);
-  };
-
-  // Объединяем сообщения и рассылки в хронологическом порядке
-  const allItems = [...messages, ...broadcasts.map(b => ({
-    ...b, id: b.id, from_role: 'system' as const, from_id: 'system',
-    from_name: b.from_name, text: `📢 ${b.text}`, media_url: null, media_type: null, sticker_emoji: null
-  }))].sort((a, b) => a.created_at - b.created_at);
-
-  let lastDate = '';
-
-  return (
-    <div className="flex flex-col h-screen" style={{ background: cfg.bgColor, fontFamily: cfg.fontFamily }}>
-      {/* Шапка */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b shrink-0" style={{ borderColor: p + '20', background: cfg.bgColor + 'ee' }}>
-        <button onClick={onBack} className="p-2 rounded-xl hover:bg-white/5 text-white/40 hover:text-white transition-all">
-          <ArrowLeft className="w-4 h-4" />
-        </button>
-        {admin && <Avatar name={admin.display_name} color={admin.avatar_color} size="w-9 h-9" online={admin.is_online} />}
-        <div className="flex-1 min-w-0">
-          <p className="font-black text-white text-sm truncate">{admin?.display_name || conversation.admin_name}</p>
-          <p className="text-[9px] font-bold" style={{ color: p + '80' }}>
-            {admin?.is_online ? '● Онлайн' : admin?.bio || ''}
-          </p>
-        </div>
-        <button onClick={onLogout} className="p-2 rounded-xl text-white/20 hover:text-white/50 hover:bg-white/5 transition-all">
-          <LogOut className="w-4 h-4" />
-        </button>
-      </div>
-
-      {/* Сообщения */}
-      <div className="flex-1 overflow-y-auto px-4 pt-4 no-scrollbar">
-        {allItems.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full gap-3">
-            <div className="text-5xl">👋</div>
-            <p className="text-white/30 text-sm font-bold">Напишите первое сообщение</p>
+        {existingConvs.length > 0 && (
+          <div className="mt-8">
+            <p className="text-[9px] font-black uppercase tracking-widest mb-3" style={{ color: p + '60' }}>Мои диалоги</p>
+            <div className="space-y-2">
+              {existingConvs.map(conv => (
+                <button key={conv.id} onClick={() => onSelect(conv)}
+                  className="w-full flex items-center gap-3 p-3 sm:p-4 text-left transition-all"
+                  style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${p}15`, borderRadius: r }}>
+                  <Avatar name={conv.admin_name} color={p} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-white text-sm font-bold">{conv.admin_name}</p>
+                    {conv.last_message_preview && (
+                      <p className="text-xs truncate mt-0.5" style={{ color: 'rgba(255,255,255,0.3)' }}>{conv.last_message_preview}</p>
+                    )}
+                  </div>
+                  {conv.unread_user > 0 && (
+                    <div className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-black text-white shrink-0" style={{ background: p }}>
+                      {conv.unread_user}
+                    </div>
+                  )}
+                </button>
+              ))}
+            </div>
           </div>
         )}
-        {allItems.map(msg => {
-          const d = fmtDate(msg.created_at);
-          const showDate = d !== lastDate;
-          if (showDate) lastDate = d;
-          return (
-            <React.Fragment key={msg.id}>
-              {showDate && (
-                <div className="flex justify-center my-4">
-                  <span className="text-[9px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full"
-                    style={{ color: p + '70', background: p + '12' }}>{d}</span>
-                </div>
-              )}
-              <MessageBubble msg={msg as Message} session={session} primary={p} />
-            </React.Fragment>
-          );
-        })}
-        <div ref={bottomRef} className="h-2" />
       </div>
-
-      <MessageInput onSend={handleSend} primary={p} commands={cfg.commands || []} />
     </div>
   );
 };
 
-// ─── Admin Chat Panel ───────────────────────────────────────────────────────────
+// ─── User Chat ──────────────────────────────────────────────────────────────────
 
-const AdminChatPanel: React.FC<{
-  site: PublicSite; session: ChatSession;
-  onLogout: () => void;
-}> = ({ site, session, onLogout }) => {
+const UserChat: React.FC<{
+  site: PublicSite; session: ChatSession; conversation: Conversation;
+  admins: AdminInfo[]; onBack: () => void; onLogout: () => void;
+}> = ({ site, session, conversation, admins, onBack, onLogout }) => {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [loading, setLoading] = useState(true);
+  const bottomRef = useRef<HTMLDivElement>(null);
   const cfg = site.config;
   const p = cfg.primaryColor || '#6366f1';
+  const r = getRadius(cfg);
+
+  // If group chat
+  if (conversation.id === '__group__') {
+    return (
+      <div className="min-h-screen flex flex-col" style={{ background: cfg.bgColor || '#09090b', fontFamily: cfg.fontFamily || 'Manrope, sans-serif' }}>
+        <div className="flex items-center gap-3 px-4 sm:px-5 py-3 border-b" style={{ borderColor: p + '20' }}>
+          <button onClick={onBack} className="p-2 rounded-xl hover:bg-white/10 transition-all"><ArrowLeft className="w-4 h-4" style={{ color: p }} /></button>
+          <div className="w-8 h-8 rounded-full flex items-center justify-center text-lg" style={{ background: p + '20' }}>💬</div>
+          <div className="flex-1">
+            <p className="font-black text-white text-sm">Общий чат</p>
+            <p className="text-[9px] font-bold uppercase tracking-widest" style={{ color: p + '80' }}>Все участники</p>
+          </div>
+          <button onClick={onLogout} className="p-2 rounded-xl hover:bg-white/10 transition-all"><LogOut className="w-4 h-4" style={{ color: p + '60' }} /></button>
+        </div>
+        <div className="flex-1 flex flex-col min-h-0">
+          <GroupChat site={site} session={session} />
+        </div>
+      </div>
+    );
+  }
+
+  const admin = admins.find(a => a.id === conversation.admin_id);
+
+  const loadMessages = useCallback(async () => {
+    try {
+      const data = await apiFetch(`${API}/chat/site/${site.slug}/messages/${conversation.id}?role=user&session_id=${session.id}`);
+      setMessages(Array.isArray(data) ? data : []);
+    } catch { } finally { setLoading(false); }
+  }, [site.slug, conversation.id, session.id]);
+
+  useEffect(() => {
+    loadMessages();
+    const interval = setInterval(loadMessages, POLL);
+    return () => clearInterval(interval);
+  }, [loadMessages]);
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages.length]);
+
+  const handleSend = async (text: string, mediaUrl?: string, mediaType?: string, sticker?: string) => {
+    await apiFetch(`${API}/chat/site/${site.slug}/message`, {
+      method: 'POST',
+      body: JSON.stringify({
+        conversation_id: conversation.id, from_id: session.id,
+        from_name: session.display_name, from_role: session.role,
+        text: text || null, media_url: mediaUrl, media_type: mediaType, sticker_emoji: sticker
+      })
+    });
+    await loadMessages();
+  };
+
+  const grouped: { date: string; msgs: Message[] }[] = [];
+  for (const msg of messages) {
+    const d = fmtDate(msg.created_at);
+    if (!grouped.length || grouped[grouped.length-1].date !== d) grouped.push({ date: d, msgs: [] });
+    grouped[grouped.length-1].msgs.push(msg);
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ background: cfg.bgColor || '#09090b', fontFamily: cfg.fontFamily || 'Manrope, sans-serif' }}>
+      {/* Header */}
+      <div className="flex items-center gap-3 px-3 sm:px-5 py-3 border-b" style={{ borderColor: p + '20' }}>
+        <button onClick={onBack} className="p-2 rounded-xl hover:bg-white/10 transition-all"><ArrowLeft className="w-4 h-4" style={{ color: p }} /></button>
+        {admin ? (
+          <Avatar name={admin.display_name} color={admin.avatar_color} size="w-9 h-9"
+            online={cfg.showOnlineStatus ? admin.is_online : undefined} />
+        ) : (
+          <div className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: p + '20' }}>
+            <Shield className="w-4 h-4" style={{ color: p }} />
+          </div>
+        )}
+        <div className="flex-1 min-w-0">
+          <p className="font-black text-white text-sm truncate">{conversation.admin_name}</p>
+          {cfg.showOnlineStatus && admin && (
+            <p className={`text-[9px] font-bold uppercase ${admin.is_online ? 'text-emerald-400' : 'text-zinc-600'}`}>
+              {admin.is_online ? '● Онлайн' : '○ Офлайн'}
+            </p>
+          )}
+        </div>
+        <button onClick={onLogout} className="p-2 rounded-xl hover:bg-white/10 transition-all"><LogOut className="w-3.5 h-3.5" style={{ color: p + '60' }} /></button>
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto p-3 sm:p-4">
+        {loading ? (
+          <div className="flex justify-center py-8"><RefreshCw className="w-5 h-5 text-white/20 animate-spin" /></div>
+        ) : messages.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full py-16 text-center">
+            <MessageCircle className="w-12 h-12 mb-4" style={{ color: p + '25' }} />
+            <p className="font-black text-sm" style={{ color: 'rgba(255,255,255,0.25)' }}>Напишите первое сообщение</p>
+          </div>
+        ) : grouped.map(({ date, msgs }) => (
+          <div key={date}>
+            <div className="flex justify-center my-4">
+              <span className="text-[10px] font-bold px-3 py-1 rounded-full" style={{ background: p + '15', color: p + 'aa' }}>{date}</span>
+            </div>
+            {msgs.map(msg => (
+              <MessageBubble key={msg.id} msg={msg} session={session} primary={p} cfg={cfg} />
+            ))}
+          </div>
+        ))}
+        <div ref={bottomRef} />
+      </div>
+
+      <MessageInput onSend={handleSend} primary={p} commands={cfg.commands || []} cfg={cfg} />
+    </div>
+  );
+};
+
+// ─── Admin Chat Panel ────────────────────────────────────────────────────────────
+
+const AdminChatPanel: React.FC<{
+  site: PublicSite; session: ChatSession; onLogout: () => void;
+}> = ({ site, session, onLogout }) => {
+  const [tab, setTab] = useState<'chats' | 'group' | 'users' | 'broadcast'>('chats');
   const [convs, setConvs] = useState<Conversation[]>([]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [users, setUsers] = useState<SiteUser[]>([]);
-  const [tab, setTab] = useState<'chat' | 'users' | 'broadcast'>('chat');
-  const [lastTs, setLastTs] = useState(0);
   const [broadcastText, setBroadcastText] = useState('');
   const [sending, setSending] = useState(false);
-  const [banReason, setBanReason] = useState('');
+  const [isOnline, setIsOnline] = useState(true);
   const [showBanModal, setShowBanModal] = useState<SiteUser | null>(null);
+  const [banReason, setBanReason] = useState('');
+  const [warnReason, setWarnReason] = useState('');
+  const [showWarnModal, setShowWarnModal] = useState<SiteUser | null>(null);
+  const [muteUserId, setMuteUserId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const pollRef = useRef<NodeJS.Timeout>();
 
-  const isAdminRole = session.role === 'admin' || session.role === 'owner';
+  const p = site.config.primaryColor || '#6366f1';
+  const bg = site.config.bgColor || '#09090b';
+  const font = site.config.fontFamily || 'Manrope, sans-serif';
 
-  const fetchConvs = async () => {
+  // Set admin online on mount
+  useEffect(() => {
+    if (session.role === 'admin' || session.role === 'owner') {
+      fetch(`${API}/chat/sites/${site.id}/admins/${session.id}/online`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_online: true })
+      });
+    }
+    return () => {
+      fetch(`${API}/chat/sites/${site.id}/admins/${session.id}/online`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_online: false })
+      });
+    };
+  }, []);
+
+  const toggleOnline = async () => {
+    const next = !isOnline;
+    setIsOnline(next);
+    await fetch(`${API}/chat/sites/${site.id}/admins/${session.id}/online`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_online: next })
+    });
+  };
+
+  const loadConvs = async () => {
     try {
       const data = await apiFetch(`${API}/chat/site/${site.slug}/conversations?role=${session.role}&session_id=${session.id}`);
       setConvs(Array.isArray(data) ? data : []);
     } catch { }
   };
 
-  const fetchMessages = useCallback(async (convId: string, since = 0) => {
+  const loadMessages = async (convId: string) => {
     try {
-      const data: Message[] = await apiFetch(`${API}/chat/site/${site.slug}/conversations/${convId}/messages?since=${since}`);
-      if (data.length) {
-        setMessages(prev => {
-          const ids = new Set(prev.map(m => m.id));
-          const fresh = data.filter(m => !ids.has(m.id));
-          return fresh.length ? [...prev, ...fresh] : prev;
-        });
-        setLastTs(Math.max(...data.map(m => m.created_at)));
-      }
+      const data = await apiFetch(`${API}/chat/site/${site.slug}/messages/${convId}?role=${session.role}&session_id=${session.id}`);
+      setMessages(Array.isArray(data) ? data : []);
     } catch { }
-  }, []);
+  };
+
+  const loadUsers = async () => {
+    try {
+      const data = await apiFetch(`${API}/chat/site/${site.slug}/users?role=${session.role}`);
+      setUsers(Array.isArray(data) ? data : []);
+    } catch { }
+  };
 
   useEffect(() => {
-    fetchConvs();
-    // Обновляем статус онлайн
-    if (session.role === 'admin') {
-      fetch(`${API}/chat/sites/${site.id}/admins/${session.id}/online`, {
-        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ is_online: true })
-      });
-    }
-    if (tab === 'users') {
-      apiFetch(`${API}/chat/site/${site.slug}/users?role=${session.role}`).then(setUsers).catch(() => {});
-    }
+    loadConvs();
+    pollRef.current = setInterval(loadConvs, POLL);
+    return () => clearInterval(pollRef.current);
+  }, [site.slug]);
+
+  useEffect(() => {
+    if (tab === 'users') loadUsers();
   }, [tab]);
 
   useEffect(() => {
-    const convInt = setInterval(fetchConvs, POLL);
-    return () => {
-      convInt;
-      clearInterval(convInt);
-      if (session.role === 'admin') {
-        fetch(`${API}/chat/sites/${site.id}/admins/${session.id}/online`, {
-          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ is_online: false })
-        });
-      }
-    };
-  }, []);
-
-  useEffect(() => {
     if (!selectedConv) return;
-    setMessages([]);
-    apiFetch(`${API}/chat/site/${site.slug}/conversations/${selectedConv.id}/messages?since=0`)
-      .then((data: Message[]) => { setMessages(data); if (data.length) setLastTs(Math.max(...data.map(m => m.created_at))); })
-      .catch(() => {});
-    fetch(`${API}/chat/site/${site.slug}/conversations/${selectedConv.id}/read`, {
-      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ role: session.role })
-    });
-    const int = setInterval(() => fetchMessages(selectedConv.id, lastTs), POLL);
-    return () => clearInterval(int);
+    loadMessages(selectedConv.id);
+    const iv = setInterval(() => loadMessages(selectedConv.id), POLL);
+    return () => clearInterval(iv);
   }, [selectedConv?.id]);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages.length]);
 
   const handleSend = async (text: string, mediaUrl?: string, mediaType?: string, sticker?: string) => {
     if (!selectedConv) return;
-    const r = await apiFetch(`${API}/chat/site/${site.slug}/conversations/${selectedConv.id}/messages`, {
+    await apiFetch(`${API}/chat/site/${site.slug}/message`, {
       method: 'POST',
       body: JSON.stringify({
-        from_id: session.id, from_name: session.display_name || session.username,
-        from_role: session.role, text: text || null,
-        media_url: mediaUrl, media_type: sticker ? 'sticker' : mediaType,
-        sticker_emoji: sticker
+        conversation_id: selectedConv.id, from_id: session.id,
+        from_name: session.display_name, from_role: session.role,
+        text: text || null, media_url: mediaUrl, media_type: mediaType, sticker_emoji: sticker
       })
     });
-    setMessages(prev => [...prev, r]);
-    setLastTs(r.created_at);
-    fetchConvs();
-  };
-
-  const handleBan = async (u: SiteUser, isBanned: boolean, reason = '') => {
-    await fetch(`${API}/chat/site/${site.slug}/users/${u.id}/ban`, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ role: session.role, is_banned: isBanned, ban_reason: reason })
-    });
-    setUsers(prev => prev.map(usr => usr.id === u.id ? { ...usr, is_banned: isBanned, ban_reason: reason } : usr));
-    setShowBanModal(null);
+    await loadMessages(selectedConv.id);
+    await loadConvs();
   };
 
   const handleBroadcast = async () => {
-    if (!broadcastText.trim() || sending) return;
+    if (!broadcastText.trim()) return;
     setSending(true);
     try {
       await apiFetch(`${API}/chat/site/${site.slug}/broadcast`, {
         method: 'POST',
-        body: JSON.stringify({ role: session.role, from_id: session.id, from_name: session.display_name || session.username, text: broadcastText })
+        body: JSON.stringify({ role: session.role, from_id: session.id, from_name: session.display_name, text: broadcastText })
       });
       setBroadcastText('');
     } catch { } finally { setSending(false); }
   };
 
-  const totalUnread = convs.reduce((acc, c) => acc + (c.unread_admin || 0), 0);
+  const handleBan = async (user: SiteUser, ban: boolean) => {
+    await apiFetch(`${API}/chat/site/${site.slug}/users/${user.id}/ban`, {
+      method: 'POST', body: JSON.stringify({ role: session.role, is_banned: ban, ban_reason: banReason })
+    });
+    setBanReason(''); setShowBanModal(null);
+    loadUsers();
+  };
+
+  const handleWarn = async (user: SiteUser) => {
+    if (!warnReason.trim()) return;
+    const data = await apiFetch(`${API}/chat/site/${site.slug}/users/${user.id}/warn`, {
+      method: 'POST',
+      body: JSON.stringify({ role: session.role, admin_id: session.id, admin_name: session.display_name, reason: warnReason })
+    });
+    setWarnReason(''); setShowWarnModal(null);
+    if (data.auto_banned) alert('Пользователь автоматически забанен');
+    loadUsers();
+  };
+
+  const handleMute = async (userId: string, minutes: number) => {
+    const muted_until_ms = minutes > 0 ? Date.now() + minutes * 60000 : 0;
+    await apiFetch(`${API}/chat/site/${site.slug}/users/${userId}/mute`, {
+      method: 'POST', body: JSON.stringify({ role: session.role, muted_until_ms })
+    });
+    setMuteUserId(null);
+    loadUsers();
+  };
+
   const TABS = [
-    { id: 'chat', label: 'Диалоги', icon: MessageCircle, badge: totalUnread },
+    { id: 'chats', label: 'Диалоги', icon: MessageCircle },
+    ...(site.config.groupChatEnabled ? [{ id: 'group', label: 'Чат', icon: Layers }] : []),
+    { id: 'users', label: 'Юзеры', icon: Users },
+    { id: 'broadcast', label: 'Рассылка', icon: Megaphone },
   ] as const;
 
   return (
-    <div className="flex h-screen" style={{ background: cfg.bgColor, fontFamily: cfg.fontFamily }}>
-      {/* Ban Modal */}
-      {showBanModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/70" onClick={() => setShowBanModal(null)} />
-          <div className="relative bg-[#111] border border-zinc-800 rounded-[2rem] p-6 w-80">
-            <h3 className="text-white font-black mb-4">Заблокировать {showBanModal.username}?</h3>
-            <textarea value={banReason} onChange={e => setBanReason(e.target.value)} placeholder="Причина (необязательно)"
-              rows={3} className="w-full bg-black border border-zinc-800 text-white text-sm p-3 rounded-xl outline-none resize-none mb-4" />
-            <div className="flex gap-3">
-              <button onClick={() => setShowBanModal(null)} className="flex-1 py-3 rounded-2xl bg-zinc-800 text-white text-xs font-bold">Отмена</button>
-              <button onClick={() => handleBan(showBanModal, true, banReason)} className="flex-1 py-3 rounded-2xl bg-rose-600 text-white text-xs font-bold">Заблокировать</button>
-            </div>
-          </div>
+    <div className="flex flex-col h-screen" style={{ background: bg, fontFamily: font }}>
+      {/* Header */}
+      <div className="flex items-center gap-3 px-3 sm:px-5 py-3 border-b shrink-0" style={{ borderColor: p + '20' }}>
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: p }} />
+          <span className="font-black text-sm truncate" style={{ color: p }}>{site.config.logoText || site.name}</span>
+          <span className="text-[8px] text-zinc-600 font-mono hidden sm:block shrink-0">@{site.slug}</span>
         </div>
-      )}
-
-      {/* Сайдбар */}
-      <div className="w-72 border-r flex flex-col shrink-0" style={{ borderColor: p + '20', background: cfg.bgColor + 'dd' }}>
-        <div className="p-5 border-b" style={{ borderColor: p + '15' }}>
-          <div className="flex items-center gap-2 mb-2">
-            <div className="w-2.5 h-2.5 rounded-full" style={{ background: p }} />
-            <span className="font-black text-white">{cfg.logoText || site.name}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Shield className="w-3 h-3" style={{ color: p }} />
-            <span className="text-[10px] font-black uppercase tracking-wider" style={{ color: p }}>
-              {session.role === 'owner' ? 'Владелец' : session.display_name || session.username}
-            </span>
-          </div>
-        </div>
-
-        <nav className="p-2 space-y-0.5">
-          {TABS.map(t => (
-            <button key={t.id} onClick={() => setTab(t.id as any)}
-              className="flex items-center gap-3 w-full px-4 py-3 rounded-2xl transition-all text-left"
-              style={{ background: tab === t.id ? p + '20' : 'transparent', color: tab === t.id ? p : 'rgba(255,255,255,0.4)' }}>
-              <t.icon className="w-4 h-4 shrink-0" />
-              <span className="text-xs font-bold">{t.label}</span>
-              {(t as any).badge > 0 && (
-                <span className="ml-auto text-[8px] font-black px-2 py-0.5 rounded-full text-white" style={{ background: p }}>
-                  {(t as any).badge}
-                </span>
-              )}
-            </button>
-          ))}
-        </nav>
-
-        {/* Список диалогов */}
-        {tab === 'chat' && (
-          <div className="flex-1 overflow-y-auto p-2 no-scrollbar">
-            {convs.length === 0 ? (
-              <div className="text-center py-8">
-                <MessageCircle className="w-8 h-8 mx-auto mb-2" style={{ color: p + '30' }} />
-                <p className="text-[10px] text-white/20 font-bold">Нет диалогов</p>
-              </div>
-            ) : (
-              <div className="space-y-1">
-                {convs.map(conv => {
-                  const unread = conv.unread_admin || 0;
-                  const isSelected = selectedConv?.id === conv.id;
-                  return (
-                    <button key={conv.id} onClick={() => setSelectedConv(conv)}
-                      className="w-full flex items-start gap-3 p-3 rounded-2xl transition-all text-left"
-                      style={{ background: isSelected ? p + '20' : 'rgba(255,255,255,0.03)', border: `1px solid ${isSelected ? p + '40' : 'transparent'}` }}>
-                      <Avatar name={conv.user_name || '?'} size="w-8 h-8" />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-black text-white truncate">{conv.user_name}</span>
-                          {unread > 0 && (
-                            <span className="text-[8px] font-black px-1.5 py-0.5 rounded-full text-white shrink-0 ml-1" style={{ background: p }}>
-                              {unread}
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-[10px] text-white/30 truncate mt-0.5">{conv.last_message_preview || '...'}</p>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="p-3 border-t mt-auto" style={{ borderColor: p + '10' }}>
-          <button onClick={onLogout} className="flex items-center gap-2 w-full px-4 py-2.5 rounded-2xl text-[9px] font-black uppercase tracking-wider text-white/30 hover:text-white/60 hover:bg-white/5 transition-all">
-            <LogOut className="w-3.5 h-3.5" /> Выйти
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Online toggle */}
+          <button onClick={toggleOnline}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl transition-all text-[9px] font-black uppercase border"
+            style={{
+              background: isOnline ? '#10b98115' : '#71717a15',
+              color: isOnline ? '#10b981' : '#71717a',
+              borderColor: isOnline ? '#10b98130' : '#71717a30'
+            }}>
+            {isOnline ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+            <span className="hidden sm:inline">{isOnline ? 'Онлайн' : 'Офлайн'}</span>
+          </button>
+          <Avatar name={session.display_name} color={session.avatar_color || p} size="w-8 h-8" />
+          <button onClick={onLogout} className="p-2 rounded-xl hover:bg-white/10 transition-all">
+            <LogOut className="w-3.5 h-3.5" style={{ color: p + '70' }} />
           </button>
         </div>
       </div>
 
-      {/* Основная область */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      {/* Tabs */}
+      <div className="flex border-b shrink-0 overflow-x-auto no-scrollbar" style={{ borderColor: p + '15' }}>
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id as any)}
+            className="flex items-center gap-1.5 px-3 sm:px-5 py-2.5 text-[10px] font-black uppercase tracking-widest border-b-2 transition-all whitespace-nowrap flex-1 sm:flex-none justify-center"
+            style={{ borderColor: tab === t.id ? p : 'transparent', color: tab === t.id ? p : 'rgba(255,255,255,0.3)' }}>
+            <t.icon className="w-3.5 h-3.5" /><span className="hidden sm:inline">{t.label}</span>
+          </button>
+        ))}
+      </div>
 
-        {/* ── Чат ── */}
-        {tab === 'chat' && (
+      {/* Body */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Ban modal */}
+        {showBanModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/80" onClick={() => setShowBanModal(null)} />
+            <div className="relative w-full max-w-sm bg-[#111] border border-zinc-800 rounded-[2rem] p-6 space-y-4">
+              <p className="text-white font-black">Забанить {showBanModal.username}?</p>
+              <input value={banReason} onChange={e => setBanReason(e.target.value)} placeholder="Причина..."
+                className="w-full bg-black border border-zinc-800 text-white p-3 rounded-xl outline-none text-sm" />
+              <div className="flex gap-3">
+                <button onClick={() => setShowBanModal(null)} className="flex-1 py-3 rounded-xl bg-zinc-800 text-zinc-400 text-xs font-black uppercase">Отмена</button>
+                <button onClick={() => handleBan(showBanModal, true)} className="flex-1 py-3 rounded-xl bg-rose-600 text-white text-xs font-black uppercase">Забанить</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Warn modal */}
+        {showWarnModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/80" onClick={() => setShowWarnModal(null)} />
+            <div className="relative w-full max-w-sm bg-[#111] border border-zinc-800 rounded-[2rem] p-6 space-y-4">
+              <p className="text-white font-black flex items-center gap-2"><AlertTriangle className="w-4 h-4 text-amber-400" /> Варн для {showWarnModal.username}</p>
+              <input value={warnReason} onChange={e => setWarnReason(e.target.value)} placeholder="Причина варна..."
+                className="w-full bg-black border border-zinc-800 text-white p-3 rounded-xl outline-none text-sm"
+                onKeyDown={e => e.key === 'Enter' && handleWarn(showWarnModal)} />
+              <div className="flex gap-3">
+                <button onClick={() => setShowWarnModal(null)} className="flex-1 py-3 rounded-xl bg-zinc-800 text-zinc-400 text-xs font-black uppercase">Отмена</button>
+                <button onClick={() => handleWarn(showWarnModal)} disabled={!warnReason.trim()} className="flex-1 py-3 rounded-xl bg-amber-600 text-white text-xs font-black uppercase disabled:opacity-40">+Варн</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Chats ── */}
+        {tab === 'chats' && (
           <>
-            {!selectedConv ? (
-              <div className="flex-1 flex items-center justify-center">
-                <div className="text-center">
-                  <MessageCircle className="w-12 h-12 mx-auto mb-3" style={{ color: p + '30' }} />
-                  <p className="text-white/30 font-bold">Выберите диалог</p>
+            {/* Conv list - sidebar on desktop, full on mobile */}
+            <div className={`${selectedConv ? 'hidden sm:flex' : 'flex'} flex-col w-full sm:w-72 border-r shrink-0`} style={{ borderColor: p + '15' }}>
+              <div className="p-3 border-b" style={{ borderColor: p + '10' }}>
+                <p className="text-[9px] font-black uppercase tracking-widest" style={{ color: p }}>Диалоги ({convs.length})</p>
+              </div>
+              <div className="flex-1 overflow-y-auto no-scrollbar">
+                {convs.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-full py-16 text-center px-4">
+                    <MessageCircle className="w-10 h-10 mb-3" style={{ color: p + '20' }} />
+                    <p className="text-xs font-bold" style={{ color: 'rgba(255,255,255,0.2)' }}>Нет диалогов</p>
+                  </div>
+                ) : convs.map(conv => (
+                  <button key={conv.id} onClick={() => setSelectedConv(conv)}
+                    className={`w-full flex items-center gap-3 px-3 py-3 border-b text-left transition-all ${selectedConv?.id === conv.id ? 'border-l-2' : 'hover:bg-white/5'}`}
+                    style={{ borderColor: p + '10', borderLeftColor: selectedConv?.id === conv.id ? p : 'transparent' }}>
+                    <Avatar name={conv.user_name} size="w-9 h-9" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <p className="text-white text-xs font-black truncate">{conv.user_name}</p>
+                        {conv.last_message_at > 0 && <span className="text-[9px] shrink-0 ml-1" style={{ color: 'rgba(255,255,255,0.2)' }}>{fmtTime(conv.last_message_at)}</span>}
+                      </div>
+                      {conv.last_message_preview && (
+                        <p className="text-[10px] truncate mt-0.5" style={{ color: 'rgba(255,255,255,0.3)' }}>{conv.last_message_preview}</p>
+                      )}
+                    </div>
+                    {conv.unread_admin > 0 && (
+                      <div className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-black text-white shrink-0" style={{ background: p }}>
+                        {conv.unread_admin}
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Message area */}
+            {selectedConv ? (
+              <div className="flex-1 flex flex-col min-w-0">
+                <div className="flex items-center gap-3 px-3 sm:px-4 py-2.5 border-b shrink-0" style={{ borderColor: p + '15' }}>
+                  <button onClick={() => setSelectedConv(null)} className="sm:hidden p-1.5 rounded-xl hover:bg-white/10 transition-all">
+                    <ArrowLeft className="w-4 h-4" style={{ color: p }} />
+                  </button>
+                  <Avatar name={selectedConv.user_name} size="w-8 h-8" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-white font-black text-sm truncate">{selectedConv.user_name}</p>
+                  </div>
                 </div>
+                <div className="flex-1 overflow-y-auto p-3 sm:p-4">
+                  {messages.length === 0 ? (
+                    <div className="flex items-center justify-center h-full">
+                      <p className="text-xs font-bold" style={{ color: 'rgba(255,255,255,0.2)' }}>Начните диалог</p>
+                    </div>
+                  ) : (() => {
+                    const grouped: { date: string; msgs: Message[] }[] = [];
+                    for (const msg of messages) {
+                      const d = fmtDate(msg.created_at);
+                      if (!grouped.length || grouped[grouped.length-1].date !== d) grouped.push({ date: d, msgs: [] });
+                      grouped[grouped.length-1].msgs.push(msg);
+                    }
+                    return grouped.map(({ date, msgs }) => (
+                      <div key={date}>
+                        <div className="flex justify-center my-4">
+                          <span className="text-[10px] font-bold px-3 py-1 rounded-full" style={{ background: p + '15', color: p + 'aa' }}>{date}</span>
+                        </div>
+                        {msgs.map(msg => (
+                          <MessageBubble key={msg.id} msg={msg} session={session} primary={p} cfg={site.config} />
+                        ))}
+                      </div>
+                    ));
+                  })()}
+                  <div ref={bottomRef} />
+                </div>
+                <MessageInput onSend={handleSend} primary={p} commands={[]} placeholder={`Ответить ${selectedConv.user_name}...`} cfg={site.config} />
               </div>
             ) : (
-              <>
-                <div className="flex items-center justify-between px-6 py-4 border-b shrink-0" style={{ borderColor: p + '15' }}>
-                  <div className="flex items-center gap-3">
-                    <Avatar name={selectedConv.user_name || '?'} size="w-9 h-9" />
-                    <div>
-                      <p className="font-black text-white">{selectedConv.user_name}</p>
-                      <p className="text-[9px] font-bold text-white/30">пользователь</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {tab === 'chat' && selectedConv && (() => {
-                      const u = users.find(u => u.id === selectedConv.user_id);
-                      return u ? (
-                        u.is_banned ? (
-                          <button onClick={() => handleBan(u, false)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                            <Ban className="w-3 h-3" /> Разблокировать
-                          </button>
-                        ) : (
-                          <button onClick={() => { setBanReason(''); setShowBanModal(u); }}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/20">
-                            <Ban className="w-3 h-3" /> Заблокировать
-                          </button>
-                        )
-                      ) : null;
-                    })()}
-                  </div>
+              <div className="hidden sm:flex flex-1 items-center justify-center">
+                <div className="text-center">
+                  <MessageCircle className="w-12 h-12 mx-auto mb-3" style={{ color: p + '20' }} />
+                  <p className="text-xs font-bold" style={{ color: 'rgba(255,255,255,0.2)' }}>Выберите диалог</p>
                 </div>
-
-                <div className="flex-1 overflow-y-auto px-5 pt-4 no-scrollbar">
-                  {messages.length === 0 && (
-                    <div className="flex flex-col items-center justify-center h-full gap-2">
-                      <MessageCircle className="w-8 h-8" style={{ color: p + '30' }} />
-                      <p className="text-white/20 text-sm">Нет сообщений</p>
-                    </div>
-                  )}
-                  {messages.map(msg => (
-                    <MessageBubble key={msg.id} msg={msg} session={session} primary={p} />
-                  ))}
-                  <div ref={bottomRef} className="h-2" />
-                </div>
-
-                <MessageInput onSend={handleSend} primary={p} commands={[]} placeholder={`Ответить ${selectedConv.user_name}...`} />
-              </>
+              </div>
             )}
           </>
         )}
 
-        {/* ── Пользователи ── */}
+        {/* ── Group chat tab ── */}
+        {tab === 'group' && (
+          <div className="flex-1 flex flex-col min-w-0">
+            <GroupChat site={site} session={session} />
+          </div>
+        )}
+
+        {/* ── Users ── */}
         {tab === 'users' && (
-          <div className="flex-1 overflow-y-auto p-6">
-            <h2 className="text-xl font-black text-white mb-5">Пользователи ({users.length})</h2>
+          <div className="flex-1 overflow-y-auto p-3 sm:p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-black text-white">Пользователи ({users.length})</h2>
+            </div>
             <div className="space-y-2">
-              {users.map(u => (
-                <div key={u.id} className="flex items-center gap-4 p-4 rounded-2xl border transition-all"
-                  style={{ background: 'rgba(255,255,255,0.03)', borderColor: p + '15' }}>
-                  <Avatar name={u.username} size="w-10 h-10" />
-                  <div className="flex-1 min-w-0">
-                    <p className={`font-bold text-sm ${u.is_banned ? 'text-white/30 line-through' : 'text-white'}`}>{u.username}</p>
-                    <div className="flex items-center gap-3 mt-0.5">
-                      {u.email && <span className="text-[9px] text-white/30 flex items-center gap-1"><Mail className="w-2.5 h-2.5" />{u.email}</span>}
-                      <span className="text-[9px] text-white/20">Был: {u.last_seen ? new Date(u.last_seen).toLocaleDateString('ru') : '—'}</span>
+              {users.map(u => {
+                const muted = (u.muted_until || 0) > Date.now();
+                return (
+                  <div key={u.id} className="flex items-center gap-3 p-3 rounded-2xl border transition-all"
+                    style={{ background: 'rgba(255,255,255,0.03)', borderColor: p + '12' }}>
+                    <Avatar name={u.username} size="w-9 h-9" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className={`font-bold text-sm ${u.is_banned ? 'text-white/30 line-through' : 'text-white'}`}>{u.username}</p>
+                        {u.is_banned && <span className="text-[8px] bg-rose-500/20 text-rose-400 px-1.5 py-0.5 rounded-full font-black">Бан</span>}
+                        {muted && <span className="text-[8px] bg-orange-500/20 text-orange-400 px-1.5 py-0.5 rounded-full font-black">Мут</span>}
+                        {(u.warn_count || 0) > 0 && <span className="text-[8px] bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded-full font-black">{u.warn_count}⚠</span>}
+                      </div>
+                      {u.email && <p className="text-[9px] text-zinc-600 mt-0.5 truncate">{u.email}</p>}
                     </div>
-                    {u.is_banned && u.ban_reason && <p className="text-[9px] text-rose-400 mt-0.5">Причина: {u.ban_reason}</p>}
+                    <div className="flex items-center gap-1 shrink-0">
+                      {/* Warn */}
+                      <button onClick={() => setShowWarnModal(u)}
+                        className="p-1.5 rounded-xl transition-all" style={{ background: '#f59e0b15', color: '#f59e0b' }}>
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                      </button>
+                      {/* Mute */}
+                      {muted ? (
+                        <button onClick={() => handleMute(u.id, 0)}
+                          className="p-1.5 rounded-xl transition-all" style={{ background: '#10b98115', color: '#10b981' }}>
+                          <Volume2 className="w-3.5 h-3.5" />
+                        </button>
+                      ) : (
+                        <button onClick={() => setMuteUserId(muteUserId === u.id ? null : u.id)}
+                          className="p-1.5 rounded-xl transition-all" style={{ background: '#f9731615', color: '#f97316' }}>
+                          <VolumeX className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      {/* Ban */}
+                      {u.is_banned ? (
+                        <button onClick={() => handleBan(u, false)}
+                          className="p-1.5 rounded-xl transition-all" style={{ background: '#10b98115', color: '#10b981' }}>
+                          <Check className="w-3.5 h-3.5" />
+                        </button>
+                      ) : (
+                        <button onClick={() => setShowBanModal(u)}
+                          className="p-1.5 rounded-xl transition-all" style={{ background: '#ef444415', color: '#ef4444' }}>
+                          <Ban className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                    {/* Mute submenu */}
+                    {muteUserId === u.id && !muted && (
+                      <div className="absolute right-16 z-10 bg-[#111] border border-zinc-800 rounded-2xl overflow-hidden shadow-xl">
+                        {[10, 30, 60, 360, 1440, 10080].map(m => (
+                          <button key={m} onClick={() => handleMute(u.id, m)}
+                            className="flex items-center gap-2 w-full px-4 py-2 hover:bg-white/5 text-xs text-white text-left whitespace-nowrap">
+                            <VolumeX className="w-3 h-3 text-orange-400" />
+                            {m < 60 ? `${m} мин` : m < 1440 ? `${m/60} ч` : m < 10080 ? `${m/1440} дн` : '7 дней'}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  {u.is_banned ? (
-                    <button onClick={() => handleBan(u, false)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 transition-all">
-                      <Check className="w-3 h-3" /> Разблок
-                    </button>
-                  ) : (
-                    <button onClick={() => { setBanReason(''); setShowBanModal(u); }}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/20 transition-all">
-                      <Ban className="w-3 h-3" /> Бан
-                    </button>
-                  )}
-                </div>
-              ))}
+                );
+              })}
               {users.length === 0 && (
-                <div className="text-center py-16">
-                  <Users className="w-10 h-10 text-white/10 mx-auto mb-3" />
-                  <p className="text-white/30 font-bold">Нет пользователей</p>
+                <div className="text-center py-12">
+                  <Users className="w-10 h-10 mx-auto mb-3" style={{ color: 'rgba(255,255,255,0.1)' }} />
+                  <p className="font-bold text-sm" style={{ color: 'rgba(255,255,255,0.2)' }}>Нет пользователей</p>
                 </div>
               )}
             </div>
           </div>
         )}
 
-        {/* ── Рассылка ── */}
+        {/* ── Broadcast ── */}
         {tab === 'broadcast' && (
-          <div className="flex-1 p-6">
-            <h2 className="text-xl font-black text-white mb-5">Рассылка</h2>
+          <div className="flex-1 p-4 sm:p-6">
+            <h2 className="text-lg font-black text-white mb-5">Рассылка</h2>
             <div className="max-w-2xl">
-              <div className="p-5 rounded-[1.5rem] border mb-4" style={{ background: 'rgba(255,255,255,0.03)', borderColor: p + '20' }}>
+              <div className="p-4 sm:p-5 rounded-[1.5rem] border mb-4" style={{ background: 'rgba(255,255,255,0.03)', borderColor: p + '20' }}>
                 <p className="text-[9px] font-black uppercase tracking-wider mb-3" style={{ color: p }}>Сообщение всем пользователям</p>
                 <textarea value={broadcastText} onChange={e => setBroadcastText(e.target.value)}
                   placeholder="Текст сообщения..." rows={5}
                   className="w-full bg-transparent text-white text-sm outline-none resize-none placeholder-white/20 leading-relaxed" />
               </div>
               <button onClick={handleBroadcast} disabled={!broadcastText.trim() || sending}
-                className="flex items-center gap-2 px-8 py-4 rounded-2xl font-black text-[10px] uppercase tracking-wider disabled:opacity-40 transition-all"
+                className="flex items-center gap-2 px-6 sm:px-8 py-3.5 sm:py-4 rounded-2xl font-black text-[10px] uppercase tracking-wider disabled:opacity-40 transition-all"
                 style={{ background: p, color: '#fff', boxShadow: `0 4px 16px ${p}40` }}>
                 {sending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                 {sending ? 'Отправка...' : 'Отправить всем'}
@@ -1112,7 +1491,7 @@ const AdminChatPanel: React.FC<{
   );
 };
 
-// ─── Root ──────────────────────────────────────────────────────────────────────
+// ─── Root ────────────────────────────────────────────────────────────────────────
 
 const ChatSiteApp: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
@@ -1136,11 +1515,9 @@ const ChatSiteApp: React.FC = () => {
   }, [slug]);
 
   useEffect(() => {
-    if (!session || !site) return;
-    if (session.role === 'user') {
-      apiFetch(`${API}/chat/site/${slug}/conversations?role=user&session_id=${session.id}`)
-        .then(setConvs).catch(() => {});
-    }
+    if (!session || !site || session.role !== 'user') return;
+    apiFetch(`${API}/chat/site/${slug}/conversations?role=user&session_id=${session.id}`)
+      .then(setConvs).catch(() => {});
   }, [session?.id, site]);
 
   const handleAuth = (s: ChatSession) => {
@@ -1149,9 +1526,10 @@ const ChatSiteApp: React.FC = () => {
   };
 
   const handleLogout = () => {
-    if (session?.role === 'admin') {
+    if (session?.role === 'admin' || session?.role === 'owner') {
       fetch(`${API}/chat/sites/${site?.id}/admins/${session.id}/online`, {
-        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ is_online: false })
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_online: false })
       });
     }
     setSession(null);
@@ -1181,7 +1559,6 @@ const ChatSiteApp: React.FC = () => {
     return <AdminChatPanel site={site} session={session} onLogout={handleLogout} />;
   }
 
-  // User: если выбран диалог — показываем чат, иначе выбор администратора
   if (selectedConv) {
     return (
       <UserChat
