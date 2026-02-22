@@ -868,10 +868,98 @@ const AnalyticsView: React.FC<{ site: ChatSite; userId: string }> = ({ site, use
 
 // ─── Site Editor ───────────────────────────────────────────────────────────────
 
-const SiteEditor: React.FC<{
+
+// ─── License Gated Editor ──────────────────────────────────────────────────────
+// Показывает экран активации если нет лицензии, иначе — SiteEditor
+
+const LicenseGatedEditor: React.FC<{
   site: ChatSite; userId: string;
   onBack: () => void; onUpdated: (s: ChatSite) => void;
 }> = ({ site, userId, onBack, onUpdated }) => {
+  const [license, setLicense] = useState<LicenseInfo | null>(null);
+  const [licLoading, setLicLoading] = useState(true);
+  const [showActivate, setShowActivate] = useState(false);
+
+  const loadLicense = () => {
+    setLicLoading(true);
+    apiFetch(`${API}/chat/sites/${site.id}/license?owner_id=${userId}`)
+      .then(setLicense)
+      .catch(() => setLicense(null))
+      .finally(() => setLicLoading(false));
+  };
+
+  useEffect(() => { loadLicense(); }, [site.id]);
+
+  if (licLoading) return (
+    <div className="min-h-screen bg-[#09090b] flex items-center justify-center">
+      <RefreshCw className="w-6 h-6 text-white/20 animate-spin" />
+    </div>
+  );
+
+  if (!license?.active) {
+    return (
+      <div className="min-h-screen bg-[#09090b] flex flex-col items-center justify-center p-6 gap-6">
+        {showActivate && (
+          <ActivateKeyModal
+            siteId={site.id}
+            userId={userId}
+            onClose={() => setShowActivate(false)}
+            onActivated={lic => { setLicense(lic); setShowActivate(false); }}
+          />
+        )}
+        <button onClick={onBack} className="self-start flex items-center gap-2 text-zinc-500 hover:text-white transition-all text-sm font-bold">
+          <ArrowLeft className="w-4 h-4" /> Назад
+        </button>
+        <div className="flex flex-col items-center gap-6 max-w-md w-full text-center">
+          <div className="w-20 h-20 rounded-3xl flex items-center justify-center" style={{ background: 'rgba(99,102,241,0.1)', border: '2px solid rgba(99,102,241,0.2)' }}>
+            <Key className="w-9 h-9 text-indigo-400" />
+          </div>
+          <div>
+            <h2 className="text-2xl font-black text-white mb-2">Требуется лицензия</h2>
+            <p className="text-zinc-500 text-sm leading-relaxed">
+              Для доступа к панели управления чат-сайтом <span className="text-white font-bold">«{site.name}»</span> необходимо активировать лицензию.
+            </p>
+          </div>
+          <div className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl p-5 text-left space-y-3">
+            <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Как получить лицензию</p>
+            <div className="flex items-start gap-3">
+              <span className="w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-400 text-[10px] font-black flex items-center justify-center shrink-0 mt-0.5">1</span>
+              <p className="text-zinc-400 text-sm">Обратитесь к администратору платформы в боте лицензий</p>
+            </div>
+            <div className="flex items-start gap-3">
+              <span className="w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-400 text-[10px] font-black flex items-center justify-center shrink-0 mt-0.5">2</span>
+              <p className="text-zinc-400 text-sm">Получите ключ активации и нажмите кнопку ниже</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setShowActivate(true)}
+            className="w-full py-4 rounded-2xl font-black text-[11px] uppercase tracking-wider text-white transition-all flex items-center justify-center gap-2"
+            style={{ background: '#6366f1', boxShadow: '0 4px 24px rgba(99,102,241,0.35)' }}
+          >
+            <Key className="w-4 h-4" />
+            Активировать ключ
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <SiteEditor
+      site={site}
+      userId={userId}
+      onBack={onBack}
+      onUpdated={onUpdated}
+      license={license}
+    />
+  );
+};
+
+const SiteEditor: React.FC<{
+  site: ChatSite; userId: string;
+  onBack: () => void; onUpdated: (s: ChatSite) => void;
+  license?: LicenseInfo | null;
+}> = ({ site, userId, onBack, onUpdated, license: propLicense }) => {
   const [config, setConfig] = useState<SiteConfig>({ ...site.config });
   const [name, setName] = useState(site.name);
   const [saving, setSaving] = useState(false);
@@ -883,14 +971,16 @@ const SiteEditor: React.FC<{
   const [broadcastText, setBroadcastText] = useState('');
   const [broadcasting, setBroadcasting] = useState(false);
   const [broadcastDone, setBroadcastDone] = useState(false);
-  const [license, setLicense] = useState<LicenseInfo | null>(null);
+  const [license, setLicense] = useState<LicenseInfo | null>(propLicense || null);
   const [showActivateKey, setShowActivateKey] = useState(false);
 
   const siteUrl = `${window.location.origin}/chat/${site.slug}`;
 
   useEffect(() => {
-    apiFetch(`${API}/chat/sites/${site.id}/license?owner_id=${userId}`)
-      .then(setLicense).catch(() => {});
+    if (!propLicense) {
+      apiFetch(`${API}/chat/sites/${site.id}/license?owner_id=${userId}`)
+        .then(setLicense).catch(() => {});
+    }
   }, [site.id]);
 
   const handleSave = async () => {
@@ -1279,7 +1369,9 @@ const ChatPlatform: React.FC<{ user: AppUser }> = ({ user }) => {
 
   if (editingSite) {
     return (
-      <SiteEditor site={editingSite} userId={user.id}
+      <LicenseGatedEditor
+        site={editingSite}
+        userId={user.id}
         onBack={() => setEditingSite(null)}
         onUpdated={updated => { setSites(prev => prev.map(s => s.id === updated.id ? updated : s)); setEditingSite(updated); }}
       />
