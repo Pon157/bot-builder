@@ -246,11 +246,39 @@ const MessageBubble: React.FC<{
           
           <div className="rounded-2xl overflow-hidden border" style={{ borderColor: primary + '20' }}>
             {msg.media_type === 'image' && (
-              <img src={msg.media_url} alt="img" className="max-w-[200px] sm:max-w-xs max-h-64 object-cover cursor-pointer"
-                onClick={() => { const a = document.createElement('a'); a.href = msg.media_url!; a.target = '_blank'; a.rel = 'noopener noreferrer'; document.body.appendChild(a); a.click(); document.body.removeChild(a); }} />
+              <div className="relative">
+                <img
+                  src={msg.media_url || ''}
+                  alt="img"
+                  className="max-w-[200px] sm:max-w-xs max-h-64 object-cover cursor-pointer block"
+                  loading="lazy"
+                  onError={(e) => {
+                    const t = e.currentTarget;
+                    t.style.display = 'none';
+                    const p = t.parentElement;
+                    if (p && !p.querySelector('.img-err')) {
+                      const d = document.createElement('div');
+                      d.className = 'img-err flex items-center gap-2 px-4 py-3 text-xs text-zinc-500';
+                      d.textContent = '🖼 Изображение не загрузилось';
+                      p.appendChild(d);
+                    }
+                  }}
+                  onClick={() => {
+                    const url = msg.media_url!;
+                    const a = document.createElement('a');
+                    a.href = url.startsWith('http') ? url : window.location.origin + url;
+                    a.target = '_blank'; a.rel = 'noopener noreferrer';
+                    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                  }}
+                />
+              </div>
             )}
             {msg.media_type === 'video' && (
-              <video src={msg.media_url} controls className="max-w-[200px] sm:max-w-xs max-h-64" />
+              <video
+                src={msg.media_url && msg.media_url.startsWith('http') ? msg.media_url : (msg.media_url ? window.location.origin + msg.media_url : '')}
+                controls
+                className="max-w-[200px] sm:max-w-xs max-h-64"
+              />
             )}
             {msg.media_type === 'audio' && (
               <div className="flex items-center gap-2 px-3 py-3 bg-white/5 min-w-[180px]">
@@ -258,7 +286,13 @@ const MessageBubble: React.FC<{
                   <Volume2 className="w-4 h-4" style={{ color: primary }} />
                 </div>
                 <div className="flex flex-col gap-0.5 flex-1">
-                  <audio src={msg.media_url} controls className="w-full h-8" style={{ accentColor: primary }} />
+                  <audio
+                    src={msg.media_url && msg.media_url.startsWith('http') ? msg.media_url : (msg.media_url ? window.location.origin + msg.media_url : '')}
+                    controls
+                    className="w-full h-8"
+                    style={{ accentColor: primary }}
+                    preload="metadata"
+                  />
                   {(msg as any).duration && (msg as any).duration > 0 && (
                     <span className="text-[9px] text-zinc-500">{`${Math.floor((msg as any).duration / 60)}:${String((msg as any).duration % 60).padStart(2,'0')}`}</span>
                   )}
@@ -353,11 +387,20 @@ const VoiceRecorder: React.FC<{
   const start = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      // Выбираем поддерживаемый формат
+      const mimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4', 'audio/mpeg'];
+      const supportedMime = mimeTypes.find(t => MediaRecorder.isTypeSupported(t)) || '';
+      const mr = new MediaRecorder(stream, supportedMime ? { mimeType: supportedMime } : {});
+      const ext = supportedMime.includes('ogg') ? 'ogg' : supportedMime.includes('mp4') ? 'mp4' : 'webm';
       chunksRef.current = [];
+      (mr as any)._ext = ext;
+      (mr as any)._mime = mr.mimeType || 'audio/webm';
       mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       mr.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        const finalMime = (mr as any)._mime || 'audio/webm';
+        const finalExt = (mr as any)._ext || 'webm';
+        const blob = new Blob(chunksRef.current, { type: finalMime });
+        (blob as any)._ext = finalExt;
         const durationSec = Math.max(1, Math.round((Date.now() - startTimeRef.current) / 1000));
         onRecorded(blob, durationSec);
         stream.getTracks().forEach(t => t.stop());
@@ -471,7 +514,9 @@ const MessageInput: React.FC<{
     setUploading(true);
     try {
       const fd = new FormData();
-      fd.append('file', new File([blob], `voice_${Date.now()}.webm`, { type: 'audio/webm' }));
+      const blobExt = (blob as any)._ext || 'webm';
+      const blobMime = blob.type || 'audio/webm';
+      fd.append('file', new File([blob], `voice_${Date.now()}.${blobExt}`, { type: blobMime }));
       fd.append('is_voice', 'true');
       const r = await fetch(`${API}/chat/media/upload`, { method: 'POST', body: fd });
       if (!r.ok) throw new Error('Ошибка загрузки голосового');
