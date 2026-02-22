@@ -39,6 +39,9 @@ from starlette.concurrency import run_in_threadpool
 
 from datetime import datetime  # <--- Добавь это в начало файла
 
+from fastapi.staticfiles import StaticFiles
+
+
 # ==========================================
 # 1. ИНИЦИАЛИЗАЦИЯ И БЕЗОПАСНОСТЬ
 # ==========================================
@@ -234,6 +237,7 @@ async def lifespan(app: FastAPI):
     for bid in list(pm.procs.keys()):
         await pm.stop_bot(bid)
 
+
 # 1. Сначала инициализируем приложение
 app = FastAPI(lifespan=lifespan)
 
@@ -272,9 +276,10 @@ db = httpx.AsyncClient(
         "Content-Type": "application/json"
     }
 )
-# ==========================================
-# 4. ЭНДПОИНТЫ АВТОРИЗАЦИИ
-# ==========================================
+
+# Загрузка файлов
+os.makedirs("uploads", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # ==========================================
 # 4. ЭНДПОИНТЫ АВТОРИЗАЦИИ
@@ -3097,6 +3102,496 @@ async def chat_analytics(slug: str, role: str, days: int = 30):
         "admin_stats": admin_stats,
     }
 
+
+# ─── СТАТИКА: убедиться что монтирование добавлено ──────────────────────────
+# В секцию инициализации app добавить:
+#   from fastapi.staticfiles import StaticFiles
+#   os.makedirs("uploads/chat", exist_ok=True)
+#   app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
+
+# ─── ВАРНЫ ──────────────────────────────────────────────────────────────────
+
+@app.post("/api/chat/site/{slug}/users/{user_id}/warn")
+async def chat_warn_user(slug: str, user_id: str, d: dict):
+    """Выдать варн пользователю. Если варнов >= maxWarnsBeforeBan — авто-бан."""
+    role = d.get("role")
+    if role not in ("admin", "owner"): raise HTTPException(403)
+    admin_id   = d.get("admin_id", "")
+    admin_name = d.get("admin_name", "Администратор")
+    reason     = (d.get("reason") or "").strip()
+    if not reason: raise HTTPException(400, "reason required")
+
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404)
+    site = sites[0]
+    site_id = site["id"]
+    config  = site.get("config") or {}
+    max_warns = int(config.get("maxWarnsBeforeBan", 3))
+
+    now = int(time.time() * 1000)
+    warn = {
+        "id": _gen_id("cwn"),
+        "site_id": site_id,
+        "user_id": user_id,
+        "admin_id": admin_id,
+        "admin_name": admin_name,
+        "reason": reason,
+        "created_at": now,
+    }
+    await _sb_post("chat_user_warns", warn)
+
+    # Увеличиваем счётчик варнов
+    users = await _sb_get("chat_site_users", {"id": f"eq.{user_id}"})
+    if not users: raise HTTPException(404, "user not found")
+    user = users[0]
+    new_count = (user.get("warn_count") or 0) + 1
+    
+    auto_banned = False
+    if new_count >= max_warns:
+        await _sb_patch("chat_site_users", {"id": f"eq.{user_id}"}, {
+            "warn_count": new_count,
+            "is_banned": True,
+            "ban_reason": f"Авто-бан: {new_count} варнов"
+        })
+        auto_banned = True
+    else:
+        await _sb_patch("chat_site_users", {"id": f"eq.{user_id}"}, {
+            "warn_count": new_count
+        })
+
+    return {"ok": True, "warn": warn, "warn_count": new_count, "auto_banned": auto_banned}
+
+
+@app.get("/api/chat/site/{slug}/users/{user_id}/warns")
+async def chat_get_user_warns(slug: str, user_id: str, role: str = "admin"):
+    if role not in ("admin", "owner"): raise HTTPException(403)
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404)
+    return await _sb_get("chat_user_warns", {
+        "site_id": f"eq.{sites[0]['id']}",
+        "user_id": f"eq.{user_id}",
+        "order": "created_at.desc"
+    })
+
+
+@app.delete("/api/chat/site/{slug}/users/{user_id}/warns")
+async def chat_clear_warns(slug: str, user_id: str, role: str = "owner"):
+    """Сбросить все варны (только owner)."""
+    if role != "owner": raise HTTPException(403)
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404)
+    site_id = sites[0]["id"]
+    # Удаляем через Supabase REST
+    async with httpx.AsyncClient(
+        base_url=f"{S_URL}/rest/v1/",
+        headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}", "Content-Type": "application/json"}
+    ) as client:
+        await client.delete("chat_user_warns", params={
+            "site_id": f"eq.{site_id}", "user_id": f"eq.{user_id}"
+        })
+    await _sb_patch("chat_site_users", {"id": f"eq.{user_id}"}, {"warn_count": 0})
+    return {"ok": True}
+
+
+# ─── МЮТЫ ────────────────────────────────────────────────────────────────────
+
+@app.post("/api/chat/site/{slug}/users/{user_id}/mute")
+async def chat_mute_user(slug: str, user_id: str, d: dict):
+    """
+    Замутить/размутить пользователя.
+    d: { role, muted_until_ms: 0|timestamp, reason? }
+    muted_until_ms=0 — снять мут
+    """
+    role = d.get("role")
+    if role not in ("admin", "owner"): raise HTTPException(403)
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404)
+
+    muted_until = d.get("muted_until_ms", 0)
+    ok = await _sb_patch("chat_site_users", {"id": f"eq.{user_id}"}, {
+        "muted_until": muted_until
+    })
+    return {"ok": ok, "muted_until": muted_until}
+
+
+# ─── ГРУППОВОЙ ЧАТ ───────────────────────────────────────────────────────────
+
+@app.get("/api/chat/site/{slug}/group")
+async def chat_group_get(slug: str, since: int = 0, limit: int = 100):
+    """Получить сообщения группового чата."""
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404)
+    site_id = sites[0]["id"]
+    params = {
+        "site_id": f"eq.{site_id}",
+        "is_deleted": "eq.false",
+        "order": "created_at.asc",
+        "limit": str(limit)
+    }
+    if since > 0:
+        params["created_at"] = f"gt.{since}"
+    return await _sb_get("chat_group_messages", params)
+
+
+@app.post("/api/chat/site/{slug}/group")
+async def chat_group_send(slug: str, d: dict):
+    """Отправить сообщение в групповой чат."""
+    from_id   = d.get("from_id")
+    from_name = d.get("from_name")
+    from_role = d.get("from_role", "user")
+    text      = (d.get("text") or "").strip()
+    media_url = d.get("media_url")
+    media_type = d.get("media_type")
+    sticker_emoji = d.get("sticker_emoji")
+
+    if not from_id or not from_name: raise HTTPException(400, "from_id and from_name required")
+    if not text and not media_url and not sticker_emoji: raise HTTPException(400, "empty message")
+
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404)
+    site_id = sites[0]["id"]
+
+    # Проверяем мут пользователя
+    if from_role == "user":
+        users = await _sb_get("chat_site_users", {"id": f"eq.{from_id}"})
+        if users:
+            u = users[0]
+            if u.get("is_banned"): raise HTTPException(403, "Вы заблокированы")
+            muted_until = u.get("muted_until") or 0
+            if muted_until > int(time.time() * 1000):
+                dt = datetime.fromtimestamp(muted_until / 1000)
+                raise HTTPException(403, f"Вы замучены до {dt.strftime('%H:%M %d.%m')}")
+
+    now = int(time.time() * 1000)
+    msg = {
+        "id": _gen_id("cgm"),
+        "site_id": site_id,
+        "from_id": from_id,
+        "from_name": from_name,
+        "from_role": from_role,
+        "text": text or None,
+        "media_url": media_url,
+        "media_type": media_type,
+        "sticker_emoji": sticker_emoji,
+        "is_pinned": False,
+        "created_at": now,
+        "is_deleted": False
+    }
+    await _sb_post("chat_group_messages", msg)
+
+    # Авто-ответ на команды из конфига сайта
+    config = sites[0].get("config") or {}
+    auto_replies = config.get("autoReplies", [])
+    if text and auto_replies:
+        for ar in auto_replies:
+            cmd = (ar.get("command") or "").strip()
+            reply = (ar.get("reply") or "").strip()
+            if cmd and reply and text.lower().startswith(cmd.lower()):
+                bot_msg = {
+                    "id": _gen_id("cgm"),
+                    "site_id": site_id,
+                    "from_id": "system",
+                    "from_name": config.get("logoText") or "Бот",
+                    "from_role": "system",
+                    "text": reply,
+                    "media_url": None,
+                    "media_type": None,
+                    "sticker_emoji": None,
+                    "is_pinned": False,
+                    "created_at": now + 100,
+                    "is_deleted": False
+                }
+                await _sb_post("chat_group_messages", bot_msg)
+                break
+
+    return {"ok": True, **msg}
+
+
+@app.delete("/api/chat/site/{slug}/group/{msg_id}")
+async def chat_group_delete_msg(slug: str, msg_id: str, role: str = "admin"):
+    """Удалить сообщение из группового чата (только admin/owner)."""
+    if role not in ("admin", "owner"): raise HTTPException(403)
+    ok = await _sb_patch("chat_group_messages", {"id": f"eq.{msg_id}"}, {"is_deleted": True})
+    return {"ok": ok}
+
+
+@app.post("/api/chat/site/{slug}/group/{msg_id}/pin")
+async def chat_group_pin_msg(slug: str, msg_id: str, d: dict):
+    """Закрепить / открепить сообщение."""
+    role = d.get("role")
+    if role not in ("admin", "owner"): raise HTTPException(403)
+    pin = d.get("pin", True)
+    pinned_by = d.get("pinned_by", "")
+    ok = await _sb_patch("chat_group_messages", {"id": f"eq.{msg_id}"}, {
+        "is_pinned": pin,
+        "pinned_by": pinned_by if pin else None
+    })
+    return {"ok": ok}
+
+
+@app.get("/api/chat/site/{slug}/group/pinned")
+async def chat_group_pinned(slug: str):
+    """Получить закреплённые сообщения."""
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
+    if not sites: raise HTTPException(404)
+    return await _sb_get("chat_group_messages", {
+        "site_id": f"eq.{sites[0]['id']}",
+        "is_pinned": "eq.true",
+        "is_deleted": "eq.false",
+        "order": "created_at.desc"
+    })
+
+
+# ─── АВТО-ОТВЕТЫ (в личных диалогах) ────────────────────────────────────────
+# Авто-ответ уже интегрирован в /api/chat/site/{slug}/message
+# (нужно добавить проверку в существующий эндпоинт отправки сообщения)
+# В функции chat_send_message (найдите её в server.py) добавьте после сохранения msg:
+#
+# config = site.get("config") or {}
+# auto_replies = config.get("autoReplies", [])
+# if text and auto_replies and from_role == "user":
+#     for ar in auto_replies:
+#         cmd = (ar.get("command") or "").strip()
+#         reply_text = (ar.get("reply") or "").strip()
+#         if cmd and reply_text and text.lower().startswith(cmd.lower()):
+#             bot_reply = { ...системное сообщение от бота... }
+#             await _sb_post("chat_site_messages", bot_reply)
+#             break
+
+
+# ─── ЛИЦЕНЗИОННЫЕ КЛЮЧИ ───────────────────────────────────────────────────────
+
+@app.post("/api/chat/keys/generate")
+async def chat_key_generate(d: dict):
+    """
+    Генерация нового ключа доступа.
+    Только для супер-администратора (проверяем admin_token).
+    d: { admin_token, owner_id, duration_days?, price_rub?, note? }
+    """
+    if d.get("admin_token") != A_SECRET:
+        raise HTTPException(403, "Unauthorized")
+    
+    owner_id = d.get("owner_id", "system")
+    duration_days = int(d.get("duration_days", 30))
+    price_rub = int(d.get("price_rub", 150))
+    note = d.get("note", "")
+    
+    # Генерируем красивый ключ вида: CHAT-XXXX-XXXX-XXXX
+    raw = secrets.token_hex(6).upper()
+    key_code = f"CHAT-{raw[:4]}-{raw[4:8]}-{raw[8:12]}"
+    
+    now = int(time.time() * 1000)
+    key_obj = {
+        "id": _gen_id("cky"),
+        "key_code": key_code,
+        "site_id": None,
+        "owner_id": owner_id,
+        "duration_days": duration_days,
+        "price_rub": price_rub,
+        "activated_at": None,
+        "expires_at": None,
+        "created_at": now,
+        "is_active": True,
+        "note": note
+    }
+    await _sb_post("chat_site_keys", key_obj)
+    return {"ok": True, "key_code": key_code, "duration_days": duration_days}
+
+
+@app.post("/api/chat/sites/{site_id}/activate-key")
+async def chat_activate_key(site_id: str, d: dict):
+    """
+    Активировать ключ для сайта.
+    d: { owner_id, key_code }
+    """
+    owner_id = d.get("owner_id")
+    key_code = (d.get("key_code") or "").strip().upper()
+    if not key_code: raise HTTPException(400, "key_code required")
+
+    # Проверяем сайт
+    sites = await _sb_get("chat_sites", {"id": f"eq.{site_id}"})
+    if not sites: raise HTTPException(404, "site not found")
+    if sites[0].get("owner_id") != owner_id: raise HTTPException(403)
+
+    # Проверяем ключ
+    keys = await _sb_get("chat_site_keys", {"key_code": f"eq.{key_code}", "is_active": "eq.true"})
+    if not keys: raise HTTPException(404, "Ключ не найден или уже использован")
+    key = keys[0]
+    if key.get("site_id"): raise HTTPException(409, "Ключ уже активирован")
+
+    now = int(time.time() * 1000)
+    duration_ms = key["duration_days"] * 86_400_000
+    expires_at = now + duration_ms
+
+    await _sb_patch("chat_site_keys", {"id": f"eq.{key['id']}"}, {
+        "site_id": site_id,
+        "activated_at": now,
+        "expires_at": expires_at,
+        "is_active": True
+    })
+    return {
+        "ok": True,
+        "expires_at": expires_at,
+        "duration_days": key["duration_days"],
+        "expires_formatted": datetime.fromtimestamp(expires_at / 1000).strftime("%d.%m.%Y")
+    }
+
+
+@app.get("/api/chat/sites/{site_id}/license")
+async def chat_get_license(site_id: str, owner_id: str):
+    """Получить информацию о лицензии сайта."""
+    sites = await _sb_get("chat_sites", {"id": f"eq.{site_id}"})
+    if not sites: raise HTTPException(404)
+    if sites[0].get("owner_id") != owner_id: raise HTTPException(403)
+
+    keys = await _sb_get("chat_site_keys", {
+        "site_id": f"eq.{site_id}",
+        "is_active": "eq.true",
+        "order": "expires_at.desc"
+    })
+    if not keys:
+        return {"active": False, "expires_at": None}
+    
+    key = keys[0]
+    now = int(time.time() * 1000)
+    expires_at = key.get("expires_at") or 0
+    active = expires_at > now
+    days_left = max(0, int((expires_at - now) / 86_400_000)) if active else 0
+    
+    return {
+        "active": active,
+        "expires_at": expires_at,
+        "days_left": days_left,
+        "expires_formatted": datetime.fromtimestamp(expires_at / 1000).strftime("%d.%m.%Y") if expires_at else None
+    }
+
+
+# ─── СТАТУС ОНЛАЙН АДМИНИСТРАТОРА ────────────────────────────────────────────
+
+@app.post("/api/chat/sites/{site_id}/admins/{admin_id}/online")
+async def chat_admin_set_online(site_id: str, admin_id: str, d: dict):
+    """
+    Установить статус онлайн/оффлайн для администратора.
+    d: { is_online: bool, session_token? }
+    """
+    is_online = bool(d.get("is_online", False))
+    now = int(time.time() * 1000)
+    
+    patch_data = {
+        "is_online": is_online,
+        "last_seen": now
+    }
+    ok = await _sb_patch("chat_site_admins", {"id": f"eq.{admin_id}", "site_id": f"eq.{site_id}"}, patch_data)
+    return {"ok": ok, "is_online": is_online}
+
+
+# ─── ЗАГРУЗКА ФАЙЛОВ (улучшенная версия) ─────────────────────────────────────
+
+@app.post("/api/chat/media/upload")
+async def chat_upload_media_v2(request: Request):
+    """
+    Загрузка медиафайлов на жёсткий диск сервера.
+    Поддерживает: изображения, видео, аудио (голосовые), файлы.
+    Возвращает публичный URL вида /uploads/chat/...
+    """
+    import aiofiles
+
+    form = await request.form()
+    file_field = form.get("file")
+    if not file_field:
+        raise HTTPException(400, "file required")
+
+    original_name = getattr(file_field, "filename", f"upload_{int(time.time())}")
+    content = await file_field.read()
+    
+    if not content:
+        raise HTTPException(400, "empty file")
+    
+    # Ограничение размера: 50MB
+    MAX_SIZE = 50 * 1024 * 1024
+    if len(content) > MAX_SIZE:
+        raise HTTPException(413, "Файл слишком большой (макс. 50MB)")
+
+    ext = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else "bin"
+    
+    # Маппинг расширений в типы
+    MEDIA_MAP = {
+        "jpg": "image", "jpeg": "image", "png": "image", 
+        "gif": "image", "webp": "image", "bmp": "image",
+        "mp4": "video", "mov": "video", "webm": "video", "avi": "video", "mkv": "video",
+        "mp3": "audio", "ogg": "audio", "wav": "audio", 
+        "m4a": "audio", "opus": "audio", "aac": "audio",
+        "pdf": "file", "doc": "file", "docx": "file",
+        "xls": "file", "xlsx": "file", "txt": "file",
+        "zip": "file", "rar": "file", "7z": "file",
+    }
+    media_type = MEDIA_MAP.get(ext, "file")
+    
+    # Для голосовых сообщений
+    is_voice = form.get("is_voice") == "true"
+    if is_voice:
+        media_type = "audio"
+        subdir = "voice"
+    elif media_type == "image":
+        subdir = "images"
+    elif media_type == "video":
+        subdir = "videos"
+    elif media_type == "audio":
+        subdir = "audio"
+    else:
+        subdir = "files"
+    
+    save_dir = f"uploads/chat/{subdir}"
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Безопасное имя файла
+    safe_name = f"{int(time.time())}_{secrets.token_hex(6)}.{ext}"
+    save_path = f"{save_dir}/{safe_name}"
+    
+    async with aiofiles.open(save_path, "wb") as f:
+        await f.write(content)
+    
+    public_url = f"/uploads/chat/{subdir}/{safe_name}"
+    
+    # Размер в читаемом виде
+    size = len(content)
+    if size < 1024:
+        size_str = f"{size} B"
+    elif size < 1024 * 1024:
+        size_str = f"{size // 1024} KB"
+    else:
+        size_str = f"{size // (1024 * 1024)} MB"
+    
+    return {
+        "url": public_url,
+        "media_type": media_type,
+        "filename": original_name,
+        "size": size,
+        "size_str": size_str,
+        "is_voice": is_voice
+    }
+
+
+# ─── ПРОВЕРКА МУТА ПРИ ОТПРАВКЕ СООБЩЕНИЯ ────────────────────────────────────
+# В существующем эндпоинте chat_send_message добавить в начало (после получения user):
+#
+# if from_role == "user":
+#     muted_until = user.get("muted_until") or 0
+#     now_ms = int(time.time() * 1000)
+#     if muted_until > now_ms:
+#         dt = datetime.fromtimestamp(muted_until / 1000)
+#         raise HTTPException(403, f"Вы замучены до {dt.strftime('%H:%M %d.%m.%Y')}")
+
+
+# ─── МОНТИРОВАНИЕ СТАТИЧЕСКИХ ФАЙЛОВ ─────────────────────────────────────────
+# ВАЖНО: добавить эти строки ПОСЛЕ создания app = FastAPI(...):
+#
+# from fastapi.staticfiles import StaticFiles
+# os.makedirs("uploads", exist_ok=True)
+# app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+#
+# Это позволяет отдавать файлы из /uploads/chat/... напрямую.
 
 if __name__ == "__main__":
     import uvicorn
