@@ -2903,7 +2903,6 @@ async def chat_mark_read(slug: str, conv_id: str, d: dict):
     await _sb_patch("chat_conversations", {"id": f"eq.{conv_id}"}, {field: 0})
     return {"ok": True}
 
-
 # ─── Рассылка ──────────────────────────────────────────────────────────────────
 
 @app.post("/api/chat/site/{slug}/broadcast")
