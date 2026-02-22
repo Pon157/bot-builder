@@ -40,6 +40,8 @@ from starlette.concurrency import run_in_threadpool
 from datetime import datetime  # <--- Добавь это в начало файла
 
 from fastapi.staticfiles import StaticFiles
+from fastapi import UploadFile, File
+import shutil
 
 
 # ==========================================
@@ -2660,11 +2662,12 @@ async def chat_register(slug: str, d: dict):
     if not result: raise HTTPException(500, "Ошибка регистрации")
 
     return {
-        "id": user_id,
-        "username": username,
-        "site_id": site["id"],
-        "role": "user",
-        "token": f"user:{user_id}:{secrets.token_hex(8)}",
+    "id": user_id, 
+    "username": username, 
+    "display_name": username,  # <-- Добавь эту строку
+    "site_id": sites[0]["id"], 
+    "role": "user", 
+    "token": f"user:{user_id}"
     }
 
 
@@ -2958,20 +2961,18 @@ async def chat_ban_user(slug: str, user_id: str, d: dict):
 # ─── Загрузка медиафайлов (использует существующий /api/upload) ────────────────
 
 @app.post("/api/chat/media/upload")
-async def chat_upload_media(request: Request):
-    """Прокси для загрузки файлов в чате. Использует тот же механизм что /api/upload."""
-    from fastapi import UploadFile, File
-    import aiofiles
+async def chat_upload_media(file: UploadFile = File(...)):
+    """Рабочая загрузка файлов через стандартные средства FastAPI"""
+    
+    # Создаем папку, если её нет
+    os.makedirs("uploads/chat", exist_ok=True)
+    
+    # Генерируем безопасное имя
+    ext = file.filename.split(".")[-1].lower() if "." in file.filename else "bin"
+    save_name = f"{int(time.time())}_{secrets.token_hex(4)}.{ext}"
+    save_path = f"uploads/chat/{save_name}"
 
-    form = await request.form()
-    file_field = form.get("file")
-    if not file_field:
-        raise HTTPException(400, "file required")
-
-    filename = getattr(file_field, "filename", f"upload_{int(time.time())}")
-    content  = await file_field.read()
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
-
+    # Определяем тип медиа
     media_type_map = {
         "jpg": "image", "jpeg": "image", "png": "image", "gif": "image", "webp": "image",
         "mp4": "video", "mov": "video", "webm": "video",
@@ -2979,14 +2980,15 @@ async def chat_upload_media(request: Request):
     }
     media_type = media_type_map.get(ext, "file")
 
-    os.makedirs("uploads/chat", exist_ok=True)
-    save_name = f"{int(time.time())}_{secrets.token_hex(4)}.{ext}"
-    save_path = f"uploads/chat/{save_name}"
+    # Сохраняем файл (надежный способ)
+    with open(save_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-    async with aiofiles.open(save_path, "wb") as f:
-        await f.write(content)
-
-    return {"url": f"/uploads/chat/{save_name}", "media_type": media_type, "filename": filename}
+    return {
+        "url": f"/uploads/chat/{save_name}", 
+        "media_type": media_type, 
+        "filename": file.filename
+    }
 
 
 # ─── Аналитика ─────────────────────────────────────────────────────────────────
@@ -3218,20 +3220,27 @@ async def chat_mute_user(slug: str, user_id: str, d: dict):
 # ─── ГРУППОВОЙ ЧАТ ───────────────────────────────────────────────────────────
 
 @app.get("/api/chat/site/{slug}/group")
-async def chat_group_get(slug: str, since: int = 0, limit: int = 100):
+async def chat_group_get(slug: str, since: str = None, limit: int = 100):
     """Получить сообщения группового чата."""
     sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
     if not sites: raise HTTPException(404)
     site_id = sites[0]["id"]
+    
     params = {
         "site_id": f"eq.{site_id}",
         "is_deleted": "eq.false",
-        "order": "created_at.asc",
+        "order": "created_at.desc", # Берем последние сообщения
         "limit": str(limit)
     }
-    if since > 0:
+    
+    # Если передана дата, фильтруем сообщения "после этой даты"
+    if since and since != "0":
         params["created_at"] = f"gt.{since}"
-    return await _sb_get("chat_group_messages", params)
+
+    messages = await _sb_get("chat_group_messages", params)
+    
+    # Переворачиваем обратно, чтобы фронтенд получил: [Старое -> Новое]
+    return sorted(messages, key=lambda x: x['created_at'])
 
 
 @app.post("/api/chat/site/{slug}/group")
