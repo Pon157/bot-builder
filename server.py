@@ -53,6 +53,28 @@ import secrets
 def _gen_id(prefix: str) -> str:
     """Генерирует случайный ID, например csm_8f2d1a3b9c0e"""
     return f"{prefix}_{secrets.token_hex(6)}"
+
+def _slug(name: str) -> str:
+    """Генерирует URL-безопасный slug из имени сайта."""
+    import re
+    s = name.lower().strip()
+    s = re.sub(r'[а-яёa-z0-9]+', lambda m: m.group(0), s)  # keep alphanum
+    s = re.sub(r'[^a-zа-яё0-9\s-]', '', s)
+    s = re.sub(r'\s+', '-', s)
+    s = re.sub(r'-+', '-', s).strip('-')
+    # transliterate basic cyrillic
+    tr = {'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'yo','ж':'zh','з':'z',
+          'и':'i','й':'j','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r',
+          'с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts','ч':'ch','ш':'sh','щ':'sch',
+          'ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya'}
+    result = ''.join(tr.get(c, c) for c in s)
+    result = re.sub(r'[^a-z0-9-]', '', result)
+    result = re.sub(r'-+', '-', result).strip('-')
+    if not result:
+        result = secrets.token_hex(4)
+    # append random suffix to avoid collisions
+    suffix = secrets.token_hex(3)
+    return f"{result[:24]}-{suffix}"
     
 # ==========================================
 # 1. ИНИЦИАЛИЗАЦИЯ И БЕЗОПАСНОСТЬ
@@ -2798,19 +2820,14 @@ async def chat_start_conversation(slug: str, d: dict):
 @app.get("/api/chat/site/{slug}/messages/{conversation_id}")
 async def chat_get_messages(slug: str, conversation_id: str, role: str = Query(None), session_id: str = Query(None)):
     try:
-        # ВАЖНО: используем conversation_id вместо conv_id
-        res = supabase.table("chat_site_messages") \
-            .select("*") \
-            .eq("conversation_id", conversation_id) \
-            .order("created_at", desc=False) \
-            .execute()
-        
-        # Логируем для отладки
-        print(f"DEBUG: Found {len(res.data)} messages for {conversation_id}")
-        
-        return res.data
+        messages = await _sb_get("chat_site_messages", {
+            "conversation_id": f"eq.{conversation_id}",
+            "order": "created_at.asc"
+        })
+        # Фильтруем удалённые на стороне Python (is_deleted может быть NULL в старых записях)
+        return [m for m in messages if not m.get("is_deleted")]
     except Exception as e:
-        print(f"ERROR fetching messages: {e}")
+        logger.error(f"ERROR fetching messages: {e}")
         return []
 
 @app.post("/api/chat/site/{slug}/message")
