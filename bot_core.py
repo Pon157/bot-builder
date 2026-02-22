@@ -736,8 +736,7 @@ class BotInstance:
     except Exception as e:
         logger.error(f"General Forwarding Error: {e}")
 
-# Вспомогательный метод для чистоты кода
-async def _send_content_to_admin(self, m: Message, thread_id: int, header_text: str, user: dict):
+    async def _send_content_to_admin(self, m: Message, thread_id: int, header_text: str, user: dict):
     sent_msg = None
     if m.text:
         sent_msg = await self.bot.send_message(self.admin_chat_id, f"{header_text}{m.text}", message_thread_id=thread_id)
