@@ -26,7 +26,7 @@ except ImportError:
     class EmailService:
         @staticmethod
         def send_verification_code(e, c): return True
-        @staticmethod
+        @fstaticmethod
         def send_password_reset(e, c): return True
 
 # Импорты aiogram 3.x для массовой рассылки
@@ -44,6 +44,7 @@ from fastapi import UploadFile, File
 import shutil
 
 from fastapi import UploadFile, File, Form
+from fastapi import Query
 
 MAX_FILE_SIZE = 25 * 1024 * 1024
 
@@ -52,6 +53,7 @@ import secrets
 def _gen_id(prefix: str) -> str:
     """Генерирует случайный ID, например csm_8f2d1a3b9c0e"""
     return f"{prefix}_{secrets.token_hex(6)}"
+    
 # ==========================================
 # 1. ИНИЦИАЛИЗАЦИЯ И БЕЗОПАСНОСТЬ
 # ==========================================
@@ -2794,13 +2796,15 @@ async def chat_start_conversation(slug: str, d: dict):
     return conv
 
 @app.get("/api/chat/site/{slug}/messages/{conv_id}")
-async def chat_get_messages(slug: str, conv_id: str, since: Optional[str] = "0", **kwargs):
-    params = {"conversation_id": f"eq.{conv_id}", "is_deleted": "eq.false", "order": "created_at.asc", "limit": "300"}
-    try:
-        ts = int(since) if since and since != "undefined" else 0
-        if ts > 0: params["created_at"] = f"gt.{ts}"
-    except: pass
-    return await _sb_get("chat_site_messages", params)
+async def chat_get_messages(
+    slug: str, 
+    conv_id: str, 
+    role: str = Query(None), 
+    session_id: str = Query(None)
+):
+    # Теперь FastAPI поймет, что эти параметры берутся из ?role=...&session_id=...
+    if not role or not session_id:
+         return [] # или вернуть ошибку
 
 @app.post("/api/chat/site/{slug}/message")
 @app.post("/api/chat/site/{slug}/message/")
