@@ -92,6 +92,9 @@ class AiActivateState(StatesGroup):
 class MiniappActivateState(StatesGroup):
     waiting_bot_id = State()
 
+class ChatSiteActivateState(StatesGroup):
+    waiting_key = State()
+
 # ==========================================
 # 2. ЭКОНОМИЧЕСКАЯ МОДЕЛЬ
 # ==========================================
@@ -118,6 +121,12 @@ AI_TOKEN_PACKS = {
     500_000:  {"label": "500 000 токенов",  "price_rub": 40},
     1_500_000:{"label": "1 500 000 токенов","price_rub": 90},
     5_000_000:{"label": "5 000 000 токенов","price_rub": 240},
+}
+
+CHAT_SITE_PACKS = {
+    30:  {"label": "Чат-платформа 1 мес.",  "price_rub": 150},
+    90:  {"label": "Чат-платформа 3 мес.",  "price_rub": 400},
+    180: {"label": "Чат-платформа 6 мес.",  "price_rub": 700},
 }
 
 # Настройки партнеров
@@ -255,6 +264,7 @@ async def send_main_menu(m):
     kb.row(InlineKeyboardButton(text="🔑 Лицензия бота",    callback_data="menu_license"))
     kb.row(InlineKeyboardButton(text="🤖 AI-токены",         callback_data="menu_ai"))
     kb.row(InlineKeyboardButton(text="📱 Мини-приложения",   callback_data="menu_miniapps"))
+    kb.row(InlineKeyboardButton(text="💬 Чат-платформа",     callback_data="menu_chatsite"))
     text = "👋 <b>Добро пожаловать!</b>\n\nВыберите раздел:"
     fn = m.answer if isinstance(m, Message) else m.message.edit_text
     await fn(text, reply_markup=kb.as_markup(), parse_mode="HTML")
@@ -772,6 +782,177 @@ async def process_mapp_activation(m: Message, state: FSMContext):
             await m.answer(f"❌ {res.get('message', 'Ошибка')}")
     except Exception as e:
         await m.answer(f"❌ Ошибка сервера: {e}")
+
+@dp.callback_query(F.data == "menu_chatsite")
+async def cb_menu_chatsite(cb: CallbackQuery):
+    """Меню чат-платформ."""
+    kb = InlineKeyboardBuilder()
+    for days, info in CHAT_SITE_PACKS.items():
+        kb.row(InlineKeyboardButton(
+            text=f"💬 {info['label']} — {info['price_rub']} ₽",
+            callback_data=f"buychat_{days}"
+        ))
+    kb.row(InlineKeyboardButton(text="🔑 Активировать ключ", callback_data="activate_chat_key"))
+    kb.row(InlineKeyboardButton(text="🏠 Назад",             callback_data="back_main"))
+    text = (
+        "💬 <b>Чат-платформа</b>\n\n"
+        "Создайте собственный мессенджер с регистрацией пользователей,\n"
+        "личными диалогами, групповым чатом, рассылками и модерацией.\n\n"
+        "Ключ активируется в дашборде → Чат-платформы → Ваш сайт → Лицензия.\n\n"
+        "Выберите тариф:"
+    )
+    await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("buychat_"))
+async def cb_buy_chatsite(cb: CallbackQuery):
+    days = int(cb.data.replace("buychat_", ""))
+    info = CHAT_SITE_PACKS.get(days)
+    if not info:
+        return await cb.answer("Тариф не найден", show_alert=True)
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="💳 Оплатить", url="https://www.donationalerts.com/r/dialoge_engine"))
+    kb.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"verifychat_{days}"))
+    kb.row(InlineKeyboardButton(text="◀️ Назад", callback_data="menu_chatsite"))
+    buy_text = (
+        f"💬 <b>Заказ: {info['label']}</b>\n\n"
+        f"Сумма: <b>{info['price_rub']} ₽</b>\n\n"
+        "1. Переведите сумму по ссылке.\n"
+        "2. В комментарии укажите ваш Telegram ID.\n"
+        "3. Нажмите «Я оплатил»."
+    )
+    await cb.message.edit_text(buy_text, reply_markup=kb.as_markup(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("verifychat_"))
+async def cb_verify_chatsite(cb: CallbackQuery):
+    days = int(cb.data.replace("verifychat_", ""))
+    info = CHAT_SITE_PACKS.get(days, {})
+    akb = InlineKeyboardBuilder()
+    akb.row(
+        InlineKeyboardButton(text="✅ Выдать ключ", callback_data=f"adm_chat_ok_{cb.from_user.id}_{days}"),
+        InlineKeyboardButton(text="❌ Отказ",       callback_data=f"adm_no_{cb.from_user.id}")
+    )
+    try:
+        notify_text = (
+            f"💬 <b>Заявка Чат-платформа</b>\n"
+            f"Юзер: {cb.from_user.full_name} (<code>{cb.from_user.id}</code>)\n"
+            f"Тариф: {info.get('label', '?')} | Сумма: {info.get('price_rub', '?')} ₽"
+        )
+        await bot.send_message(ADM_CHAT, notify_text, reply_markup=akb.as_markup(), parse_mode="HTML")
+        await cb.message.edit_text("⏳ Заявка отправлена. Ожидайте подтверждения.")
+    except Exception:
+        await cb.answer("Ошибка отправки", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("adm_chat_ok_"))
+async def cb_admin_approve_chatsite(cb: CallbackQuery):
+    """Администратор выдаёт ключ чат-платформы."""
+    await cb.answer()
+    try:
+        parts = cb.data.split("_")
+        if len(parts) < 5:
+            await cb.message.edit_text("Ошибка: неверный формат данных кнопки.")
+            return
+        days = int(parts[-1])
+        uid  = parts[-2]
+        info = CHAT_SITE_PACKS.get(days, {})
+        price = info.get("price_rub", 0)
+
+        await cb.message.edit_text(f"⏳ Генерирую ключ чат-платформы для {uid}...")
+
+        r = requests.post(
+            f"{SRV_URL}/api/chat/keys/generate",
+            json={"admin_token": ADM_SECRET, "owner_id": uid, "duration_days": days, "price_rub": price},
+            timeout=15
+        )
+        if r.status_code != 200:
+            await cb.message.edit_text(f"❌ Ошибка генерации ключа: {r.status_code}\n{r.text[:200]}")
+            return
+
+        key_code = r.json().get("key_code")
+        if not key_code:
+            await cb.message.edit_text("❌ Сервер не вернул ключ.")
+            return
+
+        months_label = f"{days} дн." if days < 90 else (f"{days//30} мес.")
+        user_msg = (
+            f"🎉 <b>Оплата подтверждена!</b>\n\n"
+            f"Ваш ключ чат-платформы: <code>{key_code}</code>\n\n"
+            f"Срок: <b>{months_label}</b>\n\n"
+            "Активация:\n"
+            "1. Откройте Дашборд → Чат-платформы.\n"
+            "2. Нажмите на ваш сайт → вкладка <b>Лицензия</b>.\n"
+            "3. Введите ключ и нажмите «Активировать».\n\n"
+            "Или активируйте через бот: раздел «💬 Чат-платформа → Активировать ключ»."
+        )
+        await bot.send_message(int(uid), user_msg, parse_mode="HTML")
+        await cb.message.edit_text(
+            f"✅ Ключ <code>{key_code}</code> выдан пользователю {uid}.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"cb_admin_approve_chatsite error: {e}")
+        try:
+            await cb.message.edit_text(f"❌ Ошибка: {e}")
+        except Exception:
+            pass
+
+
+@dp.callback_query(F.data == "activate_chat_key")
+async def cb_activate_chat_key(cb: CallbackQuery, state: FSMContext):
+    """Запрашиваем ключ чат-платформы и site_id."""
+    text = (
+        "🔑 <b>Активация ключа чат-платформы</b>\n\n"
+        "Отправьте сообщение в формате:\n"
+        "<code>CHAT-XXXX-XXXX-XXXX site_id</code>\n\n"
+        "Ключ и ID сайта через пробел.\n"
+        "ID сайта найдёте в дашборде → Чат-платформы → настройки сайта.\n\n"
+        "Или активируйте ключ прямо в дашборде без бота."
+    )
+    await cb.message.edit_text(text, parse_mode="HTML")
+    await state.set_state(ChatSiteActivateState.waiting_key)
+
+
+@dp.message(ChatSiteActivateState.waiting_key)
+async def process_chat_activation(m: Message, state: FSMContext):
+    parts = m.text.strip().split()
+    if len(parts) < 2:
+        await m.answer(
+            "Укажите ключ и ID сайта через пробел.\n"
+            "Пример: <code>CHAT-ABCD-1234-EFGH site_abc123</code>",
+            parse_mode="HTML"
+        )
+        return
+    key_code = parts[0].upper()
+    site_id  = parts[1].strip()
+    await state.clear()
+    
+    # Получаем owner_id из user_id Telegram
+    user_info = await db_get_user_info(m.from_user.id)
+    owner_id = str(m.from_user.id)
+    
+    try:
+        r = requests.post(
+            f"{SRV_URL}/api/chat/sites/{site_id}/activate-key",
+            json={"owner_id": owner_id, "key_code": key_code},
+            timeout=15
+        )
+        res = r.json()
+        if res.get("ok"):
+            exp = res.get("expires_formatted", "?")
+            await m.answer(
+                f"✅ <b>Чат-платформа активирована!</b>\n\n"
+                f"Сайт: <code>{site_id}</code>\n"
+                f"Действует до: <b>{exp}</b>",
+                parse_mode="HTML"
+            )
+        else:
+            msg = res.get("detail") or res.get("message", "Ошибка")
+            await m.answer(f"❌ {msg}")
+    except Exception as e:
+        await m.answer(f"❌ Ошибка сервера: {e}")
+
 
 @dp.callback_query(F.data == "back_main")
 async def cb_back_main(cb: CallbackQuery):
