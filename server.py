@@ -2839,7 +2839,14 @@ async def chat_send_message_logic(slug: str, conversation_id: str, d: dict):
     
     if from_role == "user":
         u = await _sb_get("chat_site_users", {"id": f"eq.{from_id}"})
-        if u and u[0].get("is_banned"): raise HTTPException(403, "Banned")
+        if u:
+            _u = u[0]
+            if _u.get("is_banned"):
+                raise HTTPException(403, "Вы заблокированы")
+            muted_until = _u.get("muted_until") or 0
+            if muted_until > int(time.time() * 1000):
+                dt = datetime.fromtimestamp(muted_until / 1000)
+                raise HTTPException(403, f"Вы замучены до {dt.strftime('%H:%M %d.%m.%Y')}")
 
     convs = await _sb_get("chat_conversations", {"id": f"eq.{conversation_id}"})
     if not convs:
@@ -2865,6 +2872,28 @@ async def chat_send_message_logic(slug: str, conversation_id: str, d: dict):
     await _sb_patch("chat_conversations", {"id": f"eq.{conversation_id}"}, {
         "last_message_at": now, "last_message_preview": preview, field: (conv.get(field) or 0) + 1
     })
+
+    # ─── Авто-ответы на команды в личном диалоге ─────────────────────────────
+    if text and from_role == "user":
+        site_rows = await _sb_get("chat_sites", {"id": f"eq.{conv['site_id']}"})
+        if site_rows:
+            site_cfg = site_rows[0].get("config") or {}
+            auto_replies = site_cfg.get("autoReplies", [])
+            for ar in auto_replies:
+                cmd = (ar.get("command") or "").strip()
+                reply_text = (ar.get("reply") or "").strip()
+                if cmd and reply_text and text.lower().startswith(cmd.lower()):
+                    bot_msg = {
+                        "id": _gen_id("csm"), "site_id": conv["site_id"],
+                        "conversation_id": conversation_id,
+                        "from_id": "system", "from_name": site_cfg.get("logoText") or "Бот",
+                        "from_role": "system", "text": reply_text,
+                        "media_url": None, "media_type": None, "sticker_emoji": None,
+                        "created_at": now + 100, "is_read": False, "is_deleted": False,
+                    }
+                    await _sb_post("chat_site_messages", bot_msg)
+                    break
+
     return msg
     
 # ─── Рассылка ──────────────────────────────────────────────────────────────────
@@ -2931,47 +2960,7 @@ async def chat_ban_user(slug: str, user_id: str, d: dict):
     return {"ok": ok}
 
 
-# ─── Загрузка медиафайлов (использует существующий /api/upload) ────────────────
-
-@app.post("/api/chat/media/upload")
-async def chat_upload_media(
-    file: UploadFile = File(...), 
-    is_voice: bool = Form(False) # Фронтенд пришлет true для голосовых
-):
-    # 1. Проверка размера
-    file_size = 0
-    content = await file.read()
-    file_size = len(content)
-    
-    if file_size > MAX_FILE_SIZE:
-        raise HTTPException(413, "Файл слишком большой. Максимум 25 МБ.")
-
-    # 2. Папки и пути
-    subdir = "voice" if is_voice else "files"
-    os.makedirs(f"uploads/chat/{subdir}", exist_ok=True)
-    
-    ext = file.filename.split(".")[-1].lower() if "." in file.filename else "bin"
-    if is_voice: ext = "webm" # Голосовые обычно в этом формате
-    
-    safe_name = f"{int(time.time())}_{secrets.token_hex(4)}.{ext}"
-    save_path = f"uploads/chat/{subdir}/{safe_name}"
-
-    # 3. Сохранение
-    with open(save_path, "wb") as f:
-        f.write(content)
-
-    # 4. Определение media_type для превью
-    media_type = "file"
-    if ext in ["jpg", "jpeg", "png", "gif", "webp"]: media_type = "image"
-    elif ext in ["mp4", "mov", "webm"] and not is_voice: media_type = "video"
-    elif is_voice: media_type = "audio"
-
-    return {
-        "url": f"/uploads/chat/{subdir}/{safe_name}",
-        "media_type": media_type,
-        "filename": file.filename,
-        "is_voice": is_voice
-    }
+# ─── Загрузка медиафайлов — УБРАН ДУБЛИКАТ, используется v2 ниже ─────────────
 
 
 # ─── Аналитика ─────────────────────────────────────────────────────────────────
@@ -3481,7 +3470,7 @@ async def chat_admin_set_online(site_id: str, admin_id: str, d: dict):
 # ─── ЗАГРУЗКА ФАЙЛОВ (улучшенная версия) ─────────────────────────────────────
 
 @app.post("/api/chat/media/upload")
-async def chat_upload_media_v2(request: Request):
+async def chat_upload_media(request: Request):
     """
     Загрузка медиафайлов на жёсткий диск сервера.
     Поддерживает: изображения, видео, аудио (голосовые), файлы.
