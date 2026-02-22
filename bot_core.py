@@ -683,50 +683,77 @@ class BotInstance:
         return user, is_first_time
 
     async def resolve_thread(self, user: dict, force_new: bool = False):
-        if not self.use_topics or not self.admin_chat_id: return None
-        if not force_new and user.get("last_topic_id"): return user["last_topic_id"]
-        try:
-            is_anon = self.settings.get('anonymousTopics', False)
-            topic_name = f"#{get_anon_id(user['id'])}" if is_anon else f"{user['first_name']} [{user['id']}]"
-            new_topic = await self.bot.create_forum_topic(self.admin_chat_id, topic_name)
-            user["last_topic_id"] = new_topic.message_thread_id
-            await self.sync_queue.put(("sync_state", None))
-            return new_topic.message_thread_id
-        except Exception as e:
-            logger.error(f"Topic Error: {e}")
-            return None
+    if not self.use_topics or not self.admin_chat_id: return None
+    
+    tid = user.get("last_topic_id")
+    
+    # Если топик есть, проверим его «на вшивость» простым действием
+    if tid and not force_new:
+        return tid
+
+    try:
+        is_anon = self.settings.get('anonymousTopics', False)
+        topic_name = f"#{get_anon_id(user['id'])}" if is_anon else f"{user['first_name']} [{user['id']}]"
+        new_topic = await self.bot.create_forum_topic(self.admin_chat_id, topic_name)
+        user["last_topic_id"] = new_topic.message_thread_id
+        await self.sync_queue.put(("sync_state", None))
+        return new_topic.message_thread_id
+    except Exception as e:
+        logger.error(f"Topic Creation Error: {e}")
+        return None
 
     async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = "", is_ai_request: bool = False):
-        if not self.admin_chat_id: return
-        force_new_topic = self.topic_per_req and (btn_text != "" or is_first)
-        thread_id = await self.resolve_thread(user, force_new=force_new_topic)
-        header_text = format_admin_header(m, self.settings, is_first, btn_text)
+    if not self.admin_chat_id: return
+    
+    # 1. Определяем необходимость нового топика и получаем текущий ID
+    force_new_topic = self.topic_per_req and (btn_text != "" or is_first)
+    thread_id = await self.resolve_thread(user, force_new=force_new_topic)
+    header_text = format_admin_header(m, self.settings, is_first, btn_text)
 
-        # Помечаем ИИ-запросы — пересылаются в чат, но отвечать не нужно
-        if is_ai_request:
-            ai_tag = "\n<b>[ИИ-запрос · не отвечать]</b>\n"
-            header_text = header_text.rstrip('\n') + ai_tag + "\n"
+    if is_ai_request:
+        ai_tag = "\n<b>[ИИ-запрос · не отвечать]</b>\n"
+        header_text = header_text.rstrip('\n') + ai_tag + "\n"
+    
+    try:
+        await self._send_content_to_admin(m, thread_id, header_text, user)
         
-        try:
-            sent_msg = None
-            if m.text:
-                sent_msg = await self.bot.send_message(self.admin_chat_id, f"{header_text}{m.text}", message_thread_id=thread_id)
-            elif m.photo:
-                sent_msg = await self.bot.send_photo(self.admin_chat_id, m.photo[-1].file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
-            elif m.video:
-                sent_msg = await self.bot.send_video(self.admin_chat_id, m.video.file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
-            elif m.voice:
-                sent_msg = await self.bot.send_voice(self.admin_chat_id, m.voice.file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
-            else:
-                if header_text:
-                    await self.bot.send_message(self.admin_chat_id, header_text, message_thread_id=thread_id)
-                sent_msg = await self.bot.copy_message(self.admin_chat_id, m.chat.id, m.message_id, message_thread_id=thread_id)
+    except TelegramBadRequest as e:
+        # 2. Если Telegram говорит, что ветка не найдена
+        if "message thread not found" in e.message:
+            logger.warning(f"Thread {thread_id} not found for user {user['id']}. Resetting and retrying...")
             
-            if sent_msg:
-                self.msg_map[sent_msg.message_id] = user['id']
-                
-        except Exception as e:
+            # Сбрасываем невалидный ID и создаем новый топик принудительно
+            user["last_topic_id"] = None
+            new_thread_id = await self.resolve_thread(user, force_new=True)
+            
+            try:
+                # Повторная попытка отправки в новый топик
+                await self._send_content_to_admin(m, new_thread_id, header_text, user)
+            except Exception as retry_e:
+                logger.error(f"Retry Forwarding Error: {retry_e}")
+        else:
             logger.error(f"Forwarding Error: {e}")
+    except Exception as e:
+        logger.error(f"General Forwarding Error: {e}")
+
+# Вспомогательный метод для чистоты кода
+async def _send_content_to_admin(self, m: Message, thread_id: int, header_text: str, user: dict):
+    sent_msg = None
+    if m.text:
+        sent_msg = await self.bot.send_message(self.admin_chat_id, f"{header_text}{m.text}", message_thread_id=thread_id)
+    elif m.photo:
+        sent_msg = await self.bot.send_photo(self.admin_chat_id, m.photo[-1].file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
+    elif m.video:
+        sent_msg = await self.bot.send_video(self.admin_chat_id, m.video.file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
+    elif m.voice:
+        sent_msg = await self.bot.send_voice(self.admin_chat_id, m.voice.file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
+    else:
+        if header_text:
+            await self.bot.send_message(self.admin_chat_id, header_text, message_thread_id=thread_id)
+        sent_msg = await self.bot.copy_message(self.admin_chat_id, m.chat.id, m.message_id, message_thread_id=thread_id)
+    
+    if sent_msg:
+        self.msg_map[sent_msg.message_id] = user['id']
 
     async def admin_control_logic(self, m: Message):
         """
