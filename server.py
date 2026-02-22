@@ -2342,51 +2342,52 @@ def send_chat_verification_email(to_email: str, code: str, site_name: str) -> bo
         return False
 
 
-# --- ИСПРАВЛЕННЫЕ ХЕЛПЕРЫ SUPABASE ---
-
-def _cs_h():
-    """Supabase headers helper."""
-    return {
-        "apikey": S_KEY,
-        "Authorization": f"Bearer {S_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation"
-    }
+# ==============================================================================
+# ─── 1. ХЕЛПЕРЫ БД (ОПТИМИЗИРОВАННЫЕ) ──────────────────────────────────────────
+# ==============================================================================
 
 async def _sb_get(table: str, params: dict) -> list:
-    # Используем глобальный db вместо 'async with'
     try:
-        r = await db.get(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), params=params)
-        return r.json() if r.status_code == 200 else []
+        # Глобальный клиент 'db' уже содержит S_URL и нужные заголовки
+        r = await db.get(table, params=params)
+        if r.status_code == 200:
+            return r.json()
+        logger.error(f"Supabase GET [{table}] error: {r.text}")
+        return []
     except Exception as e:
-        logging.error(f"SB GET ERROR: {e}")
+        logger.error(f"Supabase GET exception [{table}]: {e}")
         return []
 
 async def _sb_post(table: str, data: dict) -> dict | None:
     try:
-        r = await db.post(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), json=data)
-        d = r.json()
-        return d[0] if isinstance(d, list) and d else d if isinstance(d, dict) else None
+        # Prefer: return=representation заставляет Supabase вернуть созданный объект
+        r = await db.post(table, json=data, headers={"Prefer": "return=representation"})
+        if r.status_code in (200, 201):
+            d = r.json()
+            return d[0] if isinstance(d, list) and d else d if isinstance(d, dict) else None
+        logger.error(f"Supabase POST [{table}] error: {r.text}")
+        return None
     except Exception as e:
-        logging.error(f"SB POST ERROR: {e}")
+        logger.error(f"Supabase POST exception [{table}]: {e}")
         return None
 
 async def _sb_patch(table: str, params: dict, data: dict) -> bool:
     try:
-        r = await db.patch(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), params=params, json=data)
+        r = await db.patch(table, params=params, json=data)
+        if r.status_code not in (200, 204):
+            logger.error(f"Supabase PATCH [{table}] error: {r.text}")
         return r.status_code in (200, 204)
     except Exception as e:
-        logging.error(f"SB PATCH ERROR: {e}")
+        logger.error(f"Supabase PATCH exception [{table}]: {e}")
         return False
 
 async def _sb_delete(table: str, params: dict) -> bool:
     try:
-        r = await db.delete(f"{S_URL}/rest/v1/{table}", headers=_cs_h(), params=params)
+        r = await db.delete(table, params=params)
         return r.status_code in (200, 204)
     except Exception as e:
-        logging.error(f"SB DELETE ERROR: {e}")
+        logger.error(f"Supabase DELETE exception [{table}]: {e}")
         return False
-
 
 # ─── Создать сайт ──────────────────────────────────────────────────────────────
 
@@ -2743,194 +2744,111 @@ async def chat_auth(slug: str, d: dict):
 
 
 # ==============================================================================
-# ─── БЛОК: ДИАЛОГИ И СООБЩЕНИЯ ────────────────────────────────────────────────
+# ─── 2. ДИАЛОГИ И СООБЩЕНИЯ ────────────────────────────────────────────────────
 # ==============================================================================
 
-# ─── ДИАЛОГИ (Conversations) ──────────────────────────────────────────────────
-
 @app.get("/api/chat/site/{slug}/conversations")
-@app.get("/api/chat/site/{slug}/conversation") # Алиас для совместимости с фронтом
+@app.get("/api/chat/site/{slug}/conversation") 
 async def chat_get_conversations(slug: str, role: str, session_id: str):
-    """
-    Получить список всех диалогов сайта. 
-    Фильтрует по роли (user видит только свои, admin — закрепленные за ним).
-    """
     sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
-    if not sites: 
-        raise HTTPException(404, "Сайт не найден")
-    site_id = sites[0]["id"]
-
-    # Базовые параметры: только этот сайт, сортировка по свежести сообщения
-    params = {"site_id": f"eq.{site_id}", "order": "last_message_at.desc"}
+    if not sites: raise HTTPException(404, "Сайт не найден")
     
-    if role == "user":
-        params["user_id"] = f"eq.{session_id}"
-    elif role == "admin":
-        params["admin_id"] = f"eq.{session_id}"
-    # owner видит всё по site_id без доп. фильтров
-    
+    params = {"site_id": f"eq.{sites[0]['id']}", "order": "last_message_at.desc"}
+    if role == "user": params["user_id"] = f"eq.{session_id}"
+    elif role == "admin": params["admin_id"] = f"eq.{session_id}"
     return await _sb_get("chat_conversations", params)
 
-
 @app.post("/api/chat/site/{slug}/conversations")
+@app.post("/api/chat/site/{slug}/conversation") # КРИТИЧНО: Алиас для фронтенда!
 async def chat_start_conversation(slug: str, d: dict):
-    """Создать новый диалог между пользователем и админом или вернуть старый."""
+    """Именно сюда стучится фронт при начале нового чата"""
     user_id   = d.get("user_id")
     admin_id  = d.get("admin_id")
-    user_name = d.get("user_name") or "Пользователь"
-    
-    if not user_id or not admin_id: 
-        raise HTTPException(400, "user_id и admin_id обязательны")
+    if not user_id or not admin_id: raise HTTPException(400)
 
     sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
-    if not sites: 
-        raise HTTPException(404, "Сайт не найден")
+    if not sites: raise HTTPException(404)
     site_id = sites[0]["id"]
 
-    # 1. Ищем, не создан ли уже такой диалог
     existing = await _sb_get("chat_conversations", {
-        "site_id": f"eq.{site_id}",
-        "user_id": f"eq.{user_id}",
-        "admin_id": f"eq.{admin_id}"
+        "site_id": f"eq.{site_id}", "user_id": f"eq.{user_id}", "admin_id": f"eq.{admin_id}"
     })
-    if existing: 
-        return existing[0]
+    if existing: return existing[0]
 
-    # 2. Подтягиваем имя админа для записи в диалог
     admins = await _sb_get("chat_site_admins", {"id": f"eq.{admin_id}"})
-    admin_name = admins[0].get("display_name", "Администратор") if admins else "Администратор"
+    admin_name = admins[0].get("display_name", "Админ") if admins else "Админ"
 
-    # 3. Создаем структуру нового диалога
     now = int(time.time() * 1000)
     conv = {
-        "id": _gen_id("ccv"),
-        "site_id": site_id,
-        "user_id": user_id,
-        "admin_id": admin_id,
-        "user_name": user_name,
-        "admin_name": admin_name,
-        "created_at": now,
-        "last_message_at": now,
-        "last_message_preview": "Новый диалог",
-        "unread_admin": 0,
-        "unread_user": 0,
+        "id": _gen_id("ccv"), "site_id": site_id, "user_id": user_id, "admin_id": admin_id,
+        "user_name": d.get("user_name", "Гость"), "admin_name": admin_name,
+        "created_at": now, "last_message_at": now, "last_message_preview": "Новый диалог",
+        "unread_admin": 0, "unread_user": 0,
     }
     await _sb_post("chat_conversations", conv)
     return conv
 
-
-    # ==============================================================================
-# ─── СООБЩЕНИЯ (Messages) ──────────────────────────────────────────────────────
-# ==============================================================================
-
 @app.get("/api/chat/site/{slug}/messages/{conv_id}")
-async def chat_get_messages(
-    slug: str, 
-    conv_id: str, 
-    since: Optional[str] = "0", 
-    role: Optional[str] = None, 
-    session_id: Optional[str] = None
-):
-    """Загрузить историю сообщений."""
-    params = {
-        "conversation_id": f"eq.{conv_id}",
-        "is_deleted": "eq.false",
-        "order": "created_at.asc",
-        "limit": "300",
-    }
+async def chat_get_messages(slug: str, conv_id: str, since: Optional[str] = "0", **kwargs):
+    params = {"conversation_id": f"eq.{conv_id}", "is_deleted": "eq.false", "order": "created_at.asc", "limit": "300"}
     try:
-        # Обработка 'undefined' или пустых строк от фронта
         ts = int(since) if since and since != "undefined" else 0
-        if ts > 0:
-            params["created_at"] = f"gt.{ts}"
-    except:
-        pass
-        
+        if ts > 0: params["created_at"] = f"gt.{ts}"
+    except: pass
     return await _sb_get("chat_site_messages", params)
-
 
 @app.post("/api/chat/site/{slug}/message")
 @app.post("/api/chat/site/{slug}/message/")
 async def chat_send_message_alias(slug: str, d: dict):
-    """Главный эндпоинт отправки сообщения (фиксит 404)."""
     conv_id = d.get("conversation_id") or d.get("conv_id")
-    if not conv_id: 
-        raise HTTPException(400, "ID диалога не указан")
+    if not conv_id: raise HTTPException(400, "Missing conv_id")
     return await chat_send_message_logic(slug, conv_id, d)
-
 
 @app.post("/api/chat/site/{slug}/conversation/{conv_id}/messages")
 async def chat_send_message_full(slug: str, conv_id: str, d: dict):
-    """Запасной эндпоинт отправки сообщения."""
     return await chat_send_message_logic(slug, conv_id, d)
-
 
 @app.post("/api/chat/site/{slug}/conversation/{conv_id}/read")
 async def chat_mark_read(slug: str, conv_id: str, d: dict):
-    """Сбросить счетчик непрочитанных."""
-    role = d.get("role", "admin")
-    field = "unread_user" if role == "user" else "unread_admin"
+    field = "unread_user" if d.get("role", "admin") == "user" else "unread_admin"
     await _sb_patch("chat_conversations", {"id": f"eq.{conv_id}"}, {field: 0})
     return {"ok": True}
 
-
 async def chat_send_message_logic(slug: str, conv_id: str, d: dict):
-    """Единая логика сохранения сообщения и обновления превью."""
-    from_id   = d.get("from_id")
+    from_id = d.get("from_id")
     from_role = d.get("from_role", "user")
-    from_name = d.get("from_name") or "Гость"
-    text      = (d.get("text") or "").strip()
+    text = (d.get("text") or "").strip()
     
-    if not from_id: 
-        raise HTTPException(400, "from_id обязателен")
+    if not from_id: raise HTTPException(400, "from_id required")
     
-    # 1. Проверка на бан
     if from_role == "user":
-        u_check = await _sb_get("chat_site_users", {"id": f"eq.{from_id}"})
-        if u_check and u_check[0].get("is_banned"):
-            raise HTTPException(403, "Вы заблокированы")
+        u = await _sb_get("chat_site_users", {"id": f"eq.{from_id}"})
+        if u and u[0].get("is_banned"): raise HTTPException(403, "Banned")
 
-    # 2. Получаем диалог
     convs = await _sb_get("chat_conversations", {"id": f"eq.{conv_id}"})
-    if not convs: 
+    if not convs:
+        # Логируем, чтобы точно знать, почему вылетело 404
+        logger.error(f"!!! ДИАЛОГ НЕ НАЙДЕН В БАЗЕ: conv_id={conv_id} !!!")
         raise HTTPException(404, "Диалог не найден")
     conv = convs[0]
 
     now = int(time.time() * 1000)
-    
-    # 3. Сохраняем сообщение (с duration для войсов)
     msg = {
-        "id": _gen_id("csm"),
-        "site_id": conv.get("site_id"),
-        "conversation_id": conv_id,
-        "from_id": from_id,
-        "from_name": from_name,
-        "from_role": from_role,
-        "text": text or None,
-        "media_url": d.get("media_url"),
-        "media_type": d.get("media_type"),
-        "sticker_emoji": d.get("sticker_emoji"),
-        "duration": d.get("duration"), # Чтобы не было 0:00
-        "created_at": now,
-        "is_read": False,
-        "is_deleted": False,
+        "id": _gen_id("csm"), "site_id": conv["site_id"], "conversation_id": conv_id,
+        "from_id": from_id, "from_name": d.get("from_name", "Гость"), "from_role": from_role,
+        "text": text or None, "media_url": d.get("media_url"), "media_type": d.get("media_type"),
+        "sticker_emoji": d.get("sticker_emoji"), "duration": d.get("duration"),
+        "created_at": now, "is_read": False, "is_deleted": False,
     }
-    
     await _sb_post("chat_site_messages", msg)
 
-    # 4. Обновляем диалог (превью и счетчик)
     is_voice = d.get("media_type") == "voice"
     preview = d.get("sticker_emoji") or (text[:60] if text else ("🎤 Голос" if is_voice else "[Файл]"))
+    field = "unread_admin" if from_role == "user" else "unread_user"
     
-    unread_field = "unread_admin" if from_role == "user" else "unread_user"
-    new_count = (conv.get(unread_field) or 0) + 1
-
     await _sb_patch("chat_conversations", {"id": f"eq.{conv_id}"}, {
-        "last_message_at": now,
-        "last_message_preview": preview,
-        unread_field: new_count,
+        "last_message_at": now, "last_message_preview": preview, field: (conv.get(field) or 0) + 1
     })
-
     return msg
     
 # ─── Рассылка ──────────────────────────────────────────────────────────────────
