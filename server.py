@@ -43,6 +43,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi import UploadFile, File
 import shutil
 
+from fastapi import UploadFile, File, Form
+
+MAX_FILE_SIZE = 25 * 1024 * 1024
 
 # ==========================================
 # 1. ИНИЦИАЛИЗАЦИЯ И БЕЗОПАСНОСТЬ
@@ -2741,7 +2744,7 @@ async def chat_auth(slug: str, d: dict):
 
 # ─── Диалоги ───────────────────────────────────────────────────────────────────
 
-@app.post("/api/chat/site/{slug}/conversations")
+@app.post("/api/chat/site/{slug}/conversation")
 async def chat_start_conversation(slug: str, d: dict):
     """Начать или получить диалог пользователя с конкретным администратором."""
     user_id   = d.get("user_id")
@@ -2784,7 +2787,7 @@ async def chat_start_conversation(slug: str, d: dict):
     return result or conv
 
 
-@app.get("/api/chat/site/{slug}/conversations")
+@app.get("/api/chat/site/{slug}/conversation")
 async def chat_get_conversations(slug: str, role: str, session_id: str):
     """
     Список диалогов:
@@ -2817,7 +2820,7 @@ async def chat_get_conversations(slug: str, role: str, session_id: str):
 
 # ─── Сообщения ─────────────────────────────────────────────────────────────────
 
-@app.get("/api/chat/site/{slug}/conversations/{conv_id}/messages")
+@app.get("/api/chat/site/{slug}/conversation/{conv_id}/messages")
 async def chat_get_messages(slug: str, conv_id: str, since: int = 0):
     params = {
         "conversation_id": f"eq.{conv_id}",
@@ -2830,7 +2833,7 @@ async def chat_get_messages(slug: str, conv_id: str, since: int = 0):
     return await _sb_get("chat_site_messages", params)
 
 
-@app.post("/api/chat/site/{slug}/conversations/{conv_id}/messages")
+@app.post("/api/chat/site/{slug}/conversation/{conv_id}/messages")
 async def chat_send_message(slug: str, conv_id: str, d: dict):
     from_id   = d.get("from_id")
     from_name = d.get("from_name", "")
@@ -2885,7 +2888,7 @@ async def chat_send_message(slug: str, conv_id: str, d: dict):
     return result or msg
 
 
-@app.post("/api/chat/site/{slug}/conversations/{conv_id}/read")
+@app.post("/api/chat/site/{slug}/conversation/{conv_id}/read")
 async def chat_mark_read(slug: str, conv_id: str, d: dict):
     """Сбросить счётчик непрочитанных для стороны."""
     role = d.get("role", "admin")
@@ -2961,33 +2964,43 @@ async def chat_ban_user(slug: str, user_id: str, d: dict):
 # ─── Загрузка медиафайлов (использует существующий /api/upload) ────────────────
 
 @app.post("/api/chat/media/upload")
-async def chat_upload_media(file: UploadFile = File(...)):
-    """Рабочая загрузка файлов через стандартные средства FastAPI"""
+async def chat_upload_media(
+    file: UploadFile = File(...), 
+    is_voice: bool = Form(False) # Фронтенд пришлет true для голосовых
+):
+    # 1. Проверка размера
+    file_size = 0
+    content = await file.read()
+    file_size = len(content)
     
-    # Создаем папку, если её нет
-    os.makedirs("uploads/chat", exist_ok=True)
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(413, "Файл слишком большой. Максимум 25 МБ.")
+
+    # 2. Папки и пути
+    subdir = "voice" if is_voice else "files"
+    os.makedirs(f"uploads/chat/{subdir}", exist_ok=True)
     
-    # Генерируем безопасное имя
     ext = file.filename.split(".")[-1].lower() if "." in file.filename else "bin"
-    save_name = f"{int(time.time())}_{secrets.token_hex(4)}.{ext}"
-    save_path = f"uploads/chat/{save_name}"
+    if is_voice: ext = "webm" # Голосовые обычно в этом формате
+    
+    safe_name = f"{int(time.time())}_{secrets.token_hex(4)}.{ext}"
+    save_path = f"uploads/chat/{subdir}/{safe_name}"
 
-    # Определяем тип медиа
-    media_type_map = {
-        "jpg": "image", "jpeg": "image", "png": "image", "gif": "image", "webp": "image",
-        "mp4": "video", "mov": "video", "webm": "video",
-        "mp3": "audio", "ogg": "audio", "wav": "audio", "m4a": "audio",
-    }
-    media_type = media_type_map.get(ext, "file")
+    # 3. Сохранение
+    with open(save_path, "wb") as f:
+        f.write(content)
 
-    # Сохраняем файл (надежный способ)
-    with open(save_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    # 4. Определение media_type для превью
+    media_type = "file"
+    if ext in ["jpg", "jpeg", "png", "gif", "webp"]: media_type = "image"
+    elif ext in ["mp4", "mov", "webm"] and not is_voice: media_type = "video"
+    elif is_voice: media_type = "audio"
 
     return {
-        "url": f"/uploads/chat/{save_name}", 
-        "media_type": media_type, 
-        "filename": file.filename
+        "url": f"/uploads/chat/{subdir}/{safe_name}",
+        "media_type": media_type,
+        "filename": file.filename,
+        "is_voice": is_voice
     }
 
 
@@ -3601,6 +3614,8 @@ async def chat_upload_media_v2(request: Request):
 # app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 #
 # Это позволяет отдавать файлы из /uploads/chat/... напрямую.
+
+
 
 if __name__ == "__main__":
     import uvicorn
