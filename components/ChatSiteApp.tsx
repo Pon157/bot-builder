@@ -890,8 +890,6 @@ const AdminChatPanel: React.FC<{
   const totalUnread = convs.reduce((acc, c) => acc + (c.unread_admin || 0), 0);
   const TABS = [
     { id: 'chat', label: 'Диалоги', icon: MessageCircle, badge: totalUnread },
-    { id: 'users', label: 'Пользователи', icon: Users },
-    { id: 'broadcast', label: 'Рассылка', icon: Megaphone },
   ] as const;
 
   return (
