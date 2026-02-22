@@ -47,25 +47,23 @@ export const api = {
 
   // --- НОВЫЙ МЕТОД ДЛЯ ЗАГРУЗКИ ФОТО ---
   uploadFile: async (file: File): Promise<{ url: string } | null> => {
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
 
-      const response = await fetchWithTimeout(`${getApiBase()}/upload`, {
-        method: 'POST',
-        body: formData,
-        // Мы НЕ передаем заголовки здесь, fetchWithTimeout сам поймет, 
-        // что для FormData не нужно ставить application/json
-      });
+    const response = await fetch(`${getApiBase()}/chat/media/upload`, {
+      method: 'POST',
+      body: formData,
+      // НИКАКИХ headers здесь быть не должно, браузер сам подставит boundary
+    });
 
-      if (!response.ok) return null;
-      return await response.json();
-    } catch (e) {
-      console.error("Upload error:", e);
-      return null;
-    }
-  },
-
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (e) {
+    console.error("Ошибка загрузки:", e);
+    return null;
+  }
+},
   getUser: async (userId: string): Promise<User | null> => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/auth/user/${userId}`, { method: 'GET' });
