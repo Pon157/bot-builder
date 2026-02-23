@@ -3594,6 +3594,70 @@ async def chat_upload_media(request: Request):
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ДОБАВЬ ЭТИ ДВА ЭНДПОИНТА В server.py
+# Вставь их рядом с остальными маршрутами /api/admin/... и /api/chat/...
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+# ─── [1] ADMIN: список всех чат-сайтов для модерации ─────────────────────────
+# Вставь после @app.get("/api/admin/bots") (примерно строка 1378 в server.py)
+
+@app.get("/api/admin/chat/sites")
+async def admin_get_all_chat_sites(x_admin_token: str = Header(None)):
+    """
+    Возвращает все чат-сайты для вкладки «Чат-сайты» в AdminPanel.
+    Использует ту же авторизацию x-admin-token что и все /api/admin/* маршруты.
+    """
+    if not verify_admin_token(x_admin_token):
+        raise HTTPException(403, "Unauthorized")
+
+    # Берём все сайты, сортируем по дате создания (новые сверху)
+    sites = await _sb_get("chat_sites", {"order": "created_at.desc"})
+    # Возвращаем без лишних внутренних полей
+    return sites or []
+
+
+# ─── [2] PUBLIC: статус лицензии сайта (для показа оверлея на /chat/{slug}) ──
+# Вставь после @app.get("/api/chat/sites/{site_id}/license") (примерно строка 3462)
+
+@app.get("/api/chat/site/{slug}/license-status")
+async def chat_site_license_status(slug: str):
+    """
+    Публичная проверка лицензии сайта по slug.
+    ChatSiteApp.tsx вызывает этот эндпоинт при загрузке страницы.
+    Если лицензия истекла — фронт показывает оверлей «Лицензия истекла».
+    НЕ требует авторизации (публичный).
+    """
+    # Ищем сайт
+    sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}", "is_active": "eq.true"})
+    if not sites:
+        # Если сайт не найден вообще — не показываем оверлей (404 обработается отдельно)
+        return {"expired": False}
+
+    site_id = sites[0]["id"]
+
+    # Ищем активный ключ для этого сайта
+    keys = await _sb_get("chat_site_keys", {
+        "site_id": f"eq.{site_id}",
+        "is_active": "eq.true",
+        "order": "expires_at.desc"
+    })
+
+    if not keys:
+        # Нет ключей вообще — лицензия не активирована, считаем истекшей
+        return {"expired": True, "reason": "no_license"}
+
+    key = keys[0]
+    now = int(time.time() * 1000)
+    expires_at = key.get("expires_at") or 0
+
+    if expires_at > now:
+        # Лицензия активна
+        return {"expired": False, "expires_at": expires_at}
+    else:
+        # Лицензия истекла
+        return {"expired": True, "reason": "expired", "expired_at": expires_at}
 # ─── ПРОВЕРКА МУТА ПРИ ОТПРАВКЕ СООБЩЕНИЯ ────────────────────────────────────
 # В существующем эндпоинте chat_send_message добавить в начало (после получения user):
 #
