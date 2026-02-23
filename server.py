@@ -285,9 +285,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            f"connect-src 'self' {S_URL}; "
+            f"connect-src 'self' {S_URL} blob:; "
             "script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline';"
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob: *; "
+            "media-src 'self' data: blob: *; "
+            "object-src 'none';"
         )
         return response
 
@@ -2937,6 +2940,8 @@ async def chat_broadcast(slug: str, d: dict):
     site_id = sites[0]["id"]
 
     now = int(time.time() * 1000)
+    
+    # Сохраняем broadcast в таблицу (для истории)
     broadcast = {
         "id": _gen_id("csb"),
         "site_id": site_id,
@@ -2946,7 +2951,33 @@ async def chat_broadcast(slug: str, d: dict):
         "created_at": now,
     }
     await _sb_post("chat_broadcasts", broadcast)
-    return {"ok": True, **broadcast}
+    
+    # Рассылаем системное сообщение в ВСЕ активные диалоги сайта
+    convs = await _sb_get("chat_conversations", {"site_id": f"eq.{site_id}"})
+    sent_count = 0
+    for conv in convs:
+        conv_id = conv["id"]
+        msg = {
+            "id": _gen_id("csm"),
+            "site_id": site_id,
+            "conversation_id": conv_id,
+            "from_id": from_id or "system",
+            "from_name": from_name,
+            "from_role": "system",
+            "text": f"📢 {text}",
+            "media_url": None, "media_type": None, "sticker_emoji": None,
+            "created_at": now, "is_read": False, "is_deleted": False,
+        }
+        await _sb_post("chat_site_messages", msg)
+        # Помечаем как непрочитанное у пользователя
+        await _sb_patch("chat_conversations", {"id": f"eq.{conv_id}"}, {
+            "last_message_at": now,
+            "last_message_preview": f"📢 {text[:60]}",
+            "unread_user": (conv.get("unread_user") or 0) + 1
+        })
+        sent_count += 1
+    
+    return {"ok": True, "sent_to": sent_count, **broadcast}
 
 
 @app.get("/api/chat/site/{slug}/broadcasts")
