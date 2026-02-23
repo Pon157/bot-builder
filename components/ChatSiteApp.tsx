@@ -232,6 +232,15 @@ const MessageBubble: React.FC<{
   }
 
   if (msg.media_url && String(msg.media_url).trim()) {
+    // Определяем тип медиа по URL если не указан
+    const rawUrl = msg.media_url;
+    const absUrl = rawUrl.startsWith('http') ? rawUrl : window.location.origin + rawUrl;
+    const ext = rawUrl.split('.').pop()?.toLowerCase().split('?')[0] || '';
+    const detectedType: string = msg.media_type || (
+      ['jpg','jpeg','png','gif','webp','svg'].includes(ext) ? 'image' :
+      ['mp4','webm','mov','avi'].includes(ext) ? 'video' :
+      ['mp3','ogg','wav','webm','m4a'].includes(ext) ? 'audio' : 'file'
+    );
     return (
       <div className={`flex gap-2 mb-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
         {!isOwn && <Avatar name={msg.from_name} color={isAdminMsg ? primary : '#71717a'} />}
@@ -245,10 +254,10 @@ const MessageBubble: React.FC<{
           )}
           
           <div className="rounded-2xl overflow-hidden border" style={{ borderColor: primary + '20' }}>
-            {msg.media_type === 'image' && (
+            {detectedType === 'image' && (
               <div className="relative">
                 <img
-                  src={msg.media_url ? (msg.media_url.startsWith('http') ? msg.media_url : window.location.origin + msg.media_url) : ''}
+                  src={absUrl}
                   alt="img"
                   className="max-w-[200px] sm:max-w-xs max-h-64 object-cover cursor-pointer block"
                   loading="lazy"
@@ -263,49 +272,47 @@ const MessageBubble: React.FC<{
                       p.appendChild(d);
                     }
                   }}
-                  onClick={() => {
-                    const url = msg.media_url!;
-                    const a = document.createElement('a');
-                    a.href = url.startsWith('http') ? url : window.location.origin + url;
-                    a.target = '_blank'; a.rel = 'noopener noreferrer';
-                    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                  }}
+                  onClick={() => window.open(absUrl, '_blank', 'noopener,noreferrer')}
                 />
               </div>
             )}
-            {msg.media_type === 'video' && (
-              <video
-                src={msg.media_url && msg.media_url.startsWith('http') ? msg.media_url : (msg.media_url ? window.location.origin + msg.media_url : '')}
-                controls
-                className="max-w-[200px] sm:max-w-xs max-h-64"
-              />
+            {detectedType === 'video' && (
+              <video src={absUrl} controls className="max-w-[200px] sm:max-w-xs max-h-64" />
             )}
-            {msg.media_type === 'audio' && (
+            {detectedType === 'audio' && (
               <div className="flex items-center gap-2 px-3 py-3 bg-white/5 min-w-[180px]">
                 <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: primary + '30' }}>
                   <Volume2 className="w-4 h-4" style={{ color: primary }} />
                 </div>
                 <div className="flex flex-col gap-0.5 flex-1">
-                  <audio
-                    src={msg.media_url && msg.media_url.startsWith('http') ? msg.media_url : (msg.media_url ? window.location.origin + msg.media_url : '')}
-                    controls
-                    className="w-full h-8"
-                    style={{ accentColor: primary }}
-                    preload="metadata"
-                  />
-                  {(msg as any).duration && (msg as any).duration > 0 && (
+                  <audio src={absUrl} controls className="w-full h-8" style={{ accentColor: primary }} preload="metadata" />
+                  {(msg as any).duration > 0 && (
                     <span className="text-[9px] text-zinc-500">{`${Math.floor((msg as any).duration / 60)}:${String((msg as any).duration % 60).padStart(2,'0')}`}</span>
                   )}
                 </div>
               </div>
             )}
-            {(msg.media_type === 'file' || (!msg.media_type && msg.media_url)) && (
-              <a href={msg.media_url} download target="_blank" rel="noopener noreferrer" className="flex items-center gap-3 px-4 py-3 bg-white/5 hover:bg-white/10 transition-all min-w-[160px]" onClick={e => { e.preventDefault(); const a = document.createElement('a'); a.href = msg.media_url!; a.download = (msg.media_url || '').split('/').pop() || 'file'; document.body.appendChild(a); a.click(); document.body.removeChild(a); }}>
+            {detectedType === 'file' && (
+              <a
+                href={absUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 px-4 py-3 bg-white/5 hover:bg-white/10 transition-all min-w-[160px]"
+                onClick={e => {
+                  e.preventDefault();
+                  const a = document.createElement('a');
+                  a.href = absUrl;
+                  a.download = rawUrl.split('/').pop() || 'file';
+                  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                }}
+              >
                 <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0" style={{ background: primary + '20' }}>
                   <FileIcon className="w-4 h-4" style={{ color: primary }} />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-white text-xs font-bold truncate max-w-[120px]">{(msg.media_url || '').split('/').pop()?.split('_').slice(2).join('_') || 'Файл'}</p>
+                  <p className="text-white text-xs font-bold truncate max-w-[140px]">
+                    {rawUrl.split('/').pop()?.replace(/^\d+_\d+_/, '') || 'Файл'}
+                  </p>
                   <p className="text-zinc-600 text-[9px]">Скачать</p>
                 </div>
               </a>
@@ -1560,6 +1567,29 @@ const AdminChatPanel: React.FC<{
   );
 };
 
+// ─── License Expired Overlay ─────────────────────────────────────────────────────
+
+const LicenseExpiredOverlay: React.FC<{ siteName: string; primary: string; bg: string }> = ({ siteName, primary, bg }) => (
+  <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: bg }}>
+    <div className="flex flex-col items-center gap-6 p-8 max-w-sm w-full text-center">
+      <div className="w-20 h-20 rounded-3xl flex items-center justify-center" style={{ background: primary + '15', border: `2px solid ${primary}30` }}>
+        <Shield className="w-10 h-10" style={{ color: primary }} />
+      </div>
+      <div>
+        <p className="text-white text-2xl font-black mb-2">{siteName}</p>
+        <p className="font-black text-lg mb-1" style={{ color: primary }}>Лицензия истекла</p>
+        <p className="text-sm leading-relaxed" style={{ color: 'rgba(255,255,255,0.4)' }}>
+          Доступ к этому чат-сайту временно приостановлен. Пожалуйста, свяжитесь с владельцем платформы для продления лицензии.
+        </p>
+      </div>
+      <div className="w-full p-4 rounded-2xl flex items-center gap-3" style={{ background: primary + '10', border: `1px solid ${primary}25` }}>
+        <AlertCircle className="w-5 h-5 shrink-0" style={{ color: primary }} />
+        <p className="text-xs font-bold text-left" style={{ color: primary + 'cc' }}>Сервис временно недоступен</p>
+      </div>
+    </div>
+  </div>
+);
+
 // ─── Root ────────────────────────────────────────────────────────────────────────
 
 const ChatSiteApp: React.FC = () => {
@@ -1569,6 +1599,7 @@ const ChatSiteApp: React.FC = () => {
 
   const [site, setSite] = useState<PublicSite | null>(null);
   const [loading, setLoading] = useState(true);
+  const [licenseExpired, setLicenseExpired] = useState(false);
   const [session, setSession] = useState<ChatSession | null>(() => {
     try { const s = localStorage.getItem(`cs_session_${slug}`); return s ? JSON.parse(s) : null; } catch { return null; }
   });
@@ -1578,7 +1609,15 @@ const ChatSiteApp: React.FC = () => {
 
   useEffect(() => {
     apiFetch(`${API}/chat/site/${slug}/public`)
-      .then(setSite).catch(() => setSite(null))
+      .then(data => {
+        setSite(data);
+        // Check license status for public site
+        fetch(`${API}/chat/site/${slug}/license-status`)
+          .then(r => r.json())
+          .then(lic => { if (lic && lic.expired) setLicenseExpired(true); })
+          .catch(() => {});
+      })
+      .catch(() => setSite(null))
       .finally(() => setLoading(false));
     apiFetch(`${API}/chat/site/${slug}/admins`).then(setAdmins).catch(() => {});
   }, [slug]);
@@ -1621,6 +1660,13 @@ const ChatSiteApp: React.FC = () => {
       </div>
     </div>
   );
+
+  // Show license expired overlay for non-admin users
+  if (licenseExpired && session?.role === 'user') {
+    const p = site.config?.primaryColor || '#6366f1';
+    const bg = site.config?.bgColor || '#09090b';
+    return <LicenseExpiredOverlay siteName={site.name} primary={p} bg={bg} />;
+  }
 
   if (!session) return <AuthScreen site={site} forceAdmin={forceAdmin} onAuth={handleAuth} />;
 
