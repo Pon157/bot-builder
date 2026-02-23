@@ -167,8 +167,8 @@ const LicenseBadge: React.FC<{ lic: LicenseInfo | null; onActivate: () => void }
 
 // ─── Activate Key Modal ────────────────────────────────────────────────────────
 
-const ActivateKeyModal: React.FC<{ siteId: string; userId: string; onClose: () => void; onActivated: (lic: LicenseInfo) => void }> = ({
-  siteId, userId, onClose, onActivated
+const ActivateKeyModal: React.FC<{ siteId: string; userId: string; onClose: () => void; onActivated: (lic?: LicenseInfo) => void; isNewSite?: boolean; siteName?: string }> = ({
+  siteId, userId, onClose, onActivated, isNewSite, siteName
 }) => {
   const [keyCode, setKeyCode] = useState('');
   const [loading, setLoading] = useState(false);
@@ -187,8 +187,8 @@ const ActivateKeyModal: React.FC<{ siteId: string; userId: string; onClose: () =
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={onClose} />
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={isNewSite ? undefined : onClose} />
       <div className="relative w-full max-w-sm bg-[#111] border border-zinc-800 rounded-[2.5rem] p-8 shadow-2xl animate-in zoom-in-95 duration-200">
         <div className="flex items-center gap-3 mb-6">
           <div className="w-10 h-10 rounded-2xl bg-blue-500/10 flex items-center justify-center">
@@ -196,10 +196,18 @@ const ActivateKeyModal: React.FC<{ siteId: string; userId: string; onClose: () =
           </div>
           <div>
             <h3 className="text-lg font-black text-white">Активировать ключ</h3>
-            <p className="text-zinc-600 text-[9px] font-bold uppercase tracking-widest">1 ключ = 1 месяц • 150 ₽</p>
+            <p className="text-zinc-600 text-[9px] font-bold uppercase tracking-widest">
+              {isNewSite && siteName ? `Сайт «${siteName}»` : '1 ключ = 1 месяц • 150 ₽'}
+            </p>
           </div>
-          <button onClick={onClose} className="ml-auto p-2 hover:bg-zinc-800 rounded-xl text-zinc-600 hover:text-white transition-all"><X className="w-4 h-4" /></button>
+          {!isNewSite && <button onClick={onClose} className="ml-auto p-2 hover:bg-zinc-800 rounded-xl text-zinc-600 hover:text-white transition-all"><X className="w-4 h-4" /></button>}
         </div>
+        {isNewSite && (
+          <div className="mb-5 p-4 bg-blue-500/5 border border-blue-500/20 rounded-2xl">
+            <p className="text-blue-400 text-xs font-black mb-1">✅ Сайт создан!</p>
+            <p className="text-zinc-500 text-xs leading-relaxed">Для доступа к конструктору необходима лицензия. Введите ключ ниже или закройте и активируйте позже.</p>
+          </div>
+        )}
         <input
           value={keyCode}
           onChange={e => setKeyCode(e.target.value.toUpperCase())}
@@ -219,6 +227,11 @@ const ActivateKeyModal: React.FC<{ siteId: string; userId: string; onClose: () =
           {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
           {loading ? 'Активация...' : 'Активировать'}
         </button>
+        {isNewSite && (
+          <button onClick={onClose} className="w-full mt-2 py-3 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-zinc-400 text-[10px] font-black uppercase tracking-wider transition-all">
+            Пропустить (активировать позже)
+          </button>
+        )}
       </div>
     </div>
   );
@@ -898,48 +911,40 @@ const LicenseGatedEditor: React.FC<{
 
   if (!license?.active) {
     return (
-      <div className="min-h-screen bg-[#09090b] flex flex-col items-center justify-center p-6 gap-6">
+      <div className="min-h-screen bg-[#09090b] flex flex-col items-center justify-center p-6 gap-6 relative">
+        {/* Expired overlay on top of editor UI */}
+        <div className="absolute inset-0 bg-black/70 backdrop-blur-sm z-40 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-6 max-w-sm w-full text-center p-8 bg-[#111] border border-rose-500/20 rounded-[2.5rem] shadow-2xl">
+            <div className="w-16 h-16 rounded-3xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center">
+              <Lock className="w-8 h-8 text-rose-400" />
+            </div>
+            <div>
+              <h2 className="text-2xl font-black text-white mb-2">Лицензия истекла</h2>
+              <p className="text-zinc-500 text-sm leading-relaxed">
+                Доступ к конструктору сайта <span className="text-white font-bold">«{site.name}»</span> заблокирован. Обновите лицензию для продолжения работы.
+              </p>
+            </div>
+            <div className="w-full space-y-3">
+              <button
+                onClick={() => setShowActivate(true)}
+                className="w-full py-4 rounded-2xl font-black text-[11px] uppercase tracking-wider text-white transition-all flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 shadow-lg shadow-blue-600/20"
+              >
+                <Key className="w-4 h-4" /> Активировать новый ключ
+              </button>
+              <button onClick={onBack} className="w-full py-3 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-zinc-400 font-black text-[10px] uppercase tracking-wider transition-all">
+                Вернуться назад
+              </button>
+            </div>
+          </div>
+        </div>
         {showActivate && (
           <ActivateKeyModal
             siteId={site.id}
             userId={userId}
             onClose={() => setShowActivate(false)}
-            onActivated={lic => { setLicense(lic); setShowActivate(false); }}
+            onActivated={lic => { setLicense(lic ?? null); setShowActivate(false); }}
           />
         )}
-        <button onClick={onBack} className="self-start flex items-center gap-2 text-zinc-500 hover:text-white transition-all text-sm font-bold">
-          <ArrowLeft className="w-4 h-4" /> Назад
-        </button>
-        <div className="flex flex-col items-center gap-6 max-w-md w-full text-center">
-          <div className="w-20 h-20 rounded-3xl flex items-center justify-center" style={{ background: 'rgba(99,102,241,0.1)', border: '2px solid rgba(99,102,241,0.2)' }}>
-            <Key className="w-9 h-9 text-indigo-400" />
-          </div>
-          <div>
-            <h2 className="text-2xl font-black text-white mb-2">Требуется лицензия</h2>
-            <p className="text-zinc-500 text-sm leading-relaxed">
-              Для доступа к панели управления чат-сайтом <span className="text-white font-bold">«{site.name}»</span> необходимо активировать лицензию.
-            </p>
-          </div>
-          <div className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl p-5 text-left space-y-3">
-            <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Как получить лицензию</p>
-            <div className="flex items-start gap-3">
-              <span className="w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-400 text-[10px] font-black flex items-center justify-center shrink-0 mt-0.5">1</span>
-              <p className="text-zinc-400 text-sm">Обратитесь к администратору платформы в боте лицензий</p>
-            </div>
-            <div className="flex items-start gap-3">
-              <span className="w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-400 text-[10px] font-black flex items-center justify-center shrink-0 mt-0.5">2</span>
-              <p className="text-zinc-400 text-sm">Получите ключ активации и нажмите кнопку ниже</p>
-            </div>
-          </div>
-          <button
-            onClick={() => setShowActivate(true)}
-            className="w-full py-4 rounded-2xl font-black text-[11px] uppercase tracking-wider text-white transition-all flex items-center justify-center gap-2"
-            style={{ background: '#6366f1', boxShadow: '0 4px 24px rgba(99,102,241,0.35)' }}
-          >
-            <Key className="w-4 h-4" />
-            Активировать ключ
-          </button>
-        </div>
       </div>
     );
   }
@@ -1346,6 +1351,7 @@ const ChatPlatform: React.FC<{ user: AppUser }> = ({ user }) => {
   const [showCreate, setShowCreate] = useState(false);
   const [createdSite, setCreatedSite] = useState<CreatedSiteResult | null>(null);
   const [editingSite, setEditingSite] = useState<ChatSite | null>(null);
+  const [activateNewSite, setActivateNewSite] = useState<CreatedSiteResult | null>(null);
 
   useEffect(() => {
     apiFetch(`${API}/chat/sites/owner/${user.id}`)
@@ -1358,6 +1364,8 @@ const ChatPlatform: React.FC<{ user: AppUser }> = ({ user }) => {
     setSites(prev => [s, ...prev]);
     setShowCreate(false);
     setCreatedSite(s);
+    // Immediately open key activation for the newly created site
+    setActivateNewSite(s);
   };
 
   const handleDelete = async (siteId: string) => {
@@ -1382,6 +1390,21 @@ const ChatPlatform: React.FC<{ user: AppUser }> = ({ user }) => {
     <div className="space-y-8 animate-in fade-in duration-500">
       {showCreate && <CreateModal userId={user.id} onClose={() => setShowCreate(false)} onCreated={handleCreated} />}
       {createdSite && <CredsModal site={createdSite} onClose={() => setCreatedSite(null)} />}
+      {activateNewSite && (
+        <ActivateKeyModal
+          siteId={activateNewSite.id}
+          userId={user.id}
+          onClose={() => setActivateNewSite(null)}
+          onActivated={() => {
+            setActivateNewSite(null);
+            apiFetch(`${API}/chat/sites/owner/${user.id}`)
+              .then(data => setSites(Array.isArray(data) ? data : []))
+              .catch(() => {});
+          }}
+          isNewSite
+          siteName={activateNewSite.name}
+        />
+      )}
 
       <header className="flex items-center justify-between flex-wrap gap-4">
         <div>
