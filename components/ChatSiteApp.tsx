@@ -65,12 +65,13 @@ interface Conversation {
 }
 
 interface Message {
-  id: string; conversation_id: string; from_id: string; from_name: string;
+  id: string; conversation_id: string; site_id?: string; from_id: string; from_name: string;
   from_role: 'user' | 'admin' | 'owner' | 'system';
   text: string | null; media_url: string | null;
   media_type: 'image' | 'video' | 'audio' | 'file' | 'sticker' | null;
   sticker_emoji: string | null; created_at: number; is_read: boolean;
   is_pinned?: boolean; pinned_by?: string;
+  duration?: number | null; is_deleted?: boolean;
 }
 
 interface GroupMessage {
@@ -250,9 +251,9 @@ const MessageBubble: React.FC<{
       <div className={`flex gap-2 mb-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
         {!isOwn && <Avatar name={msg.from_name} color={isAdminMsg ? primary : '#71717a'} />}
         <div className="flex flex-col gap-1" style={{ alignItems: isOwn ? 'flex-end' : 'flex-start' }}>
-          {!isOwn && <span className="text-[9px] font-black uppercase px-1" style={{ color: isAdminMsg ? primary : 'rgba(255,255,255,0.35)' }}>{msg.from_name}</span>}
+          {!isOwn && <span className="text-[9px] font-black uppercase px-1" style={{ color: isAdminMsg ? primary : themeVars(cfg).textMuted }}>{msg.from_name}</span>}
           <div className="text-5xl sm:text-6xl leading-none">{msg.sticker_emoji}</div>
-          <span className="text-[9px] px-1" style={{ color: 'rgba(255,255,255,0.25)' }}>{fmtTime(msg.created_at)}</span>
+          <span className="text-[9px] px-1" style={{ color: themeVars(cfg).textFaint }}>{fmtTime(msg.created_at)}</span>
         </div>
       </div>
     );
@@ -272,7 +273,7 @@ const MessageBubble: React.FC<{
       <div className={`flex gap-2 mb-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
         {!isOwn && <Avatar name={msg.from_name} color={isAdminMsg ? primary : '#71717a'} />}
         <div className="flex flex-col gap-1 max-w-[80%] sm:max-w-[65%]" style={{ alignItems: isOwn ? 'flex-end' : 'flex-start' }}>
-          {!isOwn && <span className="text-[9px] font-black uppercase px-1" style={{ color: isAdminMsg ? primary : 'rgba(255,255,255,0.35)' }}>{msg.from_name}</span>}
+          {!isOwn && <span className="text-[9px] font-black uppercase px-1" style={{ color: isAdminMsg ? primary : themeVars(cfg).textMuted }}>{msg.from_name}</span>}
           
           {'is_pinned' in msg && msg.is_pinned && (
             <div className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[8px] font-bold" style={{ background: primary + '20', color: primary }}>
@@ -294,7 +295,8 @@ const MessageBubble: React.FC<{
                     const p = t.parentElement;
                     if (p && !p.querySelector('.img-err')) {
                       const d = document.createElement('div');
-                      d.className = 'img-err flex items-center gap-2 px-4 py-3 text-xs text-zinc-500';
+                      d.className = 'img-err flex items-center gap-2 px-4 py-3 text-xs';
+                      d.style.color = themeVars(cfg).textMuted;
                       d.textContent = '🖼 Изображение не загрузилось';
                       p.appendChild(d);
                     }
@@ -307,14 +309,14 @@ const MessageBubble: React.FC<{
               <video src={absUrl} controls className="max-w-[200px] sm:max-w-xs max-h-64" />
             )}
             {detectedType === 'audio' && (
-              <div className="flex items-center gap-2 px-3 py-3 bg-white/5 min-w-[180px]">
+              <div className="flex items-center gap-2 px-3 py-3 min-w-[180px]" style={{ background: themeVars(cfg).surface }}>
                 <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: primary + '30' }}>
                   <Volume2 className="w-4 h-4" style={{ color: primary }} />
                 </div>
                 <div className="flex flex-col gap-0.5 flex-1">
                   <audio src={absUrl} controls className="w-full h-8" style={{ accentColor: primary }} preload="metadata" />
                   {(msg as any).duration > 0 && (
-                    <span className="text-[9px] text-zinc-500">{`${Math.floor((msg as any).duration / 60)}:${String((msg as any).duration % 60).padStart(2,'0')}`}</span>
+                    <span className="text-[9px]" style={{ color: themeVars(cfg).textMuted }}>{`${Math.floor((msg as any).duration / 60)}:${String((msg as any).duration % 60).padStart(2,'0')}`}</span>
                   )}
                 </div>
               </div>
@@ -324,7 +326,10 @@ const MessageBubble: React.FC<{
                 href={absUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-3 px-4 py-3 bg-white/5 hover:bg-white/10 transition-all min-w-[160px]"
+                className="flex items-center gap-3 px-4 py-3 transition-all min-w-[160px]"
+                style={{ background: themeVars(cfg).surface }}
+                onMouseEnter={e => (e.currentTarget.style.background = themeVars(cfg).surface2)}
+                onMouseLeave={e => (e.currentTarget.style.background = themeVars(cfg).surface)}
                 onClick={e => {
                   e.preventDefault();
                   const a = document.createElement('a');
@@ -337,25 +342,25 @@ const MessageBubble: React.FC<{
                   <FileIcon className="w-4 h-4" style={{ color: primary }} />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-white text-xs font-bold truncate max-w-[140px]">
+                  <p className="text-xs font-bold truncate max-w-[140px]" style={{ color: themeVars(cfg).text }}>
                     {rawUrl.split('/').pop()?.replace(/^\d+_\d+_/, '') || 'Файл'}
                   </p>
-                  <p className="text-zinc-600 text-[9px]">Скачать</p>
+                  <p className="text-[9px]" style={{ color: themeVars(cfg).textMuted }}>Скачать</p>
                 </div>
               </a>
             )}
           </div>
           {msg.text && (
-            <div className="px-3 py-2.5 text-sm text-white/90" style={{ background: isOwn ? primary : 'rgba(255,255,255,0.07)', borderRadius: bubbleRadius }}>
+            <div className="px-3 py-2.5 text-sm" style={{ background: isOwn ? primary : themeVars(cfg).surface, color: isOwn ? '#fff' : themeVars(cfg).text, borderRadius: bubbleRadius }}>
               {msg.text}
             </div>
           )}
           <div className="flex items-center gap-2 px-1">
-            <span className="text-[9px]" style={{ color: 'rgba(255,255,255,0.25)' }}>{fmtTime(msg.created_at)}</span>
+            <span className="text-[9px]" style={{ color: themeVars(cfg).textFaint }}>{fmtTime(msg.created_at)}</span>
             {canPin && (
               <button onClick={() => onPin!(msg.id, !('is_pinned' in msg && msg.is_pinned))}
                 className="opacity-0 group-hover:opacity-100 transition-opacity">
-                <Pin className="w-2.5 h-2.5 text-zinc-600 hover:text-white" />
+                <Pin className="w-2.5 h-2.5" style={{ color: themeVars(cfg).textMuted }} />
               </button>
             )}
           </div>
@@ -571,17 +576,22 @@ const MessageInput: React.FC<{
   };
 
   const r = getRadius(cfg);
+  const tv = themeVars(cfg);
 
   return (
     <div className="relative">
       {/* Команды-подсказки */}
       {showCommands && filteredCmds.length > 0 && (
-        <div className="absolute bottom-full mb-1 left-0 right-0 bg-[#111] border border-zinc-800 rounded-2xl overflow-hidden shadow-xl z-10">
+        <div className="absolute bottom-full mb-1 left-0 right-0 border rounded-2xl overflow-hidden shadow-xl z-10"
+          style={{ background: tv.bg, borderColor: tv.border }}>
           {filteredCmds.map(cmd => (
             <button key={cmd} onClick={() => { setText(cmd + ' '); setShowCommands(false); inputRef.current?.focus(); }}
-              className="flex items-center gap-2 w-full px-4 py-2.5 hover:bg-white/5 transition-colors text-left text-xs">
+              className="flex items-center gap-2 w-full px-4 py-2.5 transition-colors text-left text-xs"
+              style={{ color: tv.text }}
+              onMouseEnter={e => (e.currentTarget.style.background = tv.surface)}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
               <Hash className="w-3 h-3" style={{ color: primary }} />
-              <span className="text-white font-mono">{cmd}</span>
+              <span className="font-mono">{cmd}</span>
             </button>
           ))}
         </div>
@@ -599,21 +609,21 @@ const MessageInput: React.FC<{
       <input ref={fileRef} type="file" className="hidden" accept="*/*"
         onChange={e => { const f = e.target.files?.[0]; if (f) { handleFile(f); e.target.value = ''; } }} />
 
-      <div className="flex gap-1.5 sm:gap-2 items-end p-2 sm:p-3 border-t" style={{ borderColor: primary + '15' }}>
+      <div className="flex gap-1.5 sm:gap-2 items-end p-2 sm:p-3 border-t" style={{ borderColor: primary + '15', background: tv.bg }}>
         <div className="flex gap-1 shrink-0">
           <button onClick={() => { setShowEmoji(v => !v); setShowStickers(false); }}
             className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition-all text-base sm:text-lg"
-            style={{ background: showEmoji ? primary + '30' : 'rgba(255,255,255,0.06)', color: showEmoji ? primary : 'rgba(255,255,255,0.4)' }}>
+            style={{ background: showEmoji ? primary + '30' : tv.surface }}>
             😊
           </button>
           <button onClick={() => { setShowStickers(v => !v); setShowEmoji(false); }}
             className="hidden sm:flex w-9 h-9 rounded-xl items-center justify-center transition-all text-lg"
-            style={{ background: showStickers ? primary + '30' : 'rgba(255,255,255,0.06)', color: showStickers ? primary : 'rgba(255,255,255,0.4)' }}>
+            style={{ background: showStickers ? primary + '30' : tv.surface }}>
             🌟
           </button>
           <button onClick={() => fileRef.current?.click()} disabled={uploading}
             className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition-all disabled:opacity-40"
-            style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.4)' }}>
+            style={{ background: tv.surface, color: tv.textMuted }}>
             {uploading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Paperclip className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
           </button>
           {!text.trim() && (
@@ -628,14 +638,15 @@ const MessageInput: React.FC<{
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           rows={1}
-          className="flex-1 px-3 sm:px-4 py-2 sm:py-2.5 text-sm text-white placeholder-white/20 outline-none resize-none overflow-hidden leading-relaxed"
+          className="flex-1 px-3 sm:px-4 py-2 sm:py-2.5 text-sm outline-none resize-none overflow-hidden leading-relaxed"
           style={{
-            background: 'rgba(255,255,255,0.06)',
+            background: tv.surface,
             border: `1.5px solid ${primary}25`,
             borderRadius: r,
             maxHeight: '120px',
             caretColor: primary,
-            fontSize: getFontSize(cfg)
+            fontSize: getFontSize(cfg),
+            color: tv.text,
           }}
           onInput={e => { const el = e.target as HTMLTextAreaElement; el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }}
         />
@@ -1095,21 +1106,44 @@ const UserChat: React.FC<{
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages.length]);
 
   const handleSend = async (text: string, mediaUrl?: string, mediaType?: string, sticker?: string, duration?: number) => {
-    await apiFetch(`${API}/chat/site/${site.slug}/message`, {
-      method: 'POST',
-      body: JSON.stringify({
-        conversation_id: conversation.id, 
-        from_id: session.id,
-        from_name: session.display_name || session.username || "Пользователь", // И здесь!
-        from_role: session.role,
-        text: text || null, 
-        media_url: mediaUrl, 
-        media_type: mediaType, 
-        sticker_emoji: sticker,
-        duration: duration || null
-      })
-    });
+    // Optimistic update — сразу показываем сообщение без ожидания сервера
+    const optimistic: Message = {
+      id: `opt_${Date.now()}`,
+      conversation_id: conversation.id,
+      site_id: site.id,
+      from_id: session.id,
+      from_name: session.display_name || session.username || 'Пользователь',
+      from_role: session.role,
+      text: text || null,
+      media_url: mediaUrl || null,
+      media_type: mediaType || null,
+      sticker_emoji: sticker || null,
+      duration: duration || null,
+      created_at: Date.now(),
+      is_read: false,
+      is_deleted: false,
+    };
+    setMessages(prev => [...prev, optimistic]);
+
+    try {
+      await apiFetch(`${API}/chat/site/${site.slug}/message`, {
+        method: 'POST',
+        body: JSON.stringify({
+          conversation_id: conversation.id,
+          from_id: session.id,
+          from_name: session.display_name || session.username || 'Пользователь',
+          from_role: session.role,
+          text: text || null,
+          media_url: mediaUrl,
+          media_type: mediaType,
+          sticker_emoji: sticker,
+          duration: duration || null
+        })
+      });
+    } catch { }
+    // Сразу и с небольшой задержкой — гарантируем что реальный ID подтянется
     await loadMessages();
+    setTimeout(() => loadMessages(), 600);
   };
 
   const grouped: { date: string; msgs: Message[] }[] = [];
@@ -1146,11 +1180,11 @@ const UserChat: React.FC<{
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-3 sm:p-4 min-h-0">
         {loading ? (
-          <div className="flex justify-center py-8"><RefreshCw className="w-5 h-5 text-white/20 animate-spin" /></div>
+          <div className="flex justify-center py-8"><RefreshCw className="w-5 h-5 animate-spin" style={{ color: themeVars(cfg).textFaint }} /></div>
         ) : messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full py-16 text-center">
             <MessageCircle className="w-12 h-12 mb-4" style={{ color: p + '25' }} />
-            <p className="font-black text-sm" style={{ color: 'rgba(255,255,255,0.25)' }}>Напишите первое сообщение</p>
+            <p className="font-black text-sm" style={{ color: themeVars(cfg).textMuted }}>Напишите первое сообщение</p>
           </div>
         ) : grouped.map(({ date, msgs }) => (
           <div key={date}>
@@ -1262,17 +1296,39 @@ const AdminChatPanel: React.FC<{
 
   const handleSend = async (text: string, mediaUrl?: string, mediaType?: string, sticker?: string, duration?: number) => {
     if (!selectedConv) return;
-    await apiFetch(`${API}/chat/site/${site.slug}/message`, {
-      method: 'POST',
-      body: JSON.stringify({
-        conversation_id: selectedConv.id, from_id: session.id,
-        from_name: session.display_name, from_role: session.role,
-        text: text || null, media_url: mediaUrl, media_type: mediaType, sticker_emoji: sticker,
-        duration: duration || null
-      })
-    });
+    // Optimistic update
+    const optimistic: Message = {
+      id: `opt_${Date.now()}`,
+      conversation_id: selectedConv.id,
+      site_id: site.id,
+      from_id: session.id,
+      from_name: session.display_name,
+      from_role: session.role,
+      text: text || null,
+      media_url: mediaUrl || null,
+      media_type: mediaType || null,
+      sticker_emoji: sticker || null,
+      duration: duration || null,
+      created_at: Date.now(),
+      is_read: false,
+      is_deleted: false,
+    };
+    setMessages(prev => [...prev, optimistic]);
+
+    try {
+      await apiFetch(`${API}/chat/site/${site.slug}/message`, {
+        method: 'POST',
+        body: JSON.stringify({
+          conversation_id: selectedConv.id, from_id: session.id,
+          from_name: session.display_name, from_role: session.role,
+          text: text || null, media_url: mediaUrl, media_type: mediaType, sticker_emoji: sticker,
+          duration: duration || null
+        })
+      });
+    } catch { }
     await loadMessages(selectedConv.id);
     await loadConvs();
+    setTimeout(() => loadMessages(selectedConv.id), 600);
   };
 
   const handleBroadcast = async () => {
@@ -1352,11 +1408,11 @@ const AdminChatPanel: React.FC<{
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b shrink-0 overflow-x-auto no-scrollbar" style={{ borderColor: p + '15' }}>
+      <div className="flex border-b shrink-0 overflow-x-auto no-scrollbar" style={{ borderColor: p + '15', background: tv.bg }}>
         {TABS.map(t => (
           <button key={t.id} onClick={() => setTab(t.id as any)}
             className="flex items-center gap-1.5 px-3 sm:px-5 py-2.5 text-[10px] font-black uppercase tracking-widest border-b-2 transition-all whitespace-nowrap flex-1 sm:flex-none justify-center"
-            style={{ borderColor: tab === t.id ? p : 'transparent', color: tab === t.id ? p : 'rgba(255,255,255,0.3)' }}>
+            style={{ borderColor: tab === t.id ? p : 'transparent', color: tab === t.id ? p : tv.textMuted }}>
             <t.icon className="w-3.5 h-3.5" /><span className="hidden sm:inline">{t.label}</span>
           </button>
         ))}
@@ -1409,20 +1465,23 @@ const AdminChatPanel: React.FC<{
                 {convs.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-full py-16 text-center px-4">
                     <MessageCircle className="w-10 h-10 mb-3" style={{ color: p + '20' }} />
-                    <p className="text-xs font-bold" style={{ color: 'rgba(255,255,255,0.2)' }}>Нет диалогов</p>
+                    <p className="text-xs font-bold" style={{ color: tv.textMuted }}>Нет диалогов</p>
                   </div>
                 ) : convs.map(conv => (
                   <button key={conv.id} onClick={() => setSelectedConv(conv)}
-                    className={`w-full flex items-center gap-3 px-3 py-3 border-b text-left transition-all ${selectedConv?.id === conv.id ? 'border-l-2' : 'hover:bg-white/5'}`}
-                    style={{ borderColor: p + '10', borderLeftColor: selectedConv?.id === conv.id ? p : 'transparent' }}>
+                    className={`w-full flex items-center gap-3 px-3 py-3 border-b text-left transition-all ${selectedConv?.id === conv.id ? 'border-l-2' : ''}`}
+                    style={{ borderColor: p + '10', borderLeftColor: selectedConv?.id === conv.id ? p : 'transparent',
+                      background: selectedConv?.id === conv.id ? p + '08' : 'transparent' }}
+                    onMouseEnter={e => { if (selectedConv?.id !== conv.id) e.currentTarget.style.background = tv.surface; }}
+                    onMouseLeave={e => { if (selectedConv?.id !== conv.id) e.currentTarget.style.background = 'transparent'; }}>
                     <Avatar name={conv.user_name} size="w-9 h-9" />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
-                        <p className="text-white text-xs font-black truncate">{conv.user_name}</p>
-                        {conv.last_message_at > 0 && <span className="text-[9px] shrink-0 ml-1" style={{ color: 'rgba(255,255,255,0.2)' }}>{fmtTime(conv.last_message_at)}</span>}
+                        <p className="text-xs font-black truncate" style={{ color: tv.text }}>{conv.user_name}</p>
+                        {conv.last_message_at > 0 && <span className="text-[9px] shrink-0 ml-1" style={{ color: tv.textFaint }}>{fmtTime(conv.last_message_at)}</span>}
                       </div>
                       {conv.last_message_preview && (
-                        <p className="text-[10px] truncate mt-0.5" style={{ color: 'rgba(255,255,255,0.3)' }}>{conv.last_message_preview}</p>
+                        <p className="text-[10px] truncate mt-0.5" style={{ color: tv.textMuted }}>{conv.last_message_preview}</p>
                       )}
                     </div>
                     {conv.unread_admin > 0 && (
@@ -1438,19 +1497,22 @@ const AdminChatPanel: React.FC<{
             {/* Message area */}
             {selectedConv ? (
               <div className="flex-1 flex flex-col min-w-0">
-                <div className="flex items-center gap-3 px-3 sm:px-4 py-2.5 border-b shrink-0" style={{ borderColor: p + '15' }}>
-                  <button onClick={() => setSelectedConv(null)} className="sm:hidden p-1.5 rounded-xl hover:bg-white/10 transition-all">
-                    <ArrowLeft className="w-4 h-4" style={{ color: p }} />
+                <div className="flex items-center gap-3 px-3 sm:px-4 py-2.5 border-b shrink-0" style={{ borderColor: p + '15', background: tv.bg }}>
+                  <button onClick={() => setSelectedConv(null)} className="sm:hidden p-1.5 rounded-xl transition-all"
+                    style={{ color: p }}
+                    onMouseEnter={e => e.currentTarget.style.background = tv.surface}
+                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                    <ArrowLeft className="w-4 h-4" />
                   </button>
                   <Avatar name={selectedConv.user_name} size="w-8 h-8" />
                   <div className="flex-1 min-w-0">
-                    <p className="text-white font-black text-sm truncate">{selectedConv.user_name}</p>
+                    <p className="font-black text-sm truncate" style={{ color: tv.text }}>{selectedConv.user_name}</p>
                   </div>
                 </div>
                 <div className="flex-1 overflow-y-auto p-3 sm:p-4 min-h-0">
                   {messages.length === 0 ? (
                     <div className="flex items-center justify-center h-full">
-                      <p className="text-xs font-bold" style={{ color: 'rgba(255,255,255,0.2)' }}>Начните диалог</p>
+                      <p className="text-xs font-bold" style={{ color: tv.textMuted }}>Начните диалог</p>
                     </div>
                   ) : (() => {
                     const grouped: { date: string; msgs: Message[] }[] = [];
@@ -1496,31 +1558,29 @@ const AdminChatPanel: React.FC<{
         {tab === 'users' && (
           <div className="flex-1 overflow-y-auto p-3 sm:p-5 min-h-0">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-black text-white">Пользователи ({users.length})</h2>
+              <h2 className="text-lg font-black" style={{ color: tv.text }}>Пользователи ({users.length})</h2>
             </div>
             <div className="space-y-2">
               {users.map(u => {
                 const muted = (u.muted_until || 0) > Date.now();
                 return (
                   <div key={u.id} className="flex items-center gap-3 p-3 rounded-2xl border transition-all"
-                    style={{ background: 'rgba(255,255,255,0.03)', borderColor: p + '12' }}>
+                    style={{ background: tv.surface2, borderColor: p + '12' }}>
                     <Avatar name={u.username} size="w-9 h-9" />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <p className={`font-bold text-sm ${u.is_banned ? 'text-white/30 line-through' : 'text-white'}`}>{u.username}</p>
+                        <p className="font-bold text-sm" style={{ color: u.is_banned ? tv.textFaint : tv.text, textDecoration: u.is_banned ? 'line-through' : 'none' }}>{u.username}</p>
                         {u.is_banned && <span className="text-[8px] bg-rose-500/20 text-rose-400 px-1.5 py-0.5 rounded-full font-black">Бан</span>}
                         {muted && <span className="text-[8px] bg-orange-500/20 text-orange-400 px-1.5 py-0.5 rounded-full font-black">Мут</span>}
                         {(u.warn_count || 0) > 0 && <span className="text-[8px] bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded-full font-black">{u.warn_count}⚠</span>}
                       </div>
-                      {u.email && <p className="text-[9px] text-zinc-600 mt-0.5 truncate">{u.email}</p>}
+                      {u.email && <p className="text-[9px] mt-0.5 truncate" style={{ color: tv.textMuted }}>{u.email}</p>}
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
-                      {/* Warn */}
                       <button onClick={() => setShowWarnModal(u)}
                         className="p-1.5 rounded-xl transition-all" style={{ background: '#f59e0b15', color: '#f59e0b' }}>
                         <AlertTriangle className="w-3.5 h-3.5" />
                       </button>
-                      {/* Mute */}
                       {muted ? (
                         <button onClick={() => handleMute(u.id, 0)}
                           className="p-1.5 rounded-xl transition-all" style={{ background: '#10b98115', color: '#10b981' }}>
@@ -1532,7 +1592,6 @@ const AdminChatPanel: React.FC<{
                           <VolumeX className="w-3.5 h-3.5" />
                         </button>
                       )}
-                      {/* Ban */}
                       {u.is_banned ? (
                         <button onClick={() => handleBan(u, false)}
                           className="p-1.5 rounded-xl transition-all" style={{ background: '#10b98115', color: '#10b981' }}>
@@ -1545,12 +1604,15 @@ const AdminChatPanel: React.FC<{
                         </button>
                       )}
                     </div>
-                    {/* Mute submenu */}
                     {muteUserId === u.id && !muted && (
-                      <div className="absolute right-16 z-10 bg-[#111] border border-zinc-800 rounded-2xl overflow-hidden shadow-xl">
+                      <div className="absolute right-16 z-10 border rounded-2xl overflow-hidden shadow-xl"
+                        style={{ background: tv.bg, borderColor: tv.border }}>
                         {[10, 30, 60, 360, 1440, 10080].map(m => (
                           <button key={m} onClick={() => handleMute(u.id, m)}
-                            className="flex items-center gap-2 w-full px-4 py-2 hover:bg-white/5 text-xs text-white text-left whitespace-nowrap">
+                            className="flex items-center gap-2 w-full px-4 py-2 text-xs text-left whitespace-nowrap transition-all"
+                            style={{ color: tv.text }}
+                            onMouseEnter={e => e.currentTarget.style.background = tv.surface}
+                            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
                             <VolumeX className="w-3 h-3 text-orange-400" />
                             {m < 60 ? `${m} мин` : m < 1440 ? `${m/60} ч` : m < 10080 ? `${m/1440} дн` : '7 дней'}
                           </button>
@@ -1562,8 +1624,8 @@ const AdminChatPanel: React.FC<{
               })}
               {users.length === 0 && (
                 <div className="text-center py-12">
-                  <Users className="w-10 h-10 mx-auto mb-3" style={{ color: 'rgba(255,255,255,0.1)' }} />
-                  <p className="font-bold text-sm" style={{ color: 'rgba(255,255,255,0.2)' }}>Нет пользователей</p>
+                  <Users className="w-10 h-10 mx-auto mb-3" style={{ color: tv.textFaint }} />
+                  <p className="font-bold text-sm" style={{ color: tv.textMuted }}>Нет пользователей</p>
                 </div>
               )}
             </div>
@@ -1573,13 +1635,14 @@ const AdminChatPanel: React.FC<{
         {/* ── Broadcast ── */}
         {tab === 'broadcast' && (
           <div className="flex-1 p-4 sm:p-6">
-            <h2 className="text-lg font-black text-white mb-5">Рассылка</h2>
+            <h2 className="text-lg font-black mb-5" style={{ color: tv.text }}>Рассылка</h2>
             <div className="max-w-2xl">
-              <div className="p-4 sm:p-5 rounded-[1.5rem] border mb-4" style={{ background: 'rgba(255,255,255,0.03)', borderColor: p + '20' }}>
+              <div className="p-4 sm:p-5 rounded-[1.5rem] border mb-4" style={{ background: tv.surface, borderColor: p + '20' }}>
                 <p className="text-[9px] font-black uppercase tracking-wider mb-3" style={{ color: p }}>Сообщение всем пользователям</p>
                 <textarea value={broadcastText} onChange={e => setBroadcastText(e.target.value)}
                   placeholder="Текст сообщения..." rows={5}
-                  className="w-full bg-transparent text-white text-sm outline-none resize-none placeholder-white/20 leading-relaxed" />
+                  className="w-full bg-transparent text-sm outline-none resize-none leading-relaxed"
+                  style={{ color: tv.text }} />
               </div>
               <button onClick={handleBroadcast} disabled={!broadcastText.trim() || sending}
                 className="flex items-center gap-2 px-6 sm:px-8 py-3.5 sm:py-4 rounded-2xl font-black text-[10px] uppercase tracking-wider disabled:opacity-40 transition-all"
