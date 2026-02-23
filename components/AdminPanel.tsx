@@ -42,7 +42,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [password, setPassword] = useState('');
   
   // --- UI State ---
-  const [activeTab, setActiveTab] = useState<'dash' | 'users' | 'bots' | 'keys' | 'monitoring' | 'applications'>('dash');
+  const [activeTab, setActiveTab] = useState<'dash' | 'users' | 'bots' | 'keys' | 'monitoring' | 'applications' | 'chatsites'>('dash');
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -55,6 +55,12 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [realLogs, setRealLogs] = useState<any[]>([]);
   const [applications, setApplications] = useState<any[]>([]);
   const [appExpandedId, setAppExpandedId] = useState<string | null>(null);
+  const [chatSites, setChatSites] = useState<any[]>([]);
+  const [chatConvs, setChatConvs] = useState<any[]>([]);
+  const [selectedChatSite, setSelectedChatSite] = useState<any | null>(null);
+  const [selectedChatConv, setSelectedChatConv] = useState<any | null>(null);
+  const [chatMessages, setChatMessages] = useState<any[]>([]);
+  const [chatSitesLoading, setChatSitesLoading] = useState(false);
 
   // 1. Авторизация
   const handleLogin = async (e: React.FormEvent) => {
@@ -105,6 +111,18 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     if (token) loadAllData(token);
   }, [token]);
 
+  // Load chat sites when tab selected
+  useEffect(() => {
+    if (activeTab === 'chatsites' && token) {
+      setChatSitesLoading(true);
+      fetch('/api/admin/chat/sites', { headers: { 'x-admin-token': token } })
+        .then(r => r.json())
+        .then(data => setChatSites(Array.isArray(data) ? data : []))
+        .catch(() => setChatSites([]))
+        .finally(() => setChatSitesLoading(false));
+    }
+  }, [activeTab, token]);
+
   // 3. Действия
   const handleGenerateKey = async () => {
     if (!token) return;
@@ -146,6 +164,30 @@ const handleConfigAccess = async (botId: string) => {
       alert(`Команда ${action} отправлена`);
       loadAllData(token);
     } catch (e) { alert("Ошибка управления ботом"); }
+  };
+
+  const loadChatConvs = async (site: any) => {
+    setSelectedChatSite(site);
+    setSelectedChatConv(null);
+    setChatMessages([]);
+    try {
+      const r = await fetch(`/api/chat/site/${site.slug}/conversations?role=owner&session_id=admin`, {
+        headers: { 'x-admin-token': token || '' }
+      });
+      const data = await r.json();
+      setChatConvs(Array.isArray(data) ? data : []);
+    } catch { setChatConvs([]); }
+  };
+
+  const loadChatMessages = async (site: any, conv: any) => {
+    setSelectedChatConv(conv);
+    try {
+      const r = await fetch(`/api/chat/site/${site.slug}/messages/${conv.id}?role=owner&session_id=admin`, {
+        headers: { 'x-admin-token': token || '' }
+      });
+      const data = await r.json();
+      setChatMessages(Array.isArray(data) ? data : []);
+    } catch { setChatMessages([]); }
   };
 
   // НОВАЯ ЛОГИКА: Бан пользователя
@@ -235,6 +277,7 @@ const handleConfigAccess = async (botId: string) => {
           <NavBtn icon={Key} label="Центр лицензий" active={activeTab === 'keys'} onClick={() => setActiveTab('keys')} />
           <NavBtn icon={Activity} label="Мониторинг" active={activeTab === 'monitoring'} onClick={() => setActiveTab('monitoring')} />
           <NavBtn icon={Briefcase} label="Отклики" active={activeTab === 'applications'} onClick={() => setActiveTab('applications')} badge={applications.filter((a:any)=>a.status==='new').length} />
+          <NavBtn icon={MessageSquare} label="Чат-сайты" active={activeTab === 'chatsites'} onClick={() => setActiveTab('chatsites')} />
         </nav>
 
         <div className="mt-auto pt-8 border-t border-zinc-900/50">
@@ -259,6 +302,7 @@ const handleConfigAccess = async (botId: string) => {
         <MobileNavBtn icon={Key} active={activeTab === 'keys'} onClick={() => setActiveTab('keys')} />
         <MobileNavBtn icon={Activity} active={activeTab === 'monitoring'} onClick={() => setActiveTab('monitoring')} />
         <MobileNavBtn icon={Briefcase} active={activeTab === 'applications'} onClick={() => setActiveTab('applications')} badge={applications.filter((a:any)=>a.status==='new').length} />
+        <MobileNavBtn icon={MessageSquare} active={activeTab === 'chatsites'} onClick={() => setActiveTab('chatsites')} />
       </nav>
 
       {/* --- MAIN CONTENT --- */}
@@ -275,6 +319,7 @@ const handleConfigAccess = async (botId: string) => {
                 {activeTab === 'keys' && 'Licensing Hub'}
                 {activeTab === 'monitoring' && 'System Logs'}
                 {activeTab === 'applications' && 'Отклики на вакансии'}
+              {activeTab === 'chatsites' && 'Диалоги чат-сайтов'}
               </h1>
               <div className="flex items-center gap-3 mt-4">
                 <div className="h-1 w-16 bg-red-600 rounded-full" />
@@ -623,6 +668,168 @@ const handleConfigAccess = async (botId: string) => {
             </div>
           )}
 
+
+          {/* --- TAB: CHAT SITES MODERATION --- */}
+          {activeTab === 'chatsites' && (
+            <div className="space-y-6 animate-in fade-in duration-500">
+              <div className="flex gap-4">
+                {/* Sites list */}
+                <div className="w-64 shrink-0 space-y-2">
+                  <p className="text-[9px] font-black text-zinc-600 uppercase tracking-widest px-2 mb-3">Чат-сайты ({chatSites.length})</p>
+                  {chatSitesLoading ? (
+                    <div className="flex justify-center py-8"><RefreshCw size={18} className="text-zinc-700 animate-spin" /></div>
+                  ) : chatSites.length === 0 ? (
+                    <div className="border border-dashed border-zinc-800 rounded-2xl p-6 text-center">
+                      <p className="text-zinc-700 text-xs font-black uppercase">Нет сайтов</p>
+                    </div>
+                  ) : chatSites.map((site: any) => (
+                    <button key={site.id}
+                      onClick={() => loadChatConvs(site)}
+                      className={`w-full text-left p-4 rounded-2xl border transition-all ${selectedChatSite?.id === site.id ? 'bg-red-600/10 border-red-600/20 text-white' : 'bg-zinc-900/20 border-zinc-800/40 text-zinc-400 hover:border-zinc-700'}`}>
+                      <div className="flex items-center gap-3">
+                        <div className="w-3 h-3 rounded-full shrink-0" style={{ background: site.config?.primaryColor || '#6366f1' }} />
+                        <div className="min-w-0">
+                          <p className="font-black text-sm truncate">{site.name}</p>
+                          <p className="text-[9px] font-mono text-zinc-600">/chat/{site.slug}</p>
+                        </div>
+                        <div className={`w-2 h-2 rounded-full shrink-0 ml-auto ${site.is_active ? 'bg-emerald-500' : 'bg-zinc-600'}`} />
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Conversations list */}
+                {selectedChatSite && (
+                  <div className="w-72 shrink-0 space-y-2">
+                    <p className="text-[9px] font-black text-zinc-600 uppercase tracking-widest px-2 mb-3">
+                      Диалоги — {selectedChatSite.name} ({chatConvs.length})
+                    </p>
+                    {chatConvs.length === 0 ? (
+                      <div className="border border-dashed border-zinc-800 rounded-2xl p-6 text-center">
+                        <p className="text-zinc-700 text-xs font-black uppercase">Нет диалогов</p>
+                      </div>
+                    ) : chatConvs.map((conv: any) => (
+                      <button key={conv.id}
+                        onClick={() => loadChatMessages(selectedChatSite, conv)}
+                        className={`w-full text-left p-4 rounded-2xl border transition-all ${selectedChatConv?.id === conv.id ? 'bg-red-600/10 border-red-600/20' : 'bg-zinc-900/20 border-zinc-800/40 hover:border-zinc-700'}`}>
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center text-white text-sm font-black shrink-0">
+                            {(conv.user_name || '?')[0]?.toUpperCase()}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="text-white font-black text-sm truncate">{conv.user_name || 'Пользователь'}</p>
+                              {(conv.unread_admin > 0 || conv.unread_user > 0) && (
+                                <span className="w-4 h-4 rounded-full bg-red-600 text-white text-[8px] font-black flex items-center justify-center shrink-0">
+                                  {conv.unread_admin || conv.unread_user}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-zinc-600 text-[10px] truncate">{conv.admin_name}</p>
+                            {conv.last_message_preview && (
+                              <p className="text-zinc-700 text-[9px] truncate mt-0.5">{conv.last_message_preview}</p>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Messages view */}
+                {selectedChatConv && selectedChatSite && (
+                  <div className="flex-1 bg-zinc-900/20 border border-zinc-800 rounded-[2rem] overflow-hidden flex flex-col" style={{ minHeight: '500px' }}>
+                    {/* Header */}
+                    <div className="flex items-center gap-3 p-5 border-b border-zinc-800">
+                      <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center text-white font-black">
+                        {(selectedChatConv.user_name || '?')[0]?.toUpperCase()}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white font-black">{selectedChatConv.user_name}</p>
+                        <p className="text-zinc-600 text-[10px]">с {selectedChatConv.admin_name} • {selectedChatSite.name}</p>
+                      </div>
+                      <button
+                        onClick={() => { setSelectedChatConv(null); setChatMessages([]); }}
+                        className="p-2 hover:bg-zinc-800 rounded-xl text-zinc-600 hover:text-white transition-colors"
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+
+                    {/* Messages */}
+                    <div className="flex-1 overflow-y-auto p-5 space-y-3">
+                      {chatMessages.length === 0 ? (
+                        <div className="flex items-center justify-center h-full">
+                          <p className="text-zinc-700 font-bold text-sm">Нет сообщений</p>
+                        </div>
+                      ) : chatMessages.map((msg: any) => {
+                        const isAdmin = msg.from_role === 'admin' || msg.from_role === 'owner';
+                        const p = selectedChatSite.config?.primaryColor || '#6366f1';
+                        return (
+                          <div key={msg.id} className={`flex gap-3 ${isAdmin ? 'flex-row-reverse' : 'flex-row'}`}>
+                            <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-black shrink-0"
+                              style={{ background: isAdmin ? p + '40' : '#27272a' }}>
+                              {(msg.from_name || '?')[0]?.toUpperCase()}
+                            </div>
+                            <div className={`max-w-[70%] ${isAdmin ? 'items-end' : 'items-start'} flex flex-col gap-1`}>
+                              <span className="text-[9px] font-black uppercase tracking-wider px-1" style={{ color: isAdmin ? p : 'rgba(255,255,255,0.3)' }}>
+                                {msg.from_name}
+                              </span>
+                              {msg.text && (
+                                <div className="px-4 py-2.5 rounded-2xl text-sm text-white leading-relaxed break-words"
+                                  style={{ background: isAdmin ? p + '20' : 'rgba(255,255,255,0.06)' }}>
+                                  {msg.text}
+                                </div>
+                              )}
+                              {msg.media_url && (
+                                <div className="rounded-2xl overflow-hidden border border-white/10">
+                                  {msg.media_type === 'image' ? (
+                                    <img src={msg.media_url.startsWith('http') ? msg.media_url : window.location.origin + msg.media_url}
+                                      alt="img" className="max-w-[200px] max-h-40 object-cover cursor-pointer block"
+                                      onClick={() => window.open(msg.media_url.startsWith('http') ? msg.media_url : window.location.origin + msg.media_url, '_blank')} />
+                                  ) : msg.media_type === 'audio' ? (
+                                    <div className="flex items-center gap-2 px-3 py-2 bg-white/5 min-w-[160px]">
+                                      <span className="text-xs text-zinc-400">🎵 Голосовое</span>
+                                      <audio src={msg.media_url.startsWith('http') ? msg.media_url : window.location.origin + msg.media_url} controls className="h-7 flex-1" preload="metadata" />
+                                    </div>
+                                  ) : (
+                                    <a href={msg.media_url.startsWith('http') ? msg.media_url : window.location.origin + msg.media_url}
+                                      target="_blank" rel="noopener noreferrer"
+                                      className="flex items-center gap-2 px-3 py-2 bg-white/5 hover:bg-white/10 transition-all">
+                                      <span className="text-base">📎</span>
+                                      <span className="text-xs text-white truncate max-w-[120px]">
+                                        {msg.media_url.split('/').pop()?.replace(/^\d+_\d+_/, '') || 'Файл'}
+                                      </span>
+                                    </a>
+                                  )}
+                                </div>
+                              )}
+                              {msg.sticker_emoji && (
+                                <div className="text-4xl">{msg.sticker_emoji}</div>
+                              )}
+                              <span className="text-[9px] px-1" style={{ color: 'rgba(255,255,255,0.2)' }}>
+                                {new Date(msg.created_at).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Refresh button */}
+                    <div className="p-4 border-t border-zinc-800">
+                      <button
+                        onClick={() => loadChatMessages(selectedChatSite, selectedChatConv)}
+                        className="flex items-center gap-2 text-[10px] font-black uppercase text-zinc-500 hover:text-white transition-colors"
+                      >
+                        <RefreshCw size={12} /> Обновить диалог
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
         </div>
       </main>
