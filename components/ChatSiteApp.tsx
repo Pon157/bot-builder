@@ -1252,12 +1252,13 @@ const AdminChatPanel: React.FC<{
     if (!broadcastText.trim()) return;
     setSending(true);
     try {
-      await apiFetch(`${API}/chat/site/${site.slug}/broadcast`, {
+      const result = await apiFetch(`${API}/chat/site/${site.slug}/broadcast`, {
         method: 'POST',
         body: JSON.stringify({ role: session.role, from_id: session.id, from_name: session.display_name, text: broadcastText })
       });
       setBroadcastText('');
-    } catch { } finally { setSending(false); }
+      alert(`✅ Рассылка отправлена в ${result.sent_to ?? 0} диалог(ов)`);
+    } catch (e: any) { alert(e.message || 'Ошибка рассылки'); } finally { setSending(false); }
   };
 
   const handleBan = async (user: SiteUser, ban: boolean) => {
@@ -1661,8 +1662,8 @@ const ChatSiteApp: React.FC = () => {
     </div>
   );
 
-  // Show license expired overlay for non-admin users
-  if (licenseExpired && session?.role === 'user') {
+  // Show license expired overlay for all non-admin users (including unauthenticated)
+  if (licenseExpired && session?.role !== 'admin' && session?.role !== 'owner') {
     const p = site.config?.primaryColor || '#6366f1';
     const bg = site.config?.bgColor || '#09090b';
     return <LicenseExpiredOverlay siteName={site.name} primary={p} bg={bg} />;
