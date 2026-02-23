@@ -744,7 +744,6 @@ class BotInstance:
 
     # НЕ ЗАБУДЬТЕ ДОБАВИТЬ ЭТОТ МЕТОД, иначе forward_to_admin выдаст ошибку отсутствия атрибута
     async def _send_content_to_admin(self, m: Message, thread_id: int, header_text: str, user: dict):
-        # Весь код ниже должен иметь отступ (обычно 4 пробела) относительно 'async def'
         sent_msg = None
         try:
             if m.text:
@@ -755,6 +754,16 @@ class BotInstance:
                 sent_msg = await self.bot.send_video(self.admin_chat_id, m.video.file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
             elif m.voice:
                 sent_msg = await self.bot.send_voice(self.admin_chat_id, m.voice.file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
+            
+            # --- НОВЫЙ БЛОК ДЛЯ СТИКЕРОВ ---
+            elif m.sticker:
+                # У стикеров нет поля caption, поэтому сначала шлем заголовок админу
+                if header_text:
+                    await self.bot.send_message(self.admin_chat_id, header_text, message_thread_id=thread_id)
+                # Отправляем сам стикер по его file_id
+                sent_msg = await self.bot.send_sticker(self.admin_chat_id, m.sticker.file_id, message_thread_id=thread_id)
+            # ------------------------------
+
             else:
                 if header_text:
                     await self.bot.send_message(self.admin_chat_id, header_text, message_thread_id=thread_id)
@@ -763,9 +772,8 @@ class BotInstance:
             if sent_msg:
                 self.msg_map[sent_msg.message_id] = user['id']
         except Exception as e:
-            # Логируем ошибку здесь, если что-то пошло не так при самой отправке
             logger.error(f"Error inside _send_content_to_admin: {e}")
-            raise e # Пробрасываем ошибку выше, чтобы сработал retry в forward_to_admin
+            raise e
 
     async def admin_control_logic(self, m: Message):
         """
