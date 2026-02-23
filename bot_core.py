@@ -755,26 +755,33 @@ class BotInstance:
             elif m.voice:
                 sent_msg = await self.bot.send_voice(self.admin_chat_id, m.voice.file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
             
-            # --- НОВЫЙ БЛОК ДЛЯ СТИКЕРОВ ---
+            # --- ЛОГИКА ДЛЯ СТИКЕРОВ С ПРЕДВАРИТЕЛЬНЫМ ЗАГОЛОВКОМ ---
             elif m.sticker:
-                # У стикеров нет поля caption, поэтому сначала шлем заголовок админу
+                # 1. Сначала пишем от кого (ID, имя и т.д.)
                 if header_text:
                     await self.bot.send_message(self.admin_chat_id, header_text, message_thread_id=thread_id)
-                # Отправляем сам стикер по его file_id
-                sent_msg = await self.bot.send_sticker(self.admin_chat_id, m.sticker.file_id, message_thread_id=thread_id)
-            # ------------------------------
+                
+                # 2. Затем пересылаем сам стикер методом forward
+                sent_msg = await self.bot.forward_message(
+                    chat_id=self.admin_chat_id,
+                    from_chat_id=m.chat.id,
+                    message_id=m.message_id,
+                    message_thread_id=thread_id
+                )
+            # -------------------------------------------------------
 
             else:
+                # Для всех остальных типов (файлы, анимации)
                 if header_text:
                     await self.bot.send_message(self.admin_chat_id, header_text, message_thread_id=thread_id)
                 sent_msg = await self.bot.copy_message(self.admin_chat_id, m.chat.id, m.message_id, message_thread_id=thread_id)
             
             if sent_msg:
                 self.msg_map[sent_msg.message_id] = user['id']
+                
         except Exception as e:
             logger.error(f"Error inside _send_content_to_admin: {e}")
             raise e
-
     async def admin_control_logic(self, m: Message):
         """
         ЕДИНАЯ ЛОГИКА АДМИН-КОМАНД (Статистика, Рассылка, Бан, Варн, Разбан)
