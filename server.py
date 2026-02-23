@@ -75,6 +75,14 @@ def _slug(name: str) -> str:
     # append random suffix to avoid collisions
     suffix = secrets.token_hex(3)
     return f"{result[:24]}-{suffix}"
+
+def _cs_h():
+    """Генерирует заголовки для запросов к Supabase"""
+    return {
+        "apikey": S_KEY,
+        "Authorization": f"Bearer {S_KEY}",
+        "Content-Type": "application/json"
+    }
     
 # ==========================================
 # 1. ИНИЦИАЛИЗАЦИЯ И БЕЗОПАСНОСТЬ
