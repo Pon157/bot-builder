@@ -28,6 +28,7 @@ interface SiteConfig {
   autoReplies?: AutoReply[];
   groupChatEnabled?: boolean;
   maxWarnsBeforeBan?: number;
+  theme?: 'dark' | 'light'; // светлая/тёмная тема
 }
 
 interface ChatSite {
@@ -97,14 +98,22 @@ const FONT_SCALE_OPTIONS = [
   { value: 'lg', label: 'Крупный' },
 ];
 const COLOR_PRESETS = [
-  { label: 'Индиго', primary: '#6366f1', bg: '#09090b' },
-  { label: 'Синий', primary: '#3b82f6', bg: '#09090b' },
-  { label: 'Изумруд', primary: '#10b981', bg: '#061a0f' },
-  { label: 'Янтарь', primary: '#f59e0b', bg: '#0a0800' },
-  { label: 'Розовый', primary: '#ec4899', bg: '#0d040a' },
-  { label: 'Фиолет', primary: '#8b5cf6', bg: '#070510' },
-  { label: 'Красный', primary: '#ef4444', bg: '#0d0505' },
-  { label: 'Циан', primary: '#06b6d4', bg: '#05090a' },
+  // Тёмные темы
+  { label: 'Индиго', primary: '#6366f1', bg: '#09090b', theme: 'dark' as const },
+  { label: 'Синий', primary: '#3b82f6', bg: '#09090b', theme: 'dark' as const },
+  { label: 'Изумруд', primary: '#10b981', bg: '#061a0f', theme: 'dark' as const },
+  { label: 'Янтарь', primary: '#f59e0b', bg: '#0a0800', theme: 'dark' as const },
+  { label: 'Розовый', primary: '#ec4899', bg: '#0d040a', theme: 'dark' as const },
+  { label: 'Фиолет', primary: '#8b5cf6', bg: '#070510', theme: 'dark' as const },
+  { label: 'Красный', primary: '#ef4444', bg: '#0d0505', theme: 'dark' as const },
+  { label: 'Циан', primary: '#06b6d4', bg: '#05090a', theme: 'dark' as const },
+  // Светлые темы
+  { label: '☀️ Белый', primary: '#6366f1', bg: '#f8f9fa', theme: 'light' as const },
+  { label: '☀️ Синий', primary: '#2563eb', bg: '#f0f4ff', theme: 'light' as const },
+  { label: '☀️ Зелёный', primary: '#059669', bg: '#f0fdf4', theme: 'light' as const },
+  { label: '☀️ Розовый', primary: '#db2777', bg: '#fdf0f6', theme: 'light' as const },
+  { label: '☀️ Янтарь', primary: '#d97706', bg: '#fffbeb', theme: 'light' as const },
+  { label: '☀️ Серый', primary: '#4b5563', bg: '#f9fafb', theme: 'light' as const },
 ];
 const AVATAR_COLORS = ['#6366f1','#3b82f6','#10b981','#f59e0b','#ec4899','#8b5cf6','#ef4444','#14b8a6','#f97316','#06b6d4'];
 
@@ -1142,13 +1151,13 @@ const SiteEditor: React.FC<{
             
             <div>
               <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-2">Готовые темы</span>
-              <div className="grid grid-cols-4 gap-2">
-                {COLOR_PRESETS.map(p => (
-                  <button key={p.label} onClick={() => setConfig(c => ({ ...c, primaryColor: p.primary, bgColor: p.bg }))}
-                    className={`p-2.5 rounded-xl transition-all border ${config.primaryColor === p.primary ? 'border-white/30' : 'border-zinc-800'}`}
-                    style={{ background: p.bg }}>
-                    <div className="w-full h-4 rounded-lg mb-1" style={{ background: p.primary }} />
-                    <span className="text-[8px] font-bold" style={{ color: p.primary }}>{p.label}</span>
+              <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                {COLOR_PRESETS.map(pr => (
+                  <button key={pr.label} onClick={() => setConfig(c => ({ ...c, primaryColor: pr.primary, bgColor: pr.bg, theme: pr.theme }))}
+                    className={`p-2.5 rounded-xl transition-all border ${config.primaryColor === pr.primary && (config.theme || 'dark') === pr.theme ? 'border-white/30' : 'border-zinc-800'}`}
+                    style={{ background: pr.bg }}>
+                    <div className="w-full h-4 rounded-lg mb-1" style={{ background: pr.primary }} />
+                    <span className="text-[8px] font-bold" style={{ color: pr.primary }}>{pr.label}</span>
                   </button>
                 ))}
               </div>
@@ -1174,6 +1183,34 @@ const SiteEditor: React.FC<{
                   </div>
                   <span className="text-white text-xs font-mono">{config.bgColor}</span>
                 </div>
+              </div>
+            </div>
+
+            {/* Theme toggle */}
+            <div>
+              <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest block mb-2">Тема интерфейса</span>
+              <div className="flex gap-2">
+                {([
+                  { value: 'dark', label: '🌙 Тёмная', desc: 'Тёмный фон' },
+                  { value: 'light', label: '☀️ Светлая', desc: 'Светлый фон' },
+                ] as const).map(opt => (
+                  <button key={opt.value} onClick={() => {
+                    setConfig(c => ({
+                      ...c,
+                      theme: opt.value,
+                      bgColor: opt.value === 'light' ? (c.bgColor === '#09090b' || c.bgColor === '#061a0f' || c.bgColor === '#0a0800' || c.bgColor === '#0d040a' || c.bgColor === '#070510' || c.bgColor === '#0d0505' || c.bgColor === '#05090a' ? '#f8f9fa' : c.bgColor) : (c.bgColor === '#f8f9fa' || c.bgColor === '#f0f4ff' || c.bgColor === '#f0fdf4' || c.bgColor === '#fdf0f6' || c.bgColor === '#fffbeb' || c.bgColor === '#f9fafb' ? '#09090b' : c.bgColor)
+                    }));
+                  }}
+                    className="flex-1 py-3 px-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all border flex flex-col items-center gap-1"
+                    style={{
+                      background: (config.theme || 'dark') === opt.value ? '#6366f120' : 'transparent',
+                      borderColor: (config.theme || 'dark') === opt.value ? '#6366f150' : '#27272a',
+                      color: (config.theme || 'dark') === opt.value ? '#a5b4fc' : '#52525b'
+                    }}>
+                    <span className="text-base">{opt.label.split(' ')[0]}</span>
+                    <span className="text-[8px]">{opt.label.split(' ').slice(1).join(' ')}</span>
+                  </button>
+                ))}
               </div>
             </div>
 
