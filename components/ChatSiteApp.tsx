@@ -1395,8 +1395,6 @@ const AdminChatPanel: React.FC<{
   const TABS = [
     { id: 'chats', label: 'Диалоги', icon: MessageCircle },
     ...(site.config.groupChatEnabled ? [{ id: 'group', label: 'Чат', icon: Layers }] : []),
-    { id: 'users', label: 'Юзеры', icon: Users },
-    { id: 'broadcast', label: 'Рассылка', icon: Megaphone },
   ] as const;
 
   return (
