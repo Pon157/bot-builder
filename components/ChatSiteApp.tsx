@@ -41,6 +41,7 @@ interface SiteConfig {
   autoReplies?: { command: string; reply: string }[];
   groupChatEnabled?: boolean;
   maxWarnsBeforeBan?: number;
+  theme?: 'dark' | 'light'; // светлая/тёмная тема
 }
 
 interface PublicSite { id: string; name: string; slug: string; config: SiteConfig; }
@@ -106,6 +107,32 @@ const getBubbleRadius = (isOwn: boolean, cfg?: SiteConfig) => {
 const getFontSize = (cfg?: SiteConfig) => {
   const map: Record<string,string> = { sm: '13px', md: '14px', lg: '16px' };
   return map[cfg?.fontScale || 'md'] || '14px';
+};
+
+// ─── Theme helpers ───────────────────────────────────────────────────────────────
+const isLight = (cfg?: SiteConfig) => cfg?.theme === 'light';
+
+// Returns theme-aware colors
+const themeVars = (cfg?: SiteConfig) => {
+  const light = isLight(cfg);
+  return {
+    bg: light ? (cfg?.bgColor || '#f8f9fa') : (cfg?.bgColor || '#09090b'),
+    surface: light ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)',
+    surface2: light ? 'rgba(0,0,0,0.07)' : 'rgba(255,255,255,0.04)',
+    border: light ? 'rgba(0,0,0,0.10)' : 'rgba(255,255,255,0.08)',
+    text: light ? '#111111' : '#ffffff',
+    textMuted: light ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.35)',
+    textFaint: light ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.20)',
+    inputBg: light ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.06)',
+    msgOwn: cfg?.primaryColor || '#6366f1',       // sender bubble: always primary
+    msgOther: light ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.08)',
+    msgAdmin: light
+      ? ((cfg?.primaryColor || '#6366f1') + '18')
+      : ((cfg?.primaryColor || '#6366f1') + '18'),
+    msgOwnText: '#ffffff',
+    msgOtherText: light ? '#111111' : '#ffffff',
+    scrollbar: light ? '#00000015' : '#ffffff15',
+  };
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────
@@ -343,7 +370,7 @@ const MessageBubble: React.FC<{
       <div className="flex flex-col gap-1 max-w-[85%] sm:max-w-[72%]" style={{ alignItems: isOwn ? 'flex-end' : 'flex-start' }}>
         {!isOwn && (
           <span className="text-[9px] font-black uppercase tracking-wider px-1"
-            style={{ color: isAdminMsg ? primary : 'rgba(255,255,255,0.35)' }}>
+            style={{ color: isAdminMsg ? primary : themeVars(cfg).textMuted }}>
             {msg.from_name}
           </span>
         )}
@@ -355,8 +382,8 @@ const MessageBubble: React.FC<{
         <div className="relative">
           <div className="px-3 sm:px-4 py-2.5 sm:py-3 leading-relaxed whitespace-pre-wrap break-words"
             style={{
-              background: isOwn ? primary : isAdminMsg ? primary + '18' : 'rgba(255,255,255,0.08)',
-              color: '#fff',
+              background: isOwn ? primary : isAdminMsg ? primary + '18' : themeVars(cfg).msgOther,
+              color: isOwn ? '#fff' : themeVars(cfg).msgOtherText,
               borderRadius: bubbleRadius,
               fontSize,
             }}>
@@ -369,7 +396,7 @@ const MessageBubble: React.FC<{
             </button>
           )}
         </div>
-        <span className="text-[9px] px-1 flex items-center gap-1" style={{ color: 'rgba(255,255,255,0.25)' }}>
+        <span className="text-[9px] px-1 flex items-center gap-1" style={{ color: themeVars(cfg).textFaint }}>
           {fmtTime(msg.created_at)}
           {isOwn && <Check className="w-2.5 h-2.5" />}
         </span>
@@ -775,9 +802,10 @@ const AuthScreen: React.FC<{ site: PublicSite; forceAdmin?: boolean; onAuth: (s:
   const [error, setError] = useState('');
 
   const p = cfg.primaryColor || '#6366f1';
-  const bg = cfg.bgColor || '#09090b';
   const font = cfg.fontFamily || 'Manrope, sans-serif';
   const r = getRadius(cfg);
+  const tv = themeVars(cfg);
+  const bg = tv.bg;
 
   const sendCode = async () => {
     if (!email || !email.includes('@')) { setError('Введите корректный email'); return; }
@@ -816,17 +844,17 @@ const AuthScreen: React.FC<{ site: PublicSite; forceAdmin?: boolean; onAuth: (s:
           <div className="w-3.5 h-3.5 rounded-full" style={{ background: p }} />
           <span className="text-2xl sm:text-3xl font-black" style={{ color: p }}>{cfg.logoText || site.name}</span>
         </div>
-        {!forceAdmin && <p className="text-sm mt-1" style={{ color: p + '70' }}>{cfg.welcomeMessage || 'Чем можем помочь?'}</p>}
+        {!forceAdmin && <p className="text-sm mt-1" style={{ color: p + '90' }}>{cfg.welcomeMessage || 'Чем можем помочь?'}</p>}
         {forceAdmin && <p className="text-xs mt-1 font-bold uppercase tracking-widest" style={{ color: p + '70' }}>Панель администратора</p>}
       </div>
 
-      <div className="w-full max-w-sm rounded-[2rem] p-6 sm:p-8 backdrop-blur-sm" style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${p}25` }}>
+      <div className="w-full max-w-sm rounded-[2rem] p-6 sm:p-8 backdrop-blur-sm" style={{ background: tv.surface, border: `1px solid ${p}25` }}>
         {!forceAdmin && (
-          <div className="flex rounded-2xl overflow-hidden border mb-5" style={{ borderColor: p + '20' }}>
+          <div className="flex rounded-2xl overflow-hidden border mb-5" style={{ borderColor: p + '25' }}>
             {(['login', 'register'] as const).map(m => (
               <button key={m} onClick={() => { setMode(m); setError(''); }}
                 className="flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all"
-                style={{ background: mode === m ? p : 'transparent', color: mode === m ? '#fff' : p + '70' }}>
+                style={{ background: mode === m ? p : 'transparent', color: mode === m ? '#fff' : p + '80' }}>
                 {m === 'login' ? 'Войти' : 'Регистрация'}
               </button>
             ))}
@@ -835,22 +863,22 @@ const AuthScreen: React.FC<{ site: PublicSite; forceAdmin?: boolean; onAuth: (s:
 
         <div className="space-y-3">
           <div>
-            <label className="text-[9px] font-black uppercase tracking-widest block mb-1.5" style={{ color: p + '80' }}>
+            <label className="text-[9px] font-black uppercase tracking-widest block mb-1.5" style={{ color: tv.textMuted }}>
               {mode === 'register' ? 'Имя пользователя' : 'Логин'}
             </label>
             <input value={login} onChange={e => setLogin(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSubmit()}
               placeholder={mode === 'register' ? 'Никнейм' : 'Введите логин'} autoFocus
-              className="w-full bg-white/5 border text-white text-sm p-3.5 outline-none transition-all placeholder-white/20"
-              style={{ borderColor: p + '30', borderRadius: r }} />
+              className="w-full border text-sm p-3.5 outline-none transition-all"
+              style={{ background: tv.inputBg, borderColor: p + '30', borderRadius: r, color: tv.text }} />
           </div>
 
           {mode === 'register' && (
             <div>
-              <label className="text-[9px] font-black uppercase tracking-widest block mb-1.5" style={{ color: p + '80' }}>Email (опционально)</label>
+              <label className="text-[9px] font-black uppercase tracking-widest block mb-1.5" style={{ color: tv.textMuted }}>Email (опционально)</label>
               <div className="flex gap-2">
                 <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="you@example.com"
-                  className="flex-1 bg-white/5 border text-white text-sm p-3.5 outline-none transition-all placeholder-white/20"
-                  style={{ borderColor: p + '30', borderRadius: r }} />
+                  className="flex-1 border text-sm p-3.5 outline-none transition-all"
+                  style={{ background: tv.inputBg, borderColor: p + '30', borderRadius: r, color: tv.text }} />
                 {cfg.requireEmailVerification && (
                   <button onClick={sendCode} disabled={loading || codeSent}
                     className="px-3 py-2 text-[9px] font-black uppercase tracking-wider disabled:opacity-40 whitespace-nowrap transition-all"
@@ -864,20 +892,20 @@ const AuthScreen: React.FC<{ site: PublicSite; forceAdmin?: boolean; onAuth: (s:
 
           {cfg.requireEmailVerification && codeSent && (
             <div>
-              <label className="text-[9px] font-black uppercase tracking-widest block mb-1.5" style={{ color: p + '80' }}>Код из письма</label>
+              <label className="text-[9px] font-black uppercase tracking-widest block mb-1.5" style={{ color: tv.textMuted }}>Код из письма</label>
               <input value={verifyCode} onChange={e => setVerifyCode(e.target.value)} placeholder="123456" maxLength={6}
-                className="w-full bg-white/5 border text-white text-sm p-3.5 outline-none transition-all placeholder-white/20 font-mono tracking-[0.3em] text-center"
-                style={{ borderColor: p + '30', borderRadius: r }} />
+                className="w-full border text-sm p-3.5 outline-none transition-all font-mono tracking-[0.3em] text-center"
+                style={{ background: tv.inputBg, borderColor: p + '30', borderRadius: r, color: tv.text }} />
             </div>
           )}
 
           <div>
-            <label className="text-[9px] font-black uppercase tracking-widest block mb-1.5" style={{ color: p + '80' }}>Пароль</label>
+            <label className="text-[9px] font-black uppercase tracking-widest block mb-1.5" style={{ color: tv.textMuted }}>Пароль</label>
             <div className="relative">
               <input type={showPass ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSubmit()}
                 placeholder="••••••••"
-                className="w-full bg-white/5 border text-white text-sm p-3.5 outline-none transition-all placeholder-white/20 pr-12"
-                style={{ borderColor: p + '30', borderRadius: r }} />
+                className="w-full border text-sm p-3.5 outline-none transition-all pr-12"
+                style={{ background: tv.inputBg, borderColor: p + '30', borderRadius: r, color: tv.text }} />
               <button onClick={() => setShowPass(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: p + '60' }}>
                 {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
@@ -901,7 +929,6 @@ const AuthScreen: React.FC<{ site: PublicSite; forceAdmin?: boolean; onAuth: (s:
     </div>
   );
 };
-
 // ─── Admin Picker (User selects admin) ──────────────────────────────────────────
 
 const AdminPicker: React.FC<{
@@ -910,9 +937,9 @@ const AdminPicker: React.FC<{
 }> = ({ site, session, existingConvs, admins, onSelect, onLogout }) => {
   const cfg = site.config;
   const p = cfg.primaryColor || '#6366f1';
-  const bg = cfg.bgColor || '#09090b';
   const font = cfg.fontFamily || 'Manrope, sans-serif';
   const r = getRadius(cfg);
+  const tv = themeVars(cfg);
 
   const startOrOpenConv = async (admin: AdminInfo) => {
     const ex = existingConvs.find(c => c.admin_id === admin.id);
@@ -927,9 +954,9 @@ const AdminPicker: React.FC<{
   };
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden" style={{ background: bg, fontFamily: font }}>
+    <div className="flex flex-col h-screen overflow-hidden" style={{ background: tv.bg, fontFamily: font, color: tv.text }}>
       {/* Header */}
-      <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b" style={{ borderColor: p + '20' }}>
+      <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b" style={{ borderColor: p + '20', background: tv.bg }}>
         <div className="flex items-center gap-2.5">
           <div className="w-2.5 h-2.5 rounded-full" style={{ background: p }} />
           <span className="font-black" style={{ color: p, fontSize: getFontSize(cfg) }}>{cfg.logoText || site.name}</span>
@@ -939,10 +966,10 @@ const AdminPicker: React.FC<{
         </button>
       </div>
 
-      <div className="flex-1 p-4 sm:p-6 max-w-lg mx-auto w-full">
+      <div className="flex-1 p-4 sm:p-6 max-w-lg mx-auto w-full overflow-y-auto">
         <div className="mb-6">
-          <h2 className="font-black text-white text-lg mb-1">Выберите специалиста</h2>
-          <p className="text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>Выберите администратора для начала диалога</p>
+          <h2 className="font-black text-lg mb-1" style={{ color: tv.text }}>Выберите специалиста</h2>
+          <p className="text-xs" style={{ color: tv.textMuted }}>Выберите администратора для начала диалога</p>
         </div>
 
         <div className="space-y-3">
@@ -1093,9 +1120,9 @@ const UserChat: React.FC<{
   }
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden" style={{ background: cfg.bgColor || '#09090b', fontFamily: cfg.fontFamily || 'Manrope, sans-serif' }}>
+    <div className="flex flex-col h-screen overflow-hidden" style={{ background: themeVars(cfg).bg, fontFamily: cfg.fontFamily || 'Manrope, sans-serif', color: themeVars(cfg).text }}>
       {/* Header — sticky, не прокручивается */}
-      <div className="flex items-center gap-3 px-3 sm:px-5 py-3 border-b shrink-0" style={{ borderColor: p + '20' }}>
+      <div className="flex items-center gap-3 px-3 sm:px-5 py-3 border-b shrink-0" style={{ borderColor: p + '20', background: themeVars(cfg).bg }}>
         <button onClick={onBack} className="p-2 rounded-xl hover:bg-white/10 transition-all"><ArrowLeft className="w-4 h-4" style={{ color: p }} /></button>
         {admin ? (
           <Avatar name={admin.display_name} color={admin.avatar_color} size="w-9 h-9"
@@ -1165,8 +1192,8 @@ const AdminChatPanel: React.FC<{
   const pollRef = useRef<NodeJS.Timeout>();
 
   const p = site.config.primaryColor || '#6366f1';
-  const bg = site.config.bgColor || '#09090b';
   const font = site.config.fontFamily || 'Manrope, sans-serif';
+  const tv = themeVars(site.config);
 
   // Set admin online on mount
   useEffect(() => {
@@ -1297,13 +1324,13 @@ const AdminChatPanel: React.FC<{
   ] as const;
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden" style={{ background: bg, fontFamily: font }}>
+    <div className="flex flex-col h-screen overflow-hidden" style={{ background: tv.bg, fontFamily: font, color: tv.text }}>
       {/* Header */}
-      <div className="flex items-center gap-3 px-3 sm:px-5 py-3 border-b shrink-0" style={{ borderColor: p + '20' }}>
+      <div className="flex items-center gap-3 px-3 sm:px-5 py-3 border-b shrink-0" style={{ borderColor: p + '20', background: tv.bg }}>
         <div className="flex items-center gap-2 flex-1 min-w-0">
           <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: p }} />
           <span className="font-black text-sm truncate" style={{ color: p }}>{site.config.logoText || site.name}</span>
-          <span className="text-[8px] text-zinc-600 font-mono hidden sm:block shrink-0">@{site.slug}</span>
+          <span className="text-[8px] font-mono hidden sm:block shrink-0" style={{ color: tv.textFaint }}>@{site.slug}</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {/* Online toggle */}
