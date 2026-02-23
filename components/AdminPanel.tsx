@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../services/apiService';
 import { 
   LayoutDashboard, Users, Bot, Key, LogOut, 
@@ -42,7 +42,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [password, setPassword] = useState('');
   
   // --- UI State ---
-  const [activeTab, setActiveTab] = useState<'dash' | 'users' | 'bots' | 'keys' | 'monitoring' | 'applications' | 'chatsites'>('dash');
+  const [activeTab, setActiveTab] = useState<'dash' | 'users' | 'bots' | 'keys' | 'monitoring' | 'applications' | 'chatsites' | 'allmsgs'>('dash');
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -61,6 +61,11 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [selectedChatConv, setSelectedChatConv] = useState<any | null>(null);
   const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [chatSitesLoading, setChatSitesLoading] = useState(false);
+  // All messages feed
+  const [allMsgs, setAllMsgs] = useState<any[]>([]);
+  const [allMsgsLoading, setAllMsgsLoading] = useState(false);
+  const [allMsgsSiteFilter, setAllMsgsSiteFilter] = useState<string>('all');
+  const allMsgsPollRef = useRef<NodeJS.Timeout>();
 
   // 1. Авторизация
   const handleLogin = async (e: React.FormEvent) => {
@@ -120,6 +125,41 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         .then(data => setChatSites(Array.isArray(data) ? data : []))
         .catch(() => setChatSites([]))
         .finally(() => setChatSitesLoading(false));
+    }
+  }, [activeTab, token]);
+
+  // Load all messages feed
+  const loadAllMsgs = async (t: string) => {
+    try {
+      const sites = await fetch('/api/admin/chat/sites', { headers: { 'x-admin-token': t } }).then(r => r.json());
+      if (!Array.isArray(sites) || sites.length === 0) { setAllMsgs([]); return; }
+      const allConvPromises = sites.map((s: any) =>
+        fetch(`/api/chat/site/${s.slug}/conversations?role=owner&session_id=admin`, { headers: { 'x-admin-token': t } })
+          .then(r => r.json()).then(convs => (Array.isArray(convs) ? convs : []).map((c: any) => ({ ...c, _site: s })))
+          .catch(() => [])
+      );
+      const allConvs = (await Promise.all(allConvPromises)).flat();
+      const msgPromises = allConvs.map((c: any) =>
+        fetch(`/api/chat/site/${c._site.slug}/messages/${c.id}?role=owner&session_id=admin`, { headers: { 'x-admin-token': t } })
+          .then(r => r.json()).then(msgs => (Array.isArray(msgs) ? msgs : []).map((m: any) => ({
+            ...m,
+            _site: c._site,
+            _conv: c,
+          })))
+          .catch(() => [])
+      );
+      const allMessages = (await Promise.all(msgPromises)).flat();
+      allMessages.sort((a: any, b: any) => b.created_at - a.created_at);
+      setAllMsgs(allMessages.slice(0, 200));
+    } catch { setAllMsgs([]); }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'allmsgs' && token) {
+      setAllMsgsLoading(true);
+      loadAllMsgs(token).finally(() => setAllMsgsLoading(false));
+      allMsgsPollRef.current = setInterval(() => loadAllMsgs(token), 10000);
+      return () => clearInterval(allMsgsPollRef.current);
     }
   }, [activeTab, token]);
 
@@ -278,6 +318,7 @@ const handleConfigAccess = async (botId: string) => {
           <NavBtn icon={Activity} label="Мониторинг" active={activeTab === 'monitoring'} onClick={() => setActiveTab('monitoring')} />
           <NavBtn icon={Briefcase} label="Отклики" active={activeTab === 'applications'} onClick={() => setActiveTab('applications')} badge={applications.filter((a:any)=>a.status==='new').length} />
           <NavBtn icon={MessageSquare} label="Чат-сайты" active={activeTab === 'chatsites'} onClick={() => setActiveTab('chatsites')} />
+          <NavBtn icon={Mail} label="Все сообщения" active={activeTab === 'allmsgs'} onClick={() => setActiveTab('allmsgs')} />
         </nav>
 
         <div className="mt-auto pt-8 border-t border-zinc-900/50">
@@ -303,6 +344,7 @@ const handleConfigAccess = async (botId: string) => {
         <MobileNavBtn icon={Activity} active={activeTab === 'monitoring'} onClick={() => setActiveTab('monitoring')} />
         <MobileNavBtn icon={Briefcase} active={activeTab === 'applications'} onClick={() => setActiveTab('applications')} badge={applications.filter((a:any)=>a.status==='new').length} />
         <MobileNavBtn icon={MessageSquare} active={activeTab === 'chatsites'} onClick={() => setActiveTab('chatsites')} />
+        <MobileNavBtn icon={Mail} active={activeTab === 'allmsgs'} onClick={() => setActiveTab('allmsgs')} />
       </nav>
 
       {/* --- MAIN CONTENT --- */}
@@ -320,6 +362,7 @@ const handleConfigAccess = async (botId: string) => {
                 {activeTab === 'monitoring' && 'System Logs'}
                 {activeTab === 'applications' && 'Отклики на вакансии'}
               {activeTab === 'chatsites' && 'Диалоги чат-сайтов'}
+              {activeTab === 'allmsgs' && 'Все сообщения'}
               </h1>
               <div className="flex items-center gap-3 mt-4">
                 <div className="h-1 w-16 bg-red-600 rounded-full" />
@@ -831,6 +874,123 @@ const handleConfigAccess = async (botId: string) => {
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* --- TAB: ALL MESSAGES --- */}
+          {activeTab === 'allmsgs' && (
+            <div className="space-y-4 animate-in fade-in duration-500">
+              {/* Filter bar */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <button onClick={() => setAllMsgsSiteFilter('all')}
+                  className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border ${allMsgsSiteFilter === 'all' ? 'bg-red-600/20 border-red-600/30 text-red-400' : 'border-zinc-800 text-zinc-500 hover:text-white'}`}>
+                  Все сайты ({allMsgs.length})
+                </button>
+                {Array.from(new Set(allMsgs.map((m: any) => m._site?.id))).map(siteId => {
+                  const site = allMsgs.find((m: any) => m._site?.id === siteId)?._site;
+                  if (!site) return null;
+                  const count = allMsgs.filter((m: any) => m._site?.id === siteId).length;
+                  return (
+                    <button key={siteId as string} onClick={() => setAllMsgsSiteFilter(siteId as string)}
+                      className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border ${allMsgsSiteFilter === siteId ? 'bg-white/10 border-white/20 text-white' : 'border-zinc-800 text-zinc-500 hover:text-white'}`}>
+                      <div className="w-2 h-2 rounded-full" style={{ background: site.config?.primaryColor || '#6366f1' }} />
+                      {site.name} ({count})
+                    </button>
+                  );
+                })}
+                <button onClick={() => token && loadAllMsgs(token)}
+                  className="ml-auto px-3 py-2 rounded-xl text-[10px] font-black uppercase text-zinc-500 hover:text-white border border-zinc-800 hover:border-zinc-700 transition-all flex items-center gap-1.5">
+                  <RefreshCw size={12} /> Обновить
+                </button>
+              </div>
+
+              {allMsgsLoading ? (
+                <div className="flex justify-center py-16"><RefreshCw size={24} className="text-zinc-700 animate-spin" /></div>
+              ) : (
+                <div className="space-y-2">
+                  {(allMsgsSiteFilter === 'all' ? allMsgs : allMsgs.filter((m: any) => m._site?.id === allMsgsSiteFilter))
+                    .map((msg: any) => {
+                      const isAdmin = msg.from_role === 'admin' || msg.from_role === 'owner';
+                      const isSystem = msg.from_role === 'system';
+                      const p = msg._site?.config?.primaryColor || '#6366f1';
+                      const absUrl = msg.media_url ? (msg.media_url.startsWith('http') ? msg.media_url : window.location.origin + msg.media_url) : null;
+                      return (
+                        <div key={msg.id} className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-4 hover:border-zinc-700 transition-all">
+                          {/* Meta row */}
+                          <div className="flex items-center gap-3 mb-2.5 flex-wrap">
+                            <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-black shrink-0"
+                              style={{ background: isSystem ? '#27272a' : isAdmin ? p + '40' : '#27272a' }}>
+                              {isSystem ? '📢' : (msg.from_name || '?')[0]?.toUpperCase()}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-white font-black text-xs">{msg.from_name || 'Неизвестно'}</span>
+                                <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-black uppercase ${isSystem ? 'bg-purple-500/20 text-purple-400' : isAdmin ? 'bg-blue-500/20 text-blue-400' : 'bg-zinc-800 text-zinc-500'}`}>
+                                  {isSystem ? 'system' : isAdmin ? 'admin' : 'user'}
+                                </span>
+                                {allMsgsSiteFilter === 'all' && (
+                                  <span className="text-[8px] px-2 py-0.5 rounded-full font-black border"
+                                    style={{ borderColor: p + '40', color: p, background: p + '10' }}>
+                                    {msg._site?.name}
+                                  </span>
+                                )}
+                                <span className="text-[9px] text-zinc-600 ml-auto shrink-0">
+                                  {new Date(msg.created_at).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
+                                  {' · '}
+                                  {new Date(msg.created_at).toLocaleDateString('ru', { day: 'numeric', month: 'short' })}
+                                </span>
+                              </div>
+                              <p className="text-[9px] text-zinc-600 font-mono truncate">
+                                диалог: {msg._conv?.user_name || '?'} ↔ {msg._conv?.admin_name || '?'}
+                              </p>
+                            </div>
+                          </div>
+                          {/* Content */}
+                          {msg.sticker_emoji && <div className="text-3xl mb-1">{msg.sticker_emoji}</div>}
+                          {msg.text && (
+                            <div className="text-sm text-zinc-300 leading-relaxed break-words">
+                              {msg.text.startsWith('📢') ? (
+                                <div className="flex items-start gap-2 p-3 rounded-xl" style={{ background: p + '10', border: `1px solid ${p}25` }}>
+                                  <span className="text-base shrink-0">📢</span>
+                                  <span style={{ color: p + 'cc' }}>{msg.text.slice(2).trim()}</span>
+                                </div>
+                              ) : msg.text}
+                            </div>
+                          )}
+                          {absUrl && (
+                            <div className="mt-2 rounded-xl overflow-hidden border border-white/10 inline-block">
+                              {msg.media_type === 'image' ? (
+                                <img src={absUrl} alt="img" className="max-w-[180px] max-h-32 object-cover cursor-pointer block"
+                                  onClick={() => window.open(absUrl, '_blank')} />
+                              ) : msg.media_type === 'video' ? (
+                                <video src={absUrl} controls className="max-w-[180px] max-h-32" />
+                              ) : msg.media_type === 'audio' ? (
+                                <div className="flex items-center gap-2 px-3 py-2 bg-white/5 min-w-[160px]">
+                                  <span className="text-xs text-zinc-400">🎵</span>
+                                  <audio src={absUrl} controls className="h-7 flex-1" preload="metadata" />
+                                </div>
+                              ) : (
+                                <a href={absUrl} target="_blank" rel="noopener noreferrer"
+                                  className="flex items-center gap-2 px-3 py-2 bg-white/5 hover:bg-white/10 transition-all">
+                                  <span className="text-base">📎</span>
+                                  <span className="text-xs text-white truncate max-w-[120px]">
+                                    {msg.media_url?.split('/').pop()?.replace(/^\d+_\d+_/, '') || 'Файл'}
+                                  </span>
+                                </a>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  {allMsgs.length === 0 && !allMsgsLoading && (
+                    <div className="border border-dashed border-zinc-800 rounded-2xl p-16 text-center">
+                      <Mail size={40} className="mx-auto mb-4 text-zinc-800" />
+                      <p className="text-zinc-700 text-xs font-black uppercase">Нет сообщений</p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
