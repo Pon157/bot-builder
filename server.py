@@ -26,7 +26,7 @@ except ImportError:
     class EmailService:
         @staticmethod
         def send_verification_code(e, c): return True
-        @fstaticmethod
+        @staticmethod
         def send_password_reset(e, c): return True
 
 # Импорты aiogram 3.x для массовой рассылки
