@@ -787,6 +787,9 @@ const handleConfigAccess = async (botId: string) => {
                                     <img src={msg.media_url.startsWith('http') ? msg.media_url : window.location.origin + msg.media_url}
                                       alt="img" className="max-w-[200px] max-h-40 object-cover cursor-pointer block"
                                       onClick={() => window.open(msg.media_url.startsWith('http') ? msg.media_url : window.location.origin + msg.media_url, '_blank')} />
+                                  ) : msg.media_type === 'video' ? (
+                                    <video src={msg.media_url.startsWith('http') ? msg.media_url : window.location.origin + msg.media_url}
+                                      controls className="max-w-[200px] max-h-40" />
                                   ) : msg.media_type === 'audio' ? (
                                     <div className="flex items-center gap-2 px-3 py-2 bg-white/5 min-w-[160px]">
                                       <span className="text-xs text-zinc-400">🎵 Голосовое</span>
