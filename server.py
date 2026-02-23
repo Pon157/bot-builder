@@ -315,8 +315,9 @@ db = httpx.AsyncClient(
 )
 
 # Загрузка файлов
-os.makedirs("uploads", exist_ok=True)
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+UPLOADS_DIR = os.getenv("UPLOADS_DIR", "/var/www/botengine/uploads")
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
 # ==========================================
 # 4. ЭНДПОИНТЫ АВТОРИЗАЦИИ
@@ -3594,12 +3595,12 @@ async def chat_upload_media(request: Request):
     else:
         subdir = "files"
     
-    save_dir = f"uploads/chat/{subdir}"
+    save_dir = os.path.join(UPLOADS_DIR, f"chat/{subdir}")
     os.makedirs(save_dir, exist_ok=True)
     
     # Безопасное имя файла
     safe_name = f"{int(time.time())}_{secrets.token_hex(6)}.{ext}"
-    save_path = f"{save_dir}/{safe_name}"
+    save_path = os.path.join(save_dir, safe_name)
     
     async with aiofiles.open(save_path, "wb") as f:
         await f.write(content)
