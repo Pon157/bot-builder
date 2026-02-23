@@ -396,8 +396,9 @@ const MessageBubble: React.FC<{
           </div>
           {canPin && (
             <button onClick={() => onPin!(msg.id, !('is_pinned' in msg && msg.is_pinned))}
-              className="absolute -top-2 right-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 bg-zinc-800 rounded-lg">
-              <Pin className="w-2.5 h-2.5 text-zinc-400 hover:text-white" />
+              className="absolute -top-2 right-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-lg"
+              style={{ background: themeVars(cfg).surface2 }}>
+              <Pin className="w-2.5 h-2.5" style={{ color: themeVars(cfg).textMuted }} />
             </button>
           )}
         </div>
@@ -414,8 +415,8 @@ const MessageBubble: React.FC<{
 
 const VoiceRecorder: React.FC<{
   onRecorded: (blob: Blob, duration: number) => void;
-  primary: string;
-}> = ({ onRecorded, primary }) => {
+  primary: string; cfg?: SiteConfig;
+}> = ({ onRecorded, primary, cfg }) => {
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const mediaRef = useRef<MediaRecorder | null>(null);
@@ -483,9 +484,9 @@ const VoiceRecorder: React.FC<{
     return (
       <div className="flex items-center gap-2 px-3 py-2 rounded-xl animate-pulse" style={{ background: primary + '15' }}>
         <div className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
-        <span className="text-white text-xs font-mono">{String(Math.floor(seconds / 60)).padStart(2,'0')}:{String(seconds % 60).padStart(2,'0')}</span>
-        <button onClick={cancel} className="p-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all">
-          <X className="w-3.5 h-3.5 text-zinc-400" />
+        <span className="text-xs font-mono" style={{ color: themeVars(cfg).text }}>{String(Math.floor(seconds / 60)).padStart(2,'0')}:{String(seconds % 60).padStart(2,'0')}</span>
+        <button onClick={cancel} className="p-1 rounded-lg transition-all" style={{ background: themeVars(cfg).surface }}>
+          <X className="w-3.5 h-3.5" style={{ color: themeVars(cfg).textMuted }} />
         </button>
         <button onClick={stop}
           className="w-8 h-8 rounded-full flex items-center justify-center"
@@ -499,7 +500,7 @@ const VoiceRecorder: React.FC<{
   return (
     <button onClick={start}
       className="w-9 h-9 rounded-xl flex items-center justify-center transition-all"
-      style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.4)' }}>
+      style={{ background: themeVars(cfg).surface, color: themeVars(cfg).textMuted }}>
       <Mic className="w-4 h-4" />
     </button>
   );
@@ -627,7 +628,7 @@ const MessageInput: React.FC<{
             {uploading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Paperclip className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
           </button>
           {!text.trim() && (
-            <VoiceRecorder onRecorded={handleVoice} primary={primary} />
+            <VoiceRecorder onRecorded={handleVoice} primary={primary} cfg={cfg} />
           )}
         </div>
 
@@ -738,20 +739,22 @@ const GroupChat: React.FC<{ site: PublicSite; session: ChatSession }> = ({ site,
     <div className="flex flex-col h-full" style={{ fontFamily: site.config.fontFamily || 'Manrope, sans-serif' }}>
       {/* Pinned messages bar */}
       {pinned.length > 0 && (
-        <div className="px-4 py-2 border-b cursor-pointer hover:bg-white/5 transition-all shrink-0"
+        <div className="px-4 py-2 border-b cursor-pointer transition-all shrink-0"
           style={{ borderColor: p + '20' }}
+          onMouseEnter={e => e.currentTarget.style.background = themeVars(site.config).surface}
+          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
           onClick={() => setShowPinned(v => !v)}>
           <div className="flex items-center gap-2">
             <Pin className="w-3.5 h-3.5" style={{ color: p }} />
             <span className="text-[10px] font-black uppercase tracking-widest" style={{ color: p }}>
               {pinned.length} закреплённых
             </span>
-            <ChevronRight className={`w-3 h-3 text-zinc-600 ml-auto transition-transform ${showPinned ? 'rotate-90' : ''}`} />
+            <ChevronRight className={`w-3 h-3 ml-auto transition-transform ${showPinned ? 'rotate-90' : ''}`} style={{ color: themeVars(site.config).textFaint }} />
           </div>
           {showPinned && (
             <div className="mt-2 space-y-1.5 max-h-32 overflow-y-auto">
               {pinned.map(m => (
-                <div key={m.id} className="px-3 py-2 rounded-xl text-xs text-white/80 border" style={{ background: p + '08', borderColor: p + '20' }}>
+                <div key={m.id} className="px-3 py-2 rounded-xl text-xs border" style={{ background: p + '08', borderColor: p + '20', color: themeVars(site.config).text }}>
                   <span className="font-black text-[9px] uppercase" style={{ color: p }}>{m.from_name}: </span>
                   {m.text || (m.media_type === 'image' ? '🖼 Изображение' : '📎 Файл')}
                 </div>
@@ -764,12 +767,12 @@ const GroupChat: React.FC<{ site: PublicSite; session: ChatSession }> = ({ site,
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-0.5">
         {loading ? (
-          <div className="flex justify-center py-8"><RefreshCw className="w-5 h-5 text-white/20 animate-spin" /></div>
+          <div className="flex justify-center py-8"><RefreshCw className="w-5 h-5 animate-spin" style={{ color: themeVars(site.config).textFaint }} /></div>
         ) : messages.length === 0 ? (
           <div className="text-center py-16">
             <MessageCircle className="w-10 h-10 mx-auto mb-3" style={{ color: p + '30' }} />
-            <p className="font-bold text-sm" style={{ color: 'rgba(255,255,255,0.2)' }}>Групповой чат пуст</p>
-            <p className="text-xs mt-1" style={{ color: 'rgba(255,255,255,0.1)' }}>Напишите первым!</p>
+            <p className="font-bold text-sm" style={{ color: themeVars(site.config).textMuted }}>Групповой чат пуст</p>
+            <p className="text-xs mt-1" style={{ color: themeVars(site.config).textFaint }}>Напишите первым!</p>
           </div>
         ) : grouped.map(({ date, msgs }) => (
           <div key={date}>
@@ -989,12 +992,12 @@ const AdminPicker: React.FC<{
             return (
               <button key={admin.id} onClick={() => startOrOpenConv(admin)}
                 className="w-full flex items-center gap-4 p-4 sm:p-5 transition-all text-left"
-                style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${p}20`, borderRadius: r }}>
+                style={{ background: tv.surface, border: `1px solid ${p}20`, borderRadius: r }}>
                 <Avatar name={admin.display_name} color={admin.avatar_color} size="w-12 h-12"
                   online={cfg.showOnlineStatus ? admin.is_online : undefined} />
                 <div className="flex-1 min-w-0">
-                  <p className="font-black text-white text-sm">{admin.display_name}</p>
-                  {admin.bio && <p className="text-xs mt-0.5 truncate" style={{ color: 'rgba(255,255,255,0.35)' }}>{admin.bio}</p>}
+                  <p className="font-black text-sm" style={{ color: tv.text }}>{admin.display_name}</p>
+                  {admin.bio && <p className="text-xs mt-0.5 truncate" style={{ color: tv.textMuted }}>{admin.bio}</p>}
                   {cfg.showOnlineStatus && (
                     <div className={`flex items-center gap-1.5 mt-1 text-[9px] font-bold uppercase ${admin.is_online ? 'text-emerald-400' : 'text-zinc-600'}`}>
                       <div className={`w-1.5 h-1.5 rounded-full ${admin.is_online ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
@@ -1017,7 +1020,7 @@ const AdminPicker: React.FC<{
               style={{ background: p + '10', border: `1px solid ${p}30`, borderRadius: r }}>
               <div className="w-12 h-12 rounded-full flex items-center justify-center text-2xl" style={{ background: p + '20' }}>💬</div>
               <div className="flex-1">
-                <p className="font-black text-white text-sm">Общий чат</p>
+                <p className="font-black text-sm" style={{ color: tv.text }}>Общий чат</p>
                 <p className="text-xs mt-0.5" style={{ color: p + '80' }}>Все участники вместе</p>
               </div>
               <Layers className="w-4 h-4" style={{ color: p + '60' }} />
@@ -1032,12 +1035,12 @@ const AdminPicker: React.FC<{
               {existingConvs.map(conv => (
                 <button key={conv.id} onClick={() => onSelect(conv)}
                   className="w-full flex items-center gap-3 p-3 sm:p-4 text-left transition-all"
-                  style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${p}15`, borderRadius: r }}>
+                  style={{ background: tv.surface2, border: `1px solid ${p}15`, borderRadius: r }}>
                   <Avatar name={conv.admin_name} color={p} />
                   <div className="flex-1 min-w-0">
-                    <p className="text-white text-sm font-bold">{conv.admin_name}</p>
+                    <p className="text-sm font-bold" style={{ color: tv.text }}>{conv.admin_name}</p>
                     {conv.last_message_preview && (
-                      <p className="text-xs truncate mt-0.5" style={{ color: 'rgba(255,255,255,0.3)' }}>{conv.last_message_preview}</p>
+                      <p className="text-xs truncate mt-0.5" style={{ color: tv.textMuted }}>{conv.last_message_preview}</p>
                     )}
                   </div>
                   {conv.unread_user > 0 && (
@@ -1076,7 +1079,7 @@ const UserChat: React.FC<{
           <button onClick={onBack} className="p-2 rounded-xl hover:bg-white/10 transition-all"><ArrowLeft className="w-4 h-4" style={{ color: p }} /></button>
           <div className="w-8 h-8 rounded-full flex items-center justify-center text-lg" style={{ background: p + '20' }}>💬</div>
           <div className="flex-1">
-            <p className="font-black text-white text-sm">Общий чат</p>
+            <p className="font-black text-sm" style={{ color: themeVars(cfg).text }}>Общий чат</p>
             <p className="text-[9px] font-bold uppercase tracking-widest" style={{ color: p + '80' }}>Все участники</p>
           </div>
           <button onClick={onLogout} className="p-2 rounded-xl hover:bg-white/10 transition-all"><LogOut className="w-4 h-4" style={{ color: p + '60' }} /></button>
@@ -1093,7 +1096,22 @@ const UserChat: React.FC<{
   const loadMessages = useCallback(async () => {
     try {
       const data = await apiFetch(`${API}/chat/site/${site.slug}/messages/${conversation.id}?role=user&session_id=${session.id}`);
-      setMessages(Array.isArray(data) ? data : []);
+      if (Array.isArray(data)) {
+        // Сохраняем optimistic-сообщения у которых ещё нет реального аналога
+        setMessages(prev => {
+          const opts = prev.filter(m => m.id.startsWith('opt_'));
+          const serverIds = new Set(data.map((m: Message) => m.id));
+          const stillPending = opts.filter(o =>
+            !data.some((r: Message) =>
+              r.from_id === o.from_id &&
+              r.media_url === o.media_url &&
+              r.text === o.text &&
+              Math.abs(r.created_at - o.created_at) < 10000
+            )
+          );
+          return [...data, ...stillPending].sort((a, b) => a.created_at - b.created_at);
+        });
+      }
     } catch { } finally { setLoading(false); }
   }, [site.slug, conversation.id, session.id]);
 
@@ -1106,22 +1124,15 @@ const UserChat: React.FC<{
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages.length]);
 
   const handleSend = async (text: string, mediaUrl?: string, mediaType?: string, sticker?: string, duration?: number) => {
-    // Optimistic update — сразу показываем сообщение без ожидания сервера
+    // Optimistic: показываем сообщение мгновенно
+    const optId = `opt_${Date.now()}`;
     const optimistic: Message = {
-      id: `opt_${Date.now()}`,
-      conversation_id: conversation.id,
-      site_id: site.id,
-      from_id: session.id,
-      from_name: session.display_name || session.username || 'Пользователь',
-      from_role: session.role,
-      text: text || null,
-      media_url: mediaUrl || null,
-      media_type: mediaType || null,
-      sticker_emoji: sticker || null,
-      duration: duration || null,
-      created_at: Date.now(),
-      is_read: false,
-      is_deleted: false,
+      id: optId, conversation_id: conversation.id, site_id: site.id,
+      from_id: session.id, from_name: session.display_name || session.username || 'Пользователь',
+      from_role: session.role, text: text || null,
+      media_url: mediaUrl || null, media_type: (mediaType as any) || null,
+      sticker_emoji: sticker || null, duration: duration || null,
+      created_at: Date.now(), is_read: false, is_deleted: false,
     };
     setMessages(prev => [...prev, optimistic]);
 
@@ -1129,21 +1140,21 @@ const UserChat: React.FC<{
       await apiFetch(`${API}/chat/site/${site.slug}/message`, {
         method: 'POST',
         body: JSON.stringify({
-          conversation_id: conversation.id,
-          from_id: session.id,
+          conversation_id: conversation.id, from_id: session.id,
           from_name: session.display_name || session.username || 'Пользователь',
-          from_role: session.role,
-          text: text || null,
-          media_url: mediaUrl,
-          media_type: mediaType,
-          sticker_emoji: sticker,
+          from_role: session.role, text: text || null,
+          media_url: mediaUrl, media_type: mediaType, sticker_emoji: sticker,
           duration: duration || null
         })
       });
-    } catch { }
-    // Сразу и с небольшой задержкой — гарантируем что реальный ID подтянется
-    await loadMessages();
-    setTimeout(() => loadMessages(), 600);
+      // После успешной отправки — загружаем реальные данные
+      // Задержка нужна чтобы Supabase успел записать
+      setTimeout(() => loadMessages(), 300);
+      setTimeout(() => loadMessages(), 1200);
+    } catch {
+      // При ошибке убираем optimistic
+      setMessages(prev => prev.filter(m => m.id !== optId));
+    }
   };
 
   const grouped: { date: string; msgs: Message[] }[] = [];
@@ -1167,14 +1178,17 @@ const UserChat: React.FC<{
           </div>
         )}
         <div className="flex-1 min-w-0">
-          <p className="font-black text-white text-sm truncate">{conversation.admin_name}</p>
+          <p className="font-black text-sm truncate" style={{ color: themeVars(cfg).text }}>{conversation.admin_name}</p>
           {cfg.showOnlineStatus && admin && (
             <p className={`text-[9px] font-bold uppercase ${admin.is_online ? 'text-emerald-400' : 'text-zinc-600'}`}>
               {admin.is_online ? '● Онлайн' : '○ Офлайн'}
             </p>
           )}
         </div>
-        <button onClick={onLogout} className="p-2 rounded-xl hover:bg-white/10 transition-all"><LogOut className="w-3.5 h-3.5" style={{ color: p + '60' }} /></button>
+        <button onClick={onLogout} className="p-2 rounded-xl transition-all" style={{ color: p + '60' }}
+          onMouseEnter={e => e.currentTarget.style.background = themeVars(cfg).surface}
+          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+          <LogOut className="w-3.5 h-3.5" /></button>
       </div>
 
       {/* Messages */}
@@ -1264,7 +1278,20 @@ const AdminChatPanel: React.FC<{
   const loadMessages = async (convId: string) => {
     try {
       const data = await apiFetch(`${API}/chat/site/${site.slug}/messages/${convId}?role=${session.role}&session_id=${session.id}`);
-      setMessages(Array.isArray(data) ? data : []);
+      if (Array.isArray(data)) {
+        setMessages(prev => {
+          const opts = prev.filter(m => m.id.startsWith('opt_'));
+          const stillPending = opts.filter(o =>
+            !data.some((r: Message) =>
+              r.from_id === o.from_id &&
+              r.media_url === o.media_url &&
+              r.text === o.text &&
+              Math.abs(r.created_at - o.created_at) < 10000
+            )
+          );
+          return [...data, ...stillPending].sort((a, b) => a.created_at - b.created_at);
+        });
+      }
     } catch { }
   };
 
@@ -1296,22 +1323,13 @@ const AdminChatPanel: React.FC<{
 
   const handleSend = async (text: string, mediaUrl?: string, mediaType?: string, sticker?: string, duration?: number) => {
     if (!selectedConv) return;
-    // Optimistic update
+    const optId = `opt_${Date.now()}`;
     const optimistic: Message = {
-      id: `opt_${Date.now()}`,
-      conversation_id: selectedConv.id,
-      site_id: site.id,
-      from_id: session.id,
-      from_name: session.display_name,
-      from_role: session.role,
-      text: text || null,
-      media_url: mediaUrl || null,
-      media_type: mediaType || null,
-      sticker_emoji: sticker || null,
-      duration: duration || null,
-      created_at: Date.now(),
-      is_read: false,
-      is_deleted: false,
+      id: optId, conversation_id: selectedConv.id, site_id: site.id,
+      from_id: session.id, from_name: session.display_name, from_role: session.role,
+      text: text || null, media_url: mediaUrl || null, media_type: (mediaType as any) || null,
+      sticker_emoji: sticker || null, duration: duration || null,
+      created_at: Date.now(), is_read: false, is_deleted: false,
     };
     setMessages(prev => [...prev, optimistic]);
 
@@ -1325,10 +1343,12 @@ const AdminChatPanel: React.FC<{
           duration: duration || null
         })
       });
-    } catch { }
-    await loadMessages(selectedConv.id);
-    await loadConvs();
-    setTimeout(() => loadMessages(selectedConv.id), 600);
+      loadConvs();
+      setTimeout(() => loadMessages(selectedConv.id), 300);
+      setTimeout(() => loadMessages(selectedConv.id), 1200);
+    } catch {
+      setMessages(prev => prev.filter(m => m.id !== optId));
+    }
   };
 
   const handleBroadcast = async () => {
@@ -1401,7 +1421,9 @@ const AdminChatPanel: React.FC<{
             <span className="hidden sm:inline">{isOnline ? 'Онлайн' : 'Офлайн'}</span>
           </button>
           <Avatar name={session.display_name} color={session.avatar_color || p} size="w-8 h-8" />
-          <button onClick={onLogout} className="p-2 rounded-xl hover:bg-white/10 transition-all">
+          <button onClick={onLogout} className="p-2 rounded-xl transition-all"
+            onMouseEnter={e => e.currentTarget.style.background = tv.surface}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
             <LogOut className="w-3.5 h-3.5" style={{ color: p + '70' }} />
           </button>
         </div>
@@ -1540,7 +1562,7 @@ const AdminChatPanel: React.FC<{
               <div className="hidden sm:flex flex-1 items-center justify-center">
                 <div className="text-center">
                   <MessageCircle className="w-12 h-12 mx-auto mb-3" style={{ color: p + '20' }} />
-                  <p className="text-xs font-bold" style={{ color: 'rgba(255,255,255,0.2)' }}>Выберите диалог</p>
+                  <p className="text-xs font-bold" style={{ color: tv.textMuted }}>Выберите диалог</p>
                 </div>
               </div>
             )}
