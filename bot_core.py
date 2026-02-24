@@ -9,7 +9,6 @@ import time
 import re
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Any, Union, Callable, Awaitable
-import requests
 
 # Добавили BaseMiddleware
 from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
@@ -529,42 +528,132 @@ class BotInstance:
         return showed_sub_keyboard
 
     async def _execute_flow_code(self, code: str, m: Message, user: dict):
-        """Выполняет пользовательский Python-код в изолированном окружении."""
-        import asyncio, traceback, requests as _requests, json as _json, datetime as _datetime
+        """
+        Выполняет пользовательский Python-код в изолированном окружении.
+
+        Разрешено:   requests, json, datetime, math, re, xml.etree (ET)
+        Запрещено:   import, open, os, sys, subprocess, exec/eval внутри кода,
+                     чтение файлов, переменных окружения, доступ к БД.
+        reply_text:  если код установит эту переменную, значение будет отправлено пользователю.
+        """
+        import asyncio
+        import traceback
+        import requests       as _requests
+        import json           as _json
+        import datetime       as _datetime
+        import math           as _math
+        import re             as _re
         import xml.etree.ElementTree as _ET
 
+        # Безопасная обёртка над requests — режем опасные локальные адреса
+        _BLOCKED_HOSTS = ('localhost', '127.', '0.0.0.0', '::1', '169.254', '10.', '192.168.', '172.')
+
+        class _SafeSession:
+            """Прокси над requests, блокирующий внутренние адреса и файловые URL."""
+            @staticmethod
+            def _check_url(url: str):
+                url_lower = url.lower().strip()
+                if url_lower.startswith('file://'):
+                    raise PermissionError("file:// URL запрещены")
+                for host in _BLOCKED_HOSTS:
+                    if host in url_lower:
+                        raise PermissionError(f"Обращение к внутренним адресам запрещено: {url}")
+
+            def get(self, url, **kw):
+                self._check_url(url)
+                kw.setdefault('timeout', 10)
+                return _requests.get(url, **kw)
+
+            def post(self, url, **kw):
+                self._check_url(url)
+                kw.setdefault('timeout', 10)
+                return _requests.post(url, **kw)
+
+            def put(self, url, **kw):
+                self._check_url(url)
+                kw.setdefault('timeout', 10)
+                return _requests.put(url, **kw)
+
+            def delete(self, url, **kw):
+                self._check_url(url)
+                kw.setdefault('timeout', 10)
+                return _requests.delete(url, **kw)
+
+        _safe_requests = _SafeSession()
+
+        # Заглушки вместо опасных встроенных функций
+        def _blocked(*a, **kw):
+            raise PermissionError("Эта функция отключена в sandbox")
+
         sandbox_globals = {
+            # Контекст пользователя
             'user_id':    m.from_user.id,
             'username':   m.from_user.username or '',
             'first_name': m.from_user.first_name or '',
             'text':       m.text or '',
             'bot_id':     self.bot_id,
-            'requests':   _requests,
+            # Разрешённые модули (уже импортированы — import внутри кода не нужен)
+            'requests':   _safe_requests,
             'json':       _json,
             'datetime':   _datetime,
+            'math':       _math,
+            're':         _re,
             'ET':         _ET,
-            'reply_text': '',   # можно задать внутри кода, см. ниже
+            # Выходная переменная
+            'reply_text': '',
+            # Безопасные builtins — __import__ намеренно отсутствует
             '__builtins__': {
-                'print': lambda *a, **kw: None,
-                'str': str, 'int': int, 'float': float, 'bool': bool,
-                'len': len, 'range': range, 'list': list, 'dict': dict,
-                'tuple': tuple, 'set': set,
-                'enumerate': enumerate, 'zip': zip, 'sorted': sorted,
-                'min': min, 'max': max, 'sum': sum, 'abs': abs,
-                'round': round, 'isinstance': isinstance, 'hasattr': hasattr,
-                'getattr': getattr, 'repr': repr,
+                # Типы и преобразования
+                'str': str, 'int': int, 'float': float, 'bool': bool, 'bytes': bytes,
+                # Коллекции
+                'list': list, 'dict': dict, 'tuple': tuple, 'set': set, 'frozenset': frozenset,
+                # Итерация
+                'len': len, 'range': range, 'enumerate': enumerate, 'zip': zip,
+                'map': map, 'filter': filter, 'reversed': reversed,
+                # Математика
+                'min': min, 'max': max, 'sum': sum, 'abs': abs, 'round': round,
+                'sorted': sorted, 'pow': pow, 'divmod': divmod,
+                # Утилиты
+                'isinstance': isinstance, 'issubclass': issubclass,
+                'hasattr': hasattr, 'getattr': getattr,
+                'repr': repr, 'format': format, 'chr': chr, 'ord': ord, 'hex': hex,
+                # Исключения — только читать, не создавать системные
+                'Exception': Exception, 'ValueError': ValueError,
+                'TypeError': TypeError, 'KeyError': KeyError,
+                'IndexError': IndexError, 'AttributeError': AttributeError,
+                'PermissionError': PermissionError,
+                # Константы
                 'True': True, 'False': False, 'None': None,
-            }
+                # print → тихая заглушка (не шумит в логах)
+                'print': lambda *a, **kw: None,
+                # Всё опасное — заблокировано явно
+                '__import__': _blocked,
+                'open':       _blocked,
+                'eval':       _blocked,
+                'exec':       _blocked,
+                'compile':    _blocked,
+                'globals':    _blocked,
+                'locals':     _blocked,
+                'vars':       _blocked,
+                'dir':        _blocked,
+                'delattr':    _blocked,
+                'setattr':    _blocked,
+                '__loader__': None,
+                '__spec__':   None,
+            },
         }
+
         try:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, exec, code, sandbox_globals)
-            # Если код установил reply_text — отправляем его пользователю
-            reply = sandbox_globals.get('reply_text', '').strip()
+            reply = str(sandbox_globals.get('reply_text', '')).strip()
             if reply:
                 await m.answer(reply, parse_mode='HTML')
+        except PermissionError as e:
+            logger.warning(f"Flow sandbox blocked action for bot {self.bot_id}: {e}")
+            await m.answer("Действие заблокировано: попытка доступа к запрещённому ресурсу.")
         except Exception as e:
-            logger.warning(f"Flow code exec error for bot {self.bot_id}: {e}\n{traceback.format_exc()}")
+            logger.warning(f"Flow code error for bot {self.bot_id}: {e}\n{traceback.format_exc()}")
 
     def find_flow_node_by_label(self, label: str, nodes: list) -> Optional[dict]:
         """Рекурсивный поиск flow-ноды по тексту кнопки."""
