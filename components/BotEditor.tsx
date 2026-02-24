@@ -973,6 +973,11 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
               </div>
             ))}
           </div>
+
+          {/* ════════════════════════════════════════════
+              БЛОК: РАСШИРЕННАЯ ЛОГИКА (Flow-редактор)
+          ════════════════════════════════════════════ */}
+          {!isVK && <ButtonFlowEditor bot={bot} onUpdate={handleLocalUpdate} />}
         </div>
       )}
 
@@ -2145,6 +2150,415 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
           </div>
         )}
       </div>
+    </div>
+  );
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  РАСШИРЕННАЯ ЛОГИКА КНОПОК — Flow-редактор (только Telegram)
+// ══════════════════════════════════════════════════════════════════════════════
+
+type FlowActionType = 'message' | 'admin_notify' | 'code' | 'buttons';
+
+interface FlowAction {
+  id: string;
+  type: FlowActionType;
+  // message / admin_notify
+  text?: string;
+  // code
+  code?: string;
+  // buttons → дочерние ноды
+  buttons?: FlowNode[];
+}
+
+interface FlowNode {
+  id: string;
+  label: string;    // текст кнопки
+  actions: FlowAction[];
+}
+
+const mkFlowId = () => Math.random().toString(36).slice(2, 8);
+
+const ACTION_LABELS: Record<FlowActionType, string> = {
+  message:       '💬 Сообщение пользователю',
+  admin_notify:  '📢 Уведомление в чат админов',
+  code:          '⚙️ Выполнить код',
+  buttons:       '🔀 Показать под-кнопки',
+};
+
+// ── Иконка действия ────────────────────────────────────────────────────────────
+const FlowActionBadge: React.FC<{ type: FlowActionType }> = ({ type }) => {
+  const map: Record<FlowActionType, string> = {
+    message:      'bg-blue-500/15 text-blue-400 border-blue-500/25',
+    admin_notify: 'bg-amber-500/15 text-amber-400 border-amber-500/25',
+    code:         'bg-violet-500/15 text-violet-400 border-violet-500/25',
+    buttons:      'bg-emerald-500/15 text-emerald-400 border-emerald-500/25',
+  };
+  return (
+    <span className={`inline-flex items-center gap-1 border rounded-lg px-2 py-0.5 text-[9px] font-black uppercase tracking-wide ${map[type]}`}>
+      {ACTION_LABELS[type]}
+    </span>
+  );
+};
+
+// ── Редактор одного действия ────────────────────────────────────────────────────
+const FlowActionEditor: React.FC<{
+  action: FlowAction;
+  depth: number;
+  onChange: (a: FlowAction) => void;
+  onDelete: () => void;
+  onUpdate: (b: BotConfig) => void;
+  bot: BotConfig;
+}> = ({ action, depth, onChange, onDelete, onUpdate, bot }) => {
+  const [collapsed, setCollapsed] = React.useState(false);
+
+  const addChildNode = () => {
+    const node: FlowNode = { id: mkFlowId(), label: 'Кнопка', actions: [] };
+    onChange({ ...action, buttons: [...(action.buttons || []), node] });
+  };
+
+  const updateChildNode = (idx: number, node: FlowNode) => {
+    const nb = [...(action.buttons || [])];
+    nb[idx] = node;
+    onChange({ ...action, buttons: nb });
+  };
+
+  const deleteChildNode = (idx: number) => {
+    onChange({ ...action, buttons: (action.buttons || []).filter((_, i) => i !== idx) });
+  };
+
+  return (
+    <div className={`rounded-2xl border ${depth % 2 === 0 ? 'bg-zinc-900/60 border-zinc-800' : 'bg-black/50 border-zinc-800/70'} overflow-hidden`}>
+      {/* Заголовок действия */}
+      <div className="flex items-center gap-2 px-4 py-3">
+        <button onClick={() => setCollapsed(v => !v)} className="text-zinc-600 hover:text-zinc-300 transition-colors shrink-0">
+          {collapsed
+            ? <ChevronDown className="w-3.5 h-3.5" />
+            : <ChevronUp className="w-3.5 h-3.5" />}
+        </button>
+        <FlowActionBadge type={action.type} />
+        <div className="flex-1 min-w-0" />
+        <button onClick={onDelete} className="text-zinc-700 hover:text-rose-500 transition-colors shrink-0">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      {/* Тело */}
+      {!collapsed && (
+        <div className="px-4 pb-4 space-y-3">
+          {(action.type === 'message' || action.type === 'admin_notify') && (
+            <div>
+              <span className="text-[8px] font-black text-zinc-600 uppercase tracking-widest block mb-1">
+                {action.type === 'admin_notify'
+                  ? 'Текст уведомления (поддержка HTML и {username}, {text})'
+                  : 'Текст, который получит пользователь'}
+              </span>
+              <textarea
+                rows={3}
+                className="w-full bg-black border border-zinc-800 focus:border-blue-500 text-white text-xs p-3 rounded-xl outline-none resize-none transition-all"
+                placeholder={action.type === 'admin_notify'
+                  ? '📩 Новое обращение от {username}:\n{text}'
+                  : 'Привет! Мы получили ваш запрос...'}
+                value={action.text || ''}
+                onChange={e => onChange({ ...action, text: e.target.value })}
+              />
+            </div>
+          )}
+
+          {action.type === 'code' && (
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-[8px] font-black text-violet-400 uppercase tracking-widest">Python-код</span>
+                <span className="text-[8px] text-zinc-600">(переменные: user_id, username, text, bot_id)</span>
+              </div>
+              <textarea
+                rows={6}
+                className="w-full bg-black border border-violet-500/30 focus:border-violet-500 text-violet-300 text-[11px] p-3 rounded-xl outline-none resize-none transition-all font-mono leading-relaxed"
+                placeholder={"# Пример: записать пользователя в базу\nprint(f'user {user_id} pressed button')"}
+                value={action.code || ''}
+                onChange={e => onChange({ ...action, code: e.target.value })}
+              />
+              <p className="text-[8px] text-zinc-600 mt-1">
+                ⚠️ Код выполняется на сервере в изолированном окружении. Доступны: requests, json, datetime.
+              </p>
+            </div>
+          )}
+
+          {action.type === 'buttons' && (
+            <div className="space-y-3">
+              <p className="text-[8px] font-black text-zinc-600 uppercase tracking-widest">
+                Под-кнопки (пользователь увидит их после этого шага)
+              </p>
+              {(action.buttons || []).map((node, idx) => (
+                <FlowNodeEditor
+                  key={node.id}
+                  node={node}
+                  depth={depth + 1}
+                  onChange={n => updateChildNode(idx, n)}
+                  onDelete={() => deleteChildNode(idx)}
+                  bot={bot}
+                  onUpdate={onUpdate}
+                />
+              ))}
+              <button
+                onClick={addChildNode}
+                className="w-full py-2.5 rounded-xl border border-dashed border-emerald-500/30 text-emerald-500 text-[9px] font-black uppercase hover:border-emerald-500/60 hover:bg-emerald-500/5 transition-all flex items-center justify-center gap-1.5"
+              >
+                <Plus className="w-3 h-3" /> Добавить под-кнопку
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ── Редактор одной ноды (кнопка + её действия) ─────────────────────────────────
+const FlowNodeEditor: React.FC<{
+  node: FlowNode;
+  depth: number;
+  onChange: (n: FlowNode) => void;
+  onDelete: () => void;
+  bot: BotConfig;
+  onUpdate: (b: BotConfig) => void;
+}> = ({ node, depth, onChange, onDelete, bot, onUpdate }) => {
+  const depthColors = [
+    'border-l-blue-500',
+    'border-l-emerald-500',
+    'border-l-amber-500',
+    'border-l-violet-500',
+    'border-l-rose-500',
+  ];
+  const lineColor = depthColors[depth % depthColors.length];
+
+  const addAction = (type: FlowActionType) => {
+    const action: FlowAction = { id: mkFlowId(), type, text: '', code: '', buttons: [] };
+    onChange({ ...node, actions: [...node.actions, action] });
+  };
+
+  const updateAction = (idx: number, a: FlowAction) => {
+    const na = [...node.actions]; na[idx] = a;
+    onChange({ ...node, actions: na });
+  };
+
+  const deleteAction = (idx: number) => {
+    onChange({ ...node, actions: node.actions.filter((_, i) => i !== idx) });
+  };
+
+  return (
+    <div className={`border-l-2 ${lineColor} pl-4 space-y-3`}>
+      {/* Метка кнопки */}
+      <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2">
+          <MousePointerClick className="w-3 h-3 text-zinc-500 shrink-0" />
+          <input
+            className="flex-1 bg-transparent text-white text-xs font-bold outline-none placeholder:text-zinc-600"
+            placeholder="Текст кнопки..."
+            value={node.label}
+            onChange={e => onChange({ ...node, label: e.target.value })}
+          />
+        </div>
+        <button onClick={onDelete} className="text-zinc-700 hover:text-rose-500 transition-colors p-1">
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      {/* Стрелка → действия */}
+      {node.actions.length > 0 && (
+        <div className="flex items-center gap-2 ml-2">
+          <ArrowRight className="w-3 h-3 text-zinc-600 shrink-0" />
+          <span className="text-[8px] text-zinc-600 font-bold uppercase tracking-widest">Тогда выполнить:</span>
+        </div>
+      )}
+
+      {/* Список действий */}
+      <div className="space-y-2">
+        {node.actions.map((action, idx) => (
+          <FlowActionEditor
+            key={action.id}
+            action={action}
+            depth={depth}
+            onChange={a => updateAction(idx, a)}
+            onDelete={() => deleteAction(idx)}
+            bot={bot}
+            onUpdate={onUpdate}
+          />
+        ))}
+      </div>
+
+      {/* Добавить действие */}
+      <div className="flex flex-wrap gap-1.5">
+        {(Object.keys(ACTION_LABELS) as FlowActionType[]).map(type => (
+          <button
+            key={type}
+            onClick={() => addAction(type)}
+            className="text-[8px] font-black uppercase tracking-wide border border-zinc-800 text-zinc-500 hover:text-white hover:border-zinc-600 rounded-lg px-2.5 py-1.5 transition-all"
+          >
+            + {ACTION_LABELS[type].replace(/^.+ /, '')}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ── Главный компонент Flow-редактора ───────────────────────────────────────────
+const ButtonFlowEditor: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void }> = ({ bot, onUpdate }) => {
+  const [open, setOpen] = React.useState(false);
+  const [selectedBtnIdx, setSelectedBtnIdx] = React.useState<number | null>(null);
+
+  const buttons = bot.buttons || [];
+
+  const getFlow = (btnIdx: number): FlowNode[] => {
+    return buttons[btnIdx]?.flow || [];
+  };
+
+  const updateFlow = (btnIdx: number, flow: FlowNode[]) => {
+    const nb = [...buttons];
+    nb[btnIdx] = { ...nb[btnIdx], flow };
+    onUpdate({ ...bot, buttons: nb });
+  };
+
+  const addRootNode = (btnIdx: number) => {
+    const flow = [...getFlow(btnIdx), { id: mkFlowId(), label: 'Новая кнопка', actions: [] }];
+    updateFlow(btnIdx, flow);
+  };
+
+  const updateNode = (btnIdx: number, idx: number, node: FlowNode) => {
+    const flow = [...getFlow(btnIdx)]; flow[idx] = node;
+    updateFlow(btnIdx, flow);
+  };
+
+  const deleteNode = (btnIdx: number, idx: number) => {
+    updateFlow(btnIdx, getFlow(btnIdx).filter((_, i) => i !== idx));
+  };
+
+  if (buttons.length === 0) return null;
+
+  return (
+    <div className="mt-10">
+      {/* Заголовок-аккордеон */}
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between bg-[#0d0d0d] border border-zinc-800 rounded-[2rem] px-8 py-5 hover:border-zinc-700 transition-all group"
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-blue-600 to-violet-600 flex items-center justify-center shrink-0">
+            <Zap className="w-5 h-5 text-white" />
+          </div>
+          <div className="text-left">
+            <p className="text-white font-black text-sm">Расширенная логика кнопок</p>
+            <p className="text-[9px] text-zinc-500 mt-0.5">
+              Визуальный конструктор цепочек: кнопка → под-кнопки → действия (только Telegram)
+            </p>
+          </div>
+        </div>
+        <div className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>
+          <ChevronDown className="w-5 h-5 text-zinc-500 group-hover:text-zinc-300 transition-colors" />
+        </div>
+      </button>
+
+      {/* Тело */}
+      {open && (
+        <div className="mt-4 bg-[#0d0d0d] border border-zinc-800 rounded-[2rem] p-6 md:p-8 space-y-6 animate-in fade-in slide-in-from-top-2 duration-200">
+          {/* Подсказка */}
+          <div className="bg-blue-500/5 border border-blue-500/15 rounded-2xl p-4 flex gap-3 items-start">
+            <Zap className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" />
+            <div className="text-[10px] text-zinc-400 leading-relaxed space-y-1">
+              <p>Выберите кнопку слева и постройте цепочку: кнопка → что происходит.</p>
+              <p>Можно добавлять под-кнопки, сообщения пользователю, уведомления в чат и даже свой Python-код.</p>
+              <p className="text-zinc-600">Вложенность не ограничена — стройте любые сценарии.</p>
+            </div>
+          </div>
+
+          <div className="flex flex-col md:flex-row gap-6" style={{ minHeight: 300 }}>
+            {/* Левая колонка — выбор кнопки */}
+            <div className="w-full md:w-56 shrink-0 space-y-2">
+              <p className="text-[8px] font-black text-zinc-600 uppercase tracking-widest px-1">Кнопки бота</p>
+              {buttons.map((btn, i) => {
+                const flowLen = (btn.flow || []).length;
+                return (
+                  <button
+                    key={i}
+                    onClick={() => setSelectedBtnIdx(i)}
+                    className={`w-full text-left px-4 py-3 rounded-2xl border transition-all flex items-start gap-3 ${
+                      selectedBtnIdx === i
+                        ? 'bg-blue-500/10 border-blue-500/30 text-white'
+                        : 'bg-black/40 border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
+                    }`}
+                  >
+                    <MousePointerClick className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${selectedBtnIdx === i ? 'text-blue-400' : 'text-zinc-600'}`} />
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold truncate">{btn.text || `Кнопка ${i + 1}`}</p>
+                      {flowLen > 0 && (
+                        <p className={`text-[8px] mt-0.5 ${selectedBtnIdx === i ? 'text-blue-400/70' : 'text-zinc-600'}`}>
+                          {flowLen} узел{flowLen === 1 ? '' : flowLen < 5 ? 'а' : 'ов'} логики
+                        </p>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Правая — flow-редактор выбранной кнопки */}
+            <div className="flex-1 min-w-0">
+              {selectedBtnIdx === null ? (
+                <div className="h-full flex flex-col items-center justify-center gap-3 opacity-30">
+                  <MousePointerClick className="w-10 h-10 text-zinc-600" />
+                  <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">Выберите кнопку</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* Шапка выбранной кнопки */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-white font-black text-sm">
+                        Если нажата: «{buttons[selectedBtnIdx]?.text || `Кнопка ${selectedBtnIdx + 1}`}»
+                      </p>
+                      <p className="text-[9px] text-zinc-600 mt-0.5">
+                        Добавьте под-кнопки или действия ниже
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => addRootNode(selectedBtnIdx)}
+                      className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 px-4 py-2.5 rounded-xl text-[10px] font-black text-white uppercase transition-all"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Под-кнопка
+                    </button>
+                  </div>
+
+                  {/* Узлы */}
+                  {getFlow(selectedBtnIdx).length === 0 ? (
+                    <div className="border-2 border-dashed border-zinc-800 rounded-2xl p-10 text-center">
+                      <Layers className="w-8 h-8 text-zinc-800 mx-auto mb-3" />
+                      <p className="text-zinc-600 text-xs font-black uppercase">Нет логики</p>
+                      <p className="text-[9px] text-zinc-700 mt-1">
+                        Нажмите «Под-кнопка» чтобы добавить первый узел
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {getFlow(selectedBtnIdx).map((node, idx) => (
+                        <FlowNodeEditor
+                          key={node.id}
+                          node={node}
+                          depth={0}
+                          onChange={n => updateNode(selectedBtnIdx, idx, n)}
+                          onDelete={() => deleteNode(selectedBtnIdx, idx)}
+                          bot={bot}
+                          onUpdate={onUpdate}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
