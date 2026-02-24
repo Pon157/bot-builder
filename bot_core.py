@@ -1084,10 +1084,10 @@ class BotInstance:
 
             user, is_new = await self.get_user_state(m)
             
-            # Заблокированный — отвечаем и СРАЗУ выходим (ничего не пересылаем в чат админов)
+            # Заблокированный — отвечаем и СРАЗУ выходим
             if user.get("is_banned"):
                 await m.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
-                return  # НЕ пересылаем в чат админов
+                return
             
             if await self.check_antispam(user['id']):
                 return
@@ -1095,15 +1095,13 @@ class BotInstance:
             uid = user['id']
 
             # ── РЕЖИМ АКТИВНОГО ТИКЕТА ──
-            # Пока обращение не закрыто — все сообщения пересылаются в чат
             if user.get('_in_ticket'):
-                # Кнопка закрытия — единственное исключение
+                # Если нажата текстовая кнопка закрытия
                 if m.text and m.text.strip() == "Закрыть обращение":
                     user.pop('_in_ticket', None)
-                    # ОБЯЗАТЕЛЬНО: Синхронизируем состояние с БД сразу
-                    await self.sync_queue.put(("sync_state", None)) 
+                    # Сразу сохраняем состояние в БД
+                    await self.sync_queue.put(("sync_state", None))
                     
-                    # Уведомляем администратора
                     if self.admin_chat_id:
                         thread_id = user.get("last_topic_id")
                         name = user.get("first_name", str(uid))
@@ -1116,14 +1114,16 @@ class BotInstance:
                             await self.bot.send_message(
                                 self.admin_chat_id,
                                 f"Обращение закрыто пользователем.\n{user_line}",
-                                message_thread_id=thread_id
+                                message_thread_id=thread_id,
+                                parse_mode="HTML"
                             )
                         except Exception:
                             pass
+                    
                     await m.answer("Обращение закрыто.", reply_markup=self.get_main_keyboard())
                     return
 
-                # Всё остальное — пересылаем оператору
+                # Если тикет открыт и это НЕ кнопка закрытия — пересылаем админу и выходим
                 await self.forward_to_admin(m, user)
                 await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
                 return
@@ -1131,16 +1131,15 @@ class BotInstance:
             if m.text:
                 clean_text = m.text.strip()
                 clean_lower = clean_text.lower()
-                ai_btn_text = self.config.get('ai_button_text', 'ИИ-ассистент')
 
-                # ── А) Кнопка "Назад" (Высший приоритет) ──
+                # ── А) Кнопка "Назад" ──
                 if clean_text == "⬅️ Назад":
                     user.pop('_ai_session', None)
                     self.clear_ai_context(uid)
                     await m.answer("Главное меню:", reply_markup=self.get_main_keyboard())
                     return
 
-                # ── Б) Кнопка ИИ-ассистента из клавиатуры (второй приоритет) ──
+                # ── Б) Кнопка ИИ-ассистента из клавиатуры ──
                 if self.ai_enabled and self.ai_mode == 'button' and clean_text == self.ai_button_name:
                     bal = await self.check_ai_tokens()
                     if bal <= 0:
@@ -1156,18 +1155,14 @@ class BotInstance:
                 # ── В) Проверка на кнопки меню (с поддержкой вложенности) ──
                 matched_btn = self.get_button_by_text(clean_text)
                 if matched_btn:
-                    # Если нажата любая кнопка из дерева — выключаем ИИ сессию
                     user.pop('_ai_session', None)
-                    
                     children = matched_btn.get('children', [])
                     if children:
-                        # Если есть вложенные кнопки — показываем подменю + кнопка Назад
                         child_kb = self.build_keyboard_from_buttons(children + [{"text": "⬅️ Назад"}])
                         resp = matched_btn.get('response', '')
                         await m.answer(resp or "Выберите вариант:", reply_markup=child_kb)
                     else:
                         if matched_btn.get('type') == 'request':
-                            # ── ОТКРЫТИЕ ТИКЕТА: клавиатура с единственной кнопкой закрытия ──
                             user['_in_ticket'] = True
                             await self.forward_to_admin(m, user, btn_text=matched_btn['text'])
                             resp_text = matched_btn.get('response', 'Ваше обращение принято. Ожидайте ответа оператора.')
@@ -1186,22 +1181,18 @@ class BotInstance:
                     await self.log_and_update(uid, m.from_user.full_name, f"КНОПКА: {matched_btn['text']}")
                     return
 
-                # ── Г) /ai, /gpt, /nn — открываем AI-сессию ──
+                # ── Г) /ai, /gpt, /nn ──
                 if clean_lower in ('/ai', '/gpt', '/nn'):
                     if self.ai_enabled and self.ai_mode in ('command', 'all', 'button'):
                         bal = await self.check_ai_tokens()
                         if bal <= 0:
                             await m.answer("AI-токены закончились. Обратитесь к администратору.")
                             return
-                        
                         user['_ai_session'] = True
                         close_kb = InlineKeyboardMarkup(inline_keyboard=[[
                             InlineKeyboardButton(text="✖ Закрыть диалог с ИИ", callback_data="ai_close")
                         ]])
-                        await m.answer(
-                            text="ИИ-ассистент активирован. Задайте вопрос. Для выхода — нажмите кнопку ниже.",
-                            reply_markup=close_kb
-                        )
+                        await m.answer("ИИ-ассистент активирован. Задайте вопрос. Для выхода — нажмите кнопку ниже.", reply_markup=close_kb)
                     else:
                         await m.answer("ИИ-ассистент не подключён к этому боту.")
                     return
@@ -1226,7 +1217,6 @@ class BotInstance:
                         await self.log_and_update(uid, m.from_user.full_name, f"ТРИГГЕР: {trig['keyword']}")
                         triggered = True
                         break
-
                 if triggered:
                     return
 
@@ -1239,7 +1229,6 @@ class BotInstance:
                         if answer:
                             await thinking.delete()
                             await m.answer(answer)
-                            # Пересылаем запрос в чат с пометкой — не отвечать
                             await self.forward_to_admin(m, user, is_ai_request=True)
                             await self.log_and_update(uid, m.from_user.full_name, f"AI: {clean_text[:50]}")
                             return
@@ -1249,7 +1238,7 @@ class BotInstance:
                         await m.answer("⚠️ Лимит AI-токенов исчерпан. Обратитесь к администратору.")
                         return
 
-            # ── Ж) Активная AI-сессия — обрабатываем текст ──
+            # ── Ж) Активная AI-сессия ──
             if user.get('_ai_session') and self.ai_enabled and m.text:
                 bal = await self.check_ai_tokens()
                 if bal <= 0:
@@ -1265,18 +1254,23 @@ class BotInstance:
                 await thinking.delete()
                 if answer_text:
                     await m.answer(answer_text, reply_markup=close_kb)
-                    # Пересылаем запрос в чат с пометкой — не отвечать
                     await self.forward_to_admin(m, user, is_ai_request=True)
                     await self.log_and_update(uid, m.from_user.full_name, f"AI: {m.text[:50]}")
                 else:
                     await m.answer("⚠️ Ошибка ИИ, попробуйте ещё раз.", reply_markup=close_kb)
                 return
 
-            # ── Пересылка сообщения администратору ──
-            await self.forward_to_admin(m, user, is_first=is_new)
-            await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
+            # ── ЗАЩИТА ОТ СПАМА АДМИНУ ПОСЛЕ ЗАКРЫТИЯ ТИКЕТА ──
+            if is_new:
+                # Если человек пишет впервые, пересылаем админу
+                await self.forward_to_admin(m, user, is_first=True)
+                await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
+            else:
+                # Если тикет закрыт, это не кнопка и не триггер — просто напоминаем меню
+                await m.answer("Пожалуйста, воспользуйтесь меню или нажмите кнопку для открытия обращения.", reply_markup=self.get_main_keyboard())
 
-        # 5. Закрытие AI-сессии (inline callback «✖ Закрыть диалог с ИИ»)
+
+        # 5. Закрытие AI-сессии (inline callback)
         @self.router.callback_query(lambda c: c.data == 'ai_close')
         async def on_ai_close(cb: CallbackQuery):
             uid_cb = cb.from_user.id
@@ -1293,41 +1287,37 @@ class BotInstance:
             
             await cb.answer("Диалог с ИИ закрыт.")
             
-            # ИСПРАВЛЕНО: корректный вызов метода (убраны лишние скобки и запятые)
             try:
                 await self.bot.send_message(
                     chat_id=uid_cb,
-                    text="✅ Диалог с ИИ завершён."
+                    text="✅ Диалог с ИИ завершён.",
+                    reply_markup=self.get_main_keyboard()
                 )
             except Exception:
                 pass
 
-        # 6. Закрытие тикета пользователем
+        # 6. Закрытие тикета пользователем (Inline кнопка)
         @self.router.callback_query(lambda c: c.data == 'ticket_close')
-        async def on_ticket_close(self, cb: CallbackQuery):
+        async def on_ticket_close(cb: CallbackQuery):
             uid_cb = cb.from_user.id
-            # Находим пользователя в кэше (users_list)
             user_cb = next((u for u in self.users_list if u['id'] == uid_cb), None)
 
             if user_cb:
-            # 1. Удаляем флаг активного тикета в памяти
                 user_cb.pop('_in_ticket', None)
-            
-            # 2. ВАЖНО: Синхронизируем состояние с БД немедленно через очередь
-            # Это гарантирует, что следующее сообщение пользователя НЕ будет переслано админу
+                
+                # ВАЖНО: Синхронизация
                 await self.sync_queue.put(("sync_state", None))
 
-            # 3. Уведомляем администратора о закрытии
                 if self.admin_chat_id:
                     thread_id = user_cb.get("last_topic_id")
                     name = user_cb.get("first_name", str(uid_cb))
                     username = user_cb.get("username")
-                
+                    
                     user_line = f"<b>{name}</b>"
                     if username:
                         user_line += f" (@{username})"
                     user_line += f" | ID: <code>{uid_cb}</code>"
-                
+                    
                     try:
                         await self.bot.send_message(
                             chat_id=self.admin_chat_id,
@@ -1338,19 +1328,16 @@ class BotInstance:
                     except Exception:
                         pass
 
-        # 4. Удаляем сообщение с Inline-кнопкой (чтобы избежать повторных нажатий)
             try:
                 await cb.message.delete()
             except Exception:
                 pass
-        
-        # 5. Отвечаем на Callback Query (убирает состояние загрузки на кнопке)
+            
             try:
                 await cb.answer("Обращение закрыто.")
             except Exception:
                 pass
 
-        # 6. Отправляем финальное сообщение пользователю и возвращаем главное меню
             try:
                 await self.bot.send_message(
                     uid_cb,
@@ -1360,7 +1347,11 @@ class BotInstance:
                 )
             except Exception:
                 pass
-            
+
+    # ==========================================
+    # ВНИМАНИЕ: Этот метод находится ВНЕ core_handlers_setup, 
+    # поэтому отступ (indent) у него меньше!
+    # ==========================================
     def get_main_keyboard(self):
         from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
         active_btns = [b for b in self.buttons if b.get('text')]
