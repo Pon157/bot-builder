@@ -1304,7 +1304,7 @@ class BotInstance:
 
         # 6. Закрытие тикета пользователем
         @self.router.callback_query(lambda c: c.data == 'ticket_close')
-    async def on_ticket_close(cb: CallbackQuery):
+        async def on_ticket_close(cb: CallbackQuery):
         uid_cb = cb.from_user.id
         # Находим пользователя в кэше (users_list)
         user_cb = next((u for u in self.users_list if u['id'] == uid_cb), None)
