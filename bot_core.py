@@ -513,6 +513,9 @@ class BotInstance:
                 if code:
                     await self._execute_flow_code(code, m, user)
 
+            elif atype == 'create_ticket':
+                await self._flow_create_ticket(action, m, user)
+
             elif atype == 'buttons':
                 sub_nodes = action.get('buttons', [])
                 if sub_nodes:
@@ -654,6 +657,55 @@ class BotInstance:
             await m.answer("Действие заблокировано: попытка доступа к запрещённому ресурсу.")
         except Exception as e:
             logger.warning(f"Flow code error for bot {self.bot_id}: {e}\n{traceback.format_exc()}")
+
+    async def _flow_create_ticket(self, action: dict, m: Message, user: dict):
+        """Открывает тикет из flow-действия create_ticket."""
+        uid = m.from_user.id
+
+        # Уже в тикете — не открываем второй
+        if user.get('_in_ticket'):
+            await m.answer("У вас уже открыто обращение. Закройте его перед созданием нового.")
+            return
+
+        user['_in_ticket'] = True
+
+        # Текст кнопки закрытия
+        close_label = action.get('ticketBtnLabel', '').strip() or "Закрыть обращение"
+
+        # Текст для пользователя
+        user_text = action.get('ticketUserText', '').strip()
+        if not user_text:
+            user_text = "Ваше обращение принято. Ожидайте ответа оператора."
+
+        close_kb = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=close_label)]],
+            resize_keyboard=True
+        )
+        # Сохраняем метку кнопки закрытия чтобы отловить её в обработчике
+        user['_ticket_close_label'] = close_label
+
+        await m.answer(
+            f"{user_text}\n\nВы можете продолжать писать — сообщения будут доставлены оператору.",
+            reply_markup=close_kb,
+            parse_mode="HTML"
+        )
+
+        # Уведомление в чат администраторов
+        if self.admin_chat_id:
+            # Кастомный заголовок или стандартный
+            custom_admin = action.get('ticketAdminText', '').strip()
+            if custom_admin:
+                admin_header = self._format_flow_text(custom_admin, m) + "\n"
+            else:
+                admin_header = format_admin_header(m, self.settings, is_first=False, btn_text="[ТИКЕТ]")
+
+            try:
+                force_new = self.topic_per_req
+                thread_id = await self.resolve_thread(user, force_new=force_new)
+                fake_msg = m  # передаём оригинальное сообщение как контекст
+                await self._send_content_to_admin(fake_msg, thread_id, admin_header, user)
+            except Exception as e:
+                logger.warning(f"Flow create_ticket notify error: {e}")
 
     def find_flow_node_by_label(self, label: str, nodes: list) -> Optional[dict]:
         """Рекурсивный поиск flow-ноды по тексту кнопки."""
@@ -1351,8 +1403,10 @@ class BotInstance:
             # ── РЕЖИМ АКТИВНОГО ТИКЕТА ──
             if user.get('_in_ticket'):
                 # Если нажата текстовая кнопка закрытия
-                if m.text and m.text.strip() == "Закрыть обращение":
+                _close_label = user.get('_ticket_close_label', 'Закрыть обращение')
+                if m.text and m.text.strip() in (_close_label, "Закрыть обращение"):
                     user.pop('_in_ticket', None)
+                    user.pop('_ticket_close_label', None)
                     # Сразу сохраняем состояние в БД
                     await self.sync_queue.put(("sync_state", None))
                     
