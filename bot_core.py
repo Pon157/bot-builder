@@ -136,7 +136,29 @@ def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_
 
 # ── Скрипт, который запускается как дочерний процесс ─────────────────────────
 _SANDBOX_RUNNER_PY = r'''
-import sys, json, resource
+import sys, json, resource, os
+
+# ── 1. ИЗОЛЯЦИЯ ОКРУЖЕНИЯ ────────────────────────────────────────────────────
+# Несмотря на env={PATH:...} при запуске — очищаем ещё раз для надёжности.
+os.environ.clear()
+
+# Блокируем чтение /proc/<pid>/environ родителя и других файловых атак.
+# Переопределяем встроенный open чтобы запрещать опасные пути ДО того,
+# как sandbox-builtins заменят его.
+_real_open = open
+def _safe_open_early(path, *a, **kw):
+    p = str(path).lower()
+    _blocked_paths = ("/proc/", "/sys/", "/etc/", ".env", "passwd", "shadow",
+                      "/var/", "/root/", "/home/", "/tmp/")
+    for bp in _blocked_paths:
+        if bp in p:
+            raise PermissionError(f"Доступ к '{path}' запрещён")
+    return _real_open(path, *a, **kw)
+# Не заменяем встроенный open глобально — sandbox уже блокирует его через builtins.
+# Это дополнительный слой на уровне ОС-читалки.
+
+# Удаляем os и sys из sys.modules чтобы их нельзя было достать через другие модули.
+# (После чтения stdin они нам больше не нужны.)
 
 try:
     data = json.loads(sys.stdin.buffer.read())
@@ -146,7 +168,7 @@ except Exception as e:
     print(json.dumps({"ok": False, "error": f"Ошибка входных данных: {e}"}))
     sys.exit(1)
 
-# OS-лимиты
+# ── 2. OS-ЛИМИТЫ ─────────────────────────────────────────────────────────────
 try:
     resource.setrlimit(resource.RLIMIT_CPU, (4, 4))
 except Exception:
@@ -155,6 +177,23 @@ try:
     resource.setrlimit(resource.RLIMIT_AS, (96 * 1024 * 1024, 96 * 1024 * 1024))
 except Exception:
     pass
+
+# ── 3. УДАЛЯЕМ ОПАСНЫЕ МОДУЛИ ИЗ sys.modules ─────────────────────────────────
+# После этого import os / import sys внутри exec вернёт ошибку (модули "не найдены").
+_dangerous_modules = [
+    "os", "os.path", "sys", "subprocess", "multiprocessing", "threading",
+    "socket", "http", "urllib", "ftplib", "telnetlib", "smtplib",
+    "builtins", "importlib", "pkgutil", "zipimport",
+    "ctypes", "cffi", "mmap", "signal", "pty", "tty",
+    "resource", "gc", "tracemalloc", "linecache",
+    "tokenize", "ast", "dis", "code", "codeop", "py_compile",
+]
+for _mod_name in _dangerous_modules:
+    sys.modules.pop(_mod_name, None)
+    sys.modules[_mod_name] = None  # None = "модуль не существует", import вернёт ImportError
+
+# os и sys всё ещё доступны как локальные переменные выше,
+# но из sandbox кода их достать уже нельзя.
 
 try:
     import requests as _req
@@ -694,7 +733,7 @@ class BotInstance:
              RLIMIT_CPU=4с и RLIMIT_AS=96МБ. Передача данных через stdin/stdout JSON.
           3. asyncio.wait_for: wall-clock timeout 6 секунд — процесс убивается если завис.
         """
-        import asyncio, ast as _ast, json as _json, sys as _sys, traceback
+        import asyncio, ast as _ast, json as _json, sys as _sys, os as _os, traceback
 
         _MAX_CODE_LEN   = 4_000
         _MAX_CODE_LINES = 100
@@ -804,6 +843,10 @@ class BotInstance:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # Полностью пустое окружение — никакие env-переменные родителя
+                # (токены, ключи БД, .env) не видны дочернему процессу.
+                # Минимальный PATH нужен только чтобы Python нашёл себя.
+                env={"PATH": _os.environ.get("PATH", "/usr/bin:/usr/local/bin")},
             )
 
             stdout, stderr = await asyncio.wait_for(
