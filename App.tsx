@@ -15,8 +15,8 @@ import MiniAppBuilder from './components/MiniAppBuilder';
 import MiniAppRenderer from './components/MiniAppRenderer';
 import ChatPlatform from './components/ChatPlatform';
 import ChatSiteApp from './components/ChatSiteApp';
-import RefundPolicy from './pages/RefundPolicy'; 
-import Contacts from './pages/Contacts';
+import RefundPolicy from './components/RefundPolicy'; 
+import Contacts from './components/Contacts';
 import { api } from './services/apiService';
 import { Menu, X, ArrowLeft } from 'lucide-react';
 
