@@ -125,182 +125,133 @@ def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_
 
     return f"{status_line}\n{user_info}\n\n"
 
-# ── SANDBOX — вспомогательные функции и исключения ─────────────────────────────
+# ── SANDBOX ─────────────────────────────────────────────────────────────────────
+#
+# Архитектура: пользовательский код выполняется через asyncio.create_subprocess_exec
+# в дочернем python-процессе. Данные передаются через stdin/stdout как JSON.
+# OS-лимиты (RLIMIT_CPU, RLIMIT_AS) устанавливаются внутри дочернего процесса.
+# Wall-clock таймаут контролируется asyncio.wait_for.
+#
+# Такой подход полностью изолирует выполнение и корректно работает в asyncio/uvicorn.
 
-class _SandboxError(Exception):
-    """Ошибка выполнения кода в sandbox."""
+# ── Скрипт, который запускается как дочерний процесс ─────────────────────────
+_SANDBOX_RUNNER_PY = r'''
+import sys, json, resource
 
-class _SandboxTimeoutError(_SandboxError):
-    """Код превысил лимит времени."""
+try:
+    data = json.loads(sys.stdin.buffer.read())
+    code = data["code"]
+    ctx  = data["ctx"]
+except Exception as e:
+    print(json.dumps({"ok": False, "error": f"Ошибка входных данных: {e}"}))
+    sys.exit(1)
 
+# OS-лимиты
+try:
+    resource.setrlimit(resource.RLIMIT_CPU, (4, 4))
+except Exception:
+    pass
+try:
+    resource.setrlimit(resource.RLIMIT_AS, (96 * 1024 * 1024, 96 * 1024 * 1024))
+except Exception:
+    pass
 
-def _sandbox_process_target(code: str, ctx: dict, result_queue):
-    """
-    Выполняется в отдельном процессе.
-    Устанавливает OS-лимиты через resource, выполняет код, пишет результат в очередь.
-    """
-    import resource
+try:
     import requests as _req
     import json     as _json
-    import datetime as _datetime
+    import datetime as _dt
     import math     as _math
     import re       as _re
     import xml.etree.ElementTree as _ET
+except ImportError as e:
+    print(json.dumps({"ok": False, "error": f"Модуль недоступен: {e}"}))
+    sys.exit(1)
 
-    #try:
-        #resource.setrlimit(resource.RLIMIT_CPU, (4, 4))
-        #mem = 96 * 1024 * 1024
-        #try:
-            #resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
-        #except ValueError:
-            #pass
-    #except Exception:
-        #pass
+_ALL_DUNDERS = frozenset(
+    [n for n in dir(object) if n.startswith("__") and n.endswith("__")] +
+    ["_module", "__wrapped__", "__closure__", "__annotations__",
+     "__build_class__", "__loader__", "__spec__", "__file__", "__cached__"]
+)
 
-    _DUNDER = frozenset(
-        ['__class__', '__base__', '__bases__', '__mro__', '__subclasses__',
-         '__globals__', '__builtins__', '__dict__', '__code__', '__func__',
-         '__self__', '__module__', '__qualname__', '__init__', '__new__',
-         '__reduce__', '__reduce_ex__', '__getattribute__', '__setattr__',
-         '__delattr__', '__import__', '__loader__', '__spec__', '__file__',
-         '__cached__', '__wrapped__', '_module', '__weakref__',
-         '__build_class__', '__closure__', '__annotations__'] +
-        [n for n in dir(object) if n.startswith('__') and n.endswith('__')]
-    )
+def _safe_getattr(obj, name, *args):
+    if isinstance(name, str) and (
+        name in _ALL_DUNDERS or (name.startswith("__") and name.endswith("__"))
+    ):
+        raise PermissionError(f"Доступ к '{name}' запрещён")
+    return getattr(obj, name, *args)
 
-    def _safe_getattr(obj, name, *args):
-        if isinstance(name, str) and (name in _DUNDER or
-                (name.startswith('__') and name.endswith('__'))):
-            raise PermissionError(f"Доступ к '{name}' запрещён")
-        return getattr(obj, name, *args)
+def _safe_pow(base, exp, mod=None):
+    if isinstance(exp, (int, float)) and abs(exp) > 1000:
+        raise ValueError("Степень слишком большая (максимум 1000)")
+    return pow(base, exp, mod) if mod is not None else pow(base, exp)
 
-    def _safe_pow(base, exp, mod=None):
-        if isinstance(exp, (int, float)) and abs(exp) > 1000:
-            raise ValueError(f"Степень {exp} слишком большая (максимум 1000)")
-        return pow(base, exp, mod) if mod is not None else pow(base, exp)
+_BLOCKED_HOSTS = (
+    "localhost", "127.", "0.0.0.0", "::1",
+    "169.254", "10.", "192.168.", "172.",
+    "metadata.google", "metadata.internal",
+)
 
-    _BLOCKED_HOSTS = (
-        'localhost', '127.', '0.0.0.0', '::1',
-        '169.254', '10.', '192.168.', '172.',
-        'metadata.google', 'metadata.internal',
-    )
+class _SR:
+    @staticmethod
+    def _chk(url):
+        u = str(url).lower()
+        if u.startswith("file://"): raise PermissionError("file:// URL запрещены")
+        for h in _BLOCKED_HOSTS:
+            if h in u: raise PermissionError("Внутренние адреса запрещены")
+    def get(self,url,**kw): self._chk(url); kw.setdefault("timeout",8); return _req.get(url,**kw)
+    def post(self,url,**kw): self._chk(url); kw.setdefault("timeout",8); return _req.post(url,**kw)
+    def put(self,url,**kw): self._chk(url); kw.setdefault("timeout",8); return _req.put(url,**kw)
+    def delete(self,url,**kw): self._chk(url); kw.setdefault("timeout",8); return _req.delete(url,**kw)
 
-    class _SafeRequests:
-        @staticmethod
-        def _chk(url):
-            u = str(url).lower()
-            if u.startswith('file://'):
-                raise PermissionError("file:// URL запрещены")
-            for h in _BLOCKED_HOSTS:
-                if h in u:
-                    raise PermissionError("Запрещён запрос к внутренним адресам")
+def _blk(*a,**kw): raise PermissionError("Функция отключена в sandbox")
 
-        def get(self, url, **kw):
-            self._chk(url); kw.setdefault('timeout', 8); return _req.get(url, **kw)
-        def post(self, url, **kw):
-            self._chk(url); kw.setdefault('timeout', 8); return _req.post(url, **kw)
-        def put(self, url, **kw):
-            self._chk(url); kw.setdefault('timeout', 8); return _req.put(url, **kw)
-        def delete(self, url, **kw):
-            self._chk(url); kw.setdefault('timeout', 8); return _req.delete(url, **kw)
+_sb = {
+    "user_id": ctx.get("user_id",0), "username": ctx.get("username",""),
+    "first_name": ctx.get("first_name",""), "text": ctx.get("text",""),
+    "bot_id": ctx.get("bot_id",""),
+    "requests":_SR(), "json":_json, "datetime":_dt, "math":_math, "re":_re, "ET":_ET,
+    "reply_text": "",
+    "__builtins__": {
+        "str":str,"int":int,"float":float,"bool":bool,"bytes":bytes,
+        "list":list,"dict":dict,"tuple":tuple,"set":set,"frozenset":frozenset,
+        "len":len,"range":range,"enumerate":enumerate,"zip":zip,
+        "map":map,"filter":filter,"reversed":reversed,"iter":iter,"next":next,
+        "min":min,"max":max,"sum":sum,"abs":abs,"round":round,
+        "sorted":sorted,"pow":_safe_pow,"divmod":divmod,
+        "repr":repr,"format":format,"chr":chr,"ord":ord,"hex":hex,"oct":oct,"bin":bin,
+        "isinstance":isinstance,"issubclass":issubclass,"hasattr":hasattr,"callable":callable,
+        "getattr":_safe_getattr,
+        "Exception":Exception,"ValueError":ValueError,"TypeError":TypeError,
+        "KeyError":KeyError,"IndexError":IndexError,"AttributeError":AttributeError,
+        "PermissionError":PermissionError,"RuntimeError":RuntimeError,
+        "StopIteration":StopIteration,"AssertionError":AssertionError,
+        "True":True,"False":False,"None":None,
+        "print": lambda *a,**kw: None,
+        "__import__":_blk,"open":_blk,"eval":_blk,"exec":_blk,
+        "compile":_blk,"globals":_blk,"locals":_blk,"vars":_blk,
+        "dir":_blk,"type":_blk,"object":_blk,"super":_blk,
+        "delattr":_blk,"setattr":_blk,"input":_blk,"memoryview":_blk,
+        "breakpoint":_blk,"classmethod":_blk,"staticmethod":_blk,"property":_blk,
+        "__loader__":None,"__spec__":None,"__build_class__":_blk,
+    },
+}
 
-    def _blocked(*a, **kw):
-        raise PermissionError("Функция отключена в sandbox")
+try:
+    exec(code, _sb)
+    reply = str(_sb.get("reply_text","")).strip()
+    sys.stdout.write(json.dumps({"ok": True, "reply": reply}) + "\n")
+    sys.stdout.flush()
+except PermissionError as e:
+    sys.stdout.write(json.dumps({"ok": False, "error": f"Заблокировано: {e}"}) + "\n")
+    sys.stdout.flush()
+except MemoryError:
+    sys.stdout.write(json.dumps({"ok": False, "error": "Превышен лимит памяти"}) + "\n")
+    sys.stdout.flush()
+except Exception as e:
+    sys.stdout.write(json.dumps({"ok": False, "error": str(e)}) + "\n")
+    sys.stdout.flush()
+'''
 
-    sandbox = {
-        'user_id':    ctx.get('user_id', 0),
-        'username':   ctx.get('username', ''),
-        'first_name': ctx.get('first_name', ''),
-        'text':       ctx.get('text', ''),
-        'bot_id':     ctx.get('bot_id', ''),
-        'requests':   _SafeRequests(),
-        'json':       _json,
-        'datetime':   _datetime,
-        'math':       _math,
-        're':         _re,
-        'ET':         _ET,
-        'reply_text': '',
-        '__builtins__': {
-            'str': str, 'int': int, 'float': float, 'bool': bool, 'bytes': bytes,
-            'list': list, 'dict': dict, 'tuple': tuple, 'set': set, 'frozenset': frozenset,
-            'len': len, 'range': range, 'enumerate': enumerate, 'zip': zip,
-            'map': map, 'filter': filter, 'reversed': reversed, 'iter': iter, 'next': next,
-            'min': min, 'max': max, 'sum': sum, 'abs': abs, 'round': round,
-            'sorted': sorted, 'pow': _safe_pow, 'divmod': divmod,
-            'repr': repr, 'format': format, 'chr': chr, 'ord': ord,
-            'hex': hex, 'oct': oct, 'bin': bin,
-            'isinstance': isinstance, 'issubclass': issubclass,
-            'hasattr': hasattr, 'callable': callable,
-            'getattr': _safe_getattr,
-            'Exception': Exception, 'ValueError': ValueError, 'TypeError': TypeError,
-            'KeyError': KeyError, 'IndexError': IndexError, 'AttributeError': AttributeError,
-            'PermissionError': PermissionError, 'RuntimeError': RuntimeError,
-            'StopIteration': StopIteration, 'AssertionError': AssertionError,
-            'True': True, 'False': False, 'None': None,
-            'print': lambda *a, **kw: None,
-            '__import__': _blocked, 'open': _blocked, 'eval': _blocked, 'exec': _blocked,
-            'compile': _blocked, 'globals': _blocked, 'locals': _blocked, 'vars': _blocked,
-            'dir': _blocked, 'type': _blocked, 'object': _blocked, 'super': _blocked,
-            'delattr': _blocked, 'setattr': _blocked, 'input': _blocked,
-            'memoryview': _blocked, 'breakpoint': _blocked,
-            'classmethod': _blocked, 'staticmethod': _blocked, 'property': _blocked,
-            '__loader__': None, '__spec__': None, '__build_class__': _blocked,
-        },
-    }
-
-    try:
-        exec(code, sandbox)
-        reply = str(sandbox.get('reply_text', '')).strip()
-        result_queue.put(('ok', reply))
-    except PermissionError as e:
-        result_queue.put(('permission', str(e)))
-    except MemoryError:
-        result_queue.put(('error', 'Превышен лимит памяти'))
-    except Exception as e:
-        result_queue.put(('error', str(e)))
-
-
-def _run_sandboxed_code(code: str, ctx: dict, wall_timeout: float) -> str:
-    import multiprocessing
-    
-    # 1. Используем 'spawn', чтобы избежать deadlock-ов асинхронного кода
-    mp = multiprocessing.get_context('spawn')
-    
-    # 2. Очередь должна быть создана в ТОМ ЖЕ контексте
-    result_queue = mp.Queue()
-    
-    proc = mp.Process(
-        target=_sandbox_process_target,
-        # Передаем всё те же аргументы
-        args=(code, ctx, result_queue),
-        daemon=True,
-    )
-    
-    proc.start()
-
-    # 3. Вместо простого join, лучше забирать данные с таймаутом напрямую из очереди
-    try:
-        # Ждем чуть дольше wall_timeout, чтобы дать процессу время на старт
-        status, value = result_queue.get(timeout=wall_timeout)
-    except Exception:
-        # Если в очереди ничего не появилось за это время — это таймаут
-        if proc.is_alive():
-            proc.terminate()
-            proc.join()
-        raise _SandboxTimeoutError(f"Превышено время выполнения ({wall_timeout} сек.)")
-
-    # 4. Чистим процесс после получения данных
-    proc.join(timeout=1)
-    if proc.is_alive():
-        proc.kill()
-
-    # 5. Обрабатываем результат
-    if status == 'ok':
-        return value
-    elif status == 'permission':
-        raise PermissionError(value)
-    else:
-        raise _SandboxError(value)
 
 
 # --- ОСНОВНОЙ КЛАСС БОТА ---
@@ -710,179 +661,167 @@ class BotInstance:
 
     async def _execute_flow_code(self, code: str, m: Message, user: dict):
         """
-        Выполняет пользовательский Python-код в изолированном окружении.
+        Выполняет код через дочерний процесс (asyncio subprocess).
 
-        Трёхуровневая защита:
-          1. Статические лимиты (AST pre-scan) — длина кода, большие числа,
-             огромные степени, бесконечные range() и повторы строк.
-          2. AST security scan — все дандер-атаки, import, eval, open и т.д.
-          3. Runtime в отдельном процессе с OS-лимитами:
-             - CPU: 4 секунды (RLIMIT_CPU) → процесс убивается ОС
-             - Память: 64 МБ (RLIMIT_AS) → MemoryError при превышении
-             - Wall-clock timeout: 5 секунд через ProcessPoolExecutor
-
-        Разрешено:   requests (только внешние адреса), json, datetime, math, re, ET
-        Запрещено:   import, open, eval, exec, type, object, super, getattr с дандерами,
-                     числа > 1_000_000, степени > 1000, range > 100_000,
-                     код длиннее 4000 символов / 100 строк.
-        reply_text:  если код присваивает — значение отправляется пользователю.
+        Уровни защиты:
+          1. AST-scan: статические лимиты (длина, числа, степени, range, повторы строк)
+             + security-scan (дандеры, import, eval, open и т.д.)
+          2. Subprocess: код запускается в отдельном python-процессе с OS-лимитами
+             RLIMIT_CPU=4с и RLIMIT_AS=96МБ. Передача данных через stdin/stdout JSON.
+          3. asyncio.wait_for: wall-clock timeout 6 секунд — процесс убивается если завис.
         """
-        import asyncio, traceback, ast as _ast
-        import concurrent.futures as _cf
+        import asyncio, ast as _ast, json as _json, sys as _sys, traceback
 
-        # ── КОНСТАНТЫ ────────────────────────────────────────────────────────────
-        _MAX_CODE_LEN    = 4_000
-        _MAX_CODE_LINES  = 100
-        _MAX_INT_LIT     = 1_000_000      # целочисленные литералы
-        _MAX_POW_EXP     = 1_000          # правый операнд ** 
-        _MAX_STR_REPEAT  = 100_000        # 'x' * N
-        _MAX_RANGE       = 100_000        # range(N)
-        _MAX_REPLY_LEN   = 4_000          # длина ответа пользователю
-        _WALL_TIMEOUT    = 5.0            # секунд до kill процесса
+        _MAX_CODE_LEN   = 4_000
+        _MAX_CODE_LINES = 100
+        _MAX_INT_LIT    = 1_000_000
+        _MAX_POW_EXP    = 1_000
+        _MAX_STR_REPEAT = 100_000
+        _MAX_RANGE      = 100_000
+        _MAX_REPLY_LEN  = 4_000
+        _WALL_TIMEOUT   = 6.0
 
-        # ── ЗАПРЕЩЁННЫЕ ИДЕНТИФИКАТОРЫ / ПАТТЕРНЫ ────────────────────────────────
         _BLOCKED_ATTRS = {
-            '__class__', '__base__', '__bases__', '__mro__', '__subclasses__',
-            '__globals__', '__builtins__', '__dict__', '__code__', '__func__',
-            '__self__', '__module__', '__qualname__', '__init__', '__new__',
-            '__reduce__', '__reduce_ex__', '__getattribute__', '__setattr__',
-            '__delattr__', '__import__', '__loader__', '__spec__', '__file__',
-            '__cached__', '__wrapped__', '_module', '__weakref__',
-            '__build_class__', '__closure__', '__annotations__',
+            "__class__","__base__","__bases__","__mro__","__subclasses__",
+            "__globals__","__builtins__","__dict__","__code__","__func__",
+            "__self__","__module__","__qualname__","__init__","__new__",
+            "__reduce__","__reduce_ex__","__getattribute__","__setattr__",
+            "__delattr__","__import__","__loader__","__spec__","__file__",
+            "__cached__","__wrapped__","_module","__weakref__",
+            "__build_class__","__closure__","__annotations__",
         }
-        _BLOCKED_NAMES = {
-            '__import__', '__builtins__', '__spec__', '__loader__',
-            '__build_class__', 'breakpoint',
-        }
+        _BLOCKED_NAMES = {"__import__","__builtins__","__spec__","__loader__","__build_class__","breakpoint"}
         _BLOCKED_CALLS = {
-            'eval', 'exec', 'compile', 'open', 'input', 'breakpoint',
-            'vars', 'dir', 'locals', 'globals', 'memoryview',
-            'type', 'object', 'super', 'classmethod', 'staticmethod', 'property',
+            "eval","exec","compile","open","input","breakpoint",
+            "vars","dir","locals","globals","memoryview",
+            "type","object","super","classmethod","staticmethod","property",
         }
         _BLOCKED_STR_PATTERNS = {
-            '__class__', '__base__', '__bases__', '__mro__', '__subclasses__',
-            '__globals__', '__builtins__', '__dict__', '__code__', '__import__',
-            '__reduce__', '__init__', '__new__', '_module', '__closure__',
-            '__getattribute__', '.env', '/etc/passwd', '/etc/shadow',
-            '/proc/', '/sys/', 'subprocess', 'pty', 'ctypes', 'cffi',
+            "__class__","__base__","__bases__","__mro__","__subclasses__",
+            "__globals__","__builtins__","__dict__","__code__","__import__",
+            "__reduce__","__init__","__new__","_module","__closure__",
+            "__getattribute__",".env","/etc/passwd","/etc/shadow",
+            "/proc/","/sys/","subprocess","pty","ctypes","cffi",
         }
 
-        # ── 1. СТАТИЧЕСКИЕ ЛИМИТЫ (до security-scan) ─────────────────────────────
+        # ── 1. AST-проверка ───────────────────────────────────────────────────
         if len(code) > _MAX_CODE_LEN:
-            await m.answer(f"Код отклонён: превышена длина ({_MAX_CODE_LEN} символов максимум)")
+            await m.answer(f"Код отклонён: слишком длинный (максимум {_MAX_CODE_LEN} символов)")
             return
-        if code.count('\n') + 1 > _MAX_CODE_LINES:
-            await m.answer(f"Код отклонён: слишком много строк ({_MAX_CODE_LINES} максимум)")
+        if code.count("\n") + 1 > _MAX_CODE_LINES:
+            await m.answer(f"Код отклонён: слишком много строк (максимум {_MAX_CODE_LINES})")
             return
 
         def _ast_check(source: str):
-            """Возвращает (ok, error). Проверяет безопасность И ресурсные лимиты."""
             try:
-                tree = _ast.parse(source, mode='exec')
+                tree = _ast.parse(source, mode="exec")
             except SyntaxError as e:
                 return False, f"Синтаксическая ошибка: {e}"
-
             for node in _ast.walk(tree):
-                # Большие числовые литералы
                 if isinstance(node, _ast.Constant):
                     if isinstance(node.value, int) and abs(node.value) > _MAX_INT_LIT:
-                        return False, f"Число {node.value} слишком большое (максимум {_MAX_INT_LIT:,})"
-                    # Строковые паттерны безопасности
+                        return False, f"Число слишком большое (максимум {_MAX_INT_LIT:,})"
                     if isinstance(node.value, str):
                         for pat in _BLOCKED_STR_PATTERNS:
                             if pat in node.value:
                                 return False, f"Запрещённый паттерн в строке: '{pat}'"
-
-                # Возведение в степень a**b — ограничиваем b
                 if isinstance(node, _ast.BinOp) and isinstance(node.op, _ast.Pow):
                     r = node.right
                     if isinstance(r, _ast.Constant) and isinstance(r.value, (int, float)):
                         if r.value > _MAX_POW_EXP:
                             return False, f"Степень слишком большая (максимум {_MAX_POW_EXP})"
-                    # Если правый операнд — переменная, это уже runtime — обработает таймаут
-
-                # Повтор строк/байт: 'x' * N
                 if isinstance(node, _ast.BinOp) and isinstance(node.op, _ast.Mult):
                     for a, b in [(node.left, node.right), (node.right, node.left)]:
                         if (isinstance(a, _ast.Constant) and isinstance(a.value, (str, bytes)) and
                                 isinstance(b, _ast.Constant) and isinstance(b.value, int)):
                             if b.value > _MAX_STR_REPEAT:
                                 return False, f"Повтор строки слишком большой (максимум {_MAX_STR_REPEAT:,})"
-
-                # range(N) с большим N
-                if (isinstance(node, _ast.Call) and
-                        isinstance(node.func, _ast.Name) and node.func.id == 'range'):
+                if (isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name)
+                        and node.func.id == "range"):
                     for arg in node.args:
                         if isinstance(arg, _ast.Constant) and isinstance(arg.value, int):
                             if arg.value > _MAX_RANGE:
                                 return False, f"range() слишком большой (максимум {_MAX_RANGE:,})"
-
-                # ── 2. SECURITY SCAN ────────────────────────────────────────────
-                # Атрибуты с дандерами
                 if isinstance(node, _ast.Attribute):
-                    name = node.attr
-                    if name in _BLOCKED_ATTRS or (name.startswith('__') and name.endswith('__')):
-                        return False, f"Запрещён доступ к атрибуту '{name}'"
-
-                # Запрещённые имена
+                    nm = node.attr
+                    if nm in _BLOCKED_ATTRS or (nm.startswith("__") and nm.endswith("__")):
+                        return False, f"Запрещён доступ к атрибуту '{nm}'"
                 if isinstance(node, _ast.Name) and node.id in _BLOCKED_NAMES:
                     return False, f"Запрещено имя '{node.id}'"
-
-                # Запрещённые вызовы
                 if isinstance(node, _ast.Call):
                     func = node.func
                     if isinstance(func, _ast.Name) and func.id in _BLOCKED_CALLS:
                         return False, f"Запрещён вызов '{func.id}()'"
                     if isinstance(func, _ast.Attribute) and func.attr in _BLOCKED_CALLS:
                         return False, f"Запрещён вызов метода '{func.attr}()'"
-
-                # import
                 if isinstance(node, (_ast.Import, _ast.ImportFrom)):
                     return False, "Оператор import запрещён — модули предоставлены автоматически"
-
             return True, None
 
-        ok, err = _ast_check(code)
+        ok, ast_err = _ast_check(code)
         if not ok:
-            logger.warning(f"Flow code blocked (bot {self.bot_id}): {err} | code: {code[:200]}")
-            await m.answer(f"Код отклонён: {err}")
+            logger.warning(f"Flow AST blocked (bot {self.bot_id}): {ast_err}")
+            await m.answer(f"Код отклонён: {ast_err}")
             return
 
-        # ── 3. RUNTIME В ОТДЕЛЬНОМ ПРОЦЕССЕ ─────────────────────────────────────
-        # Контекст передаётся через аргументы (не замыкание — процесс изолирован)
+        # ── 2. Запуск в дочернем процессе ────────────────────────────────────
         ctx = {
-            'user_id':    m.from_user.id,
-            'username':   m.from_user.username or '',
-            'first_name': m.from_user.first_name or '',
-            'text':       m.text or '',
-            'bot_id':     self.bot_id,
+            "user_id":    m.from_user.id,
+            "username":   m.from_user.username or "",
+            "first_name": m.from_user.first_name or "",
+            "text":       m.text or "",
+            "bot_id":     self.bot_id,
         }
+        payload = _json.dumps({"code": code, "ctx": ctx}).encode()
 
-        loop = asyncio.get_event_loop()
         try:
-            reply = await loop.run_in_executor(
-                None,
-                _run_sandboxed_code,   # модульная функция (определена ниже класса)
-                code,
-                ctx,
-                _WALL_TIMEOUT,
+            proc = await asyncio.create_subprocess_exec(
+                _sys.executable, "-c", _SANDBOX_RUNNER_PY,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-            if reply:
-                if len(reply) > _MAX_REPLY_LEN:
-                    reply = reply[:_MAX_REPLY_LEN] + '…'
-                await m.answer(reply, parse_mode='HTML')
 
-        except _SandboxTimeoutError:
-            logger.warning(f"Flow code timeout for bot {self.bot_id}")
-            await m.answer("Код завершён по таймауту — выполнение заняло больше 5 секунд.")
-        except _SandboxError as e:
-            logger.warning(f"Flow code sandbox error for bot {self.bot_id}: {e}")
-            await m.answer(f"Ошибка выполнения: {e}")
-        except PermissionError as e:
-            logger.warning(f"Flow code permission error for bot {self.bot_id}: {e}")
-            await m.answer(f"Действие заблокировано: {e}")
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(payload),
+                timeout=_WALL_TIMEOUT,
+            )
+
+            # Процесс убит OS-лимитом или завершился с ошибкой без вывода
+            if proc.returncode != 0 and not stdout.strip():
+                rc = proc.returncode
+                if rc in (-9, -15):   # SIGKILL / SIGTERM
+                    await m.answer("Код остановлен: превышен лимит CPU или памяти.")
+                else:
+                    err_txt = stderr.decode(errors="replace")[:200]
+                    await m.answer(f"Процесс завершился с ошибкой (код {rc}).")
+                    logger.warning(f"Flow sandbox exit {rc} for bot {self.bot_id}: {err_txt}")
+                return
+
+            if not stdout.strip():
+                return  # Код выполнился, но reply_text не задан — ничего не отвечаем
+
+            result = _json.loads(stdout.decode().strip())
+            if result.get("ok"):
+                reply = result.get("reply", "").strip()
+                if reply:
+                    if len(reply) > _MAX_REPLY_LEN:
+                        reply = reply[:_MAX_REPLY_LEN] + "…"
+                    await m.answer(reply, parse_mode="HTML")
+            else:
+                err = result.get("error", "Неизвестная ошибка")
+                logger.warning(f"Flow code error (bot {self.bot_id}): {err}")
+                await m.answer(f"Ошибка выполнения: {err}")
+
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            logger.warning(f"Flow code wall-clock timeout for bot {self.bot_id}")
+            await m.answer("Код завершён по таймауту (более 6 секунд).")
         except Exception as e:
-            logger.warning(f"Flow code error for bot {self.bot_id}: {e}\n{traceback.format_exc()}")
+            logger.warning(f"Flow code unexpected error (bot {self.bot_id}): {e}\n{traceback.format_exc()}")
 
     def find_flow_node_by_label(self, label: str, nodes: list) -> Optional[dict]:
         """Рекурсивный поиск flow-ноды по тексту кнопки."""
