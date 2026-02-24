@@ -879,12 +879,13 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                   )}
                   {/* Конец блока Sub-кнопок */}
 
-                  {/* ── Инлайн URL-кнопки к ответу кнопки ── */}
+                  {/* Инлайн URL-кнопки к ответу — только Telegram */}
+                  {!isVK && (
                   <div className="border-t border-zinc-800 pt-4">
                     <div className="flex items-center justify-between mb-3">
                       <span className="text-[9px] font-black text-zinc-500 uppercase flex items-center gap-1.5">
                         <ExternalLink className="w-3 h-3 text-indigo-400" />
-                        {isVK ? 'URL-кнопки к ответу (OpenLink)' : 'Инлайн URL-кнопки к ответу'}
+                        Инлайн URL-кнопки к ответу
                       </span>
                       <button
                         type="button"
@@ -899,23 +900,15 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                       </button>
                     </div>
 
-                    {isVK && (
-                      <p className="text-[8px] text-sky-400/60 mb-2 bg-sky-500/5 border border-sky-500/10 rounded-xl p-2 leading-relaxed">
-                        💡 В VK отправляются как инлайн OpenLink-кнопки под сообщением ответа.
-                      </p>
-                    )}
-
                     <p className="text-[8px] text-zinc-600 mb-2">
-                      {isVK
-                        ? 'URL-кнопки появятся под ответом бота в VK:'
-                        : 'Инлайн-кнопки появятся под ответом бота (только TG):'}
+                      Кнопки-ссылки появятся под ответом бота в Telegram:
                     </p>
 
                     {(btn.inline || []).map((ib: any, ii: number) => (
                       <div key={ii} className="flex gap-2 mb-2">
                         <input
                           placeholder="Текст кнопки"
-                          className={`flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none transition-all ${isVK ? 'focus:border-sky-500' : 'focus:border-indigo-500'}`}
+                          className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none transition-all focus:border-indigo-500"
                           value={ib.text}
                           onChange={e => {
                             const nb = [...bot.buttons];
@@ -925,7 +918,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                         />
                         <input
                           placeholder="https://..."
-                          className={`flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none transition-all ${isVK ? 'focus:border-sky-500' : 'focus:border-indigo-500'}`}
+                          className="flex-1 bg-black border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none transition-all focus:border-indigo-500"
                           value={ib.url}
                           onChange={e => {
                             const nb = [...bot.buttons];
@@ -947,7 +940,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                       </div>
                     ))}
 
-                    {/* Мини-превью инлайн-кнопок */}
+                    {/* Превью инлайн-кнопок */}
                     {(btn.inline || []).filter((b: any) => b.text).length > 0 && (
                       <div className="mt-2 bg-black/40 border border-zinc-800/60 rounded-xl p-3 space-y-1">
                         <p className="text-[7px] text-zinc-700 uppercase font-bold mb-2 flex items-center gap-1">
@@ -957,16 +950,15 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                           <p className="text-[9px] text-zinc-400">{btn.response ? btn.response.slice(0, 60) + (btn.response.length > 60 ? '…' : '') : 'Ответ кнопки...'}</p>
                         </div>
                         {(btn.inline || []).filter((b: any) => b.text).map((b: any, pi: number) => (
-                          <div key={pi} className={`rounded-lg py-1.5 px-3 text-center flex items-center justify-center gap-1 ${
-                            isVK ? 'bg-sky-500/10 border border-sky-500/20' : 'bg-indigo-500/10 border border-indigo-500/20'
-                          }`}>
-                            <ExternalLink className={`w-2 h-2 shrink-0 ${isVK ? 'text-sky-400/60' : 'text-indigo-400/60'}`} />
-                            <span className={`text-[9px] font-semibold ${isVK ? 'text-sky-300' : 'text-indigo-300'}`}>{b.text}</span>
+                          <div key={pi} className="rounded-lg py-1.5 px-3 text-center flex items-center justify-center gap-1 bg-indigo-500/10 border border-indigo-500/20">
+                            <ExternalLink className="w-2 h-2 shrink-0 text-indigo-400/60" />
+                            <span className="text-[9px] font-semibold text-indigo-300">{b.text}</span>
                           </div>
                         ))}
                       </div>
                     )}
                   </div>
+                  )}
                   {/* Конец блока Инлайн URL-кнопок */}
 
                 </div>
@@ -2154,6 +2146,7 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
   );
 };
 
+
 // ══════════════════════════════════════════════════════════════════════════════
 //  РАСШИРЕННАЯ ЛОГИКА КНОПОК — Flow-редактор (только Telegram)
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2177,10 +2170,191 @@ interface FlowNode {
 const mkFlowId = () => Math.random().toString(36).slice(2, 8);
 
 const ACTION_META: Record<FlowActionType, { label: string; color: string; desc: string }> = {
-  message:      { label: 'Сообщение пользователю', color: 'bg-blue-500/15 text-blue-400 border-blue-500/25',   desc: 'Бот отправит текст пользователю' },
+  message:      { label: 'Сообщение пользователю', color: 'bg-blue-500/15 text-blue-400 border-blue-500/25',    desc: 'Бот отправит текст пользователю' },
   admin_notify: { label: 'Уведомить админов',       color: 'bg-amber-500/15 text-amber-400 border-amber-500/25', desc: 'Сообщение придёт в чат администраторов' },
   code:         { label: 'Выполнить код',            color: 'bg-violet-500/15 text-violet-400 border-violet-500/25', desc: 'Python-код на сервере' },
   buttons:      { label: 'Показать под-кнопки',      color: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25', desc: 'Разветвление на новые кнопки' },
+};
+
+const CODE_SNIPPETS: { label: string; code: string }[] = [
+  {
+    label: 'Погода (OpenWeatherMap)',
+    code: `import requests
+
+api_key = 'ВАШ_КЛЮЧ'  # openweathermap.org → бесплатный аккаунт
+city = 'Moscow'
+
+r = requests.get(
+    'https://api.openweathermap.org/data/2.5/weather',
+    params={'q': city, 'appid': api_key, 'units': 'metric', 'lang': 'ru'}
+)
+data = r.json()
+temp = data['main']['temp']
+desc = data['weather'][0]['description']
+reply_text = f"Погода в {city}: {temp}°C, {desc}"
+# Отправить reply_text пользователю можно через action 'message' выше`,
+  },
+  {
+    label: 'Курс валют (ЦБ РФ)',
+    code: `import requests, xml.etree.ElementTree as ET
+
+r = requests.get('https://www.cbr.ru/scripts/XML_daily.asp')
+root = ET.fromstring(r.content)
+rates = {}
+for v in root.findall('Valute'):
+    code_v = v.find('CharCode').text
+    val    = v.find('Value').text.replace(',', '.')
+    nom    = int(v.find('Nominal').text)
+    rates[code_v] = float(val) / nom
+
+usd = rates.get('USD', 0)
+eur = rates.get('EUR', 0)
+reply_text = f"USD: {usd:.2f} руб\\nEUR: {eur:.2f} руб"`,
+  },
+  {
+    label: 'HTTP-запрос к API',
+    code: `import requests
+
+# Пример GET-запроса к любому REST API
+url = 'https://api.example.com/endpoint'
+headers = {'Authorization': 'Bearer ВАШ_ТОКЕН'}
+params  = {'user_id': user_id, 'query': text}
+
+r = requests.get(url, headers=headers, params=params, timeout=10)
+if r.status_code == 200:
+    data = r.json()
+    # обработайте data как нужно
+else:
+    pass  # обработка ошибки`,
+  },
+  {
+    label: 'POST с JSON',
+    code: `import requests, json
+
+url = 'https://api.example.com/data'
+payload = {
+    'user_id': user_id,
+    'username': username,
+    'message': text,
+}
+
+r = requests.post(
+    url,
+    headers={'Content-Type': 'application/json'},
+    data=json.dumps(payload),
+    timeout=10
+)
+result = r.json()`,
+  },
+  {
+    label: 'Случайная цитата',
+    code: `import requests
+
+r = requests.get('https://api.quotable.io/random', timeout=5)
+if r.status_code == 200:
+    q = r.json()
+    reply_text = f'"{q["content"]}"\\n— {q["author"]}'
+else:
+    reply_text = 'Не удалось получить цитату'`,
+  },
+  {
+    label: 'Отправить данные в webhook',
+    code: `import requests, json
+
+webhook_url = 'https://hooks.zapier.com/...'  # или n8n / Make
+payload = {
+    'bot_id':   bot_id,
+    'user_id':  user_id,
+    'username': username,
+    'text':     text,
+}
+requests.post(webhook_url, json=payload, timeout=10)`,
+  },
+];
+
+// Минималистичный code-редактор с номерами строк и Tab-indent
+const CodeEditor: React.FC<{
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}> = ({ value, onChange, placeholder }) => {
+  const taRef = React.useRef<HTMLTextAreaElement>(null);
+  const linesRef = React.useRef<HTMLDivElement>(null);
+
+  const lineCount = (value || '').split('\n').length;
+  const lineNums = Array.from({ length: Math.max(lineCount, 8) }, (_, i) => i + 1);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const ta = e.currentTarget;
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const newVal = value.substring(0, start) + '    ' + value.substring(end);
+      onChange(newVal);
+      requestAnimationFrame(() => {
+        ta.selectionStart = ta.selectionEnd = start + 4;
+      });
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const start = ta.selectionStart;
+      const lines = value.substring(0, start).split('\n');
+      const curLine = lines[lines.length - 1];
+      const indent = curLine.match(/^(\s*)/)?.[1] || '';
+      // Автоотступ после двоеточия
+      const extraIndent = curLine.trimEnd().endsWith(':') ? '    ' : '';
+      const ins = '\n' + indent + extraIndent;
+      const newVal = value.substring(0, start) + ins + value.substring(ta.selectionEnd);
+      onChange(newVal);
+      requestAnimationFrame(() => {
+        ta.selectionStart = ta.selectionEnd = start + ins.length;
+      });
+    }
+  };
+
+  const syncScroll = () => {
+    if (linesRef.current && taRef.current) {
+      linesRef.current.scrollTop = taRef.current.scrollTop;
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-zinc-800 overflow-hidden font-mono text-[11px] leading-5 bg-[#0a0a14]">
+      {/* Toolbar */}
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-800 bg-zinc-900/60 flex-wrap">
+        <span className="text-[8px] font-black text-violet-400 uppercase tracking-widest">Python</span>
+        <span className="text-[8px] text-zinc-700">{lineCount} стр.</span>
+        <div className="flex-1" />
+        <span className="text-[8px] text-zinc-700">Tab = 4 пробела · Enter = автоотступ</span>
+      </div>
+      {/* Editor area */}
+      <div className="flex overflow-hidden" style={{ maxHeight: 320 }}>
+        {/* Line numbers */}
+        <div
+          ref={linesRef}
+          className="shrink-0 overflow-hidden select-none bg-zinc-900/40 border-r border-zinc-800/60 py-2"
+          style={{ width: 38 }}
+        >
+          {lineNums.map(n => (
+            <div key={n} className="text-right pr-2.5 text-zinc-700 leading-5" style={{ fontSize: 10 }}>{n}</div>
+          ))}
+        </div>
+        {/* Textarea */}
+        <textarea
+          ref={taRef}
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onScroll={syncScroll}
+          placeholder={placeholder}
+          spellCheck={false}
+          className="flex-1 bg-transparent text-violet-200 py-2 px-3 outline-none resize-none overflow-auto leading-5 placeholder:text-zinc-700"
+          style={{ fontSize: 11, minHeight: 180, maxHeight: 320, tabSize: 4 }}
+        />
+      </div>
+    </div>
+  );
 };
 
 const FlowBadge: React.FC<{ type: FlowActionType }> = ({ type }) => (
@@ -2199,17 +2373,16 @@ const FlowActionEditor: React.FC<{
   onUpdate: (b: BotConfig) => void;
 }> = ({ action, depth, onChange, onDelete, bot, onUpdate }) => {
   const [collapsed, setCollapsed] = React.useState(false);
+  const [snippetOpen, setSnippetOpen] = React.useState(false);
 
   const addChildNode = () => {
     const node: FlowNode = { id: mkFlowId(), label: 'Новая кнопка', actions: [] };
     onChange({ ...action, buttons: [...(action.buttons || []), node] });
   };
-
   const updateChildNode = (idx: number, node: FlowNode) => {
     const nb = [...(action.buttons || [])]; nb[idx] = node;
     onChange({ ...action, buttons: nb });
   };
-
   const deleteChildNode = (idx: number) => {
     onChange({ ...action, buttons: (action.buttons || []).filter((_, i) => i !== idx) });
   };
@@ -2217,10 +2390,7 @@ const FlowActionEditor: React.FC<{
   return (
     <div className={`rounded-2xl border overflow-hidden ${depth % 2 === 0 ? 'bg-zinc-900/50 border-zinc-800' : 'bg-black/40 border-zinc-800/60'}`}>
       <div className="flex items-center gap-3 px-4 py-3">
-        <button
-          onClick={() => setCollapsed(v => !v)}
-          className="text-zinc-600 hover:text-zinc-300 transition-colors shrink-0"
-        >
+        <button onClick={() => setCollapsed(v => !v)} className="text-zinc-600 hover:text-zinc-300 transition-colors shrink-0">
           {collapsed ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
         </button>
         <FlowBadge type={action.type} />
@@ -2239,17 +2409,15 @@ const FlowActionEditor: React.FC<{
             <div>
               <span className="text-[8px] font-black text-zinc-600 uppercase tracking-widest block mb-1.5">
                 {action.type === 'admin_notify'
-                  ? 'Текст для чата админов — доступны переменные: {username}, {first_name}, {user_id}, {text}'
+                  ? 'Текст для чата админов — переменные: {username}, {first_name}, {user_id}, {text}'
                   : 'Текст для пользователя — поддерживается HTML'}
               </span>
               <textarea
                 rows={3}
                 className="w-full bg-black border border-zinc-800 focus:border-blue-500 text-white text-xs p-3 rounded-xl outline-none resize-none transition-all"
-                placeholder={
-                  action.type === 'admin_notify'
-                    ? 'Обращение от {username}:\n{text}'
-                    : 'Ваша заявка принята. Ожидайте ответа.'
-                }
+                placeholder={action.type === 'admin_notify'
+                  ? 'Обращение от {username}:\n{text}'
+                  : 'Ваша заявка принята. Ожидайте ответа.'}
                 value={action.text || ''}
                 onChange={e => onChange({ ...action, text: e.target.value })}
               />
@@ -2257,20 +2425,40 @@ const FlowActionEditor: React.FC<{
           )}
 
           {action.type === 'code' && (
-            <div>
-              <div className="flex items-center gap-3 mb-1.5">
+            <div className="space-y-2">
+              <div className="flex items-center gap-3">
                 <span className="text-[8px] font-black text-violet-400 uppercase tracking-widest">Python-код</span>
                 <span className="text-[8px] text-zinc-600">переменные: user_id, username, first_name, text, bot_id</span>
+                <div className="flex-1" />
+                <div className="relative">
+                  <button
+                    onClick={() => setSnippetOpen(v => !v)}
+                    className="text-[8px] font-black text-zinc-500 hover:text-zinc-300 border border-zinc-800 hover:border-zinc-600 rounded-lg px-2.5 py-1.5 transition-all flex items-center gap-1.5"
+                  >
+                    <Hash className="w-2.5 h-2.5" /> Шаблоны
+                  </button>
+                  {snippetOpen && (
+                    <div className="absolute right-0 top-8 z-50 bg-[#111] border border-zinc-700 rounded-2xl shadow-2xl w-64 overflow-hidden">
+                      {CODE_SNIPPETS.map((s, si) => (
+                        <button
+                          key={si}
+                          onClick={() => { onChange({ ...action, code: s.code }); setSnippetOpen(false); }}
+                          className="w-full text-left px-4 py-3 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-white transition-all border-b border-zinc-800/60 last:border-0"
+                        >
+                          {s.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-              <textarea
-                rows={7}
-                className="w-full bg-black border border-violet-500/30 focus:border-violet-500 text-violet-300 text-[11px] p-3 rounded-xl outline-none resize-none transition-all font-mono leading-relaxed"
-                placeholder={"# Пример\nif 'заказ' in text.lower():\n    pass  # ваша логика"}
+              <CodeEditor
                 value={action.code || ''}
-                onChange={e => onChange({ ...action, code: e.target.value })}
+                onChange={code => onChange({ ...action, code })}
+                placeholder={"# Напишите Python-код\n# или выберите шаблон выше"}
               />
-              <p className="text-[8px] text-zinc-600 mt-1.5">
-                Код выполняется в изолированном окружении на сервере. Доступны: requests, json, datetime.
+              <p className="text-[8px] text-zinc-600">
+                Код выполняется в изолированном окружении. Можно использовать requests, json, datetime, xml.etree.
               </p>
             </div>
           )}
@@ -2321,19 +2509,16 @@ const FlowNodeEditor: React.FC<{
     const action: FlowAction = { id: mkFlowId(), type, text: '', code: '', buttons: [] };
     onChange({ ...node, actions: [...node.actions, action] });
   };
-
   const updateAction = (idx: number, a: FlowAction) => {
     const na = [...node.actions]; na[idx] = a;
     onChange({ ...node, actions: na });
   };
-
   const deleteAction = (idx: number) => {
     onChange({ ...node, actions: node.actions.filter((_, i) => i !== idx) });
   };
 
   return (
     <div className={`border-l-2 ${lineColor} pl-4 space-y-3`}>
-      {/* Метка кнопки */}
       <div className="flex items-center gap-2">
         <div className="flex items-center gap-2 flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 focus-within:border-zinc-600 transition-colors">
           <MousePointerClick className="w-3 h-3 text-zinc-500 shrink-0" />
@@ -2349,7 +2534,6 @@ const FlowNodeEditor: React.FC<{
         </button>
       </div>
 
-      {/* Стрелка */}
       {node.actions.length > 0 && (
         <div className="flex items-center gap-2 ml-1">
           <ArrowRight className="w-3 h-3 text-zinc-700 shrink-0" />
@@ -2357,7 +2541,6 @@ const FlowNodeEditor: React.FC<{
         </div>
       )}
 
-      {/* Список действий */}
       {node.actions.length > 0 && (
         <div className="space-y-2">
           {node.actions.map((action, idx) => (
@@ -2374,8 +2557,62 @@ const FlowNodeEditor: React.FC<{
         </div>
       )}
 
-      {/* Добавить действие */}
       <div className="flex flex-wrap gap-1.5 pt-1">
+        {(Object.keys(ACTION_META) as FlowActionType[]).map(type => (
+          <button
+            key={type}
+            onClick={() => addAction(type)}
+            title={ACTION_META[type].desc}
+            className="text-[8px] font-black uppercase tracking-wide border border-zinc-800 text-zinc-500 hover:text-white hover:border-zinc-600 rounded-lg px-2.5 py-1.5 transition-all"
+          >
+            + {ACTION_META[type].label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// Редактор прямых действий кнопки (без под-кнопок — на уровне корня)
+const FlowDirectActions: React.FC<{
+  actions: FlowAction[];
+  onChange: (actions: FlowAction[]) => void;
+  bot: BotConfig;
+  onUpdate: (b: BotConfig) => void;
+}> = ({ actions, onChange, bot, onUpdate }) => {
+  const addAction = (type: FlowActionType) => {
+    onChange([...actions, { id: mkFlowId(), type, text: '', code: '', buttons: [] }]);
+  };
+  const updateAction = (idx: number, a: FlowAction) => {
+    const na = [...actions]; na[idx] = a;
+    onChange(na);
+  };
+  const deleteAction = (idx: number) => {
+    onChange(actions.filter((_, i) => i !== idx));
+  };
+
+  return (
+    <div className="space-y-3">
+      {actions.length > 0 && (
+        <div className="flex items-center gap-2">
+          <ArrowRight className="w-3 h-3 text-zinc-700 shrink-0" />
+          <span className="text-[8px] text-zinc-700 font-bold uppercase tracking-widest">При нажатии кнопки — выполнить:</span>
+        </div>
+      )}
+      <div className="space-y-2">
+        {actions.map((action, idx) => (
+          <FlowActionEditor
+            key={action.id}
+            action={action}
+            depth={0}
+            onChange={a => updateAction(idx, a)}
+            onDelete={() => deleteAction(idx)}
+            bot={bot}
+            onUpdate={onUpdate}
+          />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
         {(Object.keys(ACTION_META) as FlowActionType[]).map(type => (
           <button
             key={type}
@@ -2395,9 +2632,12 @@ const FlowNodeEditor: React.FC<{
 const ButtonFlowEditor: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void }> = ({ bot, onUpdate }) => {
   const [open, setOpen] = React.useState(false);
   const [selectedBtnIdx, setSelectedBtnIdx] = React.useState<number | null>(null);
+  const [tab, setTab] = React.useState<'direct' | 'nodes'>('direct');
 
   const buttons = bot.buttons || [];
+
   const getFlow = (i: number): FlowNode[] => buttons[i]?.flow || [];
+  const getDirectActions = (i: number): FlowAction[] => buttons[i]?.directActions || [];
 
   const updateFlow = (btnIdx: number, flow: FlowNode[]) => {
     const nb = [...buttons];
@@ -2405,15 +2645,19 @@ const ButtonFlowEditor: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => v
     onUpdate({ ...bot, buttons: nb });
   };
 
+  const updateDirectActions = (btnIdx: number, directActions: FlowAction[]) => {
+    const nb = [...buttons];
+    nb[btnIdx] = { ...nb[btnIdx], directActions };
+    onUpdate({ ...bot, buttons: nb });
+  };
+
   const addRootNode = (btnIdx: number) => {
     updateFlow(btnIdx, [...getFlow(btnIdx), { id: mkFlowId(), label: 'Новая кнопка', actions: [] }]);
   };
-
   const updateNode = (btnIdx: number, idx: number, node: FlowNode) => {
     const flow = [...getFlow(btnIdx)]; flow[idx] = node;
     updateFlow(btnIdx, flow);
   };
-
   const deleteNode = (btnIdx: number, idx: number) => {
     updateFlow(btnIdx, getFlow(btnIdx).filter((_, i) => i !== idx));
   };
@@ -2433,7 +2677,7 @@ const ButtonFlowEditor: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => v
           <div className="text-left">
             <p className="text-white font-black text-sm">Расширенная логика кнопок</p>
             <p className="text-[9px] text-zinc-500 mt-0.5">
-              Конструктор цепочек: кнопка — под-кнопки — действия. Только Telegram.
+              Действия при нажатии, под-кнопки, код, уведомления. Только Telegram.
             </p>
           </div>
         </div>
@@ -2442,11 +2686,9 @@ const ButtonFlowEditor: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => v
 
       {open && (
         <div className="mt-4 bg-[#0d0d0d] border border-zinc-800 rounded-[2rem] p-6 md:p-8 space-y-6 animate-in fade-in duration-200">
-
-          {/* Пояснение */}
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 text-[10px] text-zinc-500 leading-relaxed space-y-1">
-            <p>Выберите кнопку слева. Добавьте под-кнопки — они появятся у пользователя в виде меню.</p>
-            <p>К каждой под-кнопке можно прикрепить любое количество действий: текст пользователю, уведомление в чат, Python-код, следующее ветвление кнопок.</p>
+            <p>Выберите кнопку слева. Вкладка <b className="text-zinc-400">Действия</b> — что происходит сразу при нажатии (отправить текст, код, уведомление).</p>
+            <p>Вкладка <b className="text-zinc-400">Под-кнопки</b> — показать пользователю вложенное меню, каждая ветка может иметь свои действия.</p>
             <p className="text-zinc-700">Вложенность не ограничена.</p>
           </div>
 
@@ -2454,8 +2696,9 @@ const ButtonFlowEditor: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => v
             {/* Список кнопок */}
             <div className="w-full md:w-56 shrink-0 space-y-1.5">
               <p className="text-[8px] font-black text-zinc-600 uppercase tracking-widest px-1 mb-2">Кнопки бота</p>
-              {buttons.map((btn, i) => {
+              {buttons.map((btn: any, i: number) => {
                 const flowLen = (btn.flow || []).length;
+                const directLen = (btn.directActions || []).length;
                 const isSelected = selectedBtnIdx === i;
                 return (
                   <button
@@ -2471,7 +2714,9 @@ const ButtonFlowEditor: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => v
                     <div className="min-w-0">
                       <p className="text-xs font-bold truncate">{btn.text || `Кнопка ${i + 1}`}</p>
                       <p className={`text-[8px] mt-0.5 ${isSelected ? 'text-blue-400/60' : 'text-zinc-700'}`}>
-                        {flowLen > 0 ? `${flowLen} узл${flowLen === 1 ? '' : flowLen < 5 ? 'а' : 'ов'} логики` : 'без логики'}
+                        {directLen > 0 && `${directLen} действ. `}
+                        {flowLen > 0 && `${flowLen} под-кнопок`}
+                        {directLen === 0 && flowLen === 0 && 'без логики'}
                       </p>
                     </div>
                   </button>
@@ -2479,7 +2724,7 @@ const ButtonFlowEditor: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => v
               })}
             </div>
 
-            {/* Редактор flow */}
+            {/* Редактор */}
             <div className="flex-1 min-w-0">
               {selectedBtnIdx === null ? (
                 <div className="h-full flex flex-col items-center justify-center gap-3 text-zinc-700 py-12">
@@ -2488,43 +2733,68 @@ const ButtonFlowEditor: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => v
                 </div>
               ) : (
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-white font-black">
-                        Кнопка: «{buttons[selectedBtnIdx]?.text || `Кнопка ${selectedBtnIdx + 1}`}»
-                      </p>
-                      <p className="text-[9px] text-zinc-600 mt-0.5">
-                        Добавьте под-кнопки — они появятся у пользователя при нажатии
-                      </p>
-                    </div>
+                  <div className="flex items-center justify-between flex-wrap gap-3">
+                    <p className="text-white font-black">
+                      Кнопка: «{buttons[selectedBtnIdx]?.text || `Кнопка ${selectedBtnIdx + 1}`}»
+                    </p>
+                    {tab === 'nodes' && (
+                      <button
+                        onClick={() => addRootNode(selectedBtnIdx)}
+                        className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 px-4 py-2.5 rounded-xl text-[10px] font-black text-white uppercase transition-all shrink-0"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> Под-кнопка
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Вкладки */}
+                  <div className="flex bg-black border border-zinc-800 rounded-2xl p-1 gap-1">
                     <button
-                      onClick={() => addRootNode(selectedBtnIdx)}
-                      className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 px-4 py-2.5 rounded-xl text-[10px] font-black text-white uppercase transition-all shrink-0"
+                      onClick={() => setTab('direct')}
+                      className={`flex-1 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-wide transition-all ${tab === 'direct' ? 'bg-blue-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
                     >
-                      <Plus className="w-3.5 h-3.5" /> Под-кнопка
+                      Действия при нажатии
+                    </button>
+                    <button
+                      onClick={() => setTab('nodes')}
+                      className={`flex-1 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-wide transition-all ${tab === 'nodes' ? 'bg-blue-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
+                    >
+                      Под-кнопки и ветки
                     </button>
                   </div>
 
-                  {getFlow(selectedBtnIdx).length === 0 ? (
-                    <div className="border-2 border-dashed border-zinc-800 rounded-2xl p-12 text-center">
-                      <Layers className="w-8 h-8 text-zinc-800 mx-auto mb-3" />
-                      <p className="text-zinc-700 text-xs font-black uppercase">Нет узлов</p>
-                      <p className="text-[9px] text-zinc-800 mt-1">Нажмите «Под-кнопка» чтобы начать</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {getFlow(selectedBtnIdx).map((node, idx) => (
-                        <FlowNodeEditor
-                          key={node.id}
-                          node={node}
-                          depth={0}
-                          onChange={n => updateNode(selectedBtnIdx, idx, n)}
-                          onDelete={() => deleteNode(selectedBtnIdx, idx)}
-                          bot={bot}
-                          onUpdate={onUpdate}
-                        />
-                      ))}
-                    </div>
+                  {/* Содержимое вкладки */}
+                  {tab === 'direct' && (
+                    <FlowDirectActions
+                      actions={getDirectActions(selectedBtnIdx)}
+                      onChange={a => updateDirectActions(selectedBtnIdx, a)}
+                      bot={bot}
+                      onUpdate={onUpdate}
+                    />
+                  )}
+
+                  {tab === 'nodes' && (
+                    getFlow(selectedBtnIdx).length === 0 ? (
+                      <div className="border-2 border-dashed border-zinc-800 rounded-2xl p-12 text-center">
+                        <Layers className="w-8 h-8 text-zinc-800 mx-auto mb-3" />
+                        <p className="text-zinc-700 text-xs font-black uppercase">Нет под-кнопок</p>
+                        <p className="text-[9px] text-zinc-800 mt-1">Нажмите «Под-кнопка» чтобы добавить ветку</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {getFlow(selectedBtnIdx).map((node, idx) => (
+                          <FlowNodeEditor
+                            key={node.id}
+                            node={node}
+                            depth={0}
+                            onChange={n => updateNode(selectedBtnIdx, idx, n)}
+                            onDelete={() => deleteNode(selectedBtnIdx, idx)}
+                            bot={bot}
+                            onUpdate={onUpdate}
+                          />
+                        ))}
+                      </div>
+                    )
                   )}
                 </div>
               )}
