@@ -2151,7 +2151,7 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
 //  РАСШИРЕННАЯ ЛОГИКА КНОПОК — Flow-редактор (только Telegram)
 // ══════════════════════════════════════════════════════════════════════════════
 
-type FlowActionType = 'message' | 'admin_notify' | 'code' | 'buttons';
+type FlowActionType = 'message' | 'admin_notify' | 'code' | 'buttons' | 'create_ticket';
 
 interface FlowAction {
   id: string;
@@ -2159,6 +2159,10 @@ interface FlowAction {
   text?: string;
   code?: string;
   buttons?: FlowNode[];
+  // create_ticket fields
+  ticketUserText?: string;
+  ticketAdminText?: string;
+  ticketBtnLabel?: string;
 }
 
 interface FlowNode {
@@ -2170,10 +2174,11 @@ interface FlowNode {
 const mkFlowId = () => Math.random().toString(36).slice(2, 8);
 
 const ACTION_META: Record<FlowActionType, { label: string; color: string; desc: string }> = {
-  message:      { label: 'Сообщение пользователю', color: 'bg-blue-500/15 text-blue-400 border-blue-500/25',    desc: 'Бот отправит текст пользователю' },
-  admin_notify: { label: 'Уведомить админов',       color: 'bg-amber-500/15 text-amber-400 border-amber-500/25', desc: 'Сообщение придёт в чат администраторов' },
-  code:         { label: 'Выполнить код',            color: 'bg-violet-500/15 text-violet-400 border-violet-500/25', desc: 'Python-код на сервере' },
-  buttons:      { label: 'Показать под-кнопки',      color: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25', desc: 'Разветвление на новые кнопки' },
+  message:       { label: 'Сообщение пользователю', color: 'bg-blue-500/15 text-blue-400 border-blue-500/25',    desc: 'Бот отправит текст пользователю' },
+  admin_notify:  { label: 'Уведомить админов',       color: 'bg-amber-500/15 text-amber-400 border-amber-500/25', desc: 'Сообщение придёт в чат администраторов' },
+  code:          { label: 'Выполнить код',            color: 'bg-violet-500/15 text-violet-400 border-violet-500/25', desc: 'Python-код на сервере' },
+  buttons:       { label: 'Показать под-кнопки',      color: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25', desc: 'Разветвление на новые кнопки' },
+  create_ticket: { label: 'Создать тикет',            color: 'bg-rose-500/15 text-rose-400 border-rose-500/25',   desc: 'Открывает обращение в поддержку' },
 };
 
 const CODE_SNIPPETS: { label: string; code: string }[] = [
@@ -2250,7 +2255,7 @@ reply_text = (
   },
   {
     label: 'Случайная цитата',
-    code: `r = requests.get('http://api.quotable.io/random') #если не работает, используйте https, на момент написания этого блока (24.02.2026), у сайта отсутствует SSL сертификат
+    code: `r = requests.get('https://api.quotable.io/random')
 if r.status_code == 200:
     q = r.json()
     reply_text = f'"{q["content"]}"\\n— {q["author"]}'
@@ -2484,6 +2489,58 @@ const FlowActionEditor: React.FC<{
               >
                 <Plus className="w-3 h-3" /> Добавить под-кнопку
               </button>
+            </div>
+          )}
+
+          {action.type === 'create_ticket' && (
+            <div className="space-y-4">
+              {/* Дефолтные значения из настроек бота */}
+              <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-3 text-[9px] text-zinc-500 leading-relaxed">
+                <p className="font-black text-zinc-400 mb-1">Как работает тикет</p>
+                <p>При срабатывании — пользователь переводится в режим обращения. Его следующие сообщения пересылаются в чат администраторов до закрытия тикета.</p>
+              </div>
+
+              <div>
+                <span className="text-[8px] font-black text-zinc-600 uppercase tracking-widest block mb-1.5">
+                  Текст кнопки закрытия тикета у пользователя
+                </span>
+                <input
+                  className="w-full bg-black border border-zinc-800 focus:border-rose-500 text-white text-xs p-3 rounded-xl outline-none transition-all"
+                  placeholder="Закрыть обращение (по умолчанию)"
+                  value={action.ticketBtnLabel || ''}
+                  onChange={e => onChange({ ...action, ticketBtnLabel: e.target.value })}
+                />
+              </div>
+
+              <div>
+                <span className="text-[8px] font-black text-zinc-600 uppercase tracking-widest block mb-1.5">
+                  Сообщение пользователю при открытии тикета
+                </span>
+                <textarea
+                  rows={3}
+                  className="w-full bg-black border border-zinc-800 focus:border-rose-500 text-white text-xs p-3 rounded-xl outline-none resize-none transition-all"
+                  placeholder={bot.settings?.ticketMessageHeader
+                    ? `По умолчанию из настроек: "${(bot.settings as any).ticketMessageHeader}"`
+                    : 'Ваше обращение принято. Ожидайте ответа оператора.'}
+                  value={action.ticketUserText || ''}
+                  onChange={e => onChange({ ...action, ticketUserText: e.target.value })}
+                />
+                <p className="text-[8px] text-zinc-700 mt-1">Оставьте пустым — будет использован текст из поля «Ответ системы» кнопки.</p>
+              </div>
+
+              <div>
+                <span className="text-[8px] font-black text-zinc-600 uppercase tracking-widest block mb-1.5">
+                  Заголовок уведомления в чат администраторов
+                </span>
+                <textarea
+                  rows={2}
+                  className="w-full bg-black border border-zinc-800 focus:border-rose-500 text-white text-xs p-3 rounded-xl outline-none resize-none transition-all"
+                  placeholder="Переменные: {username}, {first_name}, {user_id}, {btn}"
+                  value={action.ticketAdminText || ''}
+                  onChange={e => onChange({ ...action, ticketAdminText: e.target.value })}
+                />
+                <p className="text-[8px] text-zinc-700 mt-1">Оставьте пустым — будет использован стандартный заголовок из основных настроек.</p>
+              </div>
             </div>
           )}
         </div>
