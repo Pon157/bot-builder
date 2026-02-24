@@ -1304,7 +1304,7 @@ class BotInstance:
 
         # 6. Закрытие тикета пользователем
         @self.router.callback_query(lambda c: c.data == 'ticket_close')
-        async def on_ticket_close(cb: CallbackQuery):
+        async def on_ticket_close(self, cb: CallbackQuery): # Добавлен self, если функция внутри класса
         uid_cb = cb.from_user.id
         # Находим пользователя в кэше (users_list)
         user_cb = next((u for u in self.users_list if u['id'] == uid_cb), None)
@@ -1313,8 +1313,7 @@ class BotInstance:
             # 1. Удаляем флаг активного тикета в памяти
             user_cb.pop('_in_ticket', None)
             
-            # 2. ВАЖНО: Синхронизируем состояние с БД немедленно через очередь
-            # Это гарантирует, что следующее сообщение пользователя НЕ будет переслано админу
+            # 2. ВАЖНО: Синхронизируем состояние с БД через очередь
             await self.sync_queue.put(("sync_state", None))
 
             # 3. Уведомляем администратора о закрытии
@@ -1338,19 +1337,19 @@ class BotInstance:
                 except Exception:
                     pass
 
-        # 4. Удаляем сообщение с Inline-кнопкой (чтобы избежать повторных нажатий)
+        # 4. Удаляем сообщение с кнопкой
         try:
             await cb.message.delete()
         except Exception:
             pass
         
-        # 5. Отвечаем на Callback Query (убирает состояние загрузки на кнопке)
+        # 5. Отвечаем на Callback Query
         try:
             await cb.answer("Обращение закрыто.")
         except Exception:
             pass
 
-        # 6. Отправляем финальное сообщение пользователю и возвращаем главное меню
+        # 6. Отправляем финальное сообщение пользователю
         try:
             await self.bot.send_message(
                 uid_cb,
@@ -1360,7 +1359,7 @@ class BotInstance:
             )
         except Exception:
             pass
-
+            
     def get_main_keyboard(self):
         from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
         active_btns = [b for b in self.buttons if b.get('text')]
