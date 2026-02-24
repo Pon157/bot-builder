@@ -147,15 +147,15 @@ def _sandbox_process_target(code: str, ctx: dict, result_queue):
     import re       as _re
     import xml.etree.ElementTree as _ET
 
-    try:
-        resource.setrlimit(resource.RLIMIT_CPU, (4, 4))
-        mem = 96 * 1024 * 1024
-        try:
-            resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
-        except ValueError:
-            pass
-    except Exception:
-        pass
+    #try:
+        #resource.setrlimit(resource.RLIMIT_CPU, (4, 4))
+        #mem = 96 * 1024 * 1024
+        #try:
+            #resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
+        #except ValueError:
+            #pass
+    #except Exception:
+        #pass
 
     _DUNDER = frozenset(
         ['__class__', '__base__', '__bases__', '__mro__', '__subclasses__',
