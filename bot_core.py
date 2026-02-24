@@ -1100,6 +1100,9 @@ class BotInstance:
                 # Кнопка закрытия — единственное исключение
                 if m.text and m.text.strip() == "Закрыть обращение":
                     user.pop('_in_ticket', None)
+                    # ОБЯЗАТЕЛЬНО: Синхронизируем состояние с БД сразу
+                    await self.sync_queue.put(("sync_state", None)) 
+                    
                     # Уведомляем администратора
                     if self.admin_chat_id:
                         thread_id = user.get("last_topic_id")
@@ -1119,6 +1122,7 @@ class BotInstance:
                             pass
                     await m.answer("Обращение закрыто.", reply_markup=self.get_main_keyboard())
                     return
+
                 # Всё остальное — пересылаем оператору
                 await self.forward_to_admin(m, user)
                 await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
@@ -1300,52 +1304,62 @@ class BotInstance:
 
         # 6. Закрытие тикета пользователем
         @self.router.callback_query(lambda c: c.data == 'ticket_close')
-        async def on_ticket_close(cb: CallbackQuery):
-            uid_cb = cb.from_user.id
-            user_cb = next((u for u in self.users_list if u['id'] == uid_cb), None)
+    async def on_ticket_close(cb: CallbackQuery):
+        uid_cb = cb.from_user.id
+        # Находим пользователя в кэше (users_list)
+        user_cb = next((u for u in self.users_list if u['id'] == uid_cb), None)
 
-            if user_cb:
-                user_cb.pop('_in_ticket', None)
-                
-                # Уведомляем администратора о закрытии
-                # Напоминаю: admin_chat_id берется из настроек, указанных в .env
-                if self.admin_chat_id:
-                    thread_id = user_cb.get("last_topic_id")
-                    name = user_cb.get("first_name", str(uid_cb))
-                    username = user_cb.get("username")
-                    
-                    user_line = f"<b>{name}</b>"
-                    if username:
-                        user_line += f" (@{username})"
-                    user_line += f" | ID: <code>{uid_cb}</code>"
-                    
-                    try:
-                        await self.bot.send_message(
-                            chat_id=self.admin_chat_id,
-                            text=f"Обращение закрыто пользователем.\n{user_line}",
-                            message_thread_id=thread_id,
-                            parse_mode="HTML" # Добавлено для работы тегов <b> и <code>
-                        )
-                    except Exception:
-                        pass
-
-            try:
-                await cb.message.delete()
-            except Exception:
-                pass
+        if user_cb:
+            # 1. Удаляем флаг активного тикета в памяти
+            user_cb.pop('_in_ticket', None)
             
-            await cb.answer("Тикет закрыт.")
-            await self.bot.send_message(uid_cb, "Вы вышли из диалога")
+            # 2. ВАЖНО: Синхронизируем состояние с БД немедленно через очередь
+            # Это гарантирует, что следующее сообщение пользователя НЕ будет переслано админу
+            await self.sync_queue.put(("sync_state", None))
 
+            # 3. Уведомляем администратора о закрытии
+            if self.admin_chat_id:
+                thread_id = user_cb.get("last_topic_id")
+                name = user_cb.get("first_name", str(uid_cb))
+                username = user_cb.get("username")
+                
+                user_line = f"<b>{name}</b>"
+                if username:
+                    user_line += f" (@{username})"
+                user_line += f" | ID: <code>{uid_cb}</code>"
+                
+                try:
+                    await self.bot.send_message(
+                        chat_id=self.admin_chat_id,
+                        text=f"Обращение закрыто пользователем.\n{user_line}",
+                        message_thread_id=thread_id,
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+
+        # 4. Удаляем сообщение с Inline-кнопкой (чтобы избежать повторных нажатий)
+        try:
+            await cb.message.delete()
+        except Exception:
+            pass
+        
+        # 5. Отвечаем на Callback Query (убирает состояние загрузки на кнопке)
+        try:
             await cb.answer("Обращение закрыто.")
-            try:
-                await self.bot.send_message(
-                    uid_cb,
-                    "Обращение закрыто.",
-                    reply_markup=self.get_main_keyboard()
-                )
-            except Exception:
-                pass
+        except Exception:
+            pass
+
+        # 6. Отправляем финальное сообщение пользователю и возвращаем главное меню
+        try:
+            await self.bot.send_message(
+                uid_cb,
+                "<b>Обращение закрыто.</b>\nВы вышли из режима диалога с оператором.",
+                reply_markup=self.get_main_keyboard(),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
 
     def get_main_keyboard(self):
         from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
