@@ -2179,9 +2179,8 @@ const ACTION_META: Record<FlowActionType, { label: string; color: string; desc: 
 const CODE_SNIPPETS: { label: string; code: string }[] = [
   {
     label: 'Погода (OpenWeatherMap)',
-    code: `import requests
-
-api_key = 'ВАШ_КЛЮЧ'  # openweathermap.org → бесплатный аккаунт
+    code: `# requests уже доступен — import не нужен
+api_key = 'ВАШ_КЛЮЧ'  # бесплатно на openweathermap.org
 city = 'Moscow'
 
 r = requests.get(
@@ -2191,13 +2190,11 @@ r = requests.get(
 data = r.json()
 temp = data['main']['temp']
 desc = data['weather'][0]['description']
-reply_text = f"Погода в {city}: {temp}°C, {desc}"
-# Отправить reply_text пользователю можно через action 'message' выше`,
+reply_text = f"Погода в {city}: {temp}°C, {desc}"`,
   },
   {
     label: 'Курс валют (ЦБ РФ)',
-    code: `import requests, xml.etree.ElementTree as ET
-
+    code: `# ET (xml.etree.ElementTree) и requests уже доступны
 r = requests.get('https://www.cbr.ru/scripts/XML_daily.asp')
 root = ET.fromstring(r.content)
 rates = {}
@@ -2212,45 +2209,48 @@ eur = rates.get('EUR', 0)
 reply_text = f"USD: {usd:.2f} руб\\nEUR: {eur:.2f} руб"`,
   },
   {
-    label: 'HTTP-запрос к API',
-    code: `import requests
-
-# Пример GET-запроса к любому REST API
-url = 'https://api.example.com/endpoint'
-headers = {'Authorization': 'Bearer ВАШ_ТОКЕН'}
-params  = {'user_id': user_id, 'query': text}
-
-r = requests.get(url, headers=headers, params=params, timeout=10)
+    label: 'GET-запрос к API',
+    code: `url = 'https://api.example.com/endpoint'
+r = requests.get(
+    url,
+    headers={'Authorization': 'Bearer ВАШ_ТОКЕН'},
+    params={'user_id': user_id, 'query': text}
+)
 if r.status_code == 200:
     data = r.json()
-    # обработайте data как нужно
+    reply_text = str(data.get('result', ''))
 else:
-    pass  # обработка ошибки`,
+    reply_text = f"Ошибка: {r.status_code}"`,
   },
   {
     label: 'POST с JSON',
-    code: `import requests, json
-
-url = 'https://api.example.com/data'
-payload = {
-    'user_id': user_id,
+    code: `payload = {
+    'user_id':  user_id,
     'username': username,
-    'message': text,
+    'message':  text,
 }
-
-r = requests.post(
-    url,
-    headers={'Content-Type': 'application/json'},
-    data=json.dumps(payload),
-    timeout=10
+r = requests.post('https://api.example.com/data', json=payload)
+result = r.json()
+reply_text = result.get('message', 'Отправлено')`,
+  },
+  {
+    label: 'Курс крипты (CoinGecko)',
+    code: `r = requests.get(
+    'https://api.coingecko.com/api/v3/simple/price',
+    params={'ids': 'bitcoin,ethereum', 'vs_currencies': 'usd,rub'}
 )
-result = r.json()`,
+data = r.json()
+btc_usd = data['bitcoin']['usd']
+btc_rub = data['bitcoin']['rub']
+eth_usd = data['ethereum']['usd']
+reply_text = (
+    f"Bitcoin:  \${btc_usd:,} / {btc_rub:,} руб\\n"
+    f"Ethereum: \${eth_usd:,}"
+)`,
   },
   {
     label: 'Случайная цитата',
-    code: `import requests
-
-r = requests.get('https://api.quotable.io/random', timeout=5)
+    code: `r = requests.get('https://api.quotable.io/random')
 if r.status_code == 200:
     q = r.json()
     reply_text = f'"{q["content"]}"\\n— {q["author"]}'
@@ -2258,19 +2258,18 @@ else:
     reply_text = 'Не удалось получить цитату'`,
   },
   {
-    label: 'Отправить данные в webhook',
-    code: `import requests, json
-
-webhook_url = 'https://hooks.zapier.com/...'  # или n8n / Make
-payload = {
+    label: 'Webhook (Zapier / n8n / Make)',
+    code: `webhook_url = 'https://hooks.zapier.com/...'
+requests.post(webhook_url, json={
     'bot_id':   bot_id,
     'user_id':  user_id,
     'username': username,
     'text':     text,
-}
-requests.post(webhook_url, json=payload, timeout=10)`,
+})
+reply_text = 'Данные отправлены'`,
   },
 ];
+
 
 // Минималистичный code-редактор с номерами строк и Tab-indent
 const CodeEditor: React.FC<{
