@@ -9,6 +9,7 @@ import time
 import re
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Any, Union, Callable, Awaitable
+import requests
 
 # Добавили BaseMiddleware
 from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
