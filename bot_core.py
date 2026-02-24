@@ -261,33 +261,40 @@ def _sandbox_process_target(code: str, ctx: dict, result_queue):
 
 
 def _run_sandboxed_code(code: str, ctx: dict, wall_timeout: float) -> str:
-    """
-    Запускает код в отдельном процессе с OS-лимитами.
-    Убивает процесс если он не завершился за wall_timeout секунд.
-    """
     import multiprocessing
-
-    result_queue = multiprocessing.Queue()
-    proc = multiprocessing.Process(
+    
+    # 1. Используем 'spawn', чтобы избежать deadlock-ов асинхронного кода
+    mp = multiprocessing.get_context('spawn')
+    
+    # 2. Очередь должна быть создана в ТОМ ЖЕ контексте
+    result_queue = mp.Queue()
+    
+    proc = mp.Process(
         target=_sandbox_process_target,
+        # Передаем всё те же аргументы
         args=(code, ctx, result_queue),
         daemon=True,
     )
+    
     proc.start()
-    proc.join(timeout=wall_timeout)
 
-    if proc.is_alive():
-        proc.terminate()
-        proc.join(timeout=1)
-        if proc.is_alive():
-            proc.kill()
-        raise _SandboxTimeoutError("Превышено время выполнения")
-
+    # 3. Вместо простого join, лучше забирать данные с таймаутом напрямую из очереди
     try:
-        status, value = result_queue.get_nowait()
+        # Ждем чуть дольше wall_timeout, чтобы дать процессу время на старт
+        status, value = result_queue.get(timeout=wall_timeout)
     except Exception:
-        raise _SandboxError("Процесс завершился без результата")
+        # Если в очереди ничего не появилось за это время — это таймаут
+        if proc.is_alive():
+            proc.terminate()
+            proc.join()
+        raise _SandboxTimeoutError(f"Превышено время выполнения ({wall_timeout} сек.)")
 
+    # 4. Чистим процесс после получения данных
+    proc.join(timeout=1)
+    if proc.is_alive():
+        proc.kill()
+
+    # 5. Обрабатываем результат
     if status == 'ok':
         return value
     elif status == 'permission':
