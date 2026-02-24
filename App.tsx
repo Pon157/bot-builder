@@ -15,6 +15,8 @@ import MiniAppBuilder from './components/MiniAppBuilder';
 import MiniAppRenderer from './components/MiniAppRenderer';
 import ChatPlatform from './components/ChatPlatform';
 import ChatSiteApp from './components/ChatSiteApp';
+import RefundPolicy from './pages/RefundPolicy'; 
+import Contacts from './pages/Contacts';
 import { api } from './services/apiService';
 import { Menu, X, ArrowLeft } from 'lucide-react';
 
@@ -373,6 +375,14 @@ const App: React.FC = () => {
           path="/admin/editor/:botId" 
           element={<AdminBotEditorWrapper />} 
         />
+
+        {/* 1б. Политика возврата */}
+        <Route path="/refund" element={<RefundPolicy />} />
+
+        {/* 17. Контакты и реквизиты */}
+        <Route path="/contacts" element={<Contacts />} />
+
+        
 
         {/* --- [ ЗАЩИЩЕННЫЕ РОУТЫ (С ЛАЙАУТОМ) ] --- */}
         <Route 
