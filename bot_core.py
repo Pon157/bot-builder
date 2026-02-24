@@ -464,6 +464,144 @@ class BotInstance:
             ])
         return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
+    # ─────────────────────────────────────────────
+    # FLOW-ЛОГИКА РАСШИРЕННЫХ КНОПОК
+    # ─────────────────────────────────────────────
+
+    def _format_flow_text(self, text: str, m: Message) -> str:
+        """Подставляет переменные в текст flow-действия."""
+        return (text or '').\
+            replace('{username}', f'@{m.from_user.username}' if m.from_user.username else m.from_user.full_name).\
+            replace('{first_name}', m.from_user.first_name or '').\
+            replace('{last_name}', m.from_user.last_name or '').\
+            replace('{user_id}', str(m.from_user.id)).\
+            replace('{text}', m.text or '')
+
+    async def execute_flow_actions(self, actions: list, m: Message, user: dict) -> bool:
+        """
+        Выполняет список action-объектов для одной flow-ноды.
+        Возвращает True если была отправлена клавиатура с под-кнопками
+        (чтобы не показывать основное меню после).
+        """
+        uid = m.from_user.id
+        showed_sub_keyboard = False
+
+        for action in actions:
+            atype = action.get('type', 'message')
+
+            if atype == 'message':
+                text = self._format_flow_text(action.get('text', ''), m)
+                if text:
+                    await m.answer(text, parse_mode='HTML')
+
+            elif atype == 'admin_notify':
+                text = self._format_flow_text(action.get('text', ''), m)
+                if text and self.admin_chat_id:
+                    try:
+                        thread_id = user.get('last_topic_id') if self.use_topics else None
+                        await self.bot.send_message(
+                            self.admin_chat_id,
+                            text,
+                            message_thread_id=thread_id,
+                            parse_mode='HTML'
+                        )
+                    except Exception as e:
+                        logger.warning(f"Flow admin_notify error: {e}")
+
+            elif atype == 'code':
+                code = action.get('code', '').strip()
+                if code:
+                    await self._execute_flow_code(code, m, user)
+
+            elif atype == 'buttons':
+                sub_nodes = action.get('buttons', [])
+                if sub_nodes:
+                    # Показываем клавиатуру из под-узлов
+                    raw_buttons = [{'text': node.get('label', '')} for node in sub_nodes if node.get('label')]
+                    raw_buttons.append({'text': 'Назад'})
+                    kb = self.build_keyboard_from_buttons(raw_buttons)
+                    # Сохраняем sub_nodes в сессии пользователя для обработки нажатия
+                    user['_flow_nodes'] = sub_nodes
+                    await m.answer('Выберите:', reply_markup=kb)
+                    showed_sub_keyboard = True
+
+        return showed_sub_keyboard
+
+    async def _execute_flow_code(self, code: str, m: Message, user: dict):
+        """Выполняет пользовательский Python-код в изолированном окружении."""
+        import asyncio, traceback
+        sandbox_globals = {
+            'user_id': m.from_user.id,
+            'username': m.from_user.username or '',
+            'first_name': m.from_user.first_name or '',
+            'text': m.text or '',
+            'bot_id': self.bot_id,
+            '__builtins__': {
+                'print': lambda *a: None,  # заглушка
+                'str': str, 'int': int, 'float': float, 'bool': bool,
+                'len': len, 'range': range, 'list': list, 'dict': dict,
+                'enumerate': enumerate, 'zip': zip, 'sorted': sorted,
+                'min': min, 'max': max, 'sum': sum, 'abs': abs,
+                'round': round, 'isinstance': isinstance,
+                'True': True, 'False': False, 'None': None,
+            }
+        }
+        try:
+            # Выполняем в executor чтобы не блокировать event loop
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, exec, code, sandbox_globals)
+        except Exception as e:
+            logger.warning(f"Flow code exec error for bot {self.bot_id}: {e}\n{traceback.format_exc()}")
+
+    def find_flow_node_by_label(self, label: str, nodes: list) -> Optional[dict]:
+        """Рекурсивный поиск flow-ноды по тексту кнопки."""
+        for node in nodes:
+            if node.get('label', '').strip().lower() == label.strip().lower():
+                return node
+            # Искать во вложенных buttons-действиях
+            for action in node.get('actions', []):
+                if action.get('type') == 'buttons':
+                    found = self.find_flow_node_by_label(label, action.get('buttons', []))
+                    if found:
+                        return found
+        return None
+
+    async def handle_flow_button(self, m: Message, user: dict) -> bool:
+        """
+        Пытается обработать нажатую кнопку как flow-узел.
+        Возвращает True если кнопка была найдена и обработана в flow.
+        """
+        text = m.text.strip() if m.text else ''
+
+        # Сначала ищем в сохранённых под-нодах (если пользователь в под-меню)
+        session_nodes = user.get('_flow_nodes')
+        if session_nodes:
+            node = self.find_flow_node_by_label(text, session_nodes)
+            if node:
+                showed_kb = await self.execute_flow_actions(node.get('actions', []), m, user)
+                if not showed_kb:
+                    user.pop('_flow_nodes', None)
+                    await m.answer('Готово.', reply_markup=self.get_main_keyboard())
+                return True
+
+        # Ищем в flow верхнего уровня основных кнопок
+        for btn in self.buttons:
+            if btn.get('text', '').strip().lower() != text.lower():
+                continue
+            flow = btn.get('flow', [])
+            if not flow:
+                return False  # У этой кнопки нет flow — пусть обрабатывает старая логика
+            # Нашли кнопку с flow — показываем её под-ноды
+            raw_buttons = [{'text': node.get('label', '')} for node in flow if node.get('label')]
+            raw_buttons.append({'text': 'Назад'})
+            kb = self.build_keyboard_from_buttons(raw_buttons)
+            user['_flow_nodes'] = flow
+            resp = btn.get('response', '')
+            await m.answer(resp or 'Выберите:', reply_markup=kb)
+            return True
+
+        return False
+
     async def database_sync_worker(self):
         async with httpx.AsyncClient(timeout=10.0) as client:
             headers = {
@@ -1133,8 +1271,9 @@ class BotInstance:
                 clean_lower = clean_text.lower()
 
                 # ── А) Кнопка "Назад" ──
-                if clean_text == "⬅️ Назад":
+                if clean_text in ("⬅️ Назад", "Назад"):
                     user.pop('_ai_session', None)
+                    user.pop('_flow_nodes', None)
                     self.clear_ai_context(uid)
                     await m.answer("Главное меню:", reply_markup=self.get_main_keyboard())
                     return
@@ -1152,10 +1291,17 @@ class BotInstance:
                     await m.answer("🤖 <b>ИИ-ассистент активирован.</b>\nЗадайте вопрос:", reply_markup=close_kb)
                     return
 
-                # ── В) Проверка на кнопки меню (с поддержкой вложенности) ──
+                # ── В) Проверка flow-логики расширенных кнопок ──
+                flow_handled = await self.handle_flow_button(m, user)
+                if flow_handled:
+                    await self.log_and_update(uid, m.from_user.full_name, f"FLOW: {clean_text}")
+                    return
+
+                # ── Г) Проверка на кнопки меню (с поддержкой вложенности) ──
                 matched_btn = self.get_button_by_text(clean_text)
                 if matched_btn:
                     user.pop('_ai_session', None)
+                    user.pop('_flow_nodes', None)
                     children = matched_btn.get('children', [])
                     if children:
                         child_kb = self.build_keyboard_from_buttons(children + [{"text": "⬅️ Назад"}])
@@ -1181,7 +1327,7 @@ class BotInstance:
                     await self.log_and_update(uid, m.from_user.full_name, f"КНОПКА: {matched_btn['text']}")
                     return
 
-                # ── Г) /ai, /gpt, /nn ──
+                # ── Д) /ai, /gpt, /nn ──
                 if clean_lower in ('/ai', '/gpt', '/nn'):
                     if self.ai_enabled and self.ai_mode in ('command', 'all', 'button'):
                         bal = await self.check_ai_tokens()
@@ -1200,6 +1346,7 @@ class BotInstance:
                 if clean_lower == '/reset_ai':
                     self.clear_ai_context(uid)
                     user.pop('_ai_session', None)
+                    user.pop('_flow_nodes', None)
                     await m.answer("Контекст и сессия ИИ сброшены.", reply_markup=self.get_main_keyboard())
                     return
 
@@ -1243,6 +1390,7 @@ class BotInstance:
                 bal = await self.check_ai_tokens()
                 if bal <= 0:
                     user.pop('_ai_session', None)
+                    user.pop('_flow_nodes', None)
                     self.clear_ai_context(uid)
                     await m.answer("⚠️ AI-токены закончились. Сессия закрыта.", reply_markup=self.get_main_keyboard())
                     return
