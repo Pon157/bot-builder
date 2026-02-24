@@ -1050,9 +1050,13 @@ class BotInstance:
         # 3. Ввод от админа (Команды и Ответы)
         @self.router.message(F.chat.id == self.admin_chat_id)
         async def admin_input_router(m: Message):
+            # Проверяем, является ли сообщение командой
             if m.text and (m.text.startswith("/") or m.text.startswith("!")):
-                if await self.admin_control_logic(m):
-                    return
+                # Выполняем логику админки
+                await self.admin_control_logic(m)
+                # ОБЯЗАТЕЛЬНО делаем return, чтобы никакие команды (даже опечатки) 
+                # не улетали обычному пользователю
+                return
 
             target_id = None
             if m.message_thread_id:
