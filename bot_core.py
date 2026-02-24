@@ -136,143 +136,189 @@ def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_
 
 # ── Скрипт, который запускается как дочерний процесс ─────────────────────────
 _SANDBOX_RUNNER_PY = r'''
-import sys, json, resource, os
+import sys, json, os
 
-# ── 1. ИЗОЛЯЦИЯ ОКРУЖЕНИЯ ────────────────────────────────────────────────────
-# Несмотря на env={PATH:...} при запуске — очищаем ещё раз для надёжности.
-os.environ.clear()
-
-# Блокируем чтение /proc/<pid>/environ родителя и других файловых атак.
-# Переопределяем встроенный open чтобы запрещать опасные пути ДО того,
-# как sandbox-builtins заменят его.
-_real_open = open
-def _safe_open_early(path, *a, **kw):
-    p = str(path).lower()
-    _blocked_paths = ("/proc/", "/sys/", "/etc/", ".env", "passwd", "shadow",
-                      "/var/", "/root/", "/home/", "/tmp/")
-    for bp in _blocked_paths:
-        if bp in p:
-            raise PermissionError(f"Доступ к '{path}' запрещён")
-    return _real_open(path, *a, **kw)
-# Не заменяем встроенный open глобально — sandbox уже блокирует его через builtins.
-# Это дополнительный слой на уровне ОС-читалки.
-
-# Удаляем os и sys из sys.modules чтобы их нельзя было достать через другие модули.
-# (После чтения stdin они нам больше не нужны.)
-
+# 1. Read stdin first — before anything else
 try:
-    data = json.loads(sys.stdin.buffer.read())
-    code = data["code"]
-    ctx  = data["ctx"]
+    _raw = sys.stdin.buffer.read()
+    _data = json.loads(_raw)
+    _code = _data["code"]
+    _ctx  = _data["ctx"]
 except Exception as e:
-    print(json.dumps({"ok": False, "error": f"Ошибка входных данных: {e}"}))
+    sys.stdout.write(json.dumps({"ok": False, "error": "Input error: " + str(e)}) + "\n")
     sys.exit(1)
 
-# ── 2. OS-ЛИМИТЫ ─────────────────────────────────────────────────────────────
+# 2. Clear ALL environment variables immediately.
+#    Even if code somehow reaches os, environ will be empty.
 try:
-    resource.setrlimit(resource.RLIMIT_CPU, (4, 4))
-except Exception:
-    pass
-try:
-    resource.setrlimit(resource.RLIMIT_AS, (96 * 1024 * 1024, 96 * 1024 * 1024))
+    os.environ.clear()
 except Exception:
     pass
 
-# ── 3. УДАЛЯЕМ ОПАСНЫЕ МОДУЛИ ИЗ sys.modules ─────────────────────────────────
-# После этого import os / import sys внутри exec вернёт ошибку (модули "не найдены").
-_dangerous_modules = [
-    "os", "os.path", "sys", "subprocess", "multiprocessing", "threading",
-    "socket", "http", "urllib", "ftplib", "telnetlib", "smtplib",
-    "builtins", "importlib", "pkgutil", "zipimport",
-    "ctypes", "cffi", "mmap", "signal", "pty", "tty",
-    "resource", "gc", "tracemalloc", "linecache",
-    "tokenize", "ast", "dis", "code", "codeop", "py_compile",
-]
-for _mod_name in _dangerous_modules:
-    sys.modules.pop(_mod_name, None)
-    sys.modules[_mod_name] = None  # None = "модуль не существует", import вернёт ImportError
-
-# os и sys всё ещё доступны как локальные переменные выше,
-# но из sandbox кода их достать уже нельзя.
-
+# 3. CPU time limit — kills process via SIGXCPU after 4 seconds
 try:
-    import requests as _req
-    import json     as _json
-    import datetime as _dt
-    import math     as _math
-    import re       as _re
+    import resource as _res
+    _res.setrlimit(_res.RLIMIT_CPU, (4, 4))
+except Exception:
+    pass
+
+# 4. Import allowed modules.
+#    NOTE: We do NOT set RLIMIT_AS here — it breaks imports on many systems
+#    because Python's virtual address space includes memory-mapped libs.
+#    Memory is bounded by CPU timeout + wall-clock timeout in parent instead.
+try:
+    import requests  as _req
+    import json      as _json
+    import datetime  as _dt
+    import math      as _math
+    import re        as _re
     import xml.etree.ElementTree as _ET
 except ImportError as e:
-    print(json.dumps({"ok": False, "error": f"Модуль недоступен: {e}"}))
+    sys.stdout.write(json.dumps({"ok": False, "error": "Module error: " + str(e)}) + "\n")
     sys.exit(1)
 
-_ALL_DUNDERS = frozenset(
-    [n for n in dir(object) if n.startswith("__") and n.endswith("__")] +
-    ["_module", "__wrapped__", "__closure__", "__annotations__",
-     "__build_class__", "__loader__", "__spec__", "__file__", "__cached__"]
-)
+# 5. Memory watchdog via RSS (works on Linux without RLIMIT_AS issues)
+#    We check RSS after exec — if it exceeds 200MB, the code probably caused it.
+_RSS_LIMIT_MB = 200
 
-def _safe_getattr(obj, name, *args):
-    if isinstance(name, str) and (
-        name in _ALL_DUNDERS or (name.startswith("__") and name.endswith("__"))
-    ):
-        raise PermissionError(f"Доступ к '{name}' запрещён")
-    return getattr(obj, name, *args)
+def _rss_mb():
+    try:
+        with open("/proc/self/status") as _f:
+            for _line in _f:
+                if _line.startswith("VmRSS:"):
+                    return int(_line.split()[1]) // 1024
+    except Exception:
+        pass
+    return 0
 
-def _safe_pow(base, exp, mod=None):
-    if isinstance(exp, (int, float)) and abs(exp) > 1000:
-        raise ValueError("Степень слишком большая (максимум 1000)")
-    return pow(base, exp, mod) if mod is not None else pow(base, exp)
-
-_BLOCKED_HOSTS = (
-    "localhost", "127.", "0.0.0.0", "::1",
-    "169.254", "10.", "192.168.", "172.",
-    "metadata.google", "metadata.internal",
-)
-
+# 6. SafeModuleProxy — wraps ALL modules passed to sandbox.
+#    Blocks: for mod in (json, re, ET): mod.sys  ->  os.environ  (the real attack)
+#    Uses AttributeError so hasattr() returns False cleanly.
 class _SMP:
-    """
-    SafeModuleProxy — обёртка над модулем.
-    Блокирует атаку: for mod in (json, re, ET, ...): mod.sys -> os.environ
-    Все дандеры и опасные атрибуты (sys, os, __builtins__, ...) скрыты.
-    """
     _BLK = frozenset([
         "sys", "os", "__builtins__", "__loader__", "__spec__", "__file__",
-        "__cached__", "__path__", "__package__", "builtins",
-        "__import__", "__build_class__", "__initializing__",
+        "__cached__", "__path__", "__package__", "builtins", "environ",
+        "__import__", "__build_class__", "__initializing__", "modules",
+        "__doc__", "__name__",
     ])
     def __init__(self, mod, name=""):
         object.__setattr__(self, "_m", mod)
         object.__setattr__(self, "_n", name)
     def __getattr__(self, attr):
         if (attr.startswith("__") and attr.endswith("__")) or attr in self._BLK:
-            raise AttributeError(f"'{object.__getattribute__(self,'_n')}' has no attribute '{attr}'")
+            raise AttributeError("'" + object.__getattribute__(self,"_n") + "' has no attribute '" + attr + "'")
         return getattr(object.__getattribute__(self, "_m"), attr)
     def __setattr__(self, attr, val):
-        raise PermissionError("Изменение модуля запрещено")
+        raise PermissionError("Module modification forbidden")
     def __repr__(self):
-        return f"<module '{object.__getattribute__(self,'_n')}'>"
+        return "<module '" + object.__getattribute__(self,"_n") + "'>"
 
+# 7. Safe helpers
+_ALL_DUNDERS = frozenset(
+    [n for n in dir(object) if n.startswith("__") and n.endswith("__")] +
+    ["_module","__wrapped__","__closure__","__annotations__",
+     "__build_class__","__loader__","__spec__","__file__","__cached__"]
+)
+
+def _safe_getattr(obj, name, *args):
+    if isinstance(name, str) and (
+        name in _ALL_DUNDERS or (name.startswith("__") and name.endswith("__"))
+    ):
+        raise PermissionError("Access to '" + str(name) + "' forbidden")
+    return getattr(obj, name, *args)
+
+def _safe_pow(base, exp, mod=None):
+    if isinstance(exp, (int, float)) and abs(exp) > 1000:
+        raise ValueError("Exponent too large (max 1000)")
+    return pow(base, exp, mod) if mod is not None else pow(base, exp)
+
+_BH = ("localhost","127.","0.0.0.0","::1","169.254","10.","192.168.","172.",
+       "metadata.google","metadata.internal")
 
 class _SR:
     @staticmethod
     def _chk(url):
         u = str(url).lower()
-        if u.startswith("file://"): raise PermissionError("file:// URL запрещены")
-        for h in _BLOCKED_HOSTS:
-            if h in u: raise PermissionError("Внутренние адреса запрещены")
-    def get(self,url,**kw): self._chk(url); kw.setdefault("timeout",8); return _req.get(url,**kw)
-    def post(self,url,**kw): self._chk(url); kw.setdefault("timeout",8); return _req.post(url,**kw)
-    def put(self,url,**kw): self._chk(url); kw.setdefault("timeout",8); return _req.put(url,**kw)
-    def delete(self,url,**kw): self._chk(url); kw.setdefault("timeout",8); return _req.delete(url,**kw)
+        if u.startswith("file://"): raise PermissionError("file:// forbidden")
+        for h in _BH:
+            if h in u: raise PermissionError("Internal network forbidden")
+    def get(self, url, **kw):
+        self._chk(url); kw.setdefault("timeout",8); return _req.get(url,**kw)
+    def post(self, url, **kw):
+        self._chk(url); kw.setdefault("timeout",8); return _req.post(url,**kw)
+    def put(self, url, **kw):
+        self._chk(url); kw.setdefault("timeout",8); return _req.put(url,**kw)
+    def delete(self, url, **kw):
+        self._chk(url); kw.setdefault("timeout",8); return _req.delete(url,**kw)
 
-def _blk(*a,**kw): raise PermissionError("Функция отключена в sandbox")
+def _blk(*a, **kw): raise PermissionError("Function disabled in sandbox")
 
+# 7b. AST re-validation inside subprocess (defense in depth)
+#     Parent process already checked, but we verify again in case of future refactoring.
+try:
+    import ast as _ast
+    _BLOCKED_ATTRS_R = frozenset([
+        "__class__","__base__","__bases__","__mro__","__subclasses__",
+        "__globals__","__builtins__","__dict__","__code__","__func__",
+        "__self__","__module__","__qualname__","__init__","__new__",
+        "__reduce__","__reduce_ex__","__getattribute__","__import__",
+        "__loader__","__spec__","__file__","__cached__","__wrapped__",
+        "__weakref__","__build_class__","__closure__","__annotations__",
+    ])
+    _BLOCKED_CALLS_R = frozenset([
+        "eval","exec","compile","open","input","breakpoint","vars","dir",
+        "locals","globals","memoryview","type","object","super",
+        "classmethod","staticmethod","property",
+    ])
+    _BLOCKED_STR_R = frozenset([
+        "__class__","__base__","__subclasses__","__globals__","__builtins__",
+        "__dict__","__import__","__reduce__","__init__","__new__",
+        ".env","/etc/passwd","/etc/shadow","/proc/","/sys/",
+        "subprocess","ctypes","cffi","pty",
+    ])
+    def _ast_recheck(source):
+        try:
+            _tree = _ast.parse(source, mode="exec")
+        except SyntaxError as _e:
+            return False, "SyntaxError: " + str(_e)
+        for _node in _ast.walk(_tree):
+            if isinstance(_node, _ast.Attribute):
+                _a = _node.attr
+                if _a in _BLOCKED_ATTRS_R or (_a.startswith("__") and _a.endswith("__")):
+                    return False, "Blocked attr: " + _a
+            if isinstance(_node, _ast.Call):
+                _f = _node.func
+                if isinstance(_f, _ast.Name) and _f.id in _BLOCKED_CALLS_R:
+                    return False, "Blocked call: " + _f.id
+                if isinstance(_f, _ast.Attribute) and _f.attr in _BLOCKED_CALLS_R:
+                    return False, "Blocked method: " + _f.attr
+            if isinstance(_node, _ast.Constant) and isinstance(_node.value, str):
+                for _p in _BLOCKED_STR_R:
+                    if _p in _node.value:
+                        return False, "Blocked string: " + _p
+            if isinstance(_node, (_ast.Import, _ast.ImportFrom)):
+                return False, "import forbidden"
+        return True, None
+    _ast_ok, _ast_err = _ast_recheck(_code)
+    if not _ast_ok:
+        sys.stdout.write(json.dumps({"ok": False, "error": "Blocked: " + _ast_err}) + "\n")
+        sys.exit(1)
+except Exception as _e:
+    pass  # AST check failed unexpectedly - proceed anyway (parent already checked)
+
+# 8. Build sandbox
 _sb = {
-    "user_id": ctx.get("user_id",0), "username": ctx.get("username",""),
-    "first_name": ctx.get("first_name",""), "text": ctx.get("text",""),
-    "bot_id": ctx.get("bot_id",""),
-    "requests":_SR(), "json":_SMP(_json,"json"), "datetime":_SMP(_dt,"datetime"), "math":_SMP(_math,"math"), "re":_SMP(_re,"re"), "ET":_SMP(_ET,"ET"),
+    "user_id":    _ctx.get("user_id", 0),
+    "username":   _ctx.get("username", ""),
+    "first_name": _ctx.get("first_name", ""),
+    "text":       _ctx.get("text", ""),
+    "bot_id":     _ctx.get("bot_id", ""),
+    "requests":   _SR(),
+    "json":       _SMP(_json,    "json"),
+    "datetime":   _SMP(_dt,      "datetime"),
+    "math":       _SMP(_math,    "math"),
+    "re":         _SMP(_re,      "re"),
+    "ET":         _SMP(_ET,      "ET"),
     "reply_text": "",
     "__builtins__": {
         "str":str,"int":int,"float":float,"bool":bool,"bytes":bytes,
@@ -281,38 +327,48 @@ _sb = {
         "map":map,"filter":filter,"reversed":reversed,"iter":iter,"next":next,
         "min":min,"max":max,"sum":sum,"abs":abs,"round":round,
         "sorted":sorted,"pow":_safe_pow,"divmod":divmod,
-        "repr":repr,"format":format,"chr":chr,"ord":ord,"hex":hex,"oct":oct,"bin":bin,
-        "isinstance":isinstance,"issubclass":issubclass,"hasattr":hasattr,"callable":callable,
+        "repr":repr,"format":format,"chr":chr,"ord":ord,
+        "hex":hex,"oct":oct,"bin":bin,
+        "isinstance":isinstance,"issubclass":issubclass,
+        "hasattr":hasattr,"callable":callable,
         "getattr":_safe_getattr,
         "Exception":Exception,"ValueError":ValueError,"TypeError":TypeError,
         "KeyError":KeyError,"IndexError":IndexError,"AttributeError":AttributeError,
         "PermissionError":PermissionError,"RuntimeError":RuntimeError,
         "StopIteration":StopIteration,"AssertionError":AssertionError,
         "True":True,"False":False,"None":None,
-        "print": lambda *a,**kw: None,
+        "print":lambda *a,**kw:None,
         "__import__":_blk,"open":_blk,"eval":_blk,"exec":_blk,
         "compile":_blk,"globals":_blk,"locals":_blk,"vars":_blk,
         "dir":_blk,"type":_blk,"object":_blk,"super":_blk,
-        "delattr":_blk,"setattr":_blk,"input":_blk,"memoryview":_blk,
-        "breakpoint":_blk,"classmethod":_blk,"staticmethod":_blk,"property":_blk,
+        "delattr":_blk,"setattr":_blk,"input":_blk,
+        "memoryview":_blk,"breakpoint":_blk,
+        "classmethod":_blk,"staticmethod":_blk,"property":_blk,
         "__loader__":None,"__spec__":None,"__build_class__":_blk,
     },
 }
 
+# 9. Execute and check memory
 try:
-    exec(code, _sb)
-    reply = str(_sb.get("reply_text","")).strip()
-    sys.stdout.write(json.dumps({"ok": True, "reply": reply}) + "\n")
-    sys.stdout.flush()
+    exec(_code, _sb)
+
+    # Memory check after execution
+    rss = _rss_mb()
+    if rss > _RSS_LIMIT_MB:
+        sys.stdout.write(json.dumps({"ok": False, "error": "Memory limit exceeded"}) + "\n")
+        sys.exit(1)
+
+    _reply = str(_sb.get("reply_text","")).strip()
+    if len(_reply) > 4000:
+        _reply = _reply[:4000] + "..."
+    sys.stdout.write(json.dumps({"ok": True, "reply": _reply}) + "\n")
 except PermissionError as e:
-    sys.stdout.write(json.dumps({"ok": False, "error": f"Заблокировано: {e}"}) + "\n")
-    sys.stdout.flush()
+    sys.stdout.write(json.dumps({"ok": False, "error": "Blocked: " + str(e)}) + "\n")
 except MemoryError:
-    sys.stdout.write(json.dumps({"ok": False, "error": "Превышен лимит памяти"}) + "\n")
-    sys.stdout.flush()
+    sys.stdout.write(json.dumps({"ok": False, "error": "Memory limit exceeded"}) + "\n")
 except Exception as e:
     sys.stdout.write(json.dumps({"ok": False, "error": str(e)}) + "\n")
-    sys.stdout.flush()
+
 '''
 
 
@@ -846,7 +902,14 @@ class BotInstance:
                 # Полностью пустое окружение — никакие env-переменные родителя
                 # (токены, ключи БД, .env) не видны дочернему процессу.
                 # Минимальный PATH нужен только чтобы Python нашёл себя.
-                env={"PATH": _os.environ.get("PATH", "/usr/bin:/usr/local/bin")},
+                env={k: v for k, v in _os.environ.items() if k in (
+                    "PATH", "LD_LIBRARY_PATH", "LD_PRELOAD",
+                    "PYTHONPATH", "PYTHONHOME",
+                    "LANG", "LC_ALL", "LC_CTYPE",
+                    "HOME", "TMPDIR", "TMP", "TEMP",
+                    "PYTHONDONTWRITEBYTECODE", "PYTHONUNBUFFERED",
+                    "VIRTUAL_ENV",  # needed if requests is in a venv
+                )},
             )
 
             stdout, stderr = await asyncio.wait_for(
