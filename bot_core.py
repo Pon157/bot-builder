@@ -191,6 +191,30 @@ _BLOCKED_HOSTS = (
     "metadata.google", "metadata.internal",
 )
 
+class _SMP:
+    """
+    SafeModuleProxy — обёртка над модулем.
+    Блокирует атаку: for mod in (json, re, ET, ...): mod.sys -> os.environ
+    Все дандеры и опасные атрибуты (sys, os, __builtins__, ...) скрыты.
+    """
+    _BLK = frozenset([
+        "sys", "os", "__builtins__", "__loader__", "__spec__", "__file__",
+        "__cached__", "__path__", "__package__", "builtins",
+        "__import__", "__build_class__", "__initializing__",
+    ])
+    def __init__(self, mod, name=""):
+        object.__setattr__(self, "_m", mod)
+        object.__setattr__(self, "_n", name)
+    def __getattr__(self, attr):
+        if (attr.startswith("__") and attr.endswith("__")) or attr in self._BLK:
+            raise AttributeError(f"'{object.__getattribute__(self,'_n')}' has no attribute '{attr}'")
+        return getattr(object.__getattribute__(self, "_m"), attr)
+    def __setattr__(self, attr, val):
+        raise PermissionError("Изменение модуля запрещено")
+    def __repr__(self):
+        return f"<module '{object.__getattribute__(self,'_n')}'>"
+
+
 class _SR:
     @staticmethod
     def _chk(url):
@@ -209,7 +233,7 @@ _sb = {
     "user_id": ctx.get("user_id",0), "username": ctx.get("username",""),
     "first_name": ctx.get("first_name",""), "text": ctx.get("text",""),
     "bot_id": ctx.get("bot_id",""),
-    "requests":_SR(), "json":_json, "datetime":_dt, "math":_math, "re":_re, "ET":_ET,
+    "requests":_SR(), "json":_SMP(_json,"json"), "datetime":_SMP(_dt,"datetime"), "math":_SMP(_math,"math"), "re":_SMP(_re,"re"), "ET":_SMP(_ET,"ET"),
     "reply_text": "",
     "__builtins__": {
         "str":str,"int":int,"float":float,"bool":bool,"bytes":bytes,
