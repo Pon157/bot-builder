@@ -534,69 +534,174 @@ class BotInstance:
         """
         Выполняет пользовательский Python-код в изолированном окружении.
 
-        Разрешено:   requests, json, datetime, math, re, xml.etree (ET)
-        Запрещено:   import, open, os, sys, subprocess, exec/eval внутри кода,
-                     чтение файлов, переменных окружения, доступ к БД.
-        reply_text:  если код установит эту переменную, значение будет отправлено пользователю.
+        Защита двухуровневая:
+          1. AST-анализ до exec — блокирует магические атрибуты, import, eval, open
+             и строки содержащие запрещённые паттерны (getattr(x, "__class__") и т.п.)
+          2. Runtime sandbox — safe_getattr вместо встроенного getattr,
+             type/object заблокированы, __builtins__ урезан до безопасного минимума.
+
+        Разрешено:   requests, json, datetime, math, re, ET (xml.etree)
+        Запрещено:   import, open, eval, exec, type, object, getattr с дандерами,
+                     любой доступ к __class__, __subclasses__, __globals__ и пр.
+        reply_text:  если код присваивает эту переменную — значение отправляется пользователю.
         """
-        import asyncio
-        import traceback
-        import requests       as _requests
-        import json           as _json
-        import datetime       as _datetime
-        import math           as _math
-        import re             as _re
+        import asyncio, traceback, ast as _ast
+        import requests    as _requests
+        import json        as _json
+        import datetime    as _datetime
+        import math        as _math
+        import re          as _re
         import xml.etree.ElementTree as _ET
 
-        # Безопасная обёртка над requests — режем опасные локальные адреса
-        _BLOCKED_HOSTS = ('localhost', '127.', '0.0.0.0', '::1', '169.254', '10.', '192.168.', '172.')
+        # ── 1. AST-ВАЛИДАЦИЯ ────────────────────────────────────────────────────
 
-        class _SafeSession:
-            """Прокси над requests, блокирующий внутренние адреса и файловые URL."""
+        # Атрибуты, доступ к которым запрещён через точку: x.__class__ и т.д.
+        _BLOCKED_ATTRS = {
+            '__class__', '__base__', '__bases__', '__mro__', '__subclasses__',
+            '__globals__', '__builtins__', '__dict__', '__code__', '__func__',
+            '__self__', '__module__', '__qualname__', '__init__', '__new__',
+            '__reduce__', '__reduce_ex__', '__getattribute__', '__setattr__',
+            '__delattr__', '__import__', '__loader__', '__spec__', '__file__',
+            '__cached__', '__wrapped__', '_module', '__weakref__',
+            '__build_class__', '__closure__',
+        }
+        # Имена переменных/встроенных, которые нельзя использовать напрямую
+        _BLOCKED_NAMES = {
+            '__import__', '__builtins__', '__spec__', '__loader__',
+            '__build_class__', 'breakpoint',
+        }
+        # Прямые вызовы этих функций запрещены
+        _BLOCKED_CALLS = {
+            'eval', 'exec', 'compile', 'open', 'input', 'breakpoint',
+            'vars', 'dir', 'locals', 'globals', 'memoryview', 'type', 'object',
+            'super', 'classmethod', 'staticmethod', 'property',
+        }
+        # Строки, содержащие эти паттерны — блокируются (защита от getattr(x, "__class__"))
+        _BLOCKED_STR_PATTERNS = {
+            '__class__', '__base__', '__bases__', '__mro__', '__subclasses__',
+            '__globals__', '__builtins__', '__dict__', '__code__', '__import__',
+            '__reduce__', '__init__', '__new__', '_module', '__closure__',
+            '__getattribute__', '.env', '/etc/passwd', '/etc/shadow',
+        }
+
+        def _ast_validate(source: str):
+            """Возвращает (ok, error_message)."""
+            try:
+                tree = _ast.parse(source, mode='exec')
+            except SyntaxError as e:
+                return False, f"Синтаксическая ошибка: {e}"
+
+            for node in _ast.walk(tree):
+                # Доступ к атрибутам через точку
+                if isinstance(node, _ast.Attribute):
+                    if node.attr in _BLOCKED_ATTRS or (
+                        node.attr.startswith('__') and node.attr.endswith('__')
+                    ):
+                        return False, f"Запрещён доступ к атрибуту '{node.attr}'"
+
+                # Имена переменных
+                if isinstance(node, _ast.Name):
+                    if node.id in _BLOCKED_NAMES:
+                        return False, f"Запрещено имя '{node.id}'"
+
+                # Вызовы функций
+                if isinstance(node, _ast.Call):
+                    func = node.func
+                    if isinstance(func, _ast.Name) and func.id in _BLOCKED_CALLS:
+                        return False, f"Запрещён вызов '{func.id}()'"
+                    if isinstance(func, _ast.Attribute) and func.attr in _BLOCKED_CALLS:
+                        return False, f"Запрещён вызов метода '{func.attr}()'"
+
+                # Строковые константы — ловим getattr(x, "__class__") и сборку строк
+                if isinstance(node, _ast.Constant) and isinstance(node.value, str):
+                    for pat in _BLOCKED_STR_PATTERNS:
+                        if pat in node.value:
+                            return False, f"Строка содержит запрещённый паттерн '{pat}'"
+
+                # import / from ... import
+                if isinstance(node, (_ast.Import, _ast.ImportFrom)):
+                    return False, "Оператор import запрещён — модули предоставлены автоматически"
+
+                # f-строки — проверяем вложенные выражения
+                if isinstance(node, _ast.JoinedStr):
+                    for value in _ast.walk(node):
+                        if isinstance(value, _ast.Attribute) and (
+                            value.attr in _BLOCKED_ATTRS or
+                            (value.attr.startswith('__') and value.attr.endswith('__'))
+                        ):
+                            return False, f"Запрещён атрибут в f-строке: '{value.attr}'"
+
+            return True, None
+
+        ok, ast_error = _ast_validate(code)
+        if not ok:
+            logger.warning(
+                f"Flow AST blocked for bot {self.bot_id}: {ast_error}\n"
+                f"Code: {code[:200]}"
+            )
+            await m.answer(f"Код отклонён: {ast_error}")
+            return
+
+        # ── 2. RUNTIME SANDBOX ───────────────────────────────────────────────────
+
+        # Безопасный getattr — блокирует дандеры даже через конкатенацию строк
+        _DUNDER_BLOCKED = _BLOCKED_ATTRS | {
+            n for n in dir(object) if n.startswith('__') and n.endswith('__')
+        }
+
+        def _safe_getattr(obj, name, *args):
+            if isinstance(name, str) and (
+                name in _DUNDER_BLOCKED or
+                (name.startswith('__') and name.endswith('__'))
+            ):
+                raise PermissionError(f"Доступ к '{name}' запрещён в sandbox")
+            return getattr(obj, name, *args)
+
+        # Безопасная обёртка над requests — блокирует локальные адреса
+        _BLOCKED_HOSTS = (
+            'localhost', '127.', '0.0.0.0', '::1',
+            '169.254', '10.', '192.168.', '172.',
+            'metadata.google', '169.254.169.254',
+        )
+
+        class _SafeRequests:
             @staticmethod
-            def _check_url(url: str):
-                url_lower = url.lower().strip()
-                if url_lower.startswith('file://'):
+            def _check(url: str):
+                u = str(url).lower().strip()
+                if u.startswith('file://'):
                     raise PermissionError("file:// URL запрещены")
-                for host in _BLOCKED_HOSTS:
-                    if host in url_lower:
-                        raise PermissionError(f"Обращение к внутренним адресам запрещено: {url}")
+                for h in _BLOCKED_HOSTS:
+                    if h in u:
+                        raise PermissionError(f"Обращение к внутренним адресам запрещено")
 
             def get(self, url, **kw):
-                self._check_url(url)
-                kw.setdefault('timeout', 10)
+                self._check(url); kw.setdefault('timeout', 10)
                 return _requests.get(url, **kw)
 
             def post(self, url, **kw):
-                self._check_url(url)
-                kw.setdefault('timeout', 10)
+                self._check(url); kw.setdefault('timeout', 10)
                 return _requests.post(url, **kw)
 
             def put(self, url, **kw):
-                self._check_url(url)
-                kw.setdefault('timeout', 10)
+                self._check(url); kw.setdefault('timeout', 10)
                 return _requests.put(url, **kw)
 
             def delete(self, url, **kw):
-                self._check_url(url)
-                kw.setdefault('timeout', 10)
+                self._check(url); kw.setdefault('timeout', 10)
                 return _requests.delete(url, **kw)
 
-        _safe_requests = _SafeSession()
-
-        # Заглушки вместо опасных встроенных функций
         def _blocked(*a, **kw):
             raise PermissionError("Эта функция отключена в sandbox")
 
-        sandbox_globals = {
+        sandbox = {
             # Контекст пользователя
             'user_id':    m.from_user.id,
             'username':   m.from_user.username or '',
             'first_name': m.from_user.first_name or '',
             'text':       m.text or '',
             'bot_id':     self.bot_id,
-            # Разрешённые модули (уже импортированы — import внутри кода не нужен)
-            'requests':   _safe_requests,
+            # Разрешённые модули
+            'requests':   _SafeRequests(),
             'json':       _json,
             'datetime':   _datetime,
             'math':       _math,
@@ -604,57 +709,75 @@ class BotInstance:
             'ET':         _ET,
             # Выходная переменная
             'reply_text': '',
-            # Безопасные builtins — __import__ намеренно отсутствует
+            # Urезанные builtins — все опасные явно заблокированы
             '__builtins__': {
                 # Типы и преобразования
                 'str': str, 'int': int, 'float': float, 'bool': bool, 'bytes': bytes,
-                # Коллекции
+                # Коллекции (без type/object — они дают доступ к MRO)
                 'list': list, 'dict': dict, 'tuple': tuple, 'set': set, 'frozenset': frozenset,
                 # Итерация
                 'len': len, 'range': range, 'enumerate': enumerate, 'zip': zip,
-                'map': map, 'filter': filter, 'reversed': reversed,
+                'map': map, 'filter': filter, 'reversed': reversed, 'iter': iter, 'next': next,
                 # Математика
                 'min': min, 'max': max, 'sum': sum, 'abs': abs, 'round': round,
                 'sorted': sorted, 'pow': pow, 'divmod': divmod,
-                # Утилиты
-                'isinstance': isinstance, 'issubclass': issubclass,
-                'hasattr': hasattr, 'getattr': getattr,
-                'repr': repr, 'format': format, 'chr': chr, 'ord': ord, 'hex': hex,
-                # Исключения — только читать, не создавать системные
-                'Exception': Exception, 'ValueError': ValueError,
-                'TypeError': TypeError, 'KeyError': KeyError,
-                'IndexError': IndexError, 'AttributeError': AttributeError,
-                'PermissionError': PermissionError,
+                # Строки / форматирование
+                'repr': repr, 'format': format, 'chr': chr, 'ord': ord,
+                'hex': hex, 'oct': oct, 'bin': bin,
+                # Проверки типов (без type/object)
+                'isinstance': isinstance, 'issubclass': issubclass, 'callable': callable,
+                'hasattr': hasattr,
+                # getattr — заменён безопасной версией
+                'getattr': _safe_getattr,
+                # Исключения
+                'Exception': Exception, 'ValueError': ValueError, 'TypeError': TypeError,
+                'KeyError': KeyError, 'IndexError': IndexError, 'AttributeError': AttributeError,
+                'PermissionError': PermissionError, 'RuntimeError': RuntimeError,
+                'StopIteration': StopIteration, 'AssertionError': AssertionError,
                 # Константы
                 'True': True, 'False': False, 'None': None,
-                # print → тихая заглушка (не шумит в логах)
+                # print — тихая заглушка
                 'print': lambda *a, **kw: None,
-                # Всё опасное — заблокировано явно
-                '__import__': _blocked,
-                'open':       _blocked,
-                'eval':       _blocked,
-                'exec':       _blocked,
-                'compile':    _blocked,
-                'globals':    _blocked,
-                'locals':     _blocked,
-                'vars':       _blocked,
-                'dir':        _blocked,
-                'delattr':    _blocked,
-                'setattr':    _blocked,
-                '__loader__': None,
-                '__spec__':   None,
+                # Всё опасное явно заблокировано
+                '__import__':      _blocked,
+                'open':            _blocked,
+                'eval':            _blocked,
+                'exec':            _blocked,
+                'compile':         _blocked,
+                'globals':         _blocked,
+                'locals':          _blocked,
+                'vars':            _blocked,
+                'dir':             _blocked,
+                'type':            _blocked,
+                'object':          _blocked,
+                'super':           _blocked,
+                'delattr':         _blocked,
+                'setattr':         _blocked,
+                'input':           _blocked,
+                'memoryview':      _blocked,
+                'breakpoint':      _blocked,
+                'classmethod':     _blocked,
+                'staticmethod':    _blocked,
+                'property':        _blocked,
+                '__loader__':      None,
+                '__spec__':        None,
+                '__build_class__': _blocked,
             },
         }
 
+        # ── 3. ИСПОЛНЕНИЕ ────────────────────────────────────────────────────────
         try:
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, exec, code, sandbox_globals)
-            reply = str(sandbox_globals.get('reply_text', '')).strip()
+            await loop.run_in_executor(None, exec, code, sandbox)
+            reply = str(sandbox.get('reply_text', '')).strip()
             if reply:
+                # Ограничиваем длину ответа — защита от флуда
+                if len(reply) > 4000:
+                    reply = reply[:4000] + '…'
                 await m.answer(reply, parse_mode='HTML')
         except PermissionError as e:
-            logger.warning(f"Flow sandbox blocked action for bot {self.bot_id}: {e}")
-            await m.answer("Действие заблокировано: попытка доступа к запрещённому ресурсу.")
+            logger.warning(f"Flow sandbox runtime block for bot {self.bot_id}: {e}")
+            await m.answer(f"Действие заблокировано: {e}")
         except Exception as e:
             logger.warning(f"Flow code error for bot {self.bot_id}: {e}\n{traceback.format_exc()}")
 
