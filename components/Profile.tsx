@@ -435,19 +435,31 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
           </div>
 
           {/* Документация */}
-          <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6">
-            <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-4 flex items-center gap-2">
-              <FileText className="w-3 h-3" />Документация
-            </h4>
-            <div className="space-y-2">
-              {[
-                { label: 'Соглашение',       file: 'user_agreement.pdf' },
-                { label: 'Конфиденциальность', file: 'privacy_policy.pdf' },
-              ].map(({ label, file }) => (
-                <a key={file} href={`${GITHUB_RAW_URL}/${file}`} target="_blank" rel="noreferrer"
-                  className="flex items-center justify-between p-3 bg-black/30 border border-zinc-800 rounded-xl text-[10px] text-zinc-400 hover:text-white hover:border-zinc-600 transition-all">
-                  {label} <ExternalLink className="w-3 h-3 opacity-30" />
-                </a>
+<div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6">
+  <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+    <FileText className="w-3 h-3" />Документация
+  </h4>
+  <div className="space-y-2">
+    {/* Внутренние страницы (Обязательно для ЮKassa) */}
+    <Link to="/refund" 
+      className="flex items-center justify-between p-3 bg-black/30 border border-zinc-800 rounded-xl text-[10px] text-zinc-400 hover:text-white hover:border-zinc-600 transition-all">
+      Правила возврата <ExternalLink className="w-3 h-3 opacity-30" />
+    </Link>
+    
+    <Link to="/contacts" 
+      className="flex items-center justify-between p-3 bg-black/30 border border-zinc-800 rounded-xl text-[10px] text-zinc-400 hover:text-white hover:border-zinc-600 transition-all">
+      Контакты и реквизиты <ExternalLink className="w-3 h-3 opacity-30" />
+    </Link>
+
+    {/* Ссылки на GitHub */}
+    {[
+      { label: 'Соглашение',       file: 'user_agreement.pdf' },
+      { label: 'Конфиденциальность', file: 'privacy_policy.pdf' },
+    ].map(({ label, file }) => (
+      <a key={file} href={`${GITHUB_RAW_URL}/${file}`} target="_blank" rel="noreferrer"
+        className="flex items-center justify-between p-3 bg-black/30 border border-zinc-800 rounded-xl text-[10px] text-zinc-400 hover:text-white hover:border-zinc-600 transition-all">
+        {label} <ExternalLink className="w-3 h-3 opacity-30" />
+      </a>
               ))}
             </div>
           </div>
