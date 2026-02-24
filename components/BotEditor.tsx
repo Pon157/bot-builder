@@ -2255,7 +2255,7 @@ reply_text = (
   },
   {
     label: 'Случайная цитата',
-    code: `r = requests.get('https://api.quotable.io/random')
+    code: `r = requests.get('http://api.quotable.io/random')
 if r.status_code == 200:
     q = r.json()
     reply_text = f'"{q["content"]}"\\n— {q["author"]}'
