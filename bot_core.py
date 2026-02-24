@@ -788,6 +788,14 @@ class BotInstance:
         except Exception as e:
             logger.error(f"Error inside _send_content_to_admin: {e}")
             raise e
+
+    async def admin_control_logic(self, m: Message):
+        """
+        ЕДИНАЯ ЛОГИКА АДМИН-КОМАНД (Статистика, Рассылка, Бан, Варн, Разбан)
+        """
+        # 1. Проверка на наличие текста и префикса команды (/ или !)
+        if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): 
+            return False
         
         cmd_parts = m.text.split()
         command = cmd_parts[0][1:].lower()
