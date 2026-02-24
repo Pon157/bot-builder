@@ -529,27 +529,39 @@ class BotInstance:
 
     async def _execute_flow_code(self, code: str, m: Message, user: dict):
         """Выполняет пользовательский Python-код в изолированном окружении."""
-        import asyncio, traceback
+        import asyncio, traceback, requests as _requests, json as _json, datetime as _datetime
+        import xml.etree.ElementTree as _ET
+
         sandbox_globals = {
-            'user_id': m.from_user.id,
-            'username': m.from_user.username or '',
+            'user_id':    m.from_user.id,
+            'username':   m.from_user.username or '',
             'first_name': m.from_user.first_name or '',
-            'text': m.text or '',
-            'bot_id': self.bot_id,
+            'text':       m.text or '',
+            'bot_id':     self.bot_id,
+            'requests':   _requests,
+            'json':       _json,
+            'datetime':   _datetime,
+            'ET':         _ET,
+            'reply_text': '',   # можно задать внутри кода, см. ниже
             '__builtins__': {
-                'print': lambda *a: None,  # заглушка
+                'print': lambda *a, **kw: None,
                 'str': str, 'int': int, 'float': float, 'bool': bool,
                 'len': len, 'range': range, 'list': list, 'dict': dict,
+                'tuple': tuple, 'set': set,
                 'enumerate': enumerate, 'zip': zip, 'sorted': sorted,
                 'min': min, 'max': max, 'sum': sum, 'abs': abs,
-                'round': round, 'isinstance': isinstance,
+                'round': round, 'isinstance': isinstance, 'hasattr': hasattr,
+                'getattr': getattr, 'repr': repr,
                 'True': True, 'False': False, 'None': None,
             }
         }
         try:
-            # Выполняем в executor чтобы не блокировать event loop
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, exec, code, sandbox_globals)
+            # Если код установил reply_text — отправляем его пользователю
+            reply = sandbox_globals.get('reply_text', '').strip()
+            if reply:
+                await m.answer(reply, parse_mode='HTML')
         except Exception as e:
             logger.warning(f"Flow code exec error for bot {self.bot_id}: {e}\n{traceback.format_exc()}")
 
@@ -584,21 +596,35 @@ class BotInstance:
                     await m.answer('Готово.', reply_markup=self.get_main_keyboard())
                 return True
 
-        # Ищем в flow верхнего уровня основных кнопок
+        # Ищем в основных кнопках
         for btn in self.buttons:
             if btn.get('text', '').strip().lower() != text.lower():
                 continue
+
+            handled = False
+
+            # directActions — выполняем сразу при нажатии кнопки
+            direct_actions = btn.get('directActions', [])
+            if direct_actions:
+                await self.execute_flow_actions(direct_actions, m, user)
+                handled = True
+
+            # flow — показываем под-кнопки (ветки)
             flow = btn.get('flow', [])
-            if not flow:
-                return False  # У этой кнопки нет flow — пусть обрабатывает старая логика
-            # Нашли кнопку с flow — показываем её под-ноды
-            raw_buttons = [{'text': node.get('label', '')} for node in flow if node.get('label')]
-            raw_buttons.append({'text': 'Назад'})
-            kb = self.build_keyboard_from_buttons(raw_buttons)
-            user['_flow_nodes'] = flow
-            resp = btn.get('response', '')
-            await m.answer(resp or 'Выберите:', reply_markup=kb)
-            return True
+            if flow:
+                raw_buttons = [{'text': node.get('label', '')} for node in flow if node.get('label')]
+                raw_buttons.append({'text': 'Назад'})
+                kb = self.build_keyboard_from_buttons(raw_buttons)
+                user['_flow_nodes'] = flow
+                resp = btn.get('response', '')
+                await m.answer(resp or 'Выберите:', reply_markup=kb)
+                handled = True
+
+            if handled:
+                return True
+
+            # Кнопка найдена, но flow нет — пусть обрабатывает стандартная логика
+            return False
 
         return False
 
@@ -1303,10 +1329,17 @@ class BotInstance:
                     user.pop('_ai_session', None)
                     user.pop('_flow_nodes', None)
                     children = matched_btn.get('children', [])
+                    # Инлайн URL-кнопки (только TG — VK не поддерживает в этом формате)
+                    inline_links = matched_btn.get('inline', [])
+                    inline_kb = self.build_inline_from_list(inline_links) if inline_links else None
+
                     if children:
                         child_kb = self.build_keyboard_from_buttons(children + [{"text": "⬅️ Назад"}])
                         resp = matched_btn.get('response', '')
                         await m.answer(resp or "Выберите вариант:", reply_markup=child_kb)
+                        # Инлайн-кнопки идут отдельным сообщением если есть под-меню
+                        if inline_kb:
+                            await m.answer("Полезные ссылки:", reply_markup=inline_kb)
                     else:
                         if matched_btn.get('type') == 'request':
                             user['_in_ticket'] = True
@@ -1320,9 +1353,15 @@ class BotInstance:
                                 f"{resp_text}\n\nВы можете продолжать писать — сообщения будут доставлены оператору.",
                                 reply_markup=close_ticket_kb
                             )
+                            if inline_kb:
+                                await m.answer("Полезные ссылки:", reply_markup=inline_kb)
                         else:
                             resp_text = matched_btn.get('response', 'Принято!')
-                            await m.answer(resp_text, reply_markup=self.get_main_keyboard())
+                            # Если есть инлайн-кнопки — отправляем их вместе с ответом
+                            await m.answer(resp_text, reply_markup=inline_kb if inline_kb else self.get_main_keyboard())
+                            # Если были инлайн-кнопки — дополнительно показать основную клавиатуру
+                            if inline_kb:
+                                await m.answer("Главное меню:", reply_markup=self.get_main_keyboard())
 
                     await self.log_and_update(uid, m.from_user.full_name, f"КНОПКА: {matched_btn['text']}")
                     return
