@@ -746,7 +746,31 @@ class BotInstance:
     async def _send_content_to_admin(self, m: Message, thread_id: int, header_text: str, user: dict):
         sent_msg = None
         try:
-            if m.text:
+            # Проверяем наличие премиум-эмодзи в тексте или подписи
+            has_premium_emoji = False
+            entities = m.entities or m.caption_entities
+            if entities:
+                for entity in entities:
+                    if entity.type == "custom_emoji":
+                        has_premium_emoji = True
+                        break
+
+            # Если это стикер ИЛИ сообщение с премиум-эмодзи
+            if m.sticker or has_premium_emoji:
+                # 1. Сначала отправляем заголовок с данными пользователя
+                if header_text:
+                    await self.bot.send_message(self.admin_chat_id, header_text, message_thread_id=thread_id)
+                
+                # 2. Затем ПЕРЕСЫЛАЕМ оригинал сообщения (forward)
+                sent_msg = await self.bot.forward_message(
+                    chat_id=self.admin_chat_id,
+                    from_chat_id=m.chat.id,
+                    message_id=m.message_id,
+                    message_thread_id=thread_id
+                )
+            
+            # Стандартная логика для остальных типов контента
+            elif m.text:
                 sent_msg = await self.bot.send_message(self.admin_chat_id, f"{header_text}{m.text}", message_thread_id=thread_id)
             elif m.photo:
                 sent_msg = await self.bot.send_photo(self.admin_chat_id, m.photo[-1].file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
@@ -754,42 +778,16 @@ class BotInstance:
                 sent_msg = await self.bot.send_video(self.admin_chat_id, m.video.file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
             elif m.voice:
                 sent_msg = await self.bot.send_voice(self.admin_chat_id, m.voice.file_id, caption=f"{header_text}{m.caption or ''}", message_thread_id=thread_id)
-            
-            # --- ЛОГИКА ДЛЯ СТИКЕРОВ С ПРЕДВАРИТЕЛЬНЫМ ЗАГОЛОВКОМ ---
-            elif m.sticker:
-                # 1. Сначала пишем от кого (ID, имя и т.д.)
-                if header_text:
-                    await self.bot.send_message(self.admin_chat_id, header_text, message_thread_id=thread_id)
-                
-                # 2. Затем пересылаем сам стикер методом forward
-                sent_msg = await self.bot.forward_message(
-                    chat_id=self.admin_chat_id,
-                    from_chat_id=m.chat.id,
-                    message_id=m.message_id,
-                    message_thread_id=thread_id
-                )
-            # -------------------------------------------------------
-
             else:
-                # Для всех остальных типов (файлы, анимации)
                 if header_text:
                     await self.bot.send_message(self.admin_chat_id, header_text, message_thread_id=thread_id)
                 sent_msg = await self.bot.copy_message(self.admin_chat_id, m.chat.id, m.message_id, message_thread_id=thread_id)
             
             if sent_msg:
                 self.msg_map[sent_msg.message_id] = user['id']
-                
         except Exception as e:
             logger.error(f"Error inside _send_content_to_admin: {e}")
             raise e
-    async def admin_control_logic(self, m: Message):
-        """
-        ЕДИНАЯ ЛОГИКА АДМИН-КОМАНД (Статистика, Рассылка, Бан, Варн, Разбан)
-        Вызывается как: await self.admin_control_logic(m)
-        """
-        # 1. Проверка на наличие текста и префикса команды (/ или !)
-        if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): 
-            return False
         
         cmd_parts = m.text.split()
         command = cmd_parts[0][1:].lower()
