@@ -401,7 +401,9 @@ class BotInstance:
         self.flood_cache = {}
         self.is_running = True
         self.sync_queue = asyncio.Queue()
-        self.broadcast_cache = {} 
+        self.broadcast_cache = {}
+        # Буфер для media group: {media_group_id: {"messages": [...], "user": ..., "task": ...}}
+        self.media_group_buffer: Dict[str, dict] = {}
         
         # Сохраняем ссылку на конфиг для работы register_event
         self.config = config_data 
@@ -1342,6 +1344,144 @@ class BotInstance:
             logger.error(f"Error inside _send_content_to_admin: {e}")
             raise e
 
+    async def _send_media_group_to_admin(self, messages: list, user: dict, is_first: bool = False, btn_text: str = ""):
+        """Отправляет список медиа-сообщений (media group) администратору как альбом."""
+        if not self.admin_chat_id or not messages:
+            return
+        first_m = messages[0]
+        force_new_topic = self.topic_per_req and (btn_text != "" or is_first)
+        thread_id = await self.resolve_thread(user, force_new=force_new_topic)
+        if not thread_id and self.use_topics:
+            thread_id = await self.resolve_thread(user, force_new=True)
+        header_text = format_admin_header(first_m, self.settings, is_first, btn_text)
+
+        from aiogram.types import InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio
+        media_items = []
+        for i, msg in enumerate(messages):
+            cap = (header_text if i == 0 else "") + (msg.caption or "")
+            if msg.photo:
+                media_items.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=cap or None, parse_mode="HTML"))
+            elif msg.video:
+                media_items.append(InputMediaVideo(media=msg.video.file_id, caption=cap or None, parse_mode="HTML"))
+            elif msg.document:
+                media_items.append(InputMediaDocument(media=msg.document.file_id, caption=cap or None, parse_mode="HTML"))
+            elif msg.audio:
+                media_items.append(InputMediaAudio(media=msg.audio.file_id, caption=cap or None, parse_mode="HTML"))
+
+        if not media_items:
+            return
+        try:
+            sent_msgs = await self.bot.send_media_group(
+                chat_id=self.admin_chat_id,
+                media=media_items,
+                message_thread_id=thread_id
+            )
+            if sent_msgs:
+                self.msg_map[sent_msgs[0].message_id] = user['id']
+        except TelegramBadRequest as e:
+            if "message thread not found" in e.message:
+                user["last_topic_id"] = None
+                new_tid = await self.resolve_thread(user, force_new=True)
+                if new_tid:
+                    try:
+                        sent_msgs = await self.bot.send_media_group(
+                            chat_id=self.admin_chat_id,
+                            media=media_items,
+                            message_thread_id=new_tid
+                        )
+                        if sent_msgs:
+                            self.msg_map[sent_msgs[0].message_id] = user['id']
+                    except Exception as e2:
+                        logger.error(f"MediaGroup retry error: {e2}")
+            else:
+                logger.error(f"MediaGroup send error: {e}")
+        except Exception as e:
+            logger.error(f"Error in _send_media_group_to_admin: {e}")
+
+    async def _flush_media_group(self, group_id: str, user: dict, is_first: bool = False, btn_text: str = ""):
+        """Отправляет накопленную media group администратору как альбом."""
+        await asyncio.sleep(0.8)  # Ждём, пока все части группы придут
+
+        buf = self.media_group_buffer.pop(group_id, None)
+        if not buf:
+            return
+
+        messages = buf["messages"]
+        if not messages:
+            return
+
+        first_m = messages[0]
+        if not self.admin_chat_id:
+            return
+
+        force_new_topic = self.topic_per_req and (btn_text != "" or is_first)
+        thread_id = await self.resolve_thread(user, force_new=force_new_topic)
+        header_text = format_admin_header(first_m, self.settings, is_first, btn_text)
+
+        try:
+            if not thread_id and self.use_topics:
+                thread_id = await self.resolve_thread(user, force_new=True)
+
+            from aiogram.types import InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio
+
+            media_items = []
+            for i, msg in enumerate(messages):
+                cap = (header_text if i == 0 else "") + (msg.caption or "")
+                if msg.photo:
+                    media_items.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=cap or None, parse_mode="HTML"))
+                elif msg.video:
+                    media_items.append(InputMediaVideo(media=msg.video.file_id, caption=cap or None, parse_mode="HTML"))
+                elif msg.document:
+                    media_items.append(InputMediaDocument(media=msg.document.file_id, caption=cap or None, parse_mode="HTML"))
+                elif msg.audio:
+                    media_items.append(InputMediaAudio(media=msg.audio.file_id, caption=cap or None, parse_mode="HTML"))
+
+            if media_items:
+                sent_msgs = await self.bot.send_media_group(
+                    chat_id=self.admin_chat_id,
+                    media=media_items,
+                    message_thread_id=thread_id
+                )
+                if sent_msgs:
+                    self.msg_map[sent_msgs[0].message_id] = user['id']
+
+        except TelegramBadRequest as e:
+            if "message thread not found" in e.message:
+                user["last_topic_id"] = None
+                new_tid = await self.resolve_thread(user, force_new=True)
+                if new_tid:
+                    await self._flush_media_group_retry(messages, user, new_tid, header_text)
+            else:
+                logger.error(f"MediaGroup Forwarding Error: {e}")
+        except Exception as e:
+            logger.error(f"Error in _flush_media_group: {e}")
+
+    async def _flush_media_group_retry(self, messages: list, user: dict, thread_id: int, header_text: str):
+        """Повтор отправки media group при ошибке топика."""
+        try:
+            from aiogram.types import InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio
+            media_items = []
+            for i, msg in enumerate(messages):
+                cap = (header_text if i == 0 else "") + (msg.caption or "")
+                if msg.photo:
+                    media_items.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=cap or None, parse_mode="HTML"))
+                elif msg.video:
+                    media_items.append(InputMediaVideo(media=msg.video.file_id, caption=cap or None, parse_mode="HTML"))
+                elif msg.document:
+                    media_items.append(InputMediaDocument(media=msg.document.file_id, caption=cap or None, parse_mode="HTML"))
+                elif msg.audio:
+                    media_items.append(InputMediaAudio(media=msg.audio.file_id, caption=cap or None, parse_mode="HTML"))
+            if media_items:
+                sent_msgs = await self.bot.send_media_group(
+                    chat_id=self.admin_chat_id,
+                    media=media_items,
+                    message_thread_id=thread_id
+                )
+                if sent_msgs:
+                    self.msg_map[sent_msgs[0].message_id] = user['id']
+        except Exception as e:
+            logger.error(f"Error in _flush_media_group_retry: {e}")
+
     async def admin_control_logic(self, m: Message):
         """
         ЕДИНАЯ ЛОГИКА АДМИН-КОМАНД (Статистика, Рассылка, Бан, Варн, Разбан)
@@ -1646,6 +1786,37 @@ class BotInstance:
                 return
 
             uid = user['id']
+
+            # ── ОБРАБОТКА MEDIA GROUP (несколько медиа за раз) ──
+            if m.media_group_id:
+                gid = m.media_group_id
+                if gid not in self.media_group_buffer:
+                    # Определяем параметры для первого сообщения группы
+                    _is_first = is_new
+                    _btn_text = ""
+                    _in_ticket = user.get('_in_ticket', False)
+                    _forward_all = self.forward_all
+
+                    self.media_group_buffer[gid] = {
+                        "messages": [],
+                        "user": user,
+                        "is_first": _is_first,
+                        "btn_text": _btn_text,
+                        "in_ticket": _in_ticket,
+                        "forward_all": _forward_all,
+                    }
+                    # Запускаем отложенную отправку
+                    async def _schedule_flush(group_id=gid, _user=user, _is_first=_is_first, _btn_text=_btn_text, _in_ticket=_in_ticket, _forward_all=_forward_all):
+                        await asyncio.sleep(0.8)
+                        buf = self.media_group_buffer.pop(group_id, None)
+                        if not buf or not buf["messages"]:
+                            return
+                        if _in_ticket or _forward_all or _is_first:
+                            await self._send_media_group_to_admin(buf["messages"], _user, _is_first, _btn_text)
+                            await self.log_and_update(_user['id'], buf["messages"][0].from_user.full_name, "[Медиагруппа]")
+                    asyncio.create_task(_schedule_flush())
+                self.media_group_buffer[gid]["messages"].append(m)
+                return
 
             # ── РЕЖИМ АКТИВНОГО ТИКЕТА ──
             if user.get('_in_ticket'):
