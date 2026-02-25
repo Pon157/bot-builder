@@ -50,7 +50,7 @@ load_dotenv()
 #  КОНФИГУРАЦИЯ
 # ══════════════════════════════════════════════════════
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = os.getenv("SECURITY_BOT_TOKEN", "")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 DB_PATH = "guard_bot.db"
 
