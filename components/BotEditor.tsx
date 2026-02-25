@@ -720,6 +720,32 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                 </div>
               </section>
 
+              <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-4">
+                <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
+                  <Send className="w-4 h-4 text-blue-400" />Режим пересылки
+                </h3>
+                <button
+                  onClick={() => updateSetting('forwardAll' as any, !safeSettings['forwardAll' as keyof typeof safeSettings])}
+                  className={`w-full flex items-center justify-between p-5 rounded-2xl border transition-all ${
+                    safeSettings['forwardAll' as keyof typeof safeSettings]
+                      ? 'bg-blue-500/10 border-blue-500/30 text-blue-400'
+                      : 'bg-black border-zinc-800 text-zinc-600'
+                  }`}>
+                  <div className="text-left">
+                    <p className="text-xs font-bold">Пересылать все сообщения в чат</p>
+                    <p className="text-[9px] uppercase opacity-60">Без создания тикета — всё идёт в админ</p>
+                  </div>
+                  {safeSettings['forwardAll' as keyof typeof safeSettings]
+                    ? <ToggleRight className="w-5 h-5 flex-shrink-0" />
+                    : <ToggleLeft className="w-5 h-5 flex-shrink-0" />}
+                </button>
+                {safeSettings['forwardAll' as keyof typeof safeSettings] && (
+                  <p className="text-[9px] text-blue-300/60 bg-blue-500/5 border border-blue-500/10 rounded-xl p-3 leading-relaxed">
+                    💡 В этом режиме все сообщения пользователей после /start сразу пересылаются в админ-чат. Тикетные кнопки можно не добавлять.
+                  </p>
+                )}
+              </div>
+
               <div className={`bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6 transition-all ${isVK ? 'opacity-40 select-none' : ''}`}>
                 <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
                   <ShieldAlert className={`w-4 h-4 ${isVK ? 'text-zinc-500' : 'text-emerald-500'}`} />Форум (Темы)
