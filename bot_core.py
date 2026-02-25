@@ -1788,32 +1788,31 @@ class BotInstance:
             # ВАЖНО: делаем это ДО антиспама, иначе второе фото блокируется rate limit-ом
             if m.media_group_id:
                 gid = m.media_group_id
+                # Сначала добавляем сообщение, потом запускаем задачу только для первого
                 if gid not in self.media_group_buffer:
-                    # Определяем параметры для первого сообщения группы
-                    _is_first = is_new
-                    _btn_text = ""
-                    _in_ticket = user.get('_in_ticket', False)
-                    _forward_all = self.forward_all
-
                     self.media_group_buffer[gid] = {
                         "messages": [],
                         "user": user,
-                        "is_first": _is_first,
-                        "btn_text": _btn_text,
-                        "in_ticket": _in_ticket,
-                        "forward_all": _forward_all,
+                        "is_first": is_new,
+                        "in_ticket": user.get('_in_ticket', False),
+                        "forward_all": self.forward_all,
                     }
-                    # Запускаем отложенную отправку
-                    async def _schedule_flush(group_id=gid, _user=user, _is_first=_is_first, _btn_text=_btn_text, _in_ticket=_in_ticket, _forward_all=_forward_all):
-                        await asyncio.sleep(0.8)
+                    async def _schedule_flush(group_id=gid):
+                        await asyncio.sleep(1.0)  # Ждём все части альбома
                         buf = self.media_group_buffer.pop(group_id, None)
                         if not buf or not buf["messages"]:
                             return
+                        _user = buf["user"]
+                        _is_first = buf["is_first"]
+                        _in_ticket = buf["in_ticket"]
+                        _forward_all = buf["forward_all"]
+                        logger.info(f"[MediaGroup] Flush {group_id}: {len(buf['messages'])} msgs, in_ticket={_in_ticket}, forward_all={_forward_all}, is_first={_is_first}")
                         if _in_ticket or _forward_all or _is_first:
-                            await self._send_media_group_to_admin(buf["messages"], _user, _is_first, _btn_text)
+                            await self._send_media_group_to_admin(buf["messages"], _user, _is_first)
                             await self.log_and_update(_user['id'], buf["messages"][0].from_user.full_name, "[Медиагруппа]")
                     asyncio.create_task(_schedule_flush())
                 self.media_group_buffer[gid]["messages"].append(m)
+                logger.info(f"[MediaGroup] +msg {m.message_id} -> group {gid}, total={len(self.media_group_buffer[gid]['messages'])}")
                 return
 
             # Антиспам проверяем только для обычных сообщений (не media group)
