@@ -511,6 +511,7 @@ class BotInstance:
         self.settings = full_cfg.get('settings', {})
         self.use_topics = self.settings.get('useTopics', False)
         self.topic_per_req = self.settings.get('topicPerRequest', False)
+        self.forward_all = self.settings.get('forwardAll', False)  # Режим без тикетов: пересылать всё
         
         # Кнопки и триггеры
         self.buttons = full_cfg.get('buttons', [])
@@ -1841,6 +1842,10 @@ class BotInstance:
             if is_new:
                 # Если человек пишет впервые, пересылаем админу
                 await self.forward_to_admin(m, user, is_first=True)
+                await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
+            elif self.forward_all:
+                # Режим «без тикетов» — пересылаем все сообщения, тикет не нужен
+                await self.forward_to_admin(m, user)
                 await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
             else:
                 # Если тикет закрыт, это не кнопка и не триггер — просто напоминаем меню
