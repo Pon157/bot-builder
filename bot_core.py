@@ -1781,13 +1781,11 @@ class BotInstance:
             if user.get("is_banned"):
                 await m.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
                 return
-            
-            if await self.check_antispam(user['id']):
-                return
 
             uid = user['id']
 
             # ── ОБРАБОТКА MEDIA GROUP (несколько медиа за раз) ──
+            # ВАЖНО: делаем это ДО антиспама, иначе второе фото блокируется rate limit-ом
             if m.media_group_id:
                 gid = m.media_group_id
                 if gid not in self.media_group_buffer:
@@ -1816,6 +1814,10 @@ class BotInstance:
                             await self.log_and_update(_user['id'], buf["messages"][0].from_user.full_name, "[Медиагруппа]")
                     asyncio.create_task(_schedule_flush())
                 self.media_group_buffer[gid]["messages"].append(m)
+                return
+
+            # Антиспам проверяем только для обычных сообщений (не media group)
+            if await self.check_antispam(user['id']):
                 return
 
             # ── РЕЖИМ АКТИВНОГО ТИКЕТА ──
