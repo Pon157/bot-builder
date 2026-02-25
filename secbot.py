@@ -5,7 +5,7 @@
 ╚══════════════════════════════════════════════════════════════════════╝
 
 УСТАНОВКА:
-    pip install python-telegram-bot==20.7 aiosqlite python-dotenv
+    pip install "python-telegram-bot[job-queue]==20.7" aiosqlite python-dotenv
 
 НАСТРОЙКА:
     Создайте файл .env:
@@ -50,7 +50,7 @@ load_dotenv()
 #  КОНФИГУРАЦИЯ
 # ══════════════════════════════════════════════════════
 
-BOT_TOKEN = os.getenv("SECURITY_BOT_TOKEN", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 DB_PATH = "guard_bot.db"
 
@@ -550,7 +550,8 @@ async def safe_delete(msg: Message):
 
 async def safe_ban(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, until: int = 0):
     try:
-        until_dt = datetime.utcfromtimestamp(until) if until else None
+        import datetime as dt
+        until_dt = dt.datetime.fromtimestamp(until, tz=dt.timezone.utc) if until else None
         await context.bot.ban_chat_member(chat_id, user_id, until_date=until_dt)
         return True
     except (TelegramError, BadRequest) as e:
@@ -560,13 +561,14 @@ async def safe_ban(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: in
 
 async def safe_mute(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, until: int = 0):
     try:
+        import datetime as dt
         perms = ChatPermissions(
             can_send_messages=False,
             can_send_polls=False,
             can_send_other_messages=False,
             can_add_web_page_previews=False
         )
-        until_dt = datetime.utcfromtimestamp(until) if until else None
+        until_dt = dt.datetime.fromtimestamp(until, tz=dt.timezone.utc) if until else None
         await context.bot.restrict_chat_member(chat_id, user_id, perms, until_date=until_dt)
         return True
     except (TelegramError, BadRequest) as e:
@@ -748,11 +750,14 @@ async def send_captcha(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user: U
     captcha_pending[key] = {"answer": answer, "msg_id": msg.message_id, "time": _ts()}
 
     # Авто-кик если не ответил
-    context.job_queue.run_once(
-        _captcha_timeout, CAPTCHA_TIMEOUT,
-        data={"chat_id": chat_id, "user_id": user.id, "msg_id": msg.message_id},
-        name=f"captcha_{chat_id}_{user.id}"
-    )
+    if context.job_queue:
+        context.job_queue.run_once(
+            _captcha_timeout, CAPTCHA_TIMEOUT,
+            data={"chat_id": chat_id, "user_id": user.id, "msg_id": msg.message_id},
+            name=f"captcha_{chat_id}_{user.id}"
+        )
+    else:
+        logger.warning("job_queue недоступен. Установите: pip install 'python-telegram-bot[job-queue]'")
 
 
 async def _captcha_timeout(context: ContextTypes.DEFAULT_TYPE):
@@ -788,17 +793,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = chat.id
     user_id = user.id
 
-    # Боты пропускаем (кроме проверки на спам-боты - можно расширить)
+    # Боты пропускаем
     if user.is_bot:
         return
 
-    # Игнорируем стафф
-    if await is_staff(user_id):
-        return
-
-    # Shadowban — тихо удаляем
+    # Shadowban — проверяем ДО стаффа (тихо удаляем даже если нажали shadowban на стаффа)
     if user_id in shadowbanned.get(chat_id, set()):
         await safe_delete(msg)
+        return
+
+    # Игнорируем стафф (модерацию к ним не применяем)
+    if await is_staff(user_id):
         return
 
     settings = await get_chat_settings(chat_id)
@@ -825,9 +830,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Пользователь: {user_mention(user)} (<code>{user_id}</code>)\n"
             f"Мут: {format_duration(FLOOD_MUTE_DURATION)}"
         )
-        context.job_queue.run_once(
-            lambda ctx: safe_delete(notif), 15, name=f"del_notif_{notif.message_id}"
-        )
+        if context.job_queue:
+            context.job_queue.run_once(
+                lambda ctx: safe_delete(notif), 15, name=f"del_notif_{notif.message_id}"
+            )
 
         if warn_count >= WARNS_LIMIT:
             await _auto_ban(context, chat_id, user, "Превышен лимит предупреждений (флуд)")
@@ -843,7 +849,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"♻️ {user_mention(user)}, не повторяй одно сообщение. [⚠️ {warn_count}/{WARNS_LIMIT}]",
             parse_mode=ParseMode.HTML
         )
-        context.job_queue.run_once(lambda ctx: safe_delete(notif), 10)
+        if context.job_queue:
+            context.job_queue.run_once(lambda ctx: safe_delete(notif), 10)
         if warn_count >= WARNS_LIMIT:
             await _auto_ban(context, chat_id, user, "Превышен лимит предупреждений (дубли)")
         return
@@ -867,7 +874,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Тип: <code>{spam_type}</code>\n"
                 f"Текст: <code>{text[:200]}</code>"
             )
-            context.job_queue.run_once(lambda ctx: safe_delete(notif), 12)
+            if context.job_queue:
+                context.job_queue.run_once(lambda ctx: safe_delete(notif), 12)
             if warn_count >= WARNS_LIMIT:
                 await _auto_ban(context, chat_id, user, "Превышен лимит предупреждений (спам)")
             return
@@ -886,7 +894,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🔗 {user_mention(user)}, ссылки запрещены. [⚠️ {warn_count}/{WARNS_LIMIT}]",
                     parse_mode=ParseMode.HTML
                 )
-                context.job_queue.run_once(lambda ctx: safe_delete(notif), 10)
+                if context.job_queue:
+                    context.job_queue.run_once(lambda ctx: safe_delete(notif), 10)
                 if warn_count >= WARNS_LIMIT:
                     await _auto_ban(context, chat_id, user, "Запрещённые ссылки")
                 return
@@ -906,7 +915,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"⚠️ {user_mention(user)}, запрещённое слово. [⚠️ {warn_count}/{WARNS_LIMIT}]",
                         parse_mode=ParseMode.HTML
                     )
-                    context.job_queue.run_once(lambda ctx: safe_delete(notif), 10)
+                    if context.job_queue:
+                        context.job_queue.run_once(lambda ctx: safe_delete(notif), 10)
                     if warn_count >= WARNS_LIMIT:
                         await _auto_ban(context, chat_id, user, "Превышен лимит предупреждений")
                 elif action == "mute":
@@ -917,7 +927,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"🔇 {user_mention(user)} замучен на 1ч за нарушение фильтра.",
                         parse_mode=ParseMode.HTML
                     )
-                    context.job_queue.run_once(lambda ctx: safe_delete(notif), 15)
+                    if context.job_queue:
+                        context.job_queue.run_once(lambda ctx: safe_delete(notif), 15)
                 elif action == "ban":
                     await safe_ban(context, chat_id, user_id)
                     await add_ban(chat_id, user_id, f"Фильтр: {word}", context.bot.id)
@@ -937,7 +948,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📩 {user_mention(user)}, пересылка сообщений запрещена.",
                 parse_mode=ParseMode.HTML
             )
-            context.job_queue.run_once(lambda ctx: safe_delete(notif), 10)
+            if context.job_queue:
+                context.job_queue.run_once(lambda ctx: safe_delete(notif), 10)
             return
 
 
@@ -1012,7 +1024,8 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     welcome.replace("{user}", user_mention(user)),
                     parse_mode=ParseMode.HTML
                 )
-                context.job_queue.run_once(lambda ctx: safe_delete(notif), 30)
+                if context.job_queue:
+                    context.job_queue.run_once(lambda ctx: safe_delete(notif), 30)
 
 
 # ══════════════════════════════════════════════════════
@@ -1043,9 +1056,10 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Отменяем таймаут
-    jobs = context.job_queue.get_jobs_by_name(f"captcha_{chat_id}_{target_id}")
-    for job in jobs:
-        job.schedule_removal()
+    if context.job_queue:
+        jobs = context.job_queue.get_jobs_by_name(f"captcha_{chat_id}_{target_id}")
+        for job in jobs:
+            job.schedule_removal()
 
     del captcha_pending[key]
     await query.message.delete()
@@ -1058,7 +1072,8 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ {user_mention(query.from_user)} прошёл проверку!",
             parse_mode=ParseMode.HTML
         )
-        context.job_queue.run_once(lambda ctx: safe_delete(notif), 10)
+        if context.job_queue:
+            context.job_queue.run_once(lambda ctx: safe_delete(notif), 10)
     else:
         await safe_ban(context, chat_id, target_id, until=int(_ts() + 600))
         await log_action(chat_id, "captcha_fail", target_id, query.from_user.full_name, context.bot.id)
@@ -1067,7 +1082,8 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ {user_mention(query.from_user)} не прошёл проверку и кикнут на 10 минут.",
             parse_mode=ParseMode.HTML
         )
-        context.job_queue.run_once(lambda ctx: safe_delete(notif), 10)
+        if context.job_queue:
+            context.job_queue.run_once(lambda ctx: safe_delete(notif), 10)
 
 
 # ══════════════════════════════════════════════════════
@@ -1312,9 +1328,11 @@ async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mute_tracker[chat.id][target.id] = until
 
     async with aiosqlite.connect(DB_PATH) as db:
+        import datetime as dt
+        until_str = dt.datetime.fromtimestamp(until, tz=dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         await db.execute(
             "INSERT OR REPLACE INTO mutes (chat_id,user_id,until,reason,muted_by) VALUES (?,?,?,?,?)",
-            (chat.id, target.id, datetime.utcfromtimestamp(until).strftime("%Y-%m-%d %H:%M:%S"), reason, user.id)
+            (chat.id, target.id, until_str, reason, user.id)
         )
         await db.commit()
 
@@ -1462,7 +1480,8 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await log_action(chat.id, "purge", 0, "SYSTEM", user.id, f"Удалено ~{deleted} сообщений")
     notif = await context.bot.send_message(chat.id, f"🗑️ Удалено ~{deleted} сообщений.")
-    context.job_queue.run_once(lambda ctx: safe_delete(notif), 5)
+    if context.job_queue:
+        context.job_queue.run_once(lambda ctx: safe_delete(notif), 5)
 
 
 @authorized_chat_only
@@ -1479,12 +1498,32 @@ async def cmd_slowmode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Неверное число.")
         return
     try:
-        await context.bot.set_chat_slow_mode_delay(chat.id, delay)
+        # Используем прямой API вызов — метод setChatSlowModeDelay
+        await context.bot._post(  # type: ignore[attr-defined]
+            "setChatSlowModeDelay",
+            data={"chat_id": chat.id, "slow_mode_delay": delay},
+        )
         await update.message.reply_text(
             f"🐢 Slowmode: {'выключен' if delay == 0 else f'{delay}с'}"
         )
-    except TelegramError as e:
-        await update.message.reply_text(f"❌ {e}")
+    except Exception:
+        # Запасной вариант через requests/httpx напрямую
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/setChatSlowModeDelay",
+                    json={"chat_id": chat.id, "slow_mode_delay": delay}
+                )
+                data = resp.json()
+                if data.get("ok"):
+                    await update.message.reply_text(
+                        f"🐢 Slowmode: {'выключен' if delay == 0 else f'{delay}с'}"
+                    )
+                else:
+                    await update.message.reply_text(f"❌ {data.get('description', 'Ошибка')}")
+        except Exception as e2:
+            await update.message.reply_text(f"❌ Ошибка slowmode: {e2}")
 
 
 @authorized_chat_only
@@ -1532,7 +1571,10 @@ async def cmd_lockdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    context.job_queue.run_once(unlock, duration, name=f"unlock_{chat.id}")
+    if context.job_queue:
+        context.job_queue.run_once(unlock, duration, name=f"unlock_{chat.id}")
+    else:
+        logger.warning("job_queue недоступен — lockdown не снимется автоматически. Используйте /unlock")
 
 
 @authorized_chat_only
@@ -1541,8 +1583,9 @@ async def cmd_unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     lockdown_active.pop(chat.id, None)
     # Снять джобы
-    for job in context.job_queue.get_jobs_by_name(f"unlock_{chat.id}"):
-        job.schedule_removal()
+    if context.job_queue:
+        for job in context.job_queue.get_jobs_by_name(f"unlock_{chat.id}"):
+            job.schedule_removal()
     try:
         await context.bot.set_chat_permissions(chat.id, ChatPermissions(
             can_send_messages=True, can_send_polls=True,
@@ -1944,6 +1987,12 @@ def main():
         .post_init(post_init)
         .build()
     )
+    # Проверяем наличие job_queue
+    if app.job_queue is None:
+        logger.warning(
+            "JobQueue не активен! Установите: pip install 'python-telegram-bot[job-queue]'\n"
+            "Без него: таймауты капчи, авто-снятие lockdown и автоудаление сообщений работать не будут."
+        )
 
     # ── Системные команды ──
     app.add_handler(CommandHandler("start", cmd_start))
