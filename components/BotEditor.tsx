@@ -670,12 +670,13 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
               <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
                 <h2 className="text-sm font-black text-white uppercase flex items-center gap-2">
                   <Layout className="w-4 h-4 text-emerald-500" />Конструктор шапки сообщений
+                  {isVK && <span className="text-[9px] bg-sky-500/20 text-sky-400 px-2 py-0.5 rounded-md ml-auto font-normal normal-case">VK: plain text, HTML не поддерживается</span>}
                 </h2>
                 <div className="space-y-4">
                   {[
-                    { key: 'firstMessageHeader',  label: 'Заголовок первого обращения', ph: '🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ:</b>' },
-                    { key: 'ticketMessageHeader',  label: 'Заголовок заявки (кнопки)',  ph: '🆘 <b>ЗАЯВКА [{btn}]:</b>'  },
-                    { key: 'commonMessageHeader',  label: 'Обычное сообщение',          ph: '📩 <b>СООБЩЕНИЕ:</b>'        },
+                    { key: 'firstMessageHeader',  label: 'Заголовок первого обращения', ph: isVK ? '🆕 ПЕРВОЕ ОБРАЩЕНИЕ:' : '🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ:</b>' },
+                    { key: 'ticketMessageHeader',  label: 'Заголовок заявки (кнопки)',  ph: isVK ? '🆘 ЗАЯВКА [{btn}]:'   : '🆘 <b>ЗАЯВКА [{btn}]:</b>'  },
+                    { key: 'commonMessageHeader',  label: 'Обычное сообщение',          ph: isVK ? '📩 СООБЩЕНИЕ:'        : '📩 <b>СООБЩЕНИЕ:</b>'        },
                   ].map(f => (
                     <div key={f.key}>
                       <span className="text-[9px] font-bold text-zinc-500 uppercase ml-2">{f.label}</span>
@@ -2440,7 +2441,7 @@ const FlowActionEditor: React.FC<{
               <span className="text-[8px] font-black text-zinc-600 uppercase tracking-widest block mb-1.5">
                 {action.type === 'admin_notify'
                   ? 'Текст для чата админов — переменные: {username}, {first_name}, {user_id}, {text}'
-                  : 'Текст для пользователя — поддерживается HTML'}
+                  : `Текст для пользователя${bot.platform !== 'vk' ? ' — поддерживается HTML' : ' (VK: plain text, без HTML)'}`}
               </span>
               <textarea
                 rows={3}
@@ -2710,11 +2711,11 @@ const FlowDirectActions: React.FC<{
   );
 };
 
-// Главный компонент
 const ButtonFlowEditor: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void }> = ({ bot, onUpdate }) => {
   const [open, setOpen] = React.useState(false);
   const [selectedBtnIdx, setSelectedBtnIdx] = React.useState<number | null>(null);
   const [tab, setTab] = React.useState<'direct' | 'nodes'>('direct');
+  const isVKBot = bot.platform === 'vk';
 
   const buttons = bot.buttons || [];
 
@@ -2759,7 +2760,7 @@ const ButtonFlowEditor: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => v
           <div className="text-left">
             <p className="text-white font-black text-sm">Расширенная логика кнопок</p>
             <p className="text-[9px] text-zinc-500 mt-0.5">
-              Действия при нажатии, под-кнопки, код, уведомления. Только Telegram.
+              Действия при нажатии, под-кнопки, код, уведомления{isVKBot ? ' (VK)' : ' (Telegram)'}.
             </p>
           </div>
         </div>
