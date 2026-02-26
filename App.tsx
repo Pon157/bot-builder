@@ -19,6 +19,8 @@ import RefundPolicy from './components/RefundPolicy';
 import Contacts from './components/Contacts';
 import { api } from './services/apiService';
 import { Menu, X, ArrowLeft } from 'lucide-react';
+import FreeBotBuilder from './components/FreeBotBuilder';
+import AdsPanel from './components/AdsPanel';
 
 // --- [ КОМПОНЕНТ: РЕДАКТОР ДЛЯ АДМИНИСТРАТОРА ] ---
 /**
@@ -381,6 +383,10 @@ const App: React.FC = () => {
 
         {/* 17. Контакты и реквизиты */}
         <Route path="/contacts" element={<Contacts />} />
+
+        <Route path="/free" element={<FreeBotBuilder />} />
+
+        <Route path="/ads" element={<AdsPanel />} />
 
         
 
