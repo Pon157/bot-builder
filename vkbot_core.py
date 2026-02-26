@@ -1832,6 +1832,22 @@ class BotInstance:
                     await m.answer("Контекст и сессия ИИ сброшены.", keyboard=self.get_main_keyboard())
                     return
 
+                # ── Активная ИИ-сессия ──
+                if user.get('_ai_session') and self.ai_enabled:
+                    bal = await self.check_ai_tokens()
+                    if bal <= 0:
+                        user.pop('_ai_session', None)
+                        self.clear_ai_context(user['id'])
+                        await m.answer("⚠️ AI-токены закончились. Диалог завершён.", keyboard=self.get_main_keyboard())
+                        return
+                    reply = await self.ai_call(user['id'], m.text)
+                    if reply:
+                        await m.answer(reply, keyboard=self.get_ai_keyboard())
+                    else:
+                        await m.answer("⚠️ ИИ не смог ответить. Попробуйте позже.", keyboard=self.get_ai_keyboard())
+                    await self.log_and_update(user['id'], user['first_name'], m.text)
+                    return
+
                 # ── FLOW-ЛОГИКА расширенных кнопок ──
                 flow_handled = await self.handle_flow_button(m, user)
                 if flow_handled:
@@ -1898,8 +1914,8 @@ class BotInstance:
 
                     await self.log_and_update(user['id'], user['first_name'], f"КНОПКА: {matched_btn['text']}")
                     return
-
-                # ── ТРИГГЕРЫ ──
+                
+                # ── ТРИГГЕРЫ (с поддержкой children) ──
                 for trig in self.triggers:
                     if trig.get('keyword') and trig['keyword'].lower() in clean_lower:
                         trig_children = trig.get('children', [])
@@ -1912,39 +1928,16 @@ class BotInstance:
                         await self.log_and_update(user['id'], user['first_name'], f"ТРИГГЕР: {trig['keyword']}")
                         return
 
-                # ── Активная ИИ-сессия (после кнопок — чтобы «Назад» и закрытие работали) ──
-                if user.get('_ai_session') and self.ai_enabled:
-                    bal = await self.check_ai_tokens()
-                    if bal <= 0:
-                        user.pop('_ai_session', None)
-                        self.clear_ai_context(user['id'])
-                        await m.answer("⚠️ AI-токены закончились. Диалог завершён.", keyboard=self.get_main_keyboard())
-                        return
-                    await self.bot.api.messages.send(peer_id=user['id'], message="🤖 Думаю...", random_id=0)
-                    reply = await self.ai_call(user['id'], m.text)
-                    if reply:
-                        await m.answer(reply, keyboard=self.get_ai_keyboard())
-                        await self.forward_to_admin(m, user)
-                    else:
-                        await m.answer("⚠️ ИИ не смог ответить. Попробуйте позже.", keyboard=self.get_ai_keyboard())
-                    await self.log_and_update(user['id'], user['first_name'], m.text)
-                    return
-
                 # ── ИИ режим «отвечать на всё» ──
                 if self.ai_enabled and self.ai_mode == 'all':
                     bal = await self.check_ai_tokens()
                     if bal > 0:
-                        await self.bot.api.messages.send(peer_id=user['id'], message="🤖 Думаю...", random_id=0)
                         reply = await self.ai_call(user['id'], m.text)
                         if reply:
                             await m.answer(reply, keyboard=self.get_main_keyboard())
-                            await self.forward_to_admin(m, user)
                             await self.log_and_update(user['id'], user['first_name'], m.text)
                             return
-                    else:
-                        await m.answer("⚠️ Лимит AI-токенов исчерпан. Обратитесь к администратору.", keyboard=self.get_main_keyboard())
-                        return
-
+            
             # ── Если ничего не совпало ──
             if is_new:
                 # Первое обращение — пересылаем админу
@@ -1954,14 +1947,7 @@ class BotInstance:
                 # Режим «без тикетов» — пересылаем всё
                 await self.forward_to_admin(m, user)
                 await self.log_and_update(user['id'], user['first_name'], m.text or "[Медиа]")
-            else:
-                # Тикет закрыт, не кнопка и не триггер — напоминаем меню
-                await self.bot.api.messages.send(
-                    peer_id=user['id'],
-                    message="Пожалуйста, воспользуйтесь меню или нажмите кнопку для открытия обращения.",
-                    keyboard=self.get_main_keyboard(),
-                    random_id=0
-                )
+            # Иначе — молчим (или можно дать fallback-текст если задан)
 
     async def run_instance(self):
         logger.info(f"[*] Бот VK {self.bot_id} запускается...")
@@ -1994,49 +1980,15 @@ class BotInstance:
         logger.info("🚀 Запуск Long Poll поллинга...")
         
         try:
-            polling_task = asyncio.ensure_future(self._start_polling())
+            asyncio.create_task(self.bot.run_polling())
             while self.is_running:
                 await asyncio.sleep(1)
         except Exception as e:
-            logger.error(f"🚨 Ошибка в жизненном цикле бота: {e}")
+            if "close a running event loop" not in str(e):
+                logger.error(f"🚨 Ошибка в жизненном цикле бота: {e}")
         finally:
             self.is_running = False
             logger.warning(f"⚠️ Поллинг бота {self.bot_id} завершен.")
-
-    async def _start_polling(self):
-        """
-        Запускает Long Poll vkbottle без ошибок event loop.
-        
-        vkbottle.Bot.run_polling() — async coroutine, но внутри вызывает
-        loop_wrapper.run() → loop.run_until_complete(), что конфликтует с
-        уже запущенным event loop.
-        
-        Решение: запускаем через polling напрямую или подавляем ошибку закрытия loop.
-        """
-        polling = self.bot.polling
-        
-        # Пробуем запустить через polling.listen() — async generator сырых событий.
-        # vkbottle сам диспатчит через labeler внутри listen().
-        if hasattr(polling, 'listen'):
-            try:
-                async for _ in polling.listen():
-                    # Событие уже обработано labeler'ом внутри vkbottle
-                    pass
-            except Exception as e:
-                if "close a running event loop" not in str(e) and "already running" not in str(e):
-                    logger.error(f"Polling listen() error: {e}", exc_info=True)
-                    raise
-        else:
-            # Старый API — вызываем run_polling напрямую и игнорируем ошибки loop
-            try:
-                await self.bot.run_polling()
-            except RuntimeError as e:
-                if "close a running event loop" not in str(e) and "already running" not in str(e):
-                    logger.error(f"Polling RuntimeError: {e}", exc_info=True)
-                    raise
-            except Exception as e:
-                logger.error(f"Polling fatal error: {e}", exc_info=True)
-                raise
 
 # ==========================================================
 # БЛОК ЗАПУСКА
