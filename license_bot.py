@@ -972,6 +972,348 @@ async def cmd_ai_keys(m: Message):
     except Exception as e:
         await m.answer(f"❌ {e}")
 
+"""
+license_bot_ads_patch.py — ДОПОЛНЕНИЯ К license_bot.py
+
+Вставить:
+  1. Классы State — после строки "class ChatSiteActivateState(StatesGroup):"
+  2. Все хендлеры — перед строкой "# ==========================================
+                                   # 9. ЗАПУСК БОТА"
+  3. Команду /ads_admin добавить в set_my_commands в main()
+"""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ВСТАВИТЬ В СЕКЦИЮ STATES (после ChatSiteActivateState):
+# ══════════════════════════════════════════════════════════════════════════════
+
+# class AdTopupState(StatesGroup):
+#     waiting_amount = State()
+#     waiting_adv_id = State()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ВСТАВИТЬ В СЕКЦИЮ ЭНДПОИНТОВ (перед "# 9. ЗАПУСК БОТА"):
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Пакеты пополнения баланса для рекламодателей ──────────────────────────────
+AD_TOPUP_PACKS = {
+    "100":  {"label": "100 ₽ (~200 показов)",   "amount": 100,  "price_rub": 100},
+    "300":  {"label": "300 ₽ (~600 показов)",   "amount": 300,  "price_rub": 300},
+    "500":  {"label": "500 ₽ (~1000 показов)",  "amount": 500,  "price_rub": 500},
+    "1000": {"label": "1000 ₽ (~2000 показов)", "amount": 1000, "price_rub": 1000},
+    "3000": {"label": "3000 ₽ (~6000 показов)", "amount": 3000, "price_rub": 3000},
+}
+
+AD_TOPUP_STATE_KEY = "adv_topup"   # временный ключ в FSM для ожидания подтверждения
+
+
+# ─── КОМАНДА /ads — Панель рекламодателя ─────────────────────────────────────
+
+@dp.message(Command("ads"))
+async def cmd_ads_menu(m: Message):
+    """Панель рекламодателя — пополнение баланса через бот."""
+    kb = InlineKeyboardBuilder()
+    for key, info in AD_TOPUP_PACKS.items():
+        kb.row(InlineKeyboardButton(
+            text=f"💳 {info['label']}",
+            callback_data=f"adtopup_{key}"
+        ))
+    kb.row(InlineKeyboardButton(text="📊 Мои кампании", callback_data="ads_mycamps"))
+    kb.row(InlineKeyboardButton(text="ℹ️ О рекламе", callback_data="ads_info"))
+
+    text = (
+        "📢 <b>Реклама в Dialoge Engine</b>\n\n"
+        "Ваши объявления показываются пользователям бесплатных ботов сразу после команды /start.\n\n"
+        "💰 <b>Стоимость:</b> от <b>0.50 ₽</b> за показ\n"
+        "🎯 <b>Аудитория:</b> активные пользователи Telegram-ботов\n"
+        "📈 <b>Статистика:</b> в реальном времени\n\n"
+        "Пополните баланс для создания кампании:"
+    )
+    await m.answer(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "ads_info")
+async def cb_ads_info(cb: CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="◀️ Назад", callback_data="ads_back"))
+    text = (
+        "ℹ️ <b>Как работает реклама</b>\n\n"
+        "<b>1. Создайте кампанию</b> на сайте dialoge.engine/ads\n"
+        "<b>2. Пополните баланс</b> здесь в боте\n"
+        "<b>3. Ваша реклама</b> показывается после /start\n"
+        "   в сотнях бесплатных ботов\n\n"
+        "<b>Форматы:</b>\n"
+        "• Текстовое объявление\n"
+        "• Текст + изображение\n"
+        "• Кнопка с ссылкой\n\n"
+        "<b>Модерация:</b> 1-2 рабочих дня\n\n"
+        "<b>Минимальный бюджет:</b> 100 ₽\n"
+        "<b>Минимальная ставка:</b> 0.50 ₽/показ"
+    )
+    await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "ads_back")
+async def cb_ads_back(cb: CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    for key, info in AD_TOPUP_PACKS.items():
+        kb.row(InlineKeyboardButton(
+            text=f"💳 {info['label']}",
+            callback_data=f"adtopup_{key}"
+        ))
+    kb.row(InlineKeyboardButton(text="📊 Мои кампании", callback_data="ads_mycamps"))
+    kb.row(InlineKeyboardButton(text="ℹ️ О рекламе",    callback_data="ads_info"))
+    text = (
+        "📢 <b>Реклама в Dialoge Engine</b>\n\n"
+        "Ваши объявления показываются после /start в бесплатных ботах.\n\n"
+        "💰 <b>Стоимость:</b> от <b>0.50 ₽</b> за показ\n\n"
+        "Пополните баланс для создания кампании:"
+    )
+    await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("adtopup_"))
+async def cb_adtopup_select(cb: CallbackQuery):
+    pack_key = cb.data.replace("adtopup_", "")
+    info = AD_TOPUP_PACKS.get(pack_key)
+    if not info:
+        return await cb.answer("Неверный пакет", show_alert=True)
+
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(
+        text="💳 Оплатить через DonationAlerts",
+        url="https://www.donationalerts.com/r/dialoge_engine"
+    ))
+    kb.row(InlineKeyboardButton(
+        text="✅ Я оплатил — пополнить баланс",
+        callback_data=f"adtopup_confirm_{pack_key}"
+    ))
+    kb.row(InlineKeyboardButton(text="◀️ Назад", callback_data="ads_back"))
+
+    text = (
+        f"📢 <b>Пополнение рекламного баланса</b>\n\n"
+        f"Пакет: <b>{info['label']}</b>\n"
+        f"Сумма: <b>{info['price_rub']} ₽</b>\n\n"
+        "1️⃣ Переведите сумму по ссылке\n"
+        f"2️⃣ В комментарии укажите: <code>ADS {cb.from_user.id}</code>\n"
+        "3️⃣ Нажмите «Я оплатил»"
+    )
+    await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("adtopup_confirm_"))
+async def cb_adtopup_confirm(cb: CallbackQuery):
+    pack_key = cb.data.replace("adtopup_confirm_", "")
+    info = AD_TOPUP_PACKS.get(pack_key)
+    if not info:
+        return await cb.answer("Ошибка", show_alert=True)
+
+    # Уведомляем администратора
+    akb = InlineKeyboardBuilder()
+    akb.row(
+        InlineKeyboardButton(
+            text="✅ Подтвердить",
+            callback_data=f"adm_ads_ok_{cb.from_user.id}_{pack_key}"
+        ),
+        InlineKeyboardButton(
+            text="❌ Отказ",
+            callback_data=f"adm_ads_no_{cb.from_user.id}"
+        )
+    )
+
+    notify_text = (
+        f"📢 <b>Заявка на пополнение рекламного баланса</b>\n"
+        f"Юзер: {cb.from_user.full_name} (<code>{cb.from_user.id}</code>)\n"
+        f"Пакет: {info['label']} | Сумма: {info['price_rub']} ₽"
+    )
+    try:
+        await bot.send_message(ADM_CHAT, notify_text, reply_markup=akb.as_markup(), parse_mode="HTML")
+        await cb.message.edit_text("⏳ Заявка отправлена. Ожидайте подтверждения (обычно до 24 часов).")
+    except Exception as e:
+        await cb.answer(f"Ошибка: {e}", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("adm_ads_ok_"))
+async def cb_admin_approve_ads_topup(cb: CallbackQuery):
+    """Администратор подтверждает пополнение рекламного баланса."""
+    if int(cb.from_user.id) not in [MY_OWNER_ID]:
+        return await cb.answer("Недостаточно прав", show_alert=True)
+
+    await cb.answer()
+    try:
+        parts = cb.data.split("_")
+        # adm_ads_ok_{user_id}_{pack_key}
+        # split("_") -> ['adm', 'ads', 'ok', user_id, pack_key]
+        if len(parts) < 5:
+            await cb.message.edit_text("Ошибка: неверный формат данных.")
+            return
+
+        pack_key = parts[-1]
+        tg_user_id = int(parts[-2])
+        info = AD_TOPUP_PACKS.get(pack_key)
+        if not info:
+            await cb.message.edit_text("Пакет не найден.")
+            return
+
+        amount = info["amount"]
+
+        await cb.message.edit_text(f"⏳ Пополняю баланс рекламодателя {tg_user_id} на {amount} ₽...")
+
+        # Ищем рекламодателя по telegram id (email = {tg_user_id}@tg.ads)
+        # Если рекламодателя нет — создаем автоматически
+        r = requests.get(
+            f"{SRV_URL}/api/ads/auth/login",
+            params={"tg_id": tg_user_id},
+            timeout=10
+        )
+
+        # Через admin endpoint пополняем баланс
+        r2 = requests.post(
+            f"{SRV_URL}/api/ads/topup",
+            json={
+                "admin_token": ADM_SECRET,
+                "advertiser_tg_id": str(tg_user_id),
+                "amount": amount,
+            },
+            timeout=15
+        )
+
+        if r2.status_code == 200:
+            new_balance = r2.json().get("new_balance", "?")
+            user_msg = (
+                f"✅ <b>Рекламный баланс пополнен!</b>\n\n"
+                f"Зачислено: <b>{amount} ₽</b>\n"
+                f"Баланс: <b>{new_balance} ₽</b>\n\n"
+                "Перейдите на сайт <b>dialoge.engine/ads</b> для создания кампании."
+            )
+            await bot.send_message(tg_user_id, user_msg, parse_mode="HTML")
+            await cb.message.edit_text(
+                f"✅ Баланс рекламодателя {tg_user_id} пополнен на {amount} ₽. Итого: {new_balance} ₽"
+            )
+        else:
+            await cb.message.edit_text(f"❌ Ошибка сервера: {r2.status_code}\n{r2.text[:200]}")
+
+    except Exception as e:
+        logger.error(f"cb_admin_approve_ads_topup error: {e}")
+        try:
+            await cb.message.edit_text(f"❌ Ошибка: {e}")
+        except Exception:
+            pass
+
+
+@dp.callback_query(F.data.startswith("adm_ads_no_"))
+async def cb_admin_reject_ads(cb: CallbackQuery):
+    tg_user_id = int(cb.data.replace("adm_ads_no_", ""))
+    await cb.answer()
+    try:
+        await bot.send_message(
+            tg_user_id,
+            "❌ <b>Пополнение не подтверждено.</b>\n\n"
+            "Оплата не найдена или указан неверный комментарий.\n"
+            "Напишите в поддержку: @DialogeEngineSupportBot",
+            parse_mode="HTML"
+        )
+        await cb.message.edit_text(f"❌ Отказ для пользователя {tg_user_id} отправлен.")
+    except Exception as e:
+        await cb.message.edit_text(f"Ошибка отправки: {e}")
+
+
+# ── Мои кампании ─────────────────────────────────────────────────────────────
+
+@dp.callback_query(F.data == "ads_mycamps")
+async def cb_ads_mycamps(cb: CallbackQuery):
+    """Краткая статистика кампаний пользователя."""
+    tg_id = str(cb.from_user.id)
+    try:
+        r = requests.get(
+            f"{SRV_URL}/api/ads/campaigns",
+            params={"advertiser_tg_id": tg_id},
+            timeout=10
+        )
+        camps = r.json() if r.status_code == 200 else []
+    except Exception:
+        camps = []
+
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="◀️ Назад", callback_data="ads_back"))
+
+    if not camps:
+        await cb.message.edit_text(
+            "📊 <b>Мои кампании</b>\n\nУ вас пока нет рекламных кампаний.\n\n"
+            "Создайте их на сайте <b>dialoge.engine/ads</b>",
+            reply_markup=kb.as_markup(),
+            parse_mode="HTML"
+        )
+        return
+
+    lines = ["📊 <b>Мои кампании:</b>\n"]
+    status_emoji = {"active": "🟢", "paused": "⏸", "depleted": "🔴"}
+    for c in camps[:5]:
+        em = status_emoji.get(c.get("status", ""), "⚪️")
+        lines.append(
+            f"{em} <b>{c.get('title', '?')}</b>\n"
+            f"   Показов: {c.get('impressions', 0)} | Баланс: {float(c.get('balance', 0)):.2f} ₽"
+        )
+
+    await cb.message.edit_text(
+        "\n".join(lines),
+        reply_markup=kb.as_markup(),
+        parse_mode="HTML"
+    )
+
+
+# ── Команда /ads_admin — только для владельца ─────────────────────────────────
+
+@dp.message(Command("ads_admin"))
+async def cmd_ads_admin(m: Message):
+    """Обзор рекламного блока для владельца."""
+    if m.from_user.id != MY_OWNER_ID:
+        return
+
+    try:
+        r = requests.get(
+            f"{SRV_URL}/api/admin/ads/campaigns",
+            headers={"x-admin-token": ADM_SECRET},
+            timeout=10
+        )
+        camps = r.json() if r.status_code == 200 else []
+    except Exception as e:
+        await m.answer(f"❌ Ошибка: {e}")
+        return
+
+    total_imp    = sum(c.get("impressions", 0) for c in camps)
+    active_count = sum(1 for c in camps if c.get("status") == "active")
+    depleted     = sum(1 for c in camps if c.get("status") == "depleted")
+
+    lines = [
+        "📢 <b>Рекламный блок — обзор</b>\n",
+        f"Всего кампаний: {len(camps)}",
+        f"🟢 Активных: {active_count}",
+        f"🔴 Исчерпанных: {depleted}",
+        f"📊 Показов всего: {total_imp:,}\n",
+    ]
+
+    for c in camps[:8]:
+        em = {"active": "🟢", "paused": "⏸", "depleted": "🔴"}.get(c.get("status", ""), "⚪")
+        lines.append(
+            f"{em} {c.get('title', '?')} | {c.get('advertiser_name', '?')}\n"
+            f"   Показов: {c.get('impressions', 0)} | Баланс: {float(c.get('balance', 0)):.2f} ₽"
+        )
+
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_ads_refresh"))
+
+    await m.answer("\n".join(lines), reply_markup=kb.as_markup(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "adm_ads_refresh")
+async def cb_adm_ads_refresh(cb: CallbackQuery):
+    if cb.from_user.id != MY_OWNER_ID:
+        return await cb.answer("Недостаточно прав")
+    await cb.answer()
+    # Переиспользуем логику команды
+    await cmd_ads_admin(cb.message)
+
 # ==========================================
 # 9. ЗАПУСК БОТА
 # ==========================================
