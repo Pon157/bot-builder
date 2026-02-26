@@ -3718,6 +3718,572 @@ async def chat_site_license_status(slug: str):
 #
 # Это позволяет отдавать файлы из /uploads/chat/... напрямую.
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ВСПОМОГАТЕЛЬНЫЕ ХЕЛПЕРЫ ДЛЯ FREE_BOTS И ADS
+# (эти функции уже есть в server.py — используй их напрямую)
+# _sb_get, _sb_post, _sb_patch, _sb_delete, encrypt_val, decrypt_val, hash_pwd
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _hash_adv_pwd(password: str) -> str:
+    salt = "dialog_engine_ads_2026"
+    return hashlib.sha256((password + salt).encode()).hexdigest()
+
+# Цена по умолчанию за 1 показ (рублей)
+DEFAULT_CPM = 0.50
+# Макс. кнопок и триггеров у бесплатного бота
+FREE_LIMITS = {"max_buttons": 3, "max_triggers": 2}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# БЛОК 1. FREE BOTS (/api/free/...)
+# ═══════════════════════════════════════════════════════════════════════
+
+@app.post("/api/free/bots")
+async def create_free_bot(b: dict):
+    """
+    Создать бесплатный бот.
+    Тело: { owner_id, name, token, welcomeMessage, buttons (max 3), triggers (max 2), adminChatId }
+    """
+    owner_id = b.get("owner_id", "")
+    if not owner_id:
+        raise HTTPException(400, "owner_id обязателен")
+
+    token_raw = b.get("token", "").strip()
+    if not token_raw or ":" not in token_raw:
+        raise HTTPException(400, "Укажите токен бота")
+
+    # Проверяем лимит: 1 бот на пользователя
+    existing = await _sb_get("free_bots", {"owner_id": f"eq.{owner_id}"})
+    if existing:
+        raise HTTPException(409, "У вас уже есть бесплатный бот. Один бесплатный бот на аккаунт.")
+
+    bid = f"freebot_{secrets.token_hex(5)}"
+    enc_token = encrypt_val(token_raw)
+
+    buttons  = b.get("buttons", [])[:FREE_LIMITS["max_buttons"]]
+    triggers = b.get("triggers", [])[:FREE_LIMITS["max_triggers"]]
+
+    admin_raw = b.get("adminChatId") or b.get("admin_chat_id")
+    admin_id  = int(str(admin_raw).strip()) if admin_raw else None
+
+    config = {
+        "welcomeMessage": b.get("welcomeMessage", "Привет!"),
+        "buttons": buttons,
+        "triggers": triggers,
+        "admin_chat_id": admin_id,
+        "adminChatId": admin_id,
+        "connectedUsers": [],
+        "is_free": True,
+    }
+
+    payload = {
+        "id": bid,
+        "owner_id": owner_id,
+        "name": b.get("name", "Мой бесплатный бот"),
+        "token": enc_token,
+        "status": "IDLE",
+        "config": config,
+        "created_at": int(time.time() * 1000),
+    }
+
+    ok = await _sb_post("free_bots", payload)
+    if not ok:
+        raise HTTPException(500, "Ошибка создания бота в БД")
+
+    logger.info(f"🆓 Создан бесплатный бот {bid} для {owner_id}")
+    return {**payload, "token": "[encrypted]"}
+
+
+@app.get("/api/free/bots/{owner_id}")
+async def get_free_bots(owner_id: str):
+    """Получить бесплатный бот пользователя."""
+    bots = await _sb_get("free_bots", {"owner_id": f"eq.{owner_id}"})
+    if not bots:
+        return []
+    # Расшифровываем токен для отображения (маскируем)
+    result = []
+    for b in bots:
+        b_copy = dict(b)
+        cfg = b_copy.get("config") or {}
+        b_copy["welcomeMessage"] = cfg.get("welcomeMessage", "")
+        b_copy["buttons"]  = cfg.get("buttons", [])
+        b_copy["triggers"] = cfg.get("triggers", [])
+        b_copy["adminChatId"] = cfg.get("admin_chat_id", "")
+        b_copy["token"] = "[encrypted]"  # не отдаём токен в чистом виде
+        result.append(b_copy)
+    return result
+
+
+@app.post("/api/free/bots/save")
+async def save_free_bot(b: dict):
+    """Обновить конфиг бесплатного бота."""
+    bid      = b.get("id")
+    owner_id = b.get("owner_id")
+    if not bid or not owner_id:
+        raise HTTPException(400, "id и owner_id обязательны")
+
+    existing = await _sb_get("free_bots", {"id": f"eq.{bid}", "owner_id": f"eq.{owner_id}"})
+    if not existing:
+        raise HTTPException(404, "Бот не найден")
+
+    old_cfg = existing[0].get("config", {}) or {}
+
+    buttons  = b.get("buttons", old_cfg.get("buttons", []))[:FREE_LIMITS["max_buttons"]]
+    triggers = b.get("triggers", old_cfg.get("triggers", []))[:FREE_LIMITS["max_triggers"]]
+
+    admin_raw = b.get("adminChatId") or b.get("admin_chat_id") or old_cfg.get("admin_chat_id")
+    admin_id  = int(str(admin_raw).strip()) if admin_raw else None
+
+    new_cfg = {
+        **old_cfg,
+        "welcomeMessage": b.get("welcomeMessage", old_cfg.get("welcomeMessage", "Привет!")),
+        "buttons": buttons,
+        "triggers": triggers,
+        "admin_chat_id": admin_id,
+        "adminChatId": admin_id,
+    }
+
+    patch = {"config": new_cfg, "name": b.get("name", existing[0].get("name", "Мой бесплатный бот"))}
+
+    # Обновить токен если передан новый
+    new_token_raw = b.get("token", "")
+    if new_token_raw and not new_token_raw.startswith("gAAAA") and ":" in new_token_raw:
+        patch["token"] = encrypt_val(new_token_raw)
+
+    ok = await _sb_patch("free_bots", {"id": f"eq.{bid}"}, patch)
+    return {"ok": ok, "config": new_cfg}
+
+
+@app.post("/api/free/bots/start")
+async def start_free_bot(req: dict):
+    """Запустить бесплатный бот."""
+    bid = req.get("id")
+    r = await _sb_get("free_bots", {"id": f"eq.{bid}"})
+    if not r:
+        raise HTTPException(404, "Бот не найден")
+
+    bot_data = r[0]
+    if bot_data.get("status") == "BANNED":
+        raise HTTPException(403, "Бот заблокирован.")
+
+    inner_cfg = bot_data.get("config") or {}
+    merged = {**inner_cfg, **bot_data}
+    # Расшифровываем токен для запуска
+    merged["token"] = decrypt_val(bot_data.get("token", ""))
+
+    # Запускаем через BotManager (pm), но указываем free_bot_core.py
+    await pm.stop_bot(bid)
+    os.makedirs("active_bots", exist_ok=True)
+    cfg_path = f"active_bots/cfg_{bid}.json"
+    log_path = f"active_bots/bot_{bid}.log"
+
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(merged, f, indent=4)
+
+    pm.log_paths[bid] = log_path
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env.update({"SUPABASE_URL": S_URL, "SUPABASE_KEY": S_KEY, "BOT_ID": str(bid), "BOT_TOKEN": merged.get("token", "")})
+
+    try:
+        p = await asyncio.create_subprocess_exec(
+            sys.executable, "free_bot_core.py", cfg_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
+        )
+        pm.procs[bid] = p
+
+        async def log_reader(stream):
+            with open(log_path, "a", encoding="utf-8") as lf:
+                while True:
+                    line = await stream.readline()
+                    if not line:
+                        break
+                    msg = line.decode('utf-8', errors='replace')
+                    lf.write(msg)
+                    lf.flush()
+                    print(f"[FREE_{bid}] {msg.strip()}", flush=True)
+
+        asyncio.create_task(log_reader(p.stdout))
+        asyncio.create_task(log_reader(p.stderr))
+
+        await _sb_patch("free_bots", {"id": f"eq.{bid}"}, {"status": "RUNNING"})
+        logger.info(f"🆓🚀 Запущен бесплатный бот {bid} (PID: {p.pid})")
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Free bot start error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/free/bots/stop/{bid}")
+async def stop_free_bot(bid: str):
+    await pm.stop_bot(bid)
+    await _sb_patch("free_bots", {"id": f"eq.{bid}"}, {"status": "IDLE"})
+    return {"status": "stopped"}
+
+
+@app.delete("/api/free/bots/delete/{owner_id}/{bid}")
+async def delete_free_bot(owner_id: str, bid: str):
+    await pm.stop_bot(bid)
+    await _sb_delete("free_bots", {"id": f"eq.{bid}", "owner_id": f"eq.{owner_id}"})
+    return {"status": "deleted"}
+
+
+@app.get("/api/free/bots/logs/{bid}")
+async def get_free_bot_logs(bid: str):
+    return {"logs": pm.get_logs(bid)}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# БЛОК 2. ADS — РЕКЛАМОДАТЕЛИ (/api/ads/...)
+# ═══════════════════════════════════════════════════════════════════════
+
+# ── Авторизация рекламодателей ─────────────────────────────────────────────
+
+@app.post("/api/ads/auth/register")
+async def ads_register(d: dict):
+    email = d.get("email", "").lower().strip()
+    name  = d.get("name", "").strip()
+    pwd   = d.get("password", "")
+    if not email or not pwd or not name:
+        raise HTTPException(400, "Заполните все поля")
+
+    existing = await _sb_get("advertisers", {"email": f"eq.{email}"})
+    if existing:
+        raise HTTPException(409, "Email уже зарегистрирован")
+
+    adv_id = f"adv_{secrets.token_hex(5)}"
+    payload = {
+        "id": adv_id,
+        "name": name,
+        "email": email,
+        "password_hash": _hash_adv_pwd(pwd),
+        "balance": 0.0,
+        "created_at": int(time.time() * 1000),
+    }
+    ok = await _sb_post("advertisers", payload)
+    if not ok:
+        raise HTTPException(500, "Ошибка регистрации")
+    return {"id": adv_id, "name": name, "email": email, "balance": 0.0}
+
+
+@app.post("/api/ads/auth/login")
+async def ads_login(d: dict):
+    email = d.get("email", "").lower().strip()
+    pwd   = d.get("password", "")
+    adv   = await _sb_get("advertisers", {
+        "email": f"eq.{email}",
+        "password_hash": f"eq.{_hash_adv_pwd(pwd)}"
+    })
+    if not adv:
+        raise HTTPException(401, "Неверный email или пароль")
+    a = adv[0]
+    return {"id": a["id"], "name": a["name"], "email": a["email"], "balance": a.get("balance", 0)}
+
+
+# ── Кампании ───────────────────────────────────────────────────────────────
+
+@app.get("/api/ads/campaigns")
+async def ads_get_campaigns(advertiser_id: str):
+    camps = await _sb_get("ad_campaigns", {
+        "advertiser_id": f"eq.{advertiser_id}",
+        "order": "created_at.desc"
+    })
+    return camps or []
+
+
+@app.post("/api/ads/campaigns")
+async def ads_create_campaign(d: dict):
+    adv_id = d.get("advertiser_id", "")
+    if not adv_id:
+        raise HTTPException(400, "advertiser_id обязателен")
+
+    adv = await _sb_get("advertisers", {"id": f"eq.{adv_id}"})
+    if not adv:
+        raise HTTPException(404, "Рекламодатель не найден")
+
+    title   = d.get("title", "").strip()
+    ad_text = d.get("ad_text", "").strip()
+    if not title or not ad_text:
+        raise HTTPException(400, "title и ad_text обязательны")
+
+    budget  = float(d.get("budget", 0))
+    cpi     = float(d.get("cost_per_impression", DEFAULT_CPM))
+    cpi     = max(0.10, min(cpi, 50.0))  # от 10 коп до 50 руб
+
+    # Проверяем, есть ли у рекламодателя баланс
+    adv_balance = float(adv[0].get("balance", 0))
+    if budget > adv_balance:
+        raise HTTPException(400, f"Недостаточно средств. Баланс: {adv_balance:.2f} ₽")
+
+    camp_id = f"camp_{secrets.token_hex(5)}"
+    now_ms  = int(time.time() * 1000)
+
+    campaign = {
+        "id": camp_id,
+        "advertiser_id": adv_id,
+        "title": title,
+        "ad_text": ad_text,
+        "photo_url": d.get("photo_url", ""),
+        "button_text": d.get("button_text", ""),
+        "button_url": d.get("button_url", ""),
+        "budget": budget,
+        "balance": budget,
+        "cost_per_impression": cpi,
+        "impressions": 0,
+        "status": "active",
+        "created_at": now_ms,
+        "updated_at": now_ms,
+    }
+
+    ok = await _sb_post("ad_campaigns", campaign)
+    if not ok:
+        raise HTTPException(500, "Ошибка создания кампании")
+
+    # Списываем бюджет с баланса рекламодателя
+    new_balance = adv_balance - budget
+    await _sb_patch("advertisers", {"id": f"eq.{adv_id}"}, {"balance": round(new_balance, 2)})
+
+    logger.info(f"📢 Создана рекламная кампания {camp_id} (бюджет: {budget} ₽, CPM: {cpi} ₽)")
+    return campaign
+
+
+@app.patch("/api/ads/campaigns/{camp_id}")
+async def ads_update_campaign(camp_id: str, d: dict):
+    """Обновить параметры кампании (статус, текст)."""
+    adv_id = d.get("advertiser_id")
+    existing = await _sb_get("ad_campaigns", {
+        "id": f"eq.{camp_id}",
+        "advertiser_id": f"eq.{adv_id}"
+    })
+    if not existing:
+        raise HTTPException(404, "Кампания не найдена")
+
+    allowed_fields = {"title", "ad_text", "photo_url", "button_text", "button_url", "status"}
+    patch = {k: v for k, v in d.items() if k in allowed_fields}
+    if "status" in patch and patch["status"] not in ("active", "paused"):
+        del patch["status"]  # depleted ставится автоматически
+
+    patch["updated_at"] = int(time.time() * 1000)
+    ok = await _sb_patch("ad_campaigns", {"id": f"eq.{camp_id}"}, patch)
+    return {"ok": ok}
+
+
+@app.post("/api/ads/campaigns/{camp_id}/topup")
+async def ads_topup_campaign(camp_id: str, d: dict):
+    """Пополнить бюджет кампании со счёта рекламодателя."""
+    adv_id = d.get("advertiser_id")
+    amount = float(d.get("amount", 0))
+    if amount <= 0:
+        raise HTTPException(400, "Сумма должна быть > 0")
+
+    camp = await _sb_get("ad_campaigns", {"id": f"eq.{camp_id}", "advertiser_id": f"eq.{adv_id}"})
+    if not camp:
+        raise HTTPException(404, "Кампания не найдена")
+
+    adv = await _sb_get("advertisers", {"id": f"eq.{adv_id}"})
+    if not adv:
+        raise HTTPException(404, "Рекламодатель не найден")
+
+    adv_balance = float(adv[0].get("balance", 0))
+    if amount > adv_balance:
+        raise HTTPException(400, f"Недостаточно средств. Баланс: {adv_balance:.2f} ₽")
+
+    new_adv_balance  = adv_balance - amount
+    new_camp_balance = float(camp[0].get("balance", 0)) + amount
+    new_budget       = float(camp[0].get("budget", 0)) + amount
+    new_status       = "active" if camp[0].get("status") == "depleted" else camp[0].get("status")
+
+    await _sb_patch("advertisers", {"id": f"eq.{adv_id}"}, {"balance": round(new_adv_balance, 2)})
+    await _sb_patch("ad_campaigns", {"id": f"eq.{camp_id}"}, {
+        "balance": round(new_camp_balance, 2),
+        "budget": round(new_budget, 2),
+        "status": new_status,
+        "updated_at": int(time.time() * 1000),
+    })
+    return {"ok": True, "new_balance": round(new_camp_balance, 2), "advertiser_balance": round(new_adv_balance, 2)}
+
+
+@app.post("/api/ads/topup")
+async def ads_topup_account(d: dict):
+    """
+    Пополнение баланса рекламодателя.
+    В реальности здесь должна быть интеграция с платежкой.
+    Сейчас — ручное пополнение через admin_token.
+    """
+    admin_token = d.get("admin_token")
+    if not verify_admin_token(admin_token):
+        raise HTTPException(403, "Unauthorized")
+
+    adv_id = d.get("advertiser_id")
+    amount = float(d.get("amount", 0))
+    if amount <= 0:
+        raise HTTPException(400, "amount > 0")
+
+    adv = await _sb_get("advertisers", {"id": f"eq.{adv_id}"})
+    if not adv:
+        raise HTTPException(404, "Рекламодатель не найден")
+
+    new_balance = float(adv[0].get("balance", 0)) + amount
+    await _sb_patch("advertisers", {"id": f"eq.{adv_id}"}, {"balance": round(new_balance, 2)})
+    logger.info(f"💰 Пополнен баланс рекламодателя {adv_id}: +{amount} ₽ (итого: {new_balance:.2f} ₽)")
+    return {"ok": True, "new_balance": round(new_balance, 2)}
+
+
+# ── Показы (вызывается из free_bot_core.py) ────────────────────────────────
+
+@app.get("/api/ads/active")
+async def ads_get_active(bot_id: str = ""):
+    """
+    Возвращает одну активную рекламную кампанию для показа в боте.
+    Алгоритм: берём самую старую активную кампанию с балансом > 0
+    (weighted round-robin можно добавить потом).
+    """
+    camps = await _sb_get("ad_campaigns", {
+        "status": "eq.active",
+        "order": "created_at.asc",
+        "limit": "1",
+    })
+
+    # Фильтруем те, у кого баланс > 0
+    active = [c for c in (camps or []) if float(c.get("balance", 0)) > 0]
+    if not active:
+        return {}  # нет активной рекламы
+
+    camp = active[0]
+    return {
+        "campaign_id": camp["id"],
+        "text": camp.get("ad_text", ""),
+        "photo_url": camp.get("photo_url", ""),
+        "button_text": camp.get("button_text", ""),
+        "button_url": camp.get("button_url", ""),
+    }
+
+
+@app.post("/api/ads/impression")
+async def ads_record_impression(d: dict):
+    """
+    Записывает показ рекламы и списывает cost_per_impression с баланса кампании.
+    Вызывается автоматически из free_bot_core.py.
+    """
+    campaign_id = d.get("campaign_id")
+    bot_id      = d.get("bot_id", "")
+    user_id     = d.get("user_id", 0)
+
+    if not campaign_id:
+        raise HTTPException(400, "campaign_id required")
+
+    camp = await _sb_get("ad_campaigns", {"id": f"eq.{campaign_id}", "status": "eq.active"})
+    if not camp:
+        return {"ok": False, "reason": "campaign not found or not active"}
+
+    camp = camp[0]
+    cpi     = float(camp.get("cost_per_impression", DEFAULT_CPM))
+    balance = float(camp.get("balance", 0))
+
+    if balance <= 0:
+        # Помечаем как depleted
+        await _sb_patch("ad_campaigns", {"id": f"eq.{campaign_id}"}, {
+            "status": "depleted",
+            "updated_at": int(time.time() * 1000)
+        })
+        return {"ok": False, "reason": "budget depleted"}
+
+    # Списываем
+    new_balance   = max(0.0, balance - cpi)
+    new_impressions = int(camp.get("impressions", 0)) + 1
+    new_status    = "depleted" if new_balance <= 0 else "active"
+
+    await _sb_patch("ad_campaigns", {"id": f"eq.{campaign_id}"}, {
+        "balance": round(new_balance, 4),
+        "impressions": new_impressions,
+        "status": new_status,
+        "updated_at": int(time.time() * 1000),
+    })
+
+    # Лог показа
+    imp_id = f"imp_{secrets.token_hex(6)}"
+    await _sb_post("ad_impressions", {
+        "id": imp_id,
+        "campaign_id": campaign_id,
+        "bot_id": bot_id,
+        "user_id": user_id,
+        "created_at": int(time.time() * 1000),
+    })
+
+    logger.info(f"📊 Показ {imp_id}: кампания={campaign_id}, бот={bot_id}, баланс={new_balance:.4f} ₽")
+    return {"ok": True, "impressions": new_impressions, "balance_left": round(new_balance, 4)}
+
+
+@app.get("/api/ads/stats/{camp_id}")
+async def ads_get_stats(camp_id: str, advertiser_id: str):
+    camp = await _sb_get("ad_campaigns", {
+        "id": f"eq.{camp_id}",
+        "advertiser_id": f"eq.{advertiser_id}"
+    })
+    if not camp:
+        raise HTTPException(404, "Кампания не найдена")
+    c = camp[0]
+
+    # Последние 7 дней показов
+    week_ago = int((time.time() - 7 * 86400) * 1000)
+    impressions = await _sb_get("ad_impressions", {
+        "campaign_id": f"eq.{camp_id}",
+        "created_at": f"gt.{week_ago}",
+        "order": "created_at.asc",
+    })
+
+    # Группируем по дням
+    by_day: dict = {}
+    for imp in (impressions or []):
+        ts = imp.get("created_at", 0)
+        day = datetime.fromtimestamp(ts / 1000).strftime("%d.%m")
+        by_day[day] = by_day.get(day, 0) + 1
+
+    history = [{"date": k, "impressions": v} for k, v in sorted(by_day.items())]
+
+    budget    = float(c.get("budget", 0))
+    balance   = float(c.get("balance", 0))
+    spent     = budget - balance
+    total_imp = int(c.get("impressions", 0))
+
+    return {
+        "campaign": c,
+        "total_impressions": total_imp,
+        "spent": round(spent, 2),
+        "balance": round(balance, 2),
+        "history": history,
+    }
+
+
+# ── Список всех кампаний для Admins ────────────────────────────────────────
+
+@app.get("/api/admin/ads/campaigns")
+async def admin_get_all_campaigns(x_admin_token: str = Header(None)):
+    if not verify_admin_token(x_admin_token):
+        raise HTTPException(403, "Unauthorized")
+    camps = await _sb_get("ad_campaigns", {"order": "created_at.desc"})
+    advs  = await _sb_get("advertisers",  {"select": "id,name,email,balance"})
+    adv_map = {a["id"]: a for a in (advs or [])}
+    for c in (camps or []):
+        adv = adv_map.get(c.get("advertiser_id"), {})
+        c["advertiser_name"]  = adv.get("name", "?")
+        c["advertiser_email"] = adv.get("email", "?")
+    return camps or []
+
+
+@app.patch("/api/admin/ads/campaigns/{camp_id}")
+async def admin_update_campaign(camp_id: str, d: dict, x_admin_token: str = Header(None)):
+    """Модерация: активировать/заблокировать кампанию."""
+    if not verify_admin_token(x_admin_token):
+        raise HTTPException(403, "Unauthorized")
+    allowed = {"status", "ad_text", "photo_url"}
+    patch = {k: v for k, v in d.items() if k in allowed}
+    patch["updated_at"] = int(time.time() * 1000)
+    ok = await _sb_patch("ad_campaigns", {"id": f"eq.{camp_id}"}, patch)
+    return {"ok": ok}
+
 
 
 if __name__ == "__main__":
