@@ -995,7 +995,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
           {/* ════════════════════════════════════════════
               БЛОК: РАСШИРЕННАЯ ЛОГИКА (Flow-редактор)
           ════════════════════════════════════════════ */}
-          {!isVK && <ButtonFlowEditor bot={bot} onUpdate={handleLocalUpdate} />}
+          <ButtonFlowEditor bot={bot} onUpdate={handleLocalUpdate} />
         </div>
       )}
 
