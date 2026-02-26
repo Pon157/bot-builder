@@ -33,6 +33,226 @@ except ImportError:
 from vkbottle.exception_factory import VKAPIError
 from typing import Dict, List, Optional
 
+# ── SANDBOX ──────────────────────────────────────────────────────────────────
+# Пользовательский код запускается в изолированном дочернем процессе Python.
+# Данные передаются через stdin/stdout как JSON.
+# OS-лимиты (RLIMIT_CPU) устанавливаются внутри дочернего процесса.
+# Wall-clock таймаут контролируется asyncio.wait_for.
+
+_SANDBOX_RUNNER_PY = r'''
+import sys, json, os
+
+try:
+    _raw = sys.stdin.buffer.read()
+    _data = json.loads(_raw)
+    _code = _data["code"]
+    _ctx  = _data["ctx"]
+except Exception as e:
+    sys.stdout.write(json.dumps({"ok": False, "error": "Input error: " + str(e)}) + "\n")
+    sys.exit(1)
+
+try:
+    os.environ.clear()
+except Exception:
+    pass
+
+try:
+    import resource as _res
+    _res.setrlimit(_res.RLIMIT_CPU, (4, 4))
+except Exception:
+    pass
+
+try:
+    import requests  as _req
+    import json      as _json
+    import datetime  as _dt
+    import math      as _math
+    import re        as _re
+    import xml.etree.ElementTree as _ET
+except ImportError as e:
+    sys.stdout.write(json.dumps({"ok": False, "error": "Module error: " + str(e)}) + "\n")
+    sys.exit(1)
+
+_RSS_LIMIT_MB = 200
+
+def _rss_mb():
+    try:
+        with open("/proc/self/status") as _f:
+            for _line in _f:
+                if _line.startswith("VmRSS:"):
+                    return int(_line.split()[1]) // 1024
+    except Exception:
+        pass
+    return 0
+
+class _SMP:
+    _BLK = frozenset([
+        "sys", "os", "__builtins__", "__loader__", "__spec__", "__file__",
+        "__cached__", "__path__", "__package__", "builtins", "environ",
+        "__import__", "__build_class__", "__initializing__", "modules",
+        "__doc__", "__name__",
+    ])
+    def __init__(self, mod, name=""):
+        object.__setattr__(self, "_m", mod)
+        object.__setattr__(self, "_n", name)
+    def __getattr__(self, attr):
+        if (attr.startswith("__") and attr.endswith("__")) or attr in self._BLK:
+            raise AttributeError("'" + object.__getattribute__(self,"_n") + "' has no attribute '" + attr + "'")
+        return getattr(object.__getattribute__(self, "_m"), attr)
+    def __setattr__(self, attr, val):
+        raise PermissionError("Module modification forbidden")
+    def __repr__(self):
+        return "<module '" + object.__getattribute__(self,"_n") + "'>"
+
+_ALL_DUNDERS = frozenset(
+    [n for n in dir(object) if n.startswith("__") and n.endswith("__")] +
+    ["_module","__wrapped__","__closure__","__annotations__",
+     "__build_class__","__loader__","__spec__","__file__","__cached__"]
+)
+
+def _safe_getattr(obj, name, *args):
+    if isinstance(name, str) and (
+        name in _ALL_DUNDERS or (name.startswith("__") and name.endswith("__"))
+    ):
+        raise PermissionError("Access to '" + str(name) + "' forbidden")
+    return getattr(obj, name, *args)
+
+def _safe_pow(base, exp, mod=None):
+    if isinstance(exp, (int, float)) and abs(exp) > 1000:
+        raise ValueError("Exponent too large (max 1000)")
+    return pow(base, exp, mod) if mod is not None else pow(base, exp)
+
+_BH = ("localhost","127.","0.0.0.0","::1","169.254","10.","192.168.","172.",
+       "metadata.google","metadata.internal")
+
+class _SR:
+    @staticmethod
+    def _chk(url):
+        u = str(url).lower()
+        if u.startswith("file://"): raise PermissionError("file:// forbidden")
+        for h in _BH:
+            if h in u: raise PermissionError("Internal network forbidden")
+    def get(self, url, **kw):
+        self._chk(url); kw.setdefault("timeout",8); return _req.get(url,**kw)
+    def post(self, url, **kw):
+        self._chk(url); kw.setdefault("timeout",8); return _req.post(url,**kw)
+    def put(self, url, **kw):
+        self._chk(url); kw.setdefault("timeout",8); return _req.put(url,**kw)
+    def delete(self, url, **kw):
+        self._chk(url); kw.setdefault("timeout",8); return _req.delete(url,**kw)
+
+def _blk(*a, **kw): raise PermissionError("Function disabled in sandbox")
+
+try:
+    import ast as _ast
+    _BLOCKED_ATTRS_R = frozenset([
+        "__class__","__base__","__bases__","__mro__","__subclasses__",
+        "__globals__","__builtins__","__dict__","__code__","__func__",
+        "__self__","__module__","__qualname__","__init__","__new__",
+        "__reduce__","__reduce_ex__","__getattribute__","__import__",
+        "__loader__","__spec__","__file__","__cached__","__wrapped__",
+        "__weakref__","__build_class__","__closure__","__annotations__",
+    ])
+    _BLOCKED_CALLS_R = frozenset([
+        "eval","exec","compile","open","input","breakpoint","vars","dir",
+        "locals","globals","memoryview","type","object","super",
+        "classmethod","staticmethod","property",
+    ])
+    _BLOCKED_STR_R = frozenset([
+        "__class__","__base__","__subclasses__","__globals__","__builtins__",
+        "__dict__","__import__","__reduce__","__init__","__new__",
+        ".env","/etc/passwd","/etc/shadow","/proc/","/sys/",
+        "subprocess","ctypes","cffi","pty",
+    ])
+    def _ast_recheck(source):
+        try:
+            _tree = _ast.parse(source, mode="exec")
+        except SyntaxError as _e:
+            return False, "SyntaxError: " + str(_e)
+        for _node in _ast.walk(_tree):
+            if isinstance(_node, _ast.Attribute):
+                _a = _node.attr
+                if _a in _BLOCKED_ATTRS_R or (_a.startswith("__") and _a.endswith("__")):
+                    return False, "Blocked attr: " + _a
+            if isinstance(_node, _ast.Call):
+                _f = _node.func
+                if isinstance(_f, _ast.Name) and _f.id in _BLOCKED_CALLS_R:
+                    return False, "Blocked call: " + _f.id
+                if isinstance(_f, _ast.Attribute) and _f.attr in _BLOCKED_CALLS_R:
+                    return False, "Blocked method: " + _f.attr
+            if isinstance(_node, _ast.Constant) and isinstance(_node.value, str):
+                for _p in _BLOCKED_STR_R:
+                    if _p in _node.value:
+                        return False, "Blocked string: " + _p
+            if isinstance(_node, (_ast.Import, _ast.ImportFrom)):
+                return False, "import forbidden"
+        return True, None
+    _ast_ok, _ast_err = _ast_recheck(_code)
+    if not _ast_ok:
+        sys.stdout.write(json.dumps({"ok": False, "error": "Blocked: " + _ast_err}) + "\n")
+        sys.exit(1)
+except Exception as _e:
+    pass
+
+_sb = {
+    "user_id":    _ctx.get("user_id", 0),
+    "username":   _ctx.get("username", ""),
+    "first_name": _ctx.get("first_name", ""),
+    "text":       _ctx.get("text", ""),
+    "bot_id":     _ctx.get("bot_id", ""),
+    "requests":   _SR(),
+    "json":       _SMP(_json,    "json"),
+    "datetime":   _SMP(_dt,      "datetime"),
+    "math":       _SMP(_math,    "math"),
+    "re":         _SMP(_re,      "re"),
+    "ET":         _SMP(_ET,      "ET"),
+    "reply_text": "",
+    "__builtins__": {
+        "str":str,"int":int,"float":float,"bool":bool,"bytes":bytes,
+        "list":list,"dict":dict,"tuple":tuple,"set":set,"frozenset":frozenset,
+        "len":len,"range":range,"enumerate":enumerate,"zip":zip,
+        "map":map,"filter":filter,"reversed":reversed,"iter":iter,"next":next,
+        "min":min,"max":max,"sum":sum,"abs":abs,"round":round,
+        "sorted":sorted,"pow":_safe_pow,"divmod":divmod,
+        "repr":repr,"format":format,"chr":chr,"ord":ord,
+        "hex":hex,"oct":oct,"bin":bin,
+        "isinstance":isinstance,"issubclass":issubclass,
+        "hasattr":hasattr,"callable":callable,
+        "getattr":_safe_getattr,
+        "Exception":Exception,"ValueError":ValueError,"TypeError":TypeError,
+        "KeyError":KeyError,"IndexError":IndexError,"AttributeError":AttributeError,
+        "PermissionError":PermissionError,"RuntimeError":RuntimeError,
+        "StopIteration":StopIteration,"AssertionError":AssertionError,
+        "True":True,"False":False,"None":None,
+        "print":lambda *a,**kw:None,
+        "__import__":_blk,"open":_blk,"eval":_blk,"exec":_blk,
+        "compile":_blk,"globals":_blk,"locals":_blk,"vars":_blk,
+        "dir":_blk,"type":_blk,"object":_blk,"super":_blk,
+        "delattr":_blk,"setattr":_blk,"input":_blk,
+        "memoryview":_blk,"breakpoint":_blk,
+        "classmethod":_blk,"staticmethod":_blk,"property":_blk,
+        "__loader__":None,"__spec__":None,"__build_class__":_blk,
+    },
+}
+
+try:
+    exec(_code, _sb)
+    rss = _rss_mb()
+    if rss > _RSS_LIMIT_MB:
+        sys.stdout.write(json.dumps({"ok": False, "error": "Memory limit exceeded"}) + "\n")
+        sys.exit(1)
+    _reply = str(_sb.get("reply_text","")).strip()
+    if len(_reply) > 4000:
+        _reply = _reply[:4000] + "..."
+    sys.stdout.write(json.dumps({"ok": True, "reply": _reply}) + "\n")
+except PermissionError as e:
+    sys.stdout.write(json.dumps({"ok": False, "error": "Blocked: " + str(e)}) + "\n")
+except MemoryError:
+    sys.stdout.write(json.dumps({"ok": False, "error": "Memory limit exceeded"}) + "\n")
+except Exception as e:
+    sys.stdout.write(json.dumps({"ok": False, "error": str(e)}) + "\n")
+'''
+
 # --- ГЛОБАЛЬНАЯ КОНФИГУРАЦИЯ ЛОГИРОВАНИЯ ---
 logging.basicConfig(
     level=logging.INFO,
@@ -93,6 +313,25 @@ class LicenseMiddleware(BaseMiddleware[Message]):
 
     async def post(self):
         pass
+
+class BanMiddleware(BaseMiddleware[Message]):
+    """Middleware проверки бана — блокирует всех забаненных до любой логики."""
+    async def pre(self):
+        bot_instance = getattr(self.event.ctx_api, "bot_instance_ref", None)
+        if bot_instance is None:
+            return
+        user_id = self.event.from_id
+        user = next((u for u in bot_instance.users_list if u.get('id') == user_id), None)
+        if user and user.get("is_banned"):
+            try:
+                await self.event.answer("🚫 Вы заблокированы в этом боте.")
+            except Exception:
+                pass
+            self.stop("User is banned")
+
+    async def post(self):
+        pass
+
 
 # --- ОСНОВНОЙ КЛАСС БОТА ---
 class BotInstance:
@@ -230,6 +469,7 @@ class BotInstance:
         self.settings      = full_cfg.get('settings', {})
         self.rate_limit    = float(self.settings.get('rateLimit', 1.0))
         self.auto_ban_limit= int(self.settings.get('autoBanThreshold', 3))
+        self.forward_all   = self.settings.get('forwardAll', False)  # Режим «без тикетов»
 
         # -- Список ID администраторов (из редактора, поле adminIds) --
         # Если список пустой -- команды разрешены всем участникам беседы
@@ -566,6 +806,332 @@ class BotInstance:
                     return found
         return None
 
+    # ─────────────────────────────────────────────
+    # FLOW-ЛОГИКА РАСШИРЕННЫХ КНОПОК
+    # ─────────────────────────────────────────────
+
+    def _format_flow_text(self, text: str, m: Message) -> str:
+        """Подставляет переменные в текст flow-действия."""
+        uid = str(m.from_id)
+        username = ""
+        first_name = ""
+        # Ищем кэшированные данные юзера
+        user = next((u for u in self.users_list if u.get('id') == m.from_id), None)
+        if user:
+            username  = user.get('username') or user.get('domain') or ''
+            first_name = user.get('first_name', '')
+        return (text or '')\
+            .replace('{username}', f'@{username}' if username else first_name)\
+            .replace('{first_name}', first_name)\
+            .replace('{last_name}', '')\
+            .replace('{user_id}', uid)\
+            .replace('{text}', m.text or '')
+
+    async def execute_flow_actions(self, actions: list, m: Message, user: dict) -> bool:
+        """
+        Выполняет список action-объектов для одной flow-ноды.
+        Возвращает True если была отправлена клавиатура с под-кнопками.
+        """
+        uid = user['id']
+        showed_sub_keyboard = False
+
+        for action in actions:
+            atype = action.get('type', 'message')
+
+            if atype == 'message':
+                text = self._format_flow_text(action.get('text', ''), m)
+                if text:
+                    await m.answer(text)
+
+            elif atype == 'admin_notify':
+                text = self._format_flow_text(action.get('text', ''), m)
+                if text and self.admin_chat_id:
+                    try:
+                        await self.bot.api.messages.send(
+                            peer_id=self.admin_chat_id,
+                            message=text,
+                            random_id=0
+                        )
+                    except Exception as e:
+                        logger.warning(f"Flow admin_notify error: {e}")
+
+            elif atype == 'code':
+                code = action.get('code', '').strip()
+                if code:
+                    await self._execute_flow_code(code, m, user)
+
+            elif atype == 'create_ticket':
+                await self._flow_create_ticket(action, m, user)
+
+            elif atype == 'buttons':
+                sub_nodes = action.get('buttons', [])
+                if sub_nodes:
+                    raw_buttons = [{'text': node.get('label', '')} for node in sub_nodes if node.get('label')]
+                    raw_buttons.append({'text': '⬅️ Назад'})
+                    kb = self.build_keyboard_from_buttons(raw_buttons)
+                    user['_flow_nodes'] = sub_nodes
+                    await self.bot.api.messages.send(
+                        peer_id=uid,
+                        message='Выберите:',
+                        keyboard=kb,
+                        random_id=0
+                    )
+                    showed_sub_keyboard = True
+
+        return showed_sub_keyboard
+
+    async def _flow_create_ticket(self, action: dict, m: Message, user: dict):
+        """Создаёт тикет из flow-действия (пересылает сообщение админу)."""
+        btn_text = action.get('btnText', '')
+        resp_text = action.get('response', 'Ваше обращение принято. Ожидайте ответа оператора.')
+        user['_in_ticket'] = True
+        label = action.get('closeLabel', 'Закрыть обращение')
+        user['_ticket_close_label'] = label
+        await self.forward_to_admin(m, user, btn_text=btn_text)
+        close_kb = self.build_keyboard_from_buttons([{'text': label}])
+        await self.bot.api.messages.send(
+            peer_id=user['id'],
+            message=f"{resp_text}\n\nВы можете продолжать писать — сообщения будут доставлены оператору.",
+            keyboard=close_kb,
+            random_id=0
+        )
+        await self.sync_queue.put(("sync_state", None))
+
+    def find_flow_node_by_label(self, label: str, nodes: list) -> Optional[dict]:
+        """Рекурсивный поиск flow-ноды по тексту кнопки."""
+        for node in nodes:
+            if node.get('label', '').strip().lower() == label.strip().lower():
+                return node
+            for action in node.get('actions', []):
+                if action.get('type') == 'buttons':
+                    found = self.find_flow_node_by_label(label, action.get('buttons', []))
+                    if found:
+                        return found
+        return None
+
+    async def handle_flow_button(self, m: Message, user: dict) -> bool:
+        """
+        Пытается обработать нажатую кнопку как flow-узел.
+        Возвращает True если кнопка была найдена и обработана в flow.
+        """
+        text = m.text.strip() if m.text else ''
+
+        # Сначала ищем в сохранённых под-нодах (если пользователь в под-меню)
+        session_nodes = user.get('_flow_nodes')
+        if session_nodes:
+            node = self.find_flow_node_by_label(text, session_nodes)
+            if node:
+                showed_kb = await self.execute_flow_actions(node.get('actions', []), m, user)
+                if not showed_kb:
+                    user.pop('_flow_nodes', None)
+                    await self.bot.api.messages.send(
+                        peer_id=user['id'],
+                        message='Готово.',
+                        keyboard=self.get_main_keyboard(),
+                        random_id=0
+                    )
+                return True
+
+        # Ищем в основных кнопках
+        for btn in self.buttons:
+            if btn.get('text', '').strip().lower() != text.lower():
+                continue
+
+            handled = False
+
+            direct_actions = btn.get('directActions', [])
+            if direct_actions:
+                await self.execute_flow_actions(direct_actions, m, user)
+                handled = True
+
+            flow = btn.get('flow', [])
+            if flow:
+                raw_buttons = [{'text': node.get('label', '')} for node in flow if node.get('label')]
+                raw_buttons.append({'text': '⬅️ Назад'})
+                kb = self.build_keyboard_from_buttons(raw_buttons)
+                user['_flow_nodes'] = flow
+                resp = btn.get('response', '')
+                await self.bot.api.messages.send(
+                    peer_id=user['id'],
+                    message=resp or 'Выберите:',
+                    keyboard=kb,
+                    random_id=0
+                )
+                handled = True
+
+            if handled:
+                return True
+
+            return False
+
+        return False
+
+    async def _execute_flow_code(self, code: str, m: Message, user: dict):
+        """
+        Выполняет пользовательский код через изолированный дочерний процесс.
+        Уровни защиты:
+          1. AST-scan (статические лимиты + security-scan)
+          2. Subprocess: отдельный Python-процесс с RLIMIT_CPU=4с
+          3. asyncio.wait_for: wall-clock timeout 6 секунд
+        """
+        import asyncio, ast as _ast, json as _json, sys as _sys, os as _os, traceback
+
+        _MAX_CODE_LEN   = 4_000
+        _MAX_CODE_LINES = 100
+        _MAX_INT_LIT    = 1_000_000
+        _MAX_POW_EXP    = 1_000
+        _MAX_STR_REPEAT = 100_000
+        _MAX_RANGE      = 100_000
+        _MAX_REPLY_LEN  = 4_000
+        _WALL_TIMEOUT   = 6.0
+
+        _BLOCKED_ATTRS = {
+            "__class__","__base__","__bases__","__mro__","__subclasses__",
+            "__globals__","__builtins__","__dict__","__code__","__func__",
+            "__self__","__module__","__qualname__","__init__","__new__",
+            "__reduce__","__reduce_ex__","__getattribute__","__setattr__",
+            "__delattr__","__import__","__loader__","__spec__","__file__",
+            "__cached__","__wrapped__","_module","__weakref__",
+            "__build_class__","__closure__","__annotations__",
+        }
+        _BLOCKED_NAMES = {"__import__","__builtins__","__spec__","__loader__","__build_class__","breakpoint"}
+        _BLOCKED_CALLS = {
+            "eval","exec","compile","open","input","breakpoint",
+            "vars","dir","locals","globals","memoryview",
+            "type","object","super","classmethod","staticmethod","property",
+        }
+        _BLOCKED_STR_PATTERNS = {
+            "__class__","__base__","__bases__","__mro__","__subclasses__",
+            "__globals__","__builtins__","__dict__","__code__","__import__",
+            "__reduce__","__init__","__new__","_module","__closure__",
+            "__getattribute__",".env","/etc/passwd","/etc/shadow",
+            "/proc/","/sys/","subprocess","pty","ctypes","cffi",
+        }
+
+        if len(code) > _MAX_CODE_LEN:
+            await m.answer(f"Код отклонён: слишком длинный (максимум {_MAX_CODE_LEN} символов)")
+            return
+        if code.count("\n") + 1 > _MAX_CODE_LINES:
+            await m.answer(f"Код отклонён: слишком много строк (максимум {_MAX_CODE_LINES})")
+            return
+
+        def _ast_check(source: str):
+            try:
+                tree = _ast.parse(source, mode="exec")
+            except SyntaxError as e:
+                return False, f"Синтаксическая ошибка: {e}"
+            for node in _ast.walk(tree):
+                if isinstance(node, _ast.Constant):
+                    if isinstance(node.value, int) and abs(node.value) > _MAX_INT_LIT:
+                        return False, f"Число слишком большое (максимум {_MAX_INT_LIT:,})"
+                    if isinstance(node.value, str):
+                        for pat in _BLOCKED_STR_PATTERNS:
+                            if pat in node.value:
+                                return False, f"Запрещённый паттерн в строке: '{pat}'"
+                if isinstance(node, _ast.BinOp) and isinstance(node.op, _ast.Pow):
+                    r = node.right
+                    if isinstance(r, _ast.Constant) and isinstance(r.value, (int, float)):
+                        if r.value > _MAX_POW_EXP:
+                            return False, f"Степень слишком большая (максимум {_MAX_POW_EXP})"
+                if isinstance(node, _ast.BinOp) and isinstance(node.op, _ast.Mult):
+                    for a, b in [(node.left, node.right), (node.right, node.left)]:
+                        if (isinstance(a, _ast.Constant) and isinstance(a.value, (str, bytes)) and
+                                isinstance(b, _ast.Constant) and isinstance(b.value, int)):
+                            if b.value > _MAX_STR_REPEAT:
+                                return False, f"Повтор строки слишком большой (максимум {_MAX_STR_REPEAT:,})"
+                if (isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name)
+                        and node.func.id == "range"):
+                    for arg in node.args:
+                        if isinstance(arg, _ast.Constant) and isinstance(arg.value, int):
+                            if arg.value > _MAX_RANGE:
+                                return False, f"range() слишком большой (максимум {_MAX_RANGE:,})"
+                if isinstance(node, _ast.Attribute):
+                    nm = node.attr
+                    if nm in _BLOCKED_ATTRS or (nm.startswith("__") and nm.endswith("__")):
+                        return False, f"Запрещён доступ к атрибуту '{nm}'"
+                if isinstance(node, _ast.Name) and node.id in _BLOCKED_NAMES:
+                    return False, f"Запрещено имя '{node.id}'"
+                if isinstance(node, _ast.Call):
+                    func = node.func
+                    if isinstance(func, _ast.Name) and func.id in _BLOCKED_CALLS:
+                        return False, f"Запрещён вызов '{func.id}()'"
+                    if isinstance(func, _ast.Attribute) and func.attr in _BLOCKED_CALLS:
+                        return False, f"Запрещён вызов метода '{func.attr}()'"
+                if isinstance(node, (_ast.Import, _ast.ImportFrom)):
+                    return False, "Оператор import запрещён"
+            return True, None
+
+        ok, ast_err = _ast_check(code)
+        if not ok:
+            logger.warning(f"Flow AST blocked (bot {self.bot_id}): {ast_err}")
+            await m.answer(f"Код отклонён: {ast_err}")
+            return
+
+        ctx = {
+            "user_id":    user['id'],
+            "username":   user.get('username') or user.get('domain') or '',
+            "first_name": user.get('first_name', ''),
+            "text":       m.text or "",
+            "bot_id":     self.bot_id,
+        }
+        payload = _json.dumps({"code": code, "ctx": ctx}).encode()
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                _sys.executable, "-c", _SANDBOX_RUNNER_PY,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={k: v for k, v in _os.environ.items() if k in (
+                    "PATH", "LD_LIBRARY_PATH", "LD_PRELOAD",
+                    "PYTHONPATH", "PYTHONHOME",
+                    "LANG", "LC_ALL", "LC_CTYPE",
+                    "HOME", "TMPDIR", "TMP", "TEMP",
+                    "PYTHONDONTWRITEBYTECODE", "PYTHONUNBUFFERED",
+                    "VIRTUAL_ENV",
+                )},
+            )
+
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(payload),
+                timeout=_WALL_TIMEOUT,
+            )
+
+            if proc.returncode != 0 and not stdout.strip():
+                rc = proc.returncode
+                if rc in (-9, -15):
+                    await m.answer("Код остановлен: превышен лимит CPU или памяти.")
+                else:
+                    err_txt = stderr.decode(errors="replace")[:200]
+                    await m.answer(f"Процесс завершился с ошибкой (код {rc}).")
+                    logger.warning(f"Flow sandbox exit {rc} for bot {self.bot_id}: {err_txt}")
+                return
+
+            if not stdout.strip():
+                return
+
+            result = _json.loads(stdout.decode().strip())
+            if result.get("ok"):
+                reply = result.get("reply", "").strip()
+                if reply:
+                    if len(reply) > _MAX_REPLY_LEN:
+                        reply = reply[:_MAX_REPLY_LEN] + "…"
+                    await m.answer(reply)
+            else:
+                err = result.get("error", "Неизвестная ошибка")
+                logger.warning(f"Flow code error (bot {self.bot_id}): {err}")
+                await m.answer(f"Ошибка выполнения: {err}")
+
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            logger.warning(f"Flow code wall-clock timeout for bot {self.bot_id}")
+            await m.answer("Код завершён по таймауту (более 6 секунд).")
+        except Exception as e:
+            logger.warning(f"Flow code unexpected error (bot {self.bot_id}): {e}\n{traceback.format_exc()}")
+
     async def check_antispam(self, user_id: int) -> bool:
         if self.rate_limit <= 0: return False
         now = time.time()
@@ -835,6 +1401,28 @@ class BotInstance:
 
         uid = target_user['id']
 
+        # 🔍 ИНФО О ПОЛЬЗОВАТЕЛЕ (/whois)
+        if command == "whois":
+            username = target_user.get("username") or target_user.get("domain")
+            name_line = target_user.get("first_name", "—")
+            if username:
+                name_line += f" (@{username})"
+            joined = datetime.fromtimestamp(target_user.get("joined_at", 0)).strftime("%d.%m.%Y %H:%M") if target_user.get("joined_at") else "—"
+            last_seen = datetime.fromtimestamp(target_user.get("last_seen", 0)).strftime("%d.%m.%Y %H:%M") if target_user.get("last_seen") else "—"
+            await self.bot.api.messages.send(
+                peer_id=self.admin_chat_id,
+                message=(
+                    f"🔍 Пользователь {uid}:\n\n"
+                    f"Имя: {name_line}\n"
+                    f"Забанен: {'Да' if target_user.get('is_banned') else 'Нет'}\n"
+                    f"Варнов: {target_user.get('warns', 0)}\n"
+                    f"Зашёл: {joined}\n"
+                    f"Активность: {last_seen}"
+                ),
+                random_id=0
+            )
+            return True
+
         # 🚫 БАН
         if command == "ban":
             target_user["is_banned"] = True
@@ -936,6 +1524,7 @@ class BotInstance:
     # ─────────────────────────────────────────────
     async def core_handlers_setup(self):
         self.bot.labeler.message_view.register_middleware(LicenseMiddleware)
+        self.bot.labeler.message_view.register_middleware(BanMiddleware)
 
         # ── Бот приглашён в беседу ──
         @self.bot.on.message(func=lambda m: (
@@ -1081,7 +1670,7 @@ class BotInstance:
             
             user, is_new = await self.get_user_state(m)
             
-            # БАН
+            # БАН (дополнительная проверка на случай, если middleware пропустил)
             if user.get("is_banned"):
                 try:
                     await self.bot.api.messages.send(
@@ -1096,14 +1685,50 @@ class BotInstance:
             # Анти-спам
             if await self.check_antispam(user['id']):
                 return
-            
+
+            # ── РЕЖИМ АКТИВНОГО ТИКЕТА ──
+            if user.get('_in_ticket'):
+                _close_label = user.get('_ticket_close_label', 'Закрыть обращение')
+                if m.text and m.text.strip() in (_close_label, "Закрыть обращение"):
+                    user.pop('_in_ticket', None)
+                    user.pop('_ticket_close_label', None)
+                    await self.sync_queue.put(("sync_state", None))
+                    if self.admin_chat_id:
+                        name = user.get("first_name", str(user['id']))
+                        username_str = user.get("username") or user.get("domain")
+                        user_line = name
+                        if username_str:
+                            user_line += f" (@{username_str})"
+                        user_line += f" | ID: {user['id']}"
+                        try:
+                            await self.bot.api.messages.send(
+                                peer_id=self.admin_chat_id,
+                                message=f"Обращение закрыто пользователем.\n{user_line}",
+                                random_id=0
+                            )
+                        except Exception:
+                            pass
+                    await self.bot.api.messages.send(
+                        peer_id=user['id'],
+                        message="Обращение закрыто.",
+                        keyboard=self.get_main_keyboard(),
+                        random_id=0
+                    )
+                    return
+
+                # Тикет открыт — пересылаем всё админу
+                await self.forward_to_admin(m, user)
+                await self.log_and_update(user['id'], user['first_name'], m.text or "[Медиа]")
+                return
+
             if m.text:
                 clean_text = m.text.strip()
                 clean_lower = clean_text.lower()
 
                 # ── Кнопка «Назад» (высший приоритет) ──
-                if clean_text == "⬅️ Назад":
+                if clean_text in ("⬅️ Назад", "Назад"):
                     user.pop('_ai_session', None)
+                    user.pop('_flow_nodes', None)
                     self.clear_ai_context(user['id'])
                     await self.bot.api.messages.send(
                         peer_id=user['id'],
@@ -1143,8 +1768,6 @@ class BotInstance:
                             logger.warning(f"VK welcome photo upload error: {e}")
                     
                     inline_buttons = [b for b in (self.welcome_inline or []) if b.get('text') and b.get('url')]
-                    
-                    # Если есть URL-кнопки и можем их отрисовать — вставляем инлайн-клавиатуру в первое сообщение
                     inline_kb_json = self.build_inline_url_keyboard(inline_buttons) if inline_buttons else None
 
                     await self.bot.api.messages.send(
@@ -1155,7 +1778,6 @@ class BotInstance:
                         random_id=0
                     )
                     
-                    # Если инлайн-кнопки отправили вместе с приветствием — отправляем ещё главную клавиатуру
                     if inline_kb_json:
                         try:
                             await self.bot.api.messages.send(
@@ -1167,7 +1789,6 @@ class BotInstance:
                         except Exception:
                             pass
                     elif inline_buttons and VKLink is None:
-                        # Фолбек: ссылки текстом
                         links_text = "\n".join([f"🔗 {b['text']}: {b['url']}" for b in inline_buttons])
                         try:
                             await self.bot.api.messages.send(peer_id=user['id'], message=links_text, random_id=0)
@@ -1213,10 +1834,15 @@ class BotInstance:
                     await self.log_and_update(user['id'], user['first_name'], m.text)
                     return
 
+                # ── FLOW-ЛОГИКА расширенных кнопок ──
+                flow_handled = await self.handle_flow_button(m, user)
+                if flow_handled:
+                    await self.log_and_update(user['id'], user['first_name'], f"FLOW: {clean_text}")
+                    return
+
                 # ── КНОПКИ (рекурсивный поиск, sub-кнопки, инлайн URL) ──
                 matched_btn = self.get_button_by_text(clean_text)
                 if matched_btn:
-                    # При нажатии любой кнопки из дерева — закрываем ИИ-сессию
                     user.pop('_ai_session', None)
 
                     # Кнопка ИИ-ассистента
@@ -1232,29 +1858,37 @@ class BotInstance:
 
                     children = matched_btn.get('children', [])
                     if children:
-                        # Подменю с кнопкой «Назад»
                         child_kb = self.build_keyboard_from_buttons(children + [{"text": "⬅️ Назад"}])
                         response_text = matched_btn.get('response') or "Выберите действие:"
                         await m.answer(response_text, keyboard=child_kb)
                     else:
-                        # Финальная кнопка
                         if matched_btn.get('type') == 'request':
+                            user['_in_ticket'] = True
+                            label = 'Закрыть обращение'
+                            user['_ticket_close_label'] = label
                             await self.forward_to_admin(m, user, btn_text=matched_btn['text'])
+                            await self.sync_queue.put(("sync_state", None))
                         
                         resp_text = matched_btn.get('response', 'Принято!')
                         
-                        # Инлайн URL-кнопки у кнопки (если заданы)
                         btn_inline = [b for b in matched_btn.get('inline', []) if b.get('text') and b.get('url')]
                         inline_kb = self.build_inline_url_keyboard(btn_inline) if btn_inline else None
                         
-                        if inline_kb:
+                        if matched_btn.get('type') == 'request':
+                            close_kb = self.build_keyboard_from_buttons([{'text': 'Закрыть обращение'}])
+                            await self.bot.api.messages.send(
+                                peer_id=user['id'],
+                                message=f"{resp_text}\n\nВы можете продолжать писать — сообщения будут доставлены оператору.",
+                                keyboard=close_kb,
+                                random_id=0
+                            )
+                        elif inline_kb:
                             await self.bot.api.messages.send(
                                 peer_id=user['id'],
                                 message=resp_text,
                                 keyboard=inline_kb,
                                 random_id=0
                             )
-                            # Возвращаем главную клавиатуру следующим сообщением
                             await self.bot.api.messages.send(
                                 peer_id=user['id'],
                                 message="👇",
@@ -1290,9 +1924,18 @@ class BotInstance:
                             await self.log_and_update(user['id'], user['first_name'], m.text)
                             return
             
-            # Если ничего не совпало — пересылаем админу
-            await self.forward_to_admin(m, user, is_first=is_new)
-            await self.log_and_update(user['id'], user['first_name'], m.text or "[Медиа]")
+            # ── Если ничего не совпало ──
+            if is_new:
+                # Первое обращение — пересылаем админу
+                await self.forward_to_admin(m, user, is_first=True)
+                await self.log_and_update(user['id'], user['first_name'], m.text or "[Медиа]")
+            elif self.forward_all:
+                # Режим «без тикетов» — пересылаем всё
+                await self.forward_to_admin(m, user)
+                await self.log_and_update(user['id'], user['first_name'], m.text or "[Медиа]")
+            else:
+                await self.forward_to_admin(m, user, is_first=is_new)
+                await self.log_and_update(user['id'], user['first_name'], m.text or "[Медиа]")
 
     async def run_instance(self):
         logger.info(f"[*] Бот VK {self.bot_id} запускается...")
