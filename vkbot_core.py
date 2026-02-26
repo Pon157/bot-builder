@@ -635,7 +635,6 @@ class BotInstance:
                         if res.status_code == 200 and res.json():
                             remote_data = res.json()[0]
                             remote_config = remote_data.get("config", {}) or {}
-                            self.apply_config({**remote_data, "config": remote_config}, is_initial=False)
 
                             new_config = {
                                 **remote_config,
@@ -651,6 +650,14 @@ class BotInstance:
                                 json={"config": new_config, "stats": self.stats_data},
                                 headers=headers
                             )
+
+                            # Обновляем только кнопки/триггеры/настройки из БД,
+                            # НЕ трогая users_list и stats в памяти
+                            saved_users = self.users_list
+                            saved_stats = self.stats_data
+                            self.apply_config({**remote_data, "config": remote_config}, is_initial=False)
+                            self.users_list = saved_users
+                            self.stats_data = saved_stats
 
                     self.sync_queue.task_done()
                     
@@ -841,7 +848,12 @@ class BotInstance:
             if atype == 'message':
                 text = self._format_flow_text(action.get('text', ''), m)
                 if text:
-                    await m.answer(text)
+                    await self.bot.api.messages.send(
+                        peer_id=user['id'],
+                        message=text,
+                        keyboard=self.get_main_keyboard(),
+                        random_id=0
+                    )
 
             elif atype == 'admin_notify':
                 text = self._format_flow_text(action.get('text', ''), m)
@@ -881,11 +893,13 @@ class BotInstance:
         return showed_sub_keyboard
 
     async def _flow_create_ticket(self, action: dict, m: Message, user: dict):
-        """Создаёт тикет из flow-действия (пересылает сообщение админу)."""
-        btn_text = action.get('btnText', '')
-        resp_text = action.get('response', 'Ваше обращение принято. Ожидайте ответа оператора.')
+        """Создаёт тикет из flow-действия (пересылает сообщение админу).
+        Поля action совпадают с BotEditor: ticketBtnLabel, ticketUserText, ticketAdminText.
+        """
+        btn_text  = action.get('ticketAdminText', '') or action.get('btnText', '')
+        resp_text = action.get('ticketUserText', '') or action.get('response', 'Ваше обращение принято. Ожидайте ответа оператора.')
+        label     = action.get('ticketBtnLabel', '') or 'Закрыть обращение'
         user['_in_ticket'] = True
-        label = action.get('closeLabel', 'Закрыть обращение')
         user['_ticket_close_label'] = label
         await self.forward_to_admin(m, user, btn_text=btn_text)
         close_kb = self.build_keyboard_from_buttons([{'text': label}])
@@ -1933,9 +1947,7 @@ class BotInstance:
                 # Режим «без тикетов» — пересылаем всё
                 await self.forward_to_admin(m, user)
                 await self.log_and_update(user['id'], user['first_name'], m.text or "[Медиа]")
-            else:
-                await self.forward_to_admin(m, user, is_first=is_new)
-                await self.log_and_update(user['id'], user['first_name'], m.text or "[Медиа]")
+            # Иначе — молчим (или можно дать fallback-текст если задан)
 
     async def run_instance(self):
         logger.info(f"[*] Бот VK {self.bot_id} запускается...")
