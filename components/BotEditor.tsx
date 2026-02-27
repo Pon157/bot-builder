@@ -2000,93 +2000,79 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
       <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-tight">Выберите период для мгновенной активации</p>
     </div>
 
-    <div className="bg-[#111] border border-zinc-800 p-6 rounded-[2.5rem] flex flex-col lg:flex-row items-center gap-8">
-  {/* Левая часть: Статус */}
-  <div className="flex-1 w-full">
-    <div className="flex items-center gap-3 mb-1">
-      <div className="w-10 h-10 rounded-2xl bg-indigo-500/10 flex items-center justify-center">
-        <AppWindow className="w-5 h-5 text-indigo-400" />
-      </div>
-      <div>
-        <h3 className="text-sm font-black text-white uppercase tracking-wider">Мини-приложения</h3>
-        <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-tight">Веб-интерфейсы внутри бота</p>
-      </div>
-    </div>
-
-    <div className="grid grid-cols-2 gap-4 mt-4">
-      <div className="bg-black border border-zinc-800 p-3 rounded-2xl text-center">
-        <p className={`text-lg font-black ${licenseActive ? 'text-emerald-400' : 'text-rose-400'}`}>
-          {licenseActive ? 'Активна' : 'Истекла'}
-        </p>
-        <p className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest">Статус лицензии</p>
-      </div>
-      <div className="bg-black border border-zinc-800 p-3 rounded-2xl text-center">
-        <p className="text-lg font-black text-blue-400">
-          {bot.license_expires_at ? new Date(bot.license_expires_at).toLocaleDateString() : '—'}
-        </p>
-        <p className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest">Действует до</p>
-      </div>
-    </div>
-  </div>
-
-  {/* Правая часть: Быстрая покупка (как в AI) */}
-  <div className="w-full lg:w-auto flex flex-col gap-2">
-    <p className="text-[9px] text-zinc-500 font-bold uppercase ml-1 tracking-widest text-center lg:text-left">
-      Продлить подписку
-    </p>
-    <div className="flex flex-wrap lg:flex-nowrap gap-2">
-      {[
-        { id: 'miniapp_30d',  label: '30 дней', price: 90 },
-        { id: 'miniapp_90d',  label: '90 дней', price: 250 },
-        { id: 'miniapp_365d', label: '1 год',   price: 900 }
-      ].map((pkg) => (
-        <button
-          key={pkg.id}
-          onClick={async () => {
-            if (!window.confirm(`Списать ${pkg.price} ₽ с баланса для продления на ${pkg.label}?`)) return;
-            setActivatingKey(true);
-            setKeyStatus('');
-            try {
-              const res = await api.buyService(bot.owner_id, pkg.id, bot.id);
-              if (res && res.status === 'ok') {
-                setKeyStatus(`✅ Продлено на ${pkg.label}!`);
-                // Важно: вызываем onUpdate, чтобы изменения сохранились в базе и не сбросились
-                onUpdate({
-                  ...bot,
-                  license_expires_at: (Math.max(bot.license_expires_at || 0, Date.now())) + 
-                                      (pkg.id === 'miniapp_30d' ? 30 : pkg.id === 'miniapp_90d' ? 90 : 365) * 86400000
-                });
-              } else {
-                setKeyStatus(`❌ ${res?.detail || 'Нет средств'}`);
-              }
-            } catch (e) {
-              setKeyStatus('❌ Ошибка сети');
-            } finally {
-              setActivatingKey(false);
-            }
-          }}
-          disabled={activatingKey}
-          className="flex-1 lg:flex-none px-4 py-3 bg-zinc-900 border border-zinc-800 hover:border-indigo-500/50 rounded-xl transition-all group text-center"
-        >
-          <div className="text-indigo-400 font-black text-xs group-hover:scale-110 transition-transform">
-            {pkg.label}
+    {activeTab === 'miniapps' && (
+  <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
+    {/* Карточка лицензии */}
+    <div className="bg-[#111] border border-zinc-800 p-6 md:p-8 rounded-[2.5rem] flex flex-col lg:flex-row items-stretch lg:items-center gap-8">
+      
+      {/* Левая часть: Статус */}
+      <div className="flex-1">
+        <h3 className="text-[11px] font-black text-white uppercase tracking-[0.2em] flex items-center gap-2 mb-4 opacity-80">
+          <AppWindow className="w-4 h-4 text-indigo-400" /> 
+          Статус подписки
+        </h3>
+        
+        <div className="grid grid-cols-2 gap-3 md:gap-4">
+          <div className="bg-black/50 border border-zinc-800/50 p-4 rounded-2xl flex flex-col items-center justify-center">
+            <p className={`text-base md:text-lg font-black leading-none mb-1.5 ${licenseActive ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {licenseActive ? 'АКТИВНА' : 'ИСТЕКЛА'}
+            </p>
+            <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest">Лицензия</p>
           </div>
-          <div className="text-[9px] text-zinc-500 font-bold italic">{pkg.price} ₽</div>
-        </button>
-      ))}
+          
+          <div className="bg-black/50 border border-zinc-800/50 p-4 rounded-2xl flex flex-col items-center justify-center">
+            <p className="text-base md:text-lg font-black text-blue-400 leading-none mb-1.5">
+              {bot.license_expires_at ? new Date(bot.license_expires_at).toLocaleDateString() : '—'}
+            </p>
+            <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest">До даты</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Разделитель (только для десктопа) */}
+      <div className="hidden lg:block w-px h-16 bg-zinc-800/50" />
+
+      {/* Правая часть: Продление */}
+      <div className="w-full lg:w-72 flex flex-col gap-3">
+        <p className="text-[9px] text-zinc-500 font-black uppercase tracking-widest ml-1">
+          Быстрое продление
+        </p>
+        <div className="flex gap-2">
+          {[
+            { id: 'miniapp_30d', label: '30 ДНЕЙ', price: 90 },
+            { id: 'miniapp_90d', label: '90 ДНЕЙ', price: 250 }
+          ].map((pkg) => (
+            <button
+              key={pkg.id}
+              onClick={async () => {
+                if (!window.confirm(`Списать ${pkg.price}₽ с баланса?`)) return;
+                setIsProcessing(true);
+                try {
+                  const res = await api.buyService(bot.owner_id, pkg.id, bot.id);
+                  if (res?.status === 'ok') {
+                    const days = pkg.id === 'miniapp_30d' ? 30 : 90;
+                    const currentExp = bot.license_expires_at || Date.now();
+                    const newExp = Math.max(currentExp, Date.now()) + (days * 86400000);
+                    onUpdate({ ...bot, license_expires_at: newExp });
+                  } else {
+                    alert(res?.detail || 'Недостаточно средств');
+                  }
+                } catch (e) {
+                  alert('Ошибка сервера');
+                } finally {
+                  setIsProcessing(false);
+                }
+              }}
+              disabled={isProcessing}
+              className="flex-1 flex flex-col items-center justify-center px-2 py-3.5 bg-zinc-900 border border-zinc-800 rounded-2xl hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-all active:scale-95 disabled:opacity-50 disabled:active:scale-100"
+            >
+              <div className="text-indigo-400 font-black text-[10px] mb-0.5 tracking-tight">{pkg.label}</div>
+              <div className="text-[10px] text-white font-bold">{pkg.price}₽</div>
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
-    <p className="text-[8px] text-zinc-700 text-center lg:text-left italic">
-      Списание с личного счета
-    </p>
-    {keyStatus && (
-      <p className={`text-[10px] font-bold text-center mt-1 uppercase ${
-        keyStatus.includes('✅') ? 'text-emerald-500' : 'text-rose-500'
-      }`}>
-        {keyStatus}
-      </p>
-    )}
-  </div>
-</div>
 
       {apps.length === 0 ? (
         <div className="border-2 border-dashed border-zinc-800 rounded-[2rem] p-14 text-center">
