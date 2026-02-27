@@ -176,71 +176,88 @@ const LicenseBadge: React.FC<{ lic: LicenseInfo | null; onActivate: () => void }
 
 // ─── Activate Key Modal ────────────────────────────────────────────────────────
 
-const ActivateKeyModal: React.FC<{ siteId: string; userId: string; onClose: () => void; onActivated: (lic?: LicenseInfo) => void; isNewSite?: boolean; siteName?: string }> = ({
-  siteId, userId, onClose, onActivated, isNewSite, siteName
-}) => {
-  const [keyCode, setKeyCode] = useState('');
+const ActivateKeyModal: React.FC<{ 
+  siteId: string; 
+  userId: string; 
+  onClose: () => void; 
+  onActivated: (lic?: any) => void; 
+  isNewSite?: boolean; 
+  siteName?: string 
+}> = ({ siteId, userId, onClose, onActivated, isNewSite, siteName }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const handle = async () => {
-    if (!keyCode.trim()) return;
-    setLoading(true); setError('');
+  const handleBalanceBuy = async () => {
+    setLoading(true); 
+    setError('');
     try {
-      const data = await apiFetch(`${API}/chat/sites/${siteId}/activate-key`, {
-        method: 'POST', body: JSON.stringify({ owner_id: userId, key_code: keyCode.trim().toUpperCase() })
-      });
-      onActivated({ active: true, expires_at: data.expires_at, days_left: data.duration_days, expires_formatted: data.expires_formatted });
-    } catch (e: any) { setError(e.message); }
-    finally { setLoading(false); }
+      // Используем твой api.buyService из apiService.ts
+      const result = await api.buyService(userId, 'miniapp_30d', siteId);
+      
+      if (result && result.status === 'ok') {
+        // Успех! Передаем данные о лицензии наверх
+        onActivated({ 
+          active: true, 
+          expires_at: Date.now() + 30 * 24 * 60 * 60 * 1000 
+        });
+        onClose();
+      } else {
+        // Если денег не хватило или сервер вернул ошибку
+        setError(result?.detail || 'Недостаточно средств. Пополните баланс в профиле.');
+      }
+    } catch (e: any) {
+      setError('Ошибка соединения с сервером');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={isNewSite ? undefined : onClose} />
-      <div className="relative w-full max-w-sm bg-[#111] border border-zinc-800 rounded-[2.5rem] p-8 shadow-2xl animate-in zoom-in-95 duration-200">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-10 h-10 rounded-2xl bg-blue-500/10 flex items-center justify-center">
-            <Key className="w-5 h-5 text-blue-400" />
+      {/* Закрытие по клику на фон (только если это не принудительная активация нового сайта) */}
+      <div className="absolute inset-0 bg-black/90 backdrop-blur-xl" onClick={isNewSite ? undefined : onClose} />
+      
+      <div className="relative w-full max-w-sm bg-[#0A0A0A] border border-zinc-800 rounded-[3rem] p-10 shadow-2xl animate-in zoom-in-95 duration-200">
+        <div className="flex flex-col items-center text-center mb-8">
+          <div className="w-16 h-16 rounded-[2rem] bg-blue-500/10 flex items-center justify-center mb-4 border border-blue-500/20">
+            <Zap className="w-8 h-8 text-blue-400 fill-blue-400/20" />
           </div>
-          <div>
-            <h3 className="text-lg font-black text-white">Активировать ключ</h3>
-            <p className="text-zinc-600 text-[9px] font-bold uppercase tracking-widest">
-              {isNewSite && siteName ? `Сайт «${siteName}»` : '1 ключ = 1 месяц • 150 ₽'}
-            </p>
-          </div>
-          {!isNewSite && <button onClick={onClose} className="ml-auto p-2 hover:bg-zinc-800 rounded-xl text-zinc-600 hover:text-white transition-all"><X className="w-4 h-4" /></button>}
+          <h3 className="text-xl font-black text-white mb-2">Активация платформы</h3>
+          <p className="text-zinc-500 text-xs leading-relaxed px-4">
+            Для запуска сайта «{siteName || 'Новая платформа'}» необходимо активировать лицензию на 30 дней.
+          </p>
         </div>
-        {isNewSite && (
-          <div className="mb-5 p-4 bg-blue-500/5 border border-blue-500/20 rounded-2xl">
-            <p className="text-blue-400 text-xs font-black mb-1">✅ Сайт создан!</p>
-            <p className="text-zinc-500 text-xs leading-relaxed">Для доступа к конструктору необходима лицензия. Введите ключ ниже или закройте и активируйте позже.</p>
-          </div>
-        )}
-        <input
-          value={keyCode}
-          onChange={e => setKeyCode(e.target.value.toUpperCase())}
-          onKeyDown={e => e.key === 'Enter' && handle()}
-          placeholder="CHAT-XXXX-XXXX-XXXX"
-          autoFocus
-          className="w-full bg-black border border-zinc-800 focus:border-blue-500 text-white p-4 rounded-2xl outline-none transition-all text-sm font-mono text-center tracking-widest mb-4"
-        />
+
+        <div className="bg-zinc-900/50 border border-zinc-800 rounded-[2rem] p-6 mb-8 text-center">
+          <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-1">Стоимость</div>
+          <div className="text-3xl font-black text-white italic">150 ₽</div>
+          <div className="text-[10px] text-blue-400 font-bold mt-2 uppercase">30 дней доступа</div>
+        </div>
+
         {error && (
-          <div className="flex items-center gap-2 bg-rose-500/10 border border-rose-500/20 rounded-xl p-3 mb-4">
-            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-            <span className="text-rose-400 text-xs">{error}</span>
+          <div className="mb-6 flex items-center gap-3 bg-rose-500/5 border border-rose-500/10 rounded-2xl p-4">
+            <AlertCircle className="w-5 h-5 text-rose-500 shrink-0" />
+            <span className="text-rose-500 text-[11px] font-bold">{error}</span>
           </div>
         )}
-        <button onClick={handle} disabled={loading || !keyCode.trim()}
-          className="w-full py-4 rounded-2xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-[10px] font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2">
-          {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-          {loading ? 'Активация...' : 'Активировать'}
-        </button>
-        {isNewSite && (
-          <button onClick={onClose} className="w-full mt-2 py-3 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-zinc-400 text-[10px] font-black uppercase tracking-wider transition-all">
-            Пропустить (активировать позже)
+
+        <div className="space-y-3">
+          <button 
+            onClick={handleBalanceBuy}
+            disabled={loading}
+            className="w-full py-5 rounded-[1.5rem] bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-[11px] font-black uppercase tracking-wider transition-all flex items-center justify-center gap-3 shadow-lg shadow-blue-600/20"
+          >
+            {loading ? <RefreshCw className="w-5 h-5 animate-spin" /> : <CreditCard className="w-5 h-5" />}
+            {loading ? 'Обработка...' : 'Оплатить с баланса'}
           </button>
-        )}
+
+          <button 
+            onClick={onClose} 
+            className="w-full py-4 rounded-[1.5rem] text-zinc-600 hover:text-white text-[10px] font-black uppercase tracking-widest transition-all"
+          >
+            {isNewSite ? 'Активировать позже' : 'Отмена'}
+          </button>
+        </div>
       </div>
     </div>
   );
