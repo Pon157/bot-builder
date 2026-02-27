@@ -192,27 +192,21 @@ const ActivateKeyModal: React.FC<{
     setLoading(true); 
     setError('');
     try {
-      // Используем твой api.buyService из apiService.ts
       const result = await api.buyService(userId, 'miniapp_30d', siteId);
       
-      if (result && result.status === 'ok') {
-        // Успех! Передаем данные о лицензии наверх
-        onActivated({ 
-          active: true, 
-          expires_at: Date.now() + 30 * 24 * 60 * 60 * 1000 
-        });
-        onClose();
-      } else {
-        // Если денег не хватило или сервер вернул ошибку
-        setError(result?.detail || 'Недостаточно средств. Пополните баланс в профиле.');
-      }
+      // Если мы дошли сюда, значит r.ok был true и статус 200
+      onActivated({ 
+        active: true, 
+        expires_at: Date.now() + 30 * 24 * 60 * 60 * 1000 
+      });
+      onClose();
     } catch (e: any) {
-      setError('Ошибка соединения с сервером');
+      // Теперь здесь будет либо "Недостаточно средств", либо "Ошибка сервера: 404"
+      setError(e.message || 'Ошибка соединения с сервером');
     } finally {
       setLoading(false);
     }
   };
-
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
       {/* Закрытие по клику на фон (только если это не принудительная активация нового сайта) */}
