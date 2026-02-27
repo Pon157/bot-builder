@@ -37,6 +37,8 @@ const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const expiry = Number(user.license_expires_at) || 0;
   const daysRemaining = Math.max(0, Math.ceil((expiry - Date.now()) / (1000 * 60 * 60 * 24)));
+  // Округляем до целого или оставляем 2 знака после запятой
+  const balance = user.balance || 0;
 
 // Функция для создания ключа через систему лицензий
 const createSupportKey = async () => {
@@ -158,31 +160,32 @@ const createSupportKey = async () => {
       </nav>
 
       {/* Футер пользователя */}
-      <div className="p-4 border-t border-zinc-800 shrink-0 bg-[#121212]">
-        <div className="flex items-center justify-between p-3 rounded-2xl bg-zinc-900/50 border border-zinc-800/50 backdrop-blur-md">
-            <div className="flex items-center gap-2 overflow-hidden">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 text-white flex items-center justify-center text-sm font-black shrink-0 shadow-lg">
-                    {user.username.charAt(0).toUpperCase()}
-                </div>
-                <div className="truncate">
-                    <p className="text-xs font-bold text-white truncate leading-none mb-1">{user.username}</p>
-                    <div className="flex items-center gap-1.5">
-                        <div className={`w-1 h-1 rounded-full ${daysRemaining < 3 ? 'bg-red-500 animate-pulse' : 'bg-blue-500'}`}></div>
-                        <p className={`text-[9px] truncate font-black uppercase tracking-tighter ${daysRemaining < 3 ? 'text-red-500' : 'text-zinc-500'}`}>
-                            {daysRemaining} дн. доступа
-                        </p>
-                    </div>
-                </div>
-            </div>
-            <button 
-                onClick={onLogout}
-                className="p-2 hover:bg-red-500/10 text-zinc-600 hover:text-red-500 rounded-lg transition-all active:scale-90"
-                title="Выйти"
-            >
-                <LogOut size={18} />
-            </button>
+<div className="p-4 border-t border-zinc-800 shrink-0 bg-[#121212]">
+  <div className="flex items-center justify-between p-3 rounded-2xl bg-zinc-900/50 border border-zinc-800/50 backdrop-blur-md">
+    <div className="flex items-center gap-2 overflow-hidden">
+      <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 text-white flex items-center justify-center text-sm font-black shrink-0 shadow-lg">
+        {user.username.charAt(0).toUpperCase()}
+      </div>
+      <div className="truncate">
+        <p className="text-xs font-bold text-white truncate leading-none mb-1">{user.username}</p>
+        <div className="flex items-center gap-1.5">
+          {/* Индикатор баланса: красный если 0, синий если есть деньги */}
+          <div className={`w-1 h-1 rounded-full ${balance <= 0 ? 'bg-amber-500' : 'bg-emerald-500'}`}></div>
+          <p className={`text-[9px] truncate font-black uppercase tracking-tighter ${balance <= 0 ? 'text-amber-500' : 'text-zinc-500'}`}>
+            Баланс: <span className={balance > 0 ? "text-white" : ""}>{balance} ₽</span>
+          </p>
         </div>
       </div>
+    </div>
+    <button 
+      onClick={onLogout}
+      className="p-2 hover:bg-red-500/10 text-zinc-600 hover:text-red-500 rounded-lg transition-all active:scale-90"
+      title="Выйти"
+    >
+      <LogOut size={18} />
+    </button>
+  </div>
+</div>
     </aside>
   );
 };
