@@ -2088,15 +2088,6 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
   </div>
 </div>
 
-  {keyStatus && (
-    <p className={`text-[10px] font-black text-center mt-4 uppercase tracking-widest ${
-      keyStatus.includes('✅') ? 'text-emerald-500' : 'text-rose-500'
-    }`}>
-      {keyStatus}
-    </p>
-  )}
-</div>
-
       {apps.length === 0 ? (
         <div className="border-2 border-dashed border-zinc-800 rounded-[2rem] p-14 text-center">
           <AppWindow className="w-12 h-12 text-zinc-800 mx-auto mb-4" />
