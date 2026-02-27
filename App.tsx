@@ -404,6 +404,7 @@ const App: React.FC = () => {
                   <Route path="/dashboard" element={
                     <Dashboard 
                       bots={bots} 
+                      user={user}
                       onSelectBot={(id) => { setSelectedBotId(id); }} 
                       onAddBot={() => setIsModalOpen(true)}
                       onNavigate={(path) => { /* handled by Sidebar */ }}
