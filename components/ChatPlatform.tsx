@@ -11,8 +11,8 @@ import {
   Zap, Save, Hash, AlertCircle, ExternalLink, ChevronRight,
   User, Star, Clock, TrendingUp, Activity, UserCheck,
   AlertTriangle, VolumeX, Volume2, Pin, MessageCircle,
-  Sliders, CornerDownRight, Layers
-  CreditCard, RefreshCw
+  Sliders, CornerDownRight, Layers,
+  CreditCard
 } from 'lucide-react';
 import { User as AppUser } from '../types';
 
