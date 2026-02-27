@@ -277,7 +277,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
           {activeSection === 'wallet' && (<>
             <section className="bg-[#121212] border border-zinc-800 rounded-[2rem] p-6 md:p-8 shadow-2xl space-y-5">
               <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                <CreditCard className="w-5 h-5 text-indigo-400" />Пополнить баланс
+                <CreditCard className="w-5 h-5 text-indigo-400" />Пополнить баланс (временно не работает)
               </h3>
               <p className="text-xs text-zinc-500 leading-relaxed">
                 Оплата через ЮKassa — банковской картой или кошельком ЮMoney.
