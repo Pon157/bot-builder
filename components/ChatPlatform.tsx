@@ -12,6 +12,7 @@ import {
   User, Star, Clock, TrendingUp, Activity, UserCheck,
   AlertTriangle, VolumeX, Volume2, Pin, MessageCircle,
   Sliders, CornerDownRight, Layers
+  CreditCard, RefreshCw
 } from 'lucide-react';
 import { User as AppUser } from '../types';
 
