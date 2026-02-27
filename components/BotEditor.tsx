@@ -1725,8 +1725,8 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
   const [apps, setApps]                   = React.useState<MiniApp[]>([]);
   const [loading, setLoading]             = React.useState(true);
   const [isProcessing, setIsProcessing]   = React.useState(false); // <── ДОБАВЬТЕ ЭТУ СТРОКУ
-  const [licenseActive, setLicenseActive] = React.useState(false);
-  const [licenseExpiry, setLicenseExpiry] = React.useState(0);
+  const isLicenseValid = bot.license_expires_at ? new Date(bot.license_expires_at) > new Date() : false;
+  const expiryDateStr = bot.license_expires_at ? new Date(bot.license_expires_at).toLocaleDateString() : '—';
   const [licenseKey, setLicenseKey]       = React.useState('');
   const [activatingKey, setActivatingKey] = React.useState(false);
   const [keyStatus, setKeyStatus]         = React.useState('');
@@ -1940,16 +1940,32 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
               if (!window.confirm('Списать 90 ₽ с баланса для активации Мини-приложений?')) return;
               setActivatingKey(true);
               try {
-                // Вызываем API покупки (услуга miniapp_30d)
+                // 1. Вызываем API покупки
                 const res = await api.buyService(bot.owner_id, 'miniapp_30d', bot.id);
+                
                 if (res && res.status === 'ok') {
-                  // Вызываем обновление, чтобы UI переключился на редактор
+                  // 2. Рассчитываем новую дату (текущий момент + 30 дней)
+                  const addMs = 30 * 86400000;
+                  const currentExp = bot.license_expires_at || Date.now();
+                  const newExp = Math.max(currentExp, Date.now()) + addMs;
+
+                  // 3. Обновляем родительский компонент (BotEditor)
+                  // Это заставит весь интерфейс увидеть новую дату истечения
+                  onUpdate({ 
+                    ...bot, 
+                    license_expires_at: newExp 
+                  });
+
+                  // 4. Обновляем локальные состояния, чтобы скрыть этот экран
                   setLicenseActive(true);
-                  // Опционально: можно обновить дату в объекте бота, если нужно
+                  setLicenseExpiry(newExp);
+
+                  alert('Мини-приложения успешно активированы!');
                 } else {
                   alert(res?.detail || 'Недостаточно средств на балансе. Пополните его в профиле.');
                 }
               } catch (e) {
+                console.error('Ошибка активации:', e);
                 alert('Ошибка при связи с сервером. Попробуйте позже.');
               } finally {
                 setActivatingKey(false);
