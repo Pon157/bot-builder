@@ -45,7 +45,8 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
   const [balance, setBalance]           = useState<number>(0);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [topupAmount, setTopupAmount]   = useState('');
-  const [isInitiating, setIsInitiating] = useState(false);
+  const [isPolling, setIsPolling]           = useState(false);
+  const [isInitiating, setIsInitiating]     = useState(false);
   const [prices, setPrices]             = useState<ServicePrice[]>([]);
 
   // ── Покупка услуги ────────────────────────────────────────────────────────
@@ -75,14 +76,44 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
     } catch { /* тихо */ }
   }, []);
 
+  // Polling баланса после редиректа с ЮKassa — webhook может прийти с задержкой
+  const pollBalanceAfterPayment = useCallback(async (prevBalance: number) => {
+    setIsPolling(true);
+    const MAX_ATTEMPTS = 10;
+    const INTERVAL_MS  = 3000;
+    for (let i = 0; i < MAX_ATTEMPTS; i++) {
+      await new Promise(res => setTimeout(res, INTERVAL_MS));
+      try {
+        const r = await fetch(`/api/payments/balance/${user.id}`);
+        const d = await r.json();
+        if (d.balance > prevBalance) {
+          setBalance(d.balance);
+          setTransactions(d.transactions ?? []);
+          setIsPolling(false);
+          return;
+        }
+      } catch { /* тихо */ }
+    }
+    setIsPolling(false);
+    loadWallet();
+  }, [loadWallet, user.id]);
+
   useEffect(() => {
     loadWallet();
     loadPrices();
-    // Проверяем успешный редирект с ЮMoney
+    // Проверяем успешный редирект с ЮKassa
     const params = new URLSearchParams(window.location.search);
     if (params.get('payment') === 'success') {
-      setTimeout(loadWallet, 5000); // ждём webhook от ЮKassa
       window.history.replaceState({}, '', '/profile');
+      // Сначала грузим текущий баланс, потом запускаем polling
+      fetch(`/api/payments/balance/${user.id}`)
+        .then(r => r.json())
+        .then(d => {
+          setBalance(d.balance ?? 0);
+          setTransactions(d.transactions ?? []);
+          pollBalanceAfterPayment(d.balance ?? 0);
+        })
+        .catch(() => {});
     }
     bots.forEach(bot => {
       fetch(`/api/ai/balance/${bot.id}`)
@@ -94,7 +125,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
         .then(d => setMiniappLicenses(prev => ({ ...prev, [bot.id]: d })))
         .catch(() => {});
     });
-  }, [loadWallet, loadPrices, bots]);
+  }, [loadWallet, loadPrices, pollBalanceAfterPayment, bots, user.id]);
 
   const refreshData = async () => {
     setIsSyncing(true);
@@ -122,8 +153,9 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
       });
       const d = await r.json();
       if (d.payment_url) {
-        window.open(d.payment_url, '_blank');
         setTopupAmount('');
+        // Прямой переход — window.open после await блокируется браузером как popup
+        window.location.href = d.payment_url;
       } else {
         alert('Ошибка создания платежа: ' + (d.detail || 'неизвестная ошибка'));
       }
@@ -226,6 +258,17 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
         </button>
       </div>
 
+      {/* Баннер «Оплата обрабатывается» — показывается пока polling активен */}
+      {isPolling && (
+        <div className="flex items-center gap-3 p-4 bg-yellow-950/30 border border-yellow-700/40 rounded-2xl animate-pulse">
+          <RefreshCw className="w-4 h-4 text-yellow-400 animate-spin flex-shrink-0" />
+          <div>
+            <p className="text-sm font-bold text-yellow-300">Оплата обрабатывается...</p>
+            <p className="text-[11px] text-yellow-700">Баланс обновится автоматически в течение нескольких секунд</p>
+          </div>
+        </div>
+      )}
+
       {/* Переключатель раздела */}
       <div className="flex bg-black border border-zinc-800 rounded-2xl p-1 w-fit gap-1 flex-wrap">
         {([
@@ -255,7 +298,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
                 Пополнить баланс
               </h3>
               <p className="text-xs text-zinc-500 leading-relaxed">
-                Оплата через ЮMoney — банковской картой или кошельком.
+                Оплата через ЮKassa — банковской картой или кошельком ЮMoney.
                 Средства поступают автоматически в течение нескольких секунд.
               </p>
 
@@ -298,7 +341,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
 
               <div className="flex items-center gap-2 text-[10px] text-zinc-600">
                 <ShieldCheck className="w-3 h-3 text-green-500 flex-shrink-0" />
-                Минимум 10 ₽ · Оплата через ЮMoney · Безопасно
+                Минимум 10 ₽ · Оплата через ЮKassa · Безопасно
               </div>
             </section>
 
@@ -312,32 +355,54 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
                 <p className="text-sm text-zinc-600 text-center py-8">Транзакций пока нет</p>
               ) : (
                 <div className="space-y-2">
-                  {transactions.map(tx => (
+                  {transactions.map(tx => {
+                    const isPendingTopup = tx.type === 'topup' && tx.status === 'pending';
+                    const isCompleted    = tx.status === 'completed';
+                    const isFailed       = tx.status === 'failed';
+
+                    return (
                     <div key={tx.id}
-                      className="flex items-center justify-between p-4 bg-black border border-zinc-800 rounded-2xl">
+                      className={`flex items-center justify-between p-4 border rounded-2xl transition-all ${
+                        isPendingTopup
+                          ? 'bg-yellow-950/20 border-yellow-800/30'
+                          : isFailed
+                          ? 'bg-red-950/10 border-red-900/20'
+                          : 'bg-black border-zinc-800'
+                      }`}>
                       <div className="flex items-center gap-3">
-                        {tx.status === 'completed' ? (
-                          tx.type === 'topup'
-                            ? <CheckCircle className="w-4 h-4 text-green-500 flex-shrink-0" />
-                            : <Zap className="w-4 h-4 text-purple-400 flex-shrink-0" />
-                        ) : tx.status === 'pending' ? (
-                          <Clock className="w-4 h-4 text-yellow-500 flex-shrink-0" />
-                        ) : (
+                        {isPendingTopup ? (
+                          <Clock className="w-4 h-4 text-yellow-500 flex-shrink-0 animate-pulse" />
+                        ) : isFailed ? (
                           <XCircle className="w-4 h-4 text-red-500 flex-shrink-0" />
+                        ) : tx.type === 'topup' ? (
+                          <CheckCircle className="w-4 h-4 text-green-500 flex-shrink-0" />
+                        ) : (
+                          <Zap className="w-4 h-4 text-purple-400 flex-shrink-0" />
                         )}
                         <div>
                           <p className="text-xs font-bold text-white">{tx.description}</p>
-                          <p className="text-[10px] text-zinc-600">{formatDate(tx.created_at)}</p>
+                          <p className="text-[10px] text-zinc-600">
+                            {formatDate(tx.created_at)}
+                            {isPendingTopup && <span className="ml-2 text-yellow-600">· Ожидание оплаты...</span>}
+                            {isFailed       && <span className="ml-2 text-red-600">· Отменено</span>}
+                          </p>
                         </div>
                       </div>
                       <div className="text-right">
-                        <p className={`text-sm font-black ${tx.type === 'topup' ? 'text-green-400' : 'text-red-400'}`}>
+                        <p className={`text-sm font-black ${
+                          isFailed       ? 'text-zinc-600 line-through' :
+                          tx.type === 'topup' ? 'text-green-400' : 'text-red-400'
+                        }`}>
                           {tx.type === 'topup' ? '+' : '−'}{Math.abs(tx.amount).toFixed(2)} ₽
                         </p>
-                        <p className="text-[10px] text-zinc-600">→ {tx.balance_after.toFixed(2)} ₽</p>
+                        {/* Показываем balance_after только если платёж уже завершён */}
+                        {isCompleted && (
+                          <p className="text-[10px] text-zinc-600">→ {tx.balance_after.toFixed(2)} ₽</p>
+                        )}
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </section>
@@ -520,7 +585,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
               <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Как пополнить</h4>
               {[
                 ['1', 'Укажите сумму и нажмите «Оплатить»'],
-                ['2', 'Откроется форма ЮMoney — оплатите картой'],
+                ['2', 'Откроется форма ЮKassa — оплатите картой'],
                 ['3', 'Баланс пополнится автоматически'],
               ].map(([n, t]) => (
                 <div key={n} className="flex gap-3">
