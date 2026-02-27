@@ -15,7 +15,7 @@ interface ProfileProps {
   onUpdateBots: (bots: BotConfig[]) => void;
 }
 
-type Section = 'wallet' | 'license' | 'ai' | 'miniapps';
+type Section = 'wallet' | 'license' | 'ai' | 'miniapps' | 'chatsite';
 
 interface Transaction {
   id: string;
@@ -86,23 +86,47 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
 
       // Редирект после успешной оплаты
       const params = new URLSearchParams(window.location.search);
+      const pendingPaymentId = localStorage.getItem('pending_payment_id');
       if (params.get('payment') === 'success') {
         window.history.replaceState({}, '', '/profile');
         setIsPolling(true);
-
         let updated = false;
-        for (let i = 0; i < 10 && pollingActive.current; i++) {
-          await new Promise(res => setTimeout(res, 3000));
-          try {
-            const pr = await fetch(`/api/payments/balance/${user.id}`);
-            const pd = await pr.json();
-            if ((pd.balance ?? 0) > currentBalance) {
-              setBalance(pd.balance);
-              setTransactions(pd.transactions ?? []);
-              updated = true;
-              break;
-            }
-          } catch { /* тихо */ }
+
+        if (pendingPaymentId) {
+          localStorage.removeItem('pending_payment_id');
+          // Активный polling: сервер сам проверяет ЮKassa — не зависим от webhook
+          for (let i = 0; i < 20 && pollingActive.current; i++) {
+            await new Promise(res => setTimeout(res, 3000));
+            try {
+              const pr = await fetch(`/api/payments/check/${pendingPaymentId}`);
+              const pd = await pr.json();
+              if (pd.status === 'completed') {
+                if (pd.balance !== null && pd.balance !== undefined) setBalance(pd.balance);
+                fetchWallet(); // обновим транзакции
+                updated = true;
+                break;
+              } else if (pd.status === 'canceled') {
+                fetchWallet();
+                updated = true;
+                break;
+              }
+            } catch { /* тихо */ }
+          }
+        } else {
+          // Fallback: смотрим вырос ли баланс (старый способ)
+          for (let i = 0; i < 10 && pollingActive.current; i++) {
+            await new Promise(res => setTimeout(res, 3000));
+            try {
+              const pr = await fetch(`/api/payments/balance/${user.id}`);
+              const pd = await pr.json();
+              if ((pd.balance ?? 0) > currentBalance) {
+                setBalance(pd.balance);
+                setTransactions(pd.transactions ?? []);
+                updated = true;
+                break;
+              }
+            } catch { /* тихо */ }
+          }
         }
 
         setIsPolling(false);
@@ -151,6 +175,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
       const d = await r.json();
       if (d.payment_url) {
         setTopupAmount('');
+        if (d.payment_id) localStorage.setItem('pending_payment_id', d.payment_id);
         window.location.href = d.payment_url;
       } else {
         alert('Ошибка создания платежа: ' + (d.detail || 'неизвестная ошибка'));
@@ -184,6 +209,14 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
           fetch(`/api/ai/balance/${buyBotId}`).then(r => r.json())
             .then(ab => setAiBalances(prev => ({ ...prev, [buyBotId]: ab.tokens_balance || 0 })));
         }
+        if (serviceKey.startsWith('miniapp_')) {
+          // Обновляем статус мини-апп лицензии из ответа сервера
+          const expiresAt = d.expires_at || 0;
+          setMiniappLicenses(prev => ({
+            ...prev,
+            [buyBotId]: { active: expiresAt > Date.now(), expires_at: expiresAt }
+          }));
+        }
         api.getBots(user.id).then(onUpdateBots);
         alert(d.message);
       } else {
@@ -197,9 +230,10 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
     new Date(ts).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 
   const pricesByGroup = {
-    bot:     prices.filter(p => p.service_key.startsWith('bot_')),
-    ai:      prices.filter(p => p.service_key.startsWith('ai_')),
-    miniapp: prices.filter(p => p.service_key.startsWith('miniapp_')),
+    bot:      prices.filter(p => p.service_key.startsWith('bot_')),
+    ai:       prices.filter(p => p.service_key.startsWith('ai_')),
+    miniapp:  prices.filter(p => p.service_key.startsWith('miniapp_')),
+    chatsite: prices.filter(p => p.service_key.startsWith('chatsite_')),
   };
 
   const licenseStatus = (bot: BotConfig) => {
@@ -262,6 +296,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
           { id: 'license',  label: '🔑 Лицензии'  },
           { id: 'ai',       label: '🤖 AI-токены' },
           { id: 'miniapps', label: '📱 Мини-апп'  },
+          { id: 'chatsite', label: '💬 Чат-сайт'  },
         ] as const).map(({ id, label }) => (
           <button key={id} onClick={() => setActiveSection(id)}
             className={`px-5 py-3 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all ${
@@ -492,6 +527,36 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
                       <span className="text-sm font-black text-indigo-400">{p.price_rub} ₽</span>
                     </button>
                   ))}
+                </div>
+              </div>
+            </section>
+          </>)}
+
+          {/* ЧАТ-САЙТ */}
+          {activeSection === 'chatsite' && (<>
+            <section className="bg-[#121212] border border-zinc-800 rounded-[2rem] p-6 md:p-8 shadow-2xl space-y-5">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <MessageCircle className="w-5 h-5 text-sky-400" />Чат-платформа
+              </h3>
+              <p className="text-xs text-zinc-500 leading-relaxed">
+                Лицензия активируется автоматически для выбранного чат-сайта. После покупки статус сайта обновится мгновенно.
+              </p>
+              <div className="border-t border-zinc-800 pt-5 space-y-4">
+                <div className="grid grid-cols-1 gap-3">
+                  {pricesByGroup.chatsite.length === 0 ? (
+                    <p className="text-sm text-zinc-600 text-center py-4">Загрузка прайса...</p>
+                  ) : pricesByGroup.chatsite.map(p => (
+                    <div key={p.service_key} className="flex items-center justify-between p-5 bg-sky-600/10 border border-sky-500/20 rounded-2xl">
+                      <div>
+                        <p className="text-sm font-bold text-white">{p.label}</p>
+                        <p className="text-[10px] text-zinc-500 mt-1">Купить через раздел Чат-платформа → Лицензия</p>
+                      </div>
+                      <span className="text-sm font-black text-sky-400">{p.price_rub} ₽</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="p-4 bg-zinc-900/50 border border-zinc-800 rounded-2xl text-xs text-zinc-500 leading-relaxed">
+                  💡 Чтобы купить лицензию для конкретного чат-сайта, откройте <strong className="text-white">Чат-платформа → ваш сайт → вкладка Лицензия</strong> и нажмите кнопку оплаты. Средства спишутся с баланса.
                 </div>
               </div>
             </section>
