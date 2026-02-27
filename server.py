@@ -3840,67 +3840,54 @@ async def initiate_topup(d: dict):
 
 # ─── АКТИВНАЯ ПРОВЕРКА СТАТУСА ПЛАТЕЖА (FALLBACK если webhook не пришёл) ─────
 
-@app.get("/api/payments/check/{payment_id}")
+@@app.get("/api/payments/check/{payment_id}")
 async def check_payment_status(payment_id: str):
-    """
-    Фронтенд вызывает каждые 3 сек во время polling.
-    Сервер сам спрашивает ЮKassa — не ждёт webhook.
-    Если платёж succeeded и ещё не зачислен — зачисляем сами.
-    """
     if not YK_SHOP_ID or not YK_SECRET:
         raise HTTPException(500, "ЮKassa не настроена")
 
-    # Ищем транзакцию в БД
+    # Сначала пробуем найти транзакцию по yk_payment_id (как присылает ЮKassa)
     tx_r = await db.get("payment_transactions", params={"yk_payment_id": f"eq.{payment_id}"})
-    if not tx_r.json():
+    tx_data = tx_r.json()
+
+    # Если не нашли, пробуем найти по внутреннему id (UUID)
+    if not tx_data:
+        tx_r = await db.get("payment_transactions", params={"id": f"eq.{payment_id}"})
+        tx_data = tx_r.json()
+
+    if not tx_data:
+        logger.error(f"❌ Транзакция {payment_id} не найдена в базе!")
         raise HTTPException(404, "Транзакция не найдена")
 
-    tx = tx_r.json()[0]
+    tx = tx_data[0]
+    actual_yk_id = tx["yk_payment_id"] # Всегда используем ID ЮKassa для запроса к ним
 
-    # Уже обработана — сразу отвечаем
     if tx["status"] == "completed":
-        return {"status": "completed", "balance": None}
-    if tx["status"] == "failed":
-        return {"status": "failed"}
+        return {"status": "completed"}
 
-    # Спрашиваем ЮKassa напрямую
+    # Спрашиваем ЮKassa статус именно по ИХ идентификатору
     try:
-        real_payment = await run_in_threadpool(lambda: YKPayment.find_one(payment_id))
+        real_payment = await run_in_threadpool(lambda: YKPayment.find_one(actual_yk_id))
     except Exception as e:
-        logger.error(f"❌ check_payment find_one error: {e}")
+        logger.error(f"❌ ЮKassa API Error: {e}")
         return {"status": "pending"}
 
-    yk_status = real_payment.status  # pending / waiting_for_capture / succeeded / canceled
-
-    if yk_status == "succeeded":
-        # Платёж прошёл, но webhook не дошёл — зачисляем через polling
-        user_id     = tx["user_id"]
-        amount_paid = float(real_payment.amount.value)
-
+    if real_payment.status == "succeeded":
+        # Зачисляем через твой RPC
         rpc_r = await _rpc("topup_user_balance", {
-            "p_user_id": user_id,
-            "p_amount":  amount_paid,
-            "p_yk_id":   payment_id
+            "p_user_id": tx["user_id"],
+            "p_amount":  float(real_payment.amount.value),
+            "p_yk_id":   actual_yk_id
         })
 
         if rpc_r.status_code == 200:
-            new_balance = rpc_r.json()
-            logger.info(f"✅ [POLLING] Баланс {user_id} +{amount_paid}₽ → {new_balance}₽")
-            return {"status": "completed", "balance": float(new_balance)}
+            new_bal = rpc_r.json()
+            logger.info(f"✅ Баланс {tx['user_id']} обновлен: {new_bal}")
+            return {"status": "completed", "balance": float(new_bal)}
         else:
-            # Вероятно уже зачислено (гонка webhook + polling) — читаем баланс
-            u_r = await db.get("users", params={"id": f"eq.{user_id}", "select": "id,balance"})
-            bal = float(u_r.json()[0]["balance"]) if u_r.json() else 0
-            return {"status": "completed", "balance": bal}
-
-    elif yk_status == "canceled":
-        await db.patch("payment_transactions",
-                       params={"yk_payment_id": f"eq.{payment_id}"},
-                       json={"status": "failed"})
-        return {"status": "canceled"}
-
-    return {"status": "pending"}
-
+            logger.error(f"❌ Ошибка RPC: {rpc_r.text}")
+            # Если RPC вернул ошибку, статус в БД не изменится!
+            
+    return {"status": real_payment.status}
 # ─── WEBHOOK ОТ ЮKASSA ───────────────────────────────────────────────────────
 
 @app.post("/api/payments/yookassa/callback")
