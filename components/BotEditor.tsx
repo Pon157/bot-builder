@@ -1990,17 +1990,61 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
         </button>
       </div>
 
-      <div className="bg-zinc-900/40 border border-zinc-800 rounded-2xl p-4 flex gap-3 items-center flex-wrap">
-        <input value={licenseKey} onChange={e => setLicenseKey(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && activateKey()}
-          placeholder="MAPP-XXXXXX-NNN (продлить подписку)"
-          className="flex-1 min-w-0 bg-black border border-zinc-800 focus:border-indigo-500 text-white text-xs p-2.5 rounded-xl outline-none transition-all font-mono" />
-        <button onClick={activateKey} disabled={activatingKey || !licenseKey.trim()}
-          className="px-4 py-2.5 bg-indigo-600/20 border border-indigo-500/30 text-indigo-400 font-black text-[10px] uppercase rounded-xl hover:bg-indigo-600/30 transition-all disabled:opacity-40 shrink-0">
-          {activatingKey ? '...' : 'Продлить'}
-        </button>
+      <div className="bg-zinc-900/40 border border-zinc-800 rounded-[2.5rem] p-6">
+  <div className="flex flex-col lg:flex-row items-center gap-6">
+    <div className="flex-1 w-full text-center lg:text-left">
+      <div className="flex items-center justify-center lg:justify-start gap-3 mb-1">
+        <RefreshCw className={`w-4 h-4 text-indigo-400 ${activatingKey ? 'animate-spin' : ''}`} />
+        <h4 className="text-sm font-black text-white uppercase tracking-wider">Продление подписки</h4>
       </div>
-      {keyStatus && <p className="text-xs text-center text-zinc-400">{keyStatus}</p>}
+      <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-tight">Выберите период для мгновенной активации</p>
+    </div>
+
+    <div className="w-full lg:w-auto flex flex-wrap lg:flex-nowrap gap-2">
+      {[
+        { id: 'miniapp_30d',  label: '1 мес',  price: 90,  days: 30 },
+        { id: 'miniapp_90d',  label: '3 мес',  price: 250, days: 90 },
+        { id: 'miniapp_365d', label: '1 год',  price: 900, days: 365 },
+      ].map((pkg) => (
+        <button
+          key={pkg.id}
+          onClick={async () => {
+            if (!window.confirm(`Списать ${pkg.price} ₽ с баланса для продления на ${pkg.label}?`)) return;
+            setActivatingKey(true);
+            setKeyStatus('');
+            try {
+              const res = await api.buyService(bot.owner_id, pkg.id, bot.id);
+              if (res && res.status === 'ok') {
+                setKeyStatus(`✅ Подписка продлена на ${pkg.label}!`);
+                // Если в компоненте есть функция обновления данных бота, вызываем её
+                // fetchBotData(); 
+              } else {
+                setKeyStatus(`❌ ${res?.detail || 'Недостаточно средств'}`);
+              }
+            } catch (e) {
+              setKeyStatus('❌ Ошибка соединения');
+            } finally {
+              setActivatingKey(false);
+            }
+          }}
+          disabled={activatingKey}
+          className="flex-1 lg:flex-none px-5 py-3 bg-black border border-zinc-800 hover:border-indigo-500/50 rounded-2xl transition-all group"
+        >
+          <div className="text-indigo-400 font-black text-xs group-hover:scale-110 transition-transform">{pkg.label}</div>
+          <div className="text-[9px] text-zinc-600 font-bold italic">{pkg.price} ₽</div>
+        </button>
+      ))}
+    </div>
+  </div>
+
+  {keyStatus && (
+    <p className={`text-[10px] font-black text-center mt-4 uppercase tracking-widest ${
+      keyStatus.includes('✅') ? 'text-emerald-500' : 'text-rose-500'
+    }`}>
+      {keyStatus}
+    </p>
+  )}
+</div>
 
       {apps.length === 0 ? (
         <div className="border-2 border-dashed border-zinc-800 rounded-[2rem] p-14 text-center">
