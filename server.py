@@ -3840,7 +3840,7 @@ async def initiate_topup(d: dict):
 
 # ─── АКТИВНАЯ ПРОВЕРКА СТАТУСА ПЛАТЕЖА (FALLBACK если webhook не пришёл) ─────
 
-@@app.get("/api/payments/check/{payment_id}")
+@app.get("/api/payments/check/{payment_id}")
 async def check_payment_status(payment_id: str):
     if not YK_SHOP_ID or not YK_SECRET:
         raise HTTPException(500, "ЮKassa не настроена")
