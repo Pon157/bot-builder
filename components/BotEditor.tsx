@@ -1977,106 +1977,100 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
 
   if (!editingId) return (
     <div className="space-y-6 animate-in fade-in duration-500">
+      {/* ПАНЕЛЬ ЗАГОЛОВКА */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h2 className="text-2xl font-black text-white uppercase">Мини-приложения</h2>
-          <p className="text-[10px] text-emerald-400 mt-0.5 font-bold">
-            Активно до {new Date(licenseExpiry).toLocaleDateString()}
+          <h2 className="text-2xl font-black text-white uppercase tracking-tight">Мини-приложения</h2>
+          <p className="text-[10px] text-emerald-400 mt-0.5 font-bold flex items-center gap-1.5">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            </span>
+            Активно до {bot.license_expires_at ? new Date(bot.license_expires_at).toLocaleDateString() : '—'}
           </p>
         </div>
-        <button onClick={createApp}
-          className="bg-indigo-600 hover:bg-indigo-500 px-6 py-3 rounded-2xl text-[11px] font-black text-white uppercase flex items-center gap-2 shadow-lg shadow-indigo-600/20 transition-all">
+        <button 
+          onClick={createApp}
+          className="bg-indigo-600 hover:bg-indigo-500 px-6 py-3 rounded-2xl text-[11px] font-black text-white uppercase flex items-center gap-2 shadow-lg shadow-indigo-600/20 transition-all active:scale-95"
+        >
           <Plus className="w-4 h-4" /> Создать
         </button>
       </div>
 
-      <div className="bg-zinc-900/40 border border-zinc-800 rounded-[2.5rem] p-6">
-  <div className="flex flex-col lg:flex-row items-center gap-6">
-    <div className="flex-1 w-full text-center lg:text-left">
-      <div className="flex items-center justify-center lg:justify-start gap-3 mb-1">
-        <RefreshCw className={`w-4 h-4 text-indigo-400 ${activatingKey ? 'animate-spin' : ''}`} />
-        <h4 className="text-sm font-black text-white uppercase tracking-wider">Продление подписки</h4>
-      </div>
-      <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-tight">Выберите период для мгновенной активации</p>
-    </div>
-
-    {activeTab === 'miniapps' && (
-  <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
-    {/* Карточка лицензии */}
-    <div className="bg-[#111] border border-zinc-800 p-6 md:p-8 rounded-[2.5rem] flex flex-col lg:flex-row items-stretch lg:items-center gap-8">
-      
-      {/* Левая часть: Статус */}
-      <div className="flex-1">
-        <h3 className="text-[11px] font-black text-white uppercase tracking-[0.2em] flex items-center gap-2 mb-4 opacity-80">
-          <AppWindow className="w-4 h-4 text-indigo-400" /> 
-          Статус подписки
-        </h3>
-        
-        <div className="grid grid-cols-2 gap-3 md:gap-4">
-          <div className="bg-black/50 border border-zinc-800/50 p-4 rounded-2xl flex flex-col items-center justify-center">
-            <p className={`text-base md:text-lg font-black leading-none mb-1.5 ${licenseActive ? 'text-emerald-400' : 'text-rose-400'}`}>
-              {licenseActive ? 'АКТИВНА' : 'ИСТЕКЛА'}
-            </p>
-            <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest">Лицензия</p>
-          </div>
+      {/* КАРТОЧКА ЛИЦЕНЗИИ И ПРОДЛЕНИЯ */}
+      <div className="bg-[#111] border border-zinc-800 p-6 md:p-8 rounded-[2.5rem] flex flex-col lg:flex-row items-stretch lg:items-center gap-8">
+        {/* Левая часть: Статус */}
+        <div className="flex-1">
+          <h3 className="text-[11px] font-black text-white uppercase tracking-[0.2em] flex items-center gap-2 mb-4 opacity-80">
+            <AppWindow className="w-4 h-4 text-indigo-400" /> 
+            Статус подписки
+          </h3>
           
-          <div className="bg-black/50 border border-zinc-800/50 p-4 rounded-2xl flex flex-col items-center justify-center">
-            <p className="text-base md:text-lg font-black text-blue-400 leading-none mb-1.5">
-              {bot.license_expires_at ? new Date(bot.license_expires_at).toLocaleDateString() : '—'}
-            </p>
-            <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest">До даты</p>
+          <div className="grid grid-cols-2 gap-3 md:gap-4">
+            <div className="bg-black/50 border border-zinc-800/50 p-4 rounded-2xl flex flex-col items-center justify-center text-center">
+              <p className={`text-base md:text-lg font-black leading-none mb-1.5 ${licenseActive ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {licenseActive ? 'АКТИВНА' : 'ИСТЕКЛА'}
+              </p>
+              <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest">Лицензия</p>
+            </div>
+            
+            <div className="bg-black/50 border border-zinc-800/50 p-4 rounded-2xl flex flex-col items-center justify-center text-center">
+              <p className="text-base md:text-lg font-black text-blue-400 leading-none mb-1.5">
+                {bot.license_expires_at ? new Date(bot.license_expires_at).toLocaleDateString() : '—'}
+              </p>
+              <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest">До даты</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Разделитель */}
+        <div className="hidden lg:block w-px h-16 bg-zinc-800/50" />
+
+        {/* Правая часть: Кнопки покупки */}
+        <div className="w-full lg:w-72 flex flex-col gap-3">
+          <p className="text-[9px] text-zinc-500 font-black uppercase tracking-widest ml-1">Быстрое продление</p>
+          <div className="flex gap-2">
+            {[
+              { id: 'miniapp_30d', label: '30 ДНЕЙ', price: 90 },
+              { id: 'miniapp_90d', label: '90 ДНЕЙ', price: 250 }
+            ].map((pkg) => (
+              <button
+                key={pkg.id}
+                disabled={isProcessing}
+                onClick={async () => {
+                  if (!window.confirm(`Списать ${pkg.price}₽ с баланса?`)) return;
+                  setIsProcessing(true);
+                  try {
+                    const res = await api.buyService(bot.owner_id, pkg.id, bot.id);
+                    if (res?.status === 'ok') {
+                      const days = pkg.id === 'miniapp_30d' ? 30 : 90;
+                      const currentExp = bot.license_expires_at || Date.now();
+                      const newExp = Math.max(currentExp, Date.now()) + (days * 86400000);
+                      onUpdate({ ...bot, license_expires_at: newExp });
+                      alert('Подписка продлена!');
+                    } else {
+                      alert(res?.detail || 'Недостаточно средств');
+                    }
+                  } catch (e) {
+                    alert('Ошибка сервера');
+                  } finally {
+                    setIsProcessing(false);
+                  }
+                }}
+                className="flex-1 flex flex-col items-center justify-center px-2 py-3.5 bg-zinc-900 border border-zinc-800 rounded-2xl hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-all active:scale-95 disabled:opacity-50"
+              >
+                <div className="text-indigo-400 font-black text-[10px] mb-0.5">{pkg.label}</div>
+                <div className="text-[10px] text-white font-bold">{pkg.price}₽</div>
+              </button>
+            ))}
           </div>
         </div>
       </div>
 
-      {/* Разделитель (только для десктопа) */}
-      <div className="hidden lg:block w-px h-16 bg-zinc-800/50" />
-
-      {/* Правая часть: Продление */}
-      <div className="w-full lg:w-72 flex flex-col gap-3">
-        <p className="text-[9px] text-zinc-500 font-black uppercase tracking-widest ml-1">
-          Быстрое продление
-        </p>
-        <div className="flex gap-2">
-          {[
-            { id: 'miniapp_30d', label: '30 ДНЕЙ', price: 90 },
-            { id: 'miniapp_90d', label: '90 ДНЕЙ', price: 250 }
-          ].map((pkg) => (
-            <button
-              key={pkg.id}
-              onClick={async () => {
-                if (!window.confirm(`Списать ${pkg.price}₽ с баланса?`)) return;
-                setIsProcessing(true);
-                try {
-                  const res = await api.buyService(bot.owner_id, pkg.id, bot.id);
-                  if (res?.status === 'ok') {
-                    const days = pkg.id === 'miniapp_30d' ? 30 : 90;
-                    const currentExp = bot.license_expires_at || Date.now();
-                    const newExp = Math.max(currentExp, Date.now()) + (days * 86400000);
-                    onUpdate({ ...bot, license_expires_at: newExp });
-                  } else {
-                    alert(res?.detail || 'Недостаточно средств');
-                  }
-                } catch (e) {
-                  alert('Ошибка сервера');
-                } finally {
-                  setIsProcessing(false);
-                }
-              }}
-              disabled={isProcessing}
-              className="flex-1 flex flex-col items-center justify-center px-2 py-3.5 bg-zinc-900 border border-zinc-800 rounded-2xl hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-all active:scale-95 disabled:opacity-50 disabled:active:scale-100"
-            >
-              <div className="text-indigo-400 font-black text-[10px] mb-0.5 tracking-tight">{pkg.label}</div>
-              <div className="text-[10px] text-white font-bold">{pkg.price}₽</div>
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
-
+      {/* СПИСОК ПРИЛОЖЕНИЙ */}
       {apps.length === 0 ? (
         <div className="border-2 border-dashed border-zinc-800 rounded-[2rem] p-14 text-center">
-          <AppWindow className="w-12 h-12 text-zinc-800 mx-auto mb-4" />
+          <AppWindow className="w-12 h-12 text-zinc-800 mx-auto mb-4 opacity-20" />
           <p className="text-zinc-600 font-black text-sm uppercase tracking-widest">Нет мини-приложений</p>
           <button onClick={createApp}
             className="mt-6 bg-indigo-600 hover:bg-indigo-500 px-8 py-3.5 rounded-2xl text-[11px] font-black text-white uppercase inline-flex items-center gap-2 transition-all">
@@ -2088,33 +2082,39 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
           {apps.map(app => {
             const deliveryLabel = app.webhookType === 'formbot' ? 'бот форм' : app.webhookType === 'sheets' ? 'таблица' : 'вебхук';
             return (
-              <div key={app.id} style={{ borderColor: (app.theme.primary || '#6366f1') + '30', background: (app.theme.bg || '#0a0a0f') + '20' }}
-                className="border rounded-[2rem] overflow-hidden hover:scale-[1.01] transition-all">
-                <div style={{ background: app.theme.bg || '#0a0a0f', minHeight: 90, position: 'relative', overflow: 'hidden' }}>
-                  {app.theme.gradient && <div style={{ position: 'absolute', inset: 0, background: app.theme.gradient }} />}
-                  <div className="relative z-10 p-5">
-                    <p style={{ color: app.theme.textSecondary, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 4 }}>
-                      {app.components.length} блоков · {deliveryLabel}
+              <div key={app.id} 
+                style={{ 
+                  borderColor: (app.theme?.primary || '#6366f1') + '30', 
+                  background: (app.theme?.bg || '#0a0a0f') + '20' 
+                }}
+                className="border rounded-[2rem] overflow-hidden hover:scale-[1.01] transition-all group"
+              >
+                <div style={{ background: app.theme?.bg || '#0a0a0f', minHeight: 100, position: 'relative', overflow: 'hidden' }}>
+                  {app.theme?.gradient && <div style={{ position: 'absolute', inset: 0, background: app.theme.gradient, opacity: 0.4 }} />}
+                  <div className="relative z-10 p-6">
+                    <p style={{ color: app.theme?.textSecondary || '#71717a', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 4 }}>
+                      {app.components?.length || 0} блоков · {deliveryLabel}
                     </p>
-                    <p style={{ color: app.theme.textPrimary, fontWeight: 800, fontSize: 16, fontFamily: app.theme.font }}>{app.title}</p>
+                    <p style={{ color: app.theme?.textPrimary || '#ffffff', fontWeight: 800, fontSize: 18, fontFamily: app.theme?.font }}>
+                      {app.title}
+                    </p>
                   </div>
                 </div>
+
                 <div className="p-4 flex items-center gap-2 bg-zinc-900/50 border-t border-zinc-800/50">
                   <button onClick={() => { setEditingId(app.id); setSelComp(null); setPreviewMode(false); setMobileTab('canvas'); }}
-                    className="flex-1 text-[9px] font-black uppercase text-zinc-400 hover:text-white bg-zinc-800 hover:bg-zinc-700 py-2.5 rounded-xl transition-all flex items-center justify-center gap-1.5">
-                    <Palette className="w-3 h-3" /> Редактировать
+                    className="flex-1 text-[9px] font-black uppercase text-zinc-400 hover:text-white bg-zinc-800 hover:bg-zinc-700 py-3 rounded-xl transition-all flex items-center justify-center gap-1.5">
+                    <Palette className="w-3 h-3" /> Настроить
                   </button>
+                  
                   <button onClick={() => copyUrl(app.id)}
-                    className={`flex items-center gap-1.5 text-[9px] font-black uppercase py-2.5 px-3 rounded-xl transition-all ${copiedId === app.id ? 'bg-emerald-500/20 text-emerald-400' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white'}`}>
+                    className={`flex items-center gap-1.5 text-[9px] font-black uppercase py-3 px-4 rounded-xl transition-all ${copiedId === app.id ? 'bg-emerald-500/20 text-emerald-400' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white'}`}>
                     {copiedId === app.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                    {copiedId === app.id ? 'Скопировано' : 'Ссылка'}
+                    {copiedId === app.id ? 'OK' : 'URL'}
                   </button>
-                  <a href={`/app/${app.id}`} target="_blank" rel="noopener noreferrer"
-                    className="flex items-center py-2.5 px-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white transition-all">
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
+
                   <button onClick={() => deleteApp(app.id)}
-                    className="py-2.5 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 transition-all">
+                    className="py-3 px-4 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 transition-all">
                     <Trash2 className="w-3 h-3" />
                   </button>
                 </div>
