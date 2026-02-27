@@ -3710,7 +3710,7 @@ import uuid as _uuid
 # Инициализируем ЮKassa
 YK_SHOP_ID  = os.getenv("YOOKASSA_SHOP_ID", "")
 YK_SECRET   = os.getenv("YOOKASSA_SECRET_KEY", "")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://yourdomain.com")
+FRONTEND_URL = os.getenv("FRONTEND_URL")
 
 if YK_SHOP_ID and YK_SECRET:
     Configuration.account_id = YK_SHOP_ID
@@ -3890,7 +3890,7 @@ async def check_payment_status(payment_id: str):
     return {"status": real_payment.status}
 # ─── WEBHOOK ОТ ЮKASSA ───────────────────────────────────────────────────────
 
-@app.post("/api/payments/yookassa/callback")
+@app.post("/api/payments/yookassa/callback/")
 async def yookassa_callback(request: Request):
     """
     ЮKassa шлёт POST-уведомление при изменении статуса платежа.
