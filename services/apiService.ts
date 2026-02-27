@@ -551,7 +551,7 @@ adminLogin: async (login: string, pass: string) => {
     },
   },
 
-  // ─── Баланс и транзакции ─────────────────────────────────────────────────────
+// ─── Баланс и транзакции ─────────────────────────────────────────────────────
 
   getBalance: async (userId: string): Promise<{ balance: number; transactions: any[] }> => {
     try {
@@ -587,6 +587,7 @@ adminLogin: async (login: string, pass: string) => {
       return await r.json();
     } catch { return null; }
   },
+
 
   // --- BOT MANAGEMENT ---
 
