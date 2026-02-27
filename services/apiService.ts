@@ -551,6 +551,43 @@ adminLogin: async (login: string, pass: string) => {
     },
   },
 
+  // ─── Баланс и транзакции ─────────────────────────────────────────────────────
+
+  getBalance: async (userId: string): Promise<{ balance: number; transactions: any[] }> => {
+    try {
+      const r = await fetchWithTimeout(`${getApiBase()}/payments/balance/${userId}`);
+      if (!r.ok) return { balance: 0, transactions: [] };
+      return await r.json();
+    } catch { return { balance: 0, transactions: [] }; }
+  },
+
+  getPrices: async (): Promise<any[]> => {
+    try {
+      const r = await fetchWithTimeout(`${getApiBase()}/payments/prices`);
+      return r.ok ? await r.json() : [];
+    } catch { return []; }
+  },
+
+  initiateTopup: async (userId: string, amount: number): Promise<{ payment_url?: string; label?: string; detail?: string } | null> => {
+    try {
+      const r = await fetchWithTimeout(`${getApiBase()}/payments/initiate`, {
+        method: 'POST',
+        body: JSON.stringify({ user_id: userId, amount })
+      });
+      return await r.json();
+    } catch { return null; }
+  },
+
+  buyService: async (userId: string, serviceKey: string, targetId: string): Promise<any | null> => {
+    try {
+      const r = await fetchWithTimeout(`${getApiBase()}/payments/buy`, {
+        method: 'POST',
+        body: JSON.stringify({ user_id: userId, service_key: serviceKey, target_id: targetId })
+      });
+      return await r.json();
+    } catch { return null; }
+  },
+
   // --- BOT MANAGEMENT ---
 
   // --- ДОБАВИТЬ В api.ts ---
