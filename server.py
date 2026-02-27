@@ -3718,6 +3718,328 @@ async def chat_site_license_status(slug: str):
 #
 # Это позволяет отдавать файлы из /uploads/chat/... напрямую.
 
+# ================================================================
+# ВСТАВЬ ЭТОТ БЛОК В server.py
+# Лучше всего — перед последней строкой if __name__ == "__main__":
+#
+# Также добавь в начало server.py (в импорты):
+#   import hashlib   (уже есть)
+#
+# И в .env:
+#   YOOMONEY_RECEIVER=4100118XXXXXXXXX   # твой номер кошелька ЮMoney
+#   YOOMONEY_SECRET=твой_секрет_для_уведомлений
+#   FRONTEND_URL=https://yourdomain.com  # для redirectUrl после оплаты
+# ================================================================
+
+import httpx as _httpx_pay  # используем отдельный alias чтобы не конфликтовать
+
+YOOMONEY_RECEIVER = os.getenv("YOOMONEY_RECEIVER", "")
+YOOMONEY_SECRET   = os.getenv("YOOMONEY_SECRET", "")
+FRONTEND_URL      = os.getenv("FRONTEND_URL", "https://yourdomain.com")
+
+# ─── ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: RPC-вызов к Supabase ──────────────────────────
+
+async def _rpc(func_name: str, params: dict):
+    """Вызывает Supabase RPC-функцию и возвращает результат."""
+    async with _httpx_pay.AsyncClient(timeout=10) as client:
+        r = await client.post(
+            f"{S_URL}/rest/v1/rpc/{func_name}",
+            headers={
+                "apikey": S_KEY,
+                "Authorization": f"Bearer {S_KEY}",
+                "Content-Type": "application/json"
+            },
+            json=params
+        )
+    return r
+
+# ─── ПОЛУЧИТЬ БАЛАНС ─────────────────────────────────────────────────────────
+
+@app.get("/api/payments/balance/{user_id}")
+async def get_balance(user_id: str):
+    """Возвращает текущий баланс и историю транзакций пользователя."""
+    r = await db.get("users", params={"id": f"eq.{user_id}", "select": "id,balance"})
+    if not r.json():
+        raise HTTPException(404, "Пользователь не найден")
+    
+    balance = r.json()[0].get("balance", 0)
+    
+    # История транзакций (последние 30)
+    tx_r = await db.get("payment_transactions", params={
+        "user_id": f"eq.{user_id}",
+        "order": "created_at.desc",
+        "limit": "30"
+    })
+    transactions = tx_r.json() if tx_r.status_code == 200 else []
+    
+    return {"balance": float(balance), "transactions": transactions}
+
+# ─── ПРАЙСЛИСТ ───────────────────────────────────────────────────────────────
+
+@app.get("/api/payments/prices")
+async def get_prices():
+    """Возвращает актуальный прайслист из БД."""
+    r = await db.get("service_prices", params={"order": "price_rub.asc"})
+    return r.json() if r.status_code == 200 else []
+
+# ─── ИНИЦИИРОВАТЬ ПОПОЛНЕНИЕ (создать pending-транзакцию + вернуть URL) ──────
+
+@app.post("/api/payments/initiate")
+async def initiate_topup(d: dict):
+    """
+    Создаёт pending-транзакцию и возвращает URL формы ЮMoney.
+    
+    Body: { user_id: str, amount: float }  # amount в рублях, минимум 10
+    """
+    user_id = d.get("user_id", "").strip()
+    amount  = float(d.get("amount", 0))
+    
+    if not user_id:
+        raise HTTPException(400, "user_id обязателен")
+    if amount < 10:
+        raise HTTPException(400, "Минимальная сумма пополнения — 10 ₽")
+    if amount > 100000:
+        raise HTTPException(400, "Максимальная сумма — 100 000 ₽")
+    if not YOOMONEY_RECEIVER:
+        raise HTTPException(500, "YOOMONEY_RECEIVER не настроен в .env")
+    
+    # Проверяем что пользователь существует
+    u_r = await db.get("users", params={"id": f"eq.{user_id}"})
+    if not u_r.json():
+        raise HTTPException(404, "Пользователь не найден")
+    
+    # Уникальный label — привязка платежа к пользователю
+    label = f"uid_{user_id}_{secrets.token_hex(6)}"
+    
+    # Сохраняем pending-транзакцию
+    tx_data = {
+        "user_id":     user_id,
+        "type":        "topup",
+        "amount":      amount,
+        "balance_after": 0,
+        "description": f"Пополнение баланса на {amount:.0f} ₽",
+        "service":     "topup",
+        "ym_label":    label,
+        "status":      "pending"
+    }
+    await db.post("payment_transactions", json=tx_data)
+    
+    # Формируем URL оплаты ЮMoney QuickPay
+    import urllib.parse
+    params = {
+        "receiver":        YOOMONEY_RECEIVER,
+        "quickpay-form":   "button",
+        "targets":         f"Пополнение баланса DialogEngine",
+        "paymentType":     "AC",        # AC = банковская карта, PC = кошелёк ЮMoney
+        "sum":             f"{amount:.2f}",
+        "label":           label,
+        "successURL":      f"{FRONTEND_URL}/profile?payment=success"
+    }
+    payment_url = "https://yoomoney.ru/quickpay/confirm.xml?" + urllib.parse.urlencode(params, encoding="utf-8")
+    
+    logger.info(f"💳 Создан платёж {label} на {amount}₽ для {user_id}")
+    
+    return {
+        "payment_url": payment_url,
+        "label": label,
+        "amount": amount
+    }
+
+# ─── WEBHOOK ОТ ЮMONEY ───────────────────────────────────────────────────────
+
+@app.post("/api/payments/yoomoney/callback")
+async def yoomoney_callback(request: Request):
+    """
+    ЮMoney шлёт POST с данными платежа.
+    
+    В настройках кошелька ЮMoney → Переводы и платежи →
+    HTTP-уведомления → URL: https://yourdomain.com/api/payments/yoomoney/callback
+    Секрет: значение YOOMONEY_SECRET из .env
+    
+    Алгоритм проверки подписи:
+    sha1( notification_type & operation_id & amount & currency &
+          datetime & sender & codepro & secret & label )
+    """
+    form = await request.form()
+    data = dict(form)
+    
+    logger.info(f"💳 ЮMoney callback: {data}")
+    
+    # 1. Проверяем подпись (sha1)
+    notification_type = data.get("notification_type", "")
+    operation_id      = data.get("operation_id", "")
+    amount            = data.get("amount", "")
+    currency          = data.get("currency", "643")
+    dt                = data.get("datetime", "")
+    sender            = data.get("sender", "")
+    codepro           = data.get("codepro", "false")
+    label             = data.get("label", "")
+    sha1_received     = data.get("sha1_hash", "")
+    
+    # Собираем строку для проверки
+    check_str = "&".join([
+        notification_type, operation_id, amount, currency,
+        dt, sender, codepro, YOOMONEY_SECRET, label
+    ])
+    sha1_expected = hashlib.sha1(check_str.encode("utf-8")).hexdigest()
+    
+    if sha1_received != sha1_expected:
+        logger.error(f"❌ ЮMoney: неверная подпись! Получено: {sha1_received}, ожидалось: {sha1_expected}")
+        raise HTTPException(400, "Invalid signature")
+    
+    # 2. Ищем pending-транзакцию по label
+    tx_r = await db.get("payment_transactions", params={
+        "ym_label": f"eq.{label}",
+        "status":   "eq.pending"
+    })
+    if not tx_r.json():
+        logger.warning(f"⚠️ ЮMoney: транзакция {label} не найдена или уже обработана")
+        return {"ok": True}  # возвращаем 200 чтобы ЮMoney не повторял
+    
+    tx = tx_r.json()[0]
+    user_id       = tx["user_id"]
+    amount_stored = float(tx["amount"])
+    amount_paid   = float(amount)
+    
+    # 3. Проверяем сумму (округляем до копеек)
+    if round(amount_paid, 2) < round(amount_stored, 2):
+        logger.error(f"❌ ЮMoney: сумма не совпадает! Ожидал {amount_stored}, получил {amount_paid}")
+        # Обновляем статус на failed
+        await db.patch("payment_transactions",
+                       params={"ym_label": f"eq.{label}"},
+                       json={"status": "failed"})
+        return {"ok": True}
+    
+    # 4. Зачисляем баланс через Supabase RPC (атомарно)
+    rpc_r = await _rpc("topup_user_balance", {
+        "p_user_id": user_id,
+        "p_amount":  amount_paid,
+        "p_label":   label,
+        "p_op_id":   operation_id,
+        "p_sender":  sender
+    })
+    
+    if rpc_r.status_code == 200:
+        new_balance = rpc_r.json()
+        logger.info(f"✅ Баланс {user_id} пополнен на {amount_paid}₽. Новый баланс: {new_balance}₽")
+    else:
+        logger.error(f"❌ RPC topup_user_balance ошибка: {rpc_r.status_code} {rpc_r.text}")
+    
+    return {"ok": True}
+
+# ─── КУПИТЬ УСЛУГУ ЗА БАЛАНС ─────────────────────────────────────────────────
+
+@app.post("/api/payments/buy")
+async def buy_service(d: dict):
+    """
+    Списывает баланс и активирует услугу.
+    
+    Body:
+    {
+      user_id: str,
+      service_key: str,   # 'bot_30d' | 'bot_90d' | 'ai_500k' | ... | 'miniapp_30d'
+      target_id: str      # bot_id для бота/AI/мини-апп
+    }
+    """
+    user_id     = d.get("user_id", "").strip()
+    service_key = d.get("service_key", "").strip()
+    target_id   = d.get("target_id", "").strip()
+    
+    if not all([user_id, service_key]):
+        raise HTTPException(400, "user_id и service_key обязательны")
+    
+    # 1. Получаем прайс из БД
+    p_r = await db.get("service_prices", params={"service_key": f"eq.{service_key}"})
+    if not p_r.json():
+        raise HTTPException(404, f"Услуга '{service_key}' не найдена")
+    
+    price_row = p_r.json()[0]
+    price     = float(price_row["price_rub"])
+    meta      = price_row.get("meta") or {}
+    label     = price_row["label"]
+    
+    # 2. Определяем тип услуги
+    if service_key.startswith("bot_"):
+        service_type = "bot_license"
+    elif service_key.startswith("ai_"):
+        service_type = "ai_tokens"
+    elif service_key.startswith("miniapp_"):
+        service_type = "miniapp"
+    else:
+        service_type = "other"
+    
+    # 3. Атомарное списание баланса
+    rpc_r = await _rpc("spend_user_balance", {
+        "p_user_id":     user_id,
+        "p_amount":      price,
+        "p_description": label,
+        "p_service":     service_type
+    })
+    
+    if rpc_r.status_code != 200:
+        raise HTTPException(500, "Ошибка базы данных при списании")
+    
+    new_balance = rpc_r.json()
+    if new_balance == -1:
+        raise HTTPException(402, "Недостаточно средств на балансе")
+    
+    # 4. Активируем услугу
+    now_ms = int(time.time() * 1000)
+    
+    if service_type == "bot_license" and target_id:
+        days = int(meta.get("days", 30))
+        add_ms = days * 86_400_000
+        
+        # Получаем текущую лицензию бота
+        bot_r = await db.get("bots", params={"id": f"eq.{target_id}"})
+        if bot_r.json():
+            curr_exp = bot_r.json()[0].get("license_expires_at") or now_ms
+            new_exp = max(curr_exp, now_ms) + add_ms
+            await db.patch("bots",
+                           params={"id": f"eq.{target_id}"},
+                           json={"license_expires_at": new_exp})
+            logger.info(f"✅ Лицензия бота {target_id} продлена на {days} дней (до {new_exp})")
+    
+    elif service_type == "ai_tokens" and target_id:
+        tokens = int(meta.get("tokens", 0))
+        if tokens > 0:
+            # Проверяем есть ли запись в ai_token_balances
+            ab_r = await db.get("ai_token_balances", params={"bot_id": f"eq.{target_id}"})
+            if ab_r.json():
+                curr_tok = ab_r.json()[0].get("tokens_balance", 0)
+                await db.patch("ai_token_balances",
+                               params={"bot_id": f"eq.{target_id}"},
+                               json={"tokens_balance": curr_tok + tokens})
+            else:
+                await db.post("ai_token_balances",
+                              json={"bot_id": target_id, "tokens_balance": tokens})
+            logger.info(f"✅ Боту {target_id} начислено {tokens} AI-токенов")
+    
+    elif service_type == "miniapp" and target_id:
+        days = int(meta.get("days", 30))
+        add_ms = days * 86_400_000
+        
+        ml_r = await db.get("miniapp_licenses", params={"bot_id": f"eq.{target_id}"})
+        if ml_r.json():
+            curr_exp = ml_r.json()[0].get("expires_at") or now_ms
+            new_exp = max(curr_exp, now_ms) + add_ms
+            await db.patch("miniapp_licenses",
+                           params={"bot_id": f"eq.{target_id}"},
+                           json={"expires_at": new_exp, "is_active": True})
+        else:
+            await db.post("miniapp_licenses",
+                          json={"bot_id": target_id,
+                                "expires_at": now_ms + add_ms,
+                                "is_active": True})
+        logger.info(f"✅ Мини-апп лицензия бота {target_id} продлена на {days} дней")
+    
+    return {
+        "status": "ok",
+        "new_balance": float(new_balance),
+        "service": service_type,
+        "message": f"✅ {label} — активировано"
+    }
+
 
 
 if __name__ == "__main__":
