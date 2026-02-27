@@ -4004,6 +4004,8 @@ async def buy_service(d: dict):
         service_type = "ai_tokens"
     elif service_key.startswith("miniapp_"):
         service_type = "miniapp"
+    elif service_key.startswith("chatsite_"):
+        service_type = "chatsite"
     else:
         service_type = "other"
 
@@ -4053,34 +4055,67 @@ async def buy_service(d: dict):
         days   = int(meta.get("days", 30))
         add_ms = days * 86_400_000
         ml_r   = await db.get("miniapp_licenses", params={"bot_id": f"eq.{target_id}"})
-        
-        # Сначала определяем новую дату окончания
+
         if ml_r.json():
             curr_exp = ml_r.json()[0].get("expires_at") or now_ms
             new_exp  = max(curr_exp, now_ms) + add_ms
-            # Обновляем существующую лицензию
             await db.patch("miniapp_licenses",
                            params={"bot_id": f"eq.{target_id}"},
-                           json={"expires_at": new_exp, "is_active": True})
+                           json={"expires_at": new_exp, "active": True})  # поле active, не is_active
         else:
             new_exp = now_ms + add_ms
-            # Создаем новую запись лицензии
             await db.post("miniapp_licenses",
-                          json={"bot_id": target_id,
-                                "expires_at": new_exp,
-                                "is_active": True})
-        
-        # ВАЖНО: Синхронизируем дату в таблицу bots, чтобы фронтенд видел её при обновлении
-        await db.patch("bots", 
-                       params={"id": f"eq.{target_id}"}, 
-                       json={"license_expires_at": new_exp})
+                          json={"bot_id": target_id, "expires_at": new_exp, "active": True})
 
-        logger.info(f"✅ Лицензия бота {target_id} обновлена в базе до {new_exp}")
+        # Синхронизируем в bots.license_expires_at — фронтенд читает отсюда при reload
+        await db.patch("bots", params={"id": f"eq.{target_id}"},
+                       json={"license_expires_at": new_exp})
+        logger.info(f"✅ MiniApp лицензия бота {target_id} до {new_exp}")
+
+    elif service_type == "chatsite" and target_id:
+        # Для чат-сайтов пишем в chat_site_keys (именно оттуда читает /api/chat/sites/{id}/license)
+        days   = int(meta.get("days", 30))
+        add_ms = days * 86_400_000
+
+        existing = await db.get("chat_site_keys", params={
+            "site_id":   f"eq.{target_id}",
+            "is_active": "eq.true",
+            "order":     "expires_at.desc",
+            "limit":     "1"
+        })
+        existing_list = existing.json() if existing.status_code == 200 else []
+
+        if existing_list:
+            curr_exp = existing_list[0].get("expires_at") or now_ms
+            new_exp  = max(curr_exp, now_ms) + add_ms
+            await db.patch("chat_site_keys",
+                           params={"id": f"eq.{existing_list[0]['id']}"},
+                           json={"expires_at": new_exp, "is_active": True})
+        else:
+            import secrets as _secrets
+            raw = _secrets.token_hex(6).upper()
+            key_code = f"CHAT-{raw[:4]}-{raw[4:8]}-{raw[8:12]}"
+            new_exp  = now_ms + add_ms
+            await db.post("chat_site_keys", json={
+                "id":           f"cky_{uuid.uuid4().hex[:8]}",
+                "key_code":     key_code,
+                "site_id":      target_id,
+                "owner_id":     user_id,
+                "duration_days": days,
+                "price_rub":    int(price),
+                "activated_at": now_ms,
+                "expires_at":   new_exp,
+                "created_at":   now_ms,
+                "is_active":    True,
+                "note":         "auto:balance"
+            })
+        logger.info(f"✅ ChatSite лицензия {target_id} до {new_exp}")
 
     return {
         "status":      "ok",
         "new_balance": float(new_balance),
         "service":     service_type,
+        "expires_at":  locals().get("new_exp"),  # дата активации — нужна фронтенду чтобы не пересчитывать
         "message":     f"✅ {label} — активировано"
     }
 
