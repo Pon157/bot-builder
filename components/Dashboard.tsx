@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BotConfig } from '../types';
+import { BotConfig, User } from '../types';
 import { MessageSquare, Plus, Globe, ExternalLink, ChevronRight } from 'lucide-react';
 
 interface DashboardProps {
   bots: BotConfig[];
+  user: User; // Добавили пользователя для получения баланса
   onSelectBot: (id: string) => void;
   onAddBot: () => void;
   onNavigate?: (path: string) => void;
@@ -19,13 +20,12 @@ interface ChatSitePreview {
   config?: { primaryColor?: string; bgColor?: string; logoText?: string };
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ bots, onSelectBot, onAddBot }) => {
+const Dashboard: React.FC<DashboardProps> = ({ bots, user, onSelectBot, onAddBot }) => {
   const navigate = useNavigate();
   const [isFaqOpen, setIsFaqOpen] = useState(false);
   const [chatSites, setChatSites] = useState<ChatSitePreview[]>([]);
 
   const totalUsers = bots.reduce((acc, b) => acc + (b.connectedUsers?.length || 0), 0);
-  const totalMessages = bots.reduce((acc, b) => acc + (b.stats?.totalMessages || 0), 0);
   const activeBots = bots.filter(b => b.status === 'RUNNING').length;
 
   // Загружаем чат-сайты владельца (если есть userId в storage)
@@ -65,9 +65,18 @@ const Dashboard: React.FC<DashboardProps> = ({ bots, onSelectBot, onAddBot }) =>
             <p className="text-5xl font-black text-blue-500">{totalUsers.toLocaleString()}</p>
         </div>
 
-        <div className="bg-[#111] p-8 rounded-[2.5rem] border border-zinc-800">
-            <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest mb-4">Всего транзакций</p>
-            <p className="text-5xl font-black text-white">{totalMessages.toLocaleString()}</p>
+        {/* НОВЫЙ БЛОК БАЛАНСА ВМЕСТО ТРАНЗАКЦИЙ */}
+        <div className="bg-blue-600 border border-blue-500 p-8 rounded-[2.5rem] shadow-lg shadow-blue-600/20 relative overflow-hidden group">
+            {/* Декоративный свет на фоне */}
+            <div className="absolute -right-4 -top-4 w-32 h-32 bg-white/10 rounded-full blur-2xl group-hover:bg-white/20 transition-all"></div>
+            
+            <p className="text-blue-100 text-[10px] font-bold uppercase tracking-widest mb-4 relative z-10">Ваш баланс</p>
+            <div className="flex items-baseline gap-2 relative z-10">
+                <span className="text-5xl font-black text-white">
+                    {user.balance?.toLocaleString() || 0}
+                </span>
+                <span className="text-2xl font-bold text-blue-200">₽</span>
+            </div>
         </div>
 
         {/* КАРТОЧКА FAQ */}
@@ -87,140 +96,140 @@ const Dashboard: React.FC<DashboardProps> = ({ bots, onSelectBot, onAddBot }) =>
         </div>
       </div>
 
-{/* Секция Ваших ботов */}
-<section className="space-y-6">
-  <div className="flex items-center justify-between">
-      <h2 className="text-xl font-black text-white">Ваши инстансы</h2>
-      <button onClick={onAddBot} className="text-blue-500 text-xs font-bold uppercase tracking-widest hover:underline">+ Создать новый</button>
-  </div>
-  
-  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-      {bots.map(bot => (
-          <div 
-              key={bot.id}
-              className="bg-[#111] border border-zinc-800 rounded-[2.5rem] p-8 hover:border-blue-500/50 transition-all cursor-pointer group relative"
-              onClick={() => onSelectBot(bot.id)}
+      {/* Секция Ваших ботов */}
+      <section className="space-y-6">
+        <div className="flex items-center justify-between">
+            <h2 className="text-xl font-black text-white">Ваши инстансы</h2>
+            <button onClick={onAddBot} className="text-blue-500 text-xs font-bold uppercase tracking-widest hover:underline">+ Создать новый</button>
+        </div>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {bots.map(bot => (
+                <div 
+                    key={bot.id}
+                    className="bg-[#111] border border-zinc-800 rounded-[2.5rem] p-8 hover:border-blue-500/50 transition-all cursor-pointer group relative"
+                    onClick={() => onSelectBot(bot.id)}
+                >
+                    <div className="flex justify-between items-start mb-6">
+                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${bot.status === 'RUNNING' ? 'bg-blue-500/10 text-blue-500' : 'bg-zinc-900 text-zinc-600'}`}>
+                            {bot.platform === 'vk' ? (
+                              <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M13.162 18.994c-6.098 0-9.57-4.172-9.714-11.107h3.047c.101 5.088 2.339 7.243 4.116 7.688V7.887H13.5v4.39c1.673-.18 3.514-2.185 4.102-4.39h2.903a9.408 9.408 0 01-3.763 5.483 9.771 9.771 0 014.436 5.624h-3.235c-.636-1.992-2.228-3.528-4.557-3.757v3.757h-.224z"/>
+                              </svg>
+                            ) : bot.platform === 'poster' ? (
+                              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
+                            ) : bot.platform === 'randomizer' ? (
+                              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path d="M16 3h5m0 0v5m0-5l-6 6M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-1m-8-5l3 3 3-3" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
+                            ) : (
+                              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
+                            )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <span className="bg-zinc-800/80 text-zinc-500 text-[8px] font-black px-2.5 py-1 rounded-lg uppercase tracking-wider">
+                              {bot.platform === 'vk' ? 'VK' : bot.platform === 'poster' ? 'Постинг' : bot.platform === 'randomizer' ? 'Лотерея' : 'Telegram'}
+                            </span>
+                            <span className={`text-[9px] px-3 py-1 rounded-full font-black uppercase ${bot.status === 'RUNNING' ? 'bg-green-500/10 text-green-500' : 'bg-zinc-800 text-zinc-500'}`}>
+                                {bot.status}
+                            </span>
+                        </div>
+                    </div>
+                    
+                    <h3 className="text-xl font-black text-white mb-2 group-hover:text-blue-500 transition-colors">{bot.name}</h3>
+                    
+                    <div className="flex items-center gap-6 mt-6 pt-6 border-t border-zinc-800/50">
+                        <div className="text-center">
+                            <p className="text-lg font-black text-white">{bot.connectedUsers?.length || 0}</p>
+                            <p className="text-[8px] text-zinc-600 uppercase font-bold">Users</p>
+                        </div>
+                        <div className="text-center">
+                            <p className="text-lg font-black text-white">{bot.stats?.totalMessages || 0}</p>
+                            <p className="text-[8px] text-zinc-600 uppercase font-bold">Msgs</p>
+                        </div>
+                    </div>
+                </div>
+            ))}
+        </div>
+      </section>
+
+      {/* ─── Секция чат-платформ ─── */}
+      <section className="space-y-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-black text-white">Чат-платформы</h2>
+            <p className="text-zinc-600 text-xs font-medium mt-0.5">Публичные мессенджеры с регистрацией пользователей</p>
+          </div>
+          <button
+            onClick={() => navigate('/chatplatform')}
+            className="flex items-center gap-1.5 text-blue-500 text-xs font-bold uppercase tracking-widest hover:underline"
           >
-              <div className="flex justify-between items-start mb-6">
-                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${bot.status === 'RUNNING' ? 'bg-blue-500/10 text-blue-500' : 'bg-zinc-900 text-zinc-600'}`}>
-                      {bot.platform === 'vk' ? (
-                        <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
-                          <path d="M13.162 18.994c-6.098 0-9.57-4.172-9.714-11.107h3.047c.101 5.088 2.339 7.243 4.116 7.688V7.887H13.5v4.39c1.673-.18 3.514-2.185 4.102-4.39h2.903a9.408 9.408 0 01-3.763 5.483 9.771 9.771 0 014.436 5.624h-3.235c-.636-1.992-2.228-3.528-4.557-3.757v3.757h-.224z"/>
-                        </svg>
-                      ) : bot.platform === 'poster' ? (
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      ) : bot.platform === 'randomizer' ? (
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path d="M16 3h5m0 0v5m0-5l-6 6M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-1m-8-5l3 3 3-3" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      ) : (
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                      <span className="bg-zinc-800/80 text-zinc-500 text-[8px] font-black px-2.5 py-1 rounded-lg uppercase tracking-wider">
-                        {bot.platform === 'vk' ? 'VK' : bot.platform === 'poster' ? 'Постинг' : bot.platform === 'randomizer' ? 'Лотерея' : 'Telegram'}
-                      </span>
-                      <span className={`text-[9px] px-3 py-1 rounded-full font-black uppercase ${bot.status === 'RUNNING' ? 'bg-green-500/10 text-green-500' : 'bg-zinc-800 text-zinc-500'}`}>
-                          {bot.status}
-                      </span>
-                  </div>
-              </div>
-              
-              <h3 className="text-xl font-black text-white mb-2 group-hover:text-blue-500 transition-colors">{bot.name}</h3>
-              
-              <div className="flex items-center gap-6 mt-6 pt-6 border-t border-zinc-800/50">
-                  <div className="text-center">
-                      <p className="text-lg font-black text-white">{bot.connectedUsers?.length || 0}</p>
-                      <p className="text-[8px] text-zinc-600 uppercase font-bold">Users</p>
-                  </div>
-                  <div className="text-center">
-                      <p className="text-lg font-black text-white">{bot.stats?.totalMessages || 0}</p>
-                      <p className="text-[8px] text-zinc-600 uppercase font-bold">Msgs</p>
-                  </div>
-              </div>
+            Управление <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {chatSites.length === 0 ? (
+          <div
+            className="border-2 border-dashed border-zinc-800 rounded-[2.5rem] p-10 text-center cursor-pointer hover:border-blue-500/30 transition-all group"
+            onClick={() => navigate('/chatplatform')}
+          >
+            <MessageSquare className="w-8 h-8 text-zinc-700 group-hover:text-blue-500/50 mx-auto mb-3 transition-colors" />
+            <p className="text-zinc-600 text-xs font-black uppercase tracking-widest mb-2">Нет чат-сайтов</p>
+            <span className="text-blue-500 text-xs font-bold hover:underline inline-flex items-center gap-1">
+              <Plus className="w-3.5 h-3.5" /> Создать первый
+            </span>
           </div>
-      ))}
-  </div>
-</section>
-
-{/* ─── Секция чат-платформ ─── */}
-<section className="space-y-5">
-  <div className="flex items-center justify-between">
-    <div>
-      <h2 className="text-xl font-black text-white">Чат-платформы</h2>
-      <p className="text-zinc-600 text-xs font-medium mt-0.5">Публичные мессенджеры с регистрацией пользователей</p>
-    </div>
-    <button
-      onClick={() => navigate('/chatplatform')}
-      className="flex items-center gap-1.5 text-blue-500 text-xs font-bold uppercase tracking-widest hover:underline"
-    >
-      Управление <ChevronRight className="w-3.5 h-3.5" />
-    </button>
-  </div>
-
-  {chatSites.length === 0 ? (
-    <div
-      className="border-2 border-dashed border-zinc-800 rounded-[2.5rem] p-10 text-center cursor-pointer hover:border-blue-500/30 transition-all group"
-      onClick={() => navigate('/chatplatform')}
-    >
-      <MessageSquare className="w-8 h-8 text-zinc-700 group-hover:text-blue-500/50 mx-auto mb-3 transition-colors" />
-      <p className="text-zinc-600 text-xs font-black uppercase tracking-widest mb-2">Нет чат-сайтов</p>
-      <span className="text-blue-500 text-xs font-bold hover:underline inline-flex items-center gap-1">
-        <Plus className="w-3.5 h-3.5" /> Создать первый
-      </span>
-    </div>
-  ) : (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-      {chatSites.map(site => {
-        const primary = site.config?.primaryColor || '#6366f1';
-        const bg = site.config?.bgColor || '#09090b';
-        const siteUrl = `/chat/${site.slug}`;
-        return (
-          <div key={site.id}
-            className="bg-[#111] border border-zinc-800 rounded-[2rem] overflow-hidden hover:border-zinc-700 transition-all group cursor-pointer"
-            onClick={() => navigate('/chatplatform')}>
-            {/* Превью шапки сайта */}
-            <div className="h-14 flex items-center px-5 gap-2" style={{ background: bg }}>
-              <div className="w-2 h-2 rounded-full shrink-0" style={{ background: primary }} />
-              <span className="font-black text-sm truncate" style={{ color: primary }}>
-                {site.config?.logoText || site.name}
-              </span>
-              <div className="ml-auto flex gap-1">
-                {[0, 1, 2].map(i => <div key={i} className="w-1.5 h-1.5 rounded-full bg-white/10" />)}
-              </div>
-            </div>
-            <div className="p-5 flex items-center justify-between">
-              <div>
-                <p className="text-white font-black text-sm group-hover:text-blue-400 transition-colors">{site.name}</p>
-                <p className="text-zinc-600 text-[9px] font-mono mt-0.5">/chat/{site.slug}</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full ${site.is_active ? 'bg-emerald-500' : 'bg-zinc-600'}`} />
-                <a href={siteUrl} target="_blank" rel="noopener noreferrer"
-                  onClick={e => e.stopPropagation()}
-                  className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 transition-all">
-                  <ExternalLink className="w-3 h-3 text-zinc-500 hover:text-white transition-colors" />
-                </a>
-              </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+            {chatSites.map(site => {
+              const primary = site.config?.primaryColor || '#6366f1';
+              const bg = site.config?.bgColor || '#09090b';
+              const siteUrl = `/chat/${site.slug}`;
+              return (
+                <div key={site.id}
+                  className="bg-[#111] border border-zinc-800 rounded-[2rem] overflow-hidden hover:border-zinc-700 transition-all group cursor-pointer"
+                  onClick={() => navigate('/chatplatform')}>
+                  {/* Превью шапки сайта */}
+                  <div className="h-14 flex items-center px-5 gap-2" style={{ background: bg }}>
+                    <div className="w-2 h-2 rounded-full shrink-0" style={{ background: primary }} />
+                    <span className="font-black text-sm truncate" style={{ color: primary }}>
+                      {site.config?.logoText || site.name}
+                    </span>
+                    <div className="ml-auto flex gap-1">
+                      {[0, 1, 2].map(i => <div key={i} className="w-1.5 h-1.5 rounded-full bg-white/10" />)}
+                    </div>
+                  </div>
+                  <div className="p-5 flex items-center justify-between">
+                    <div>
+                      <p className="text-white font-black text-sm group-hover:text-blue-400 transition-colors">{site.name}</p>
+                      <p className="text-zinc-600 text-[9px] font-mono mt-0.5">/chat/{site.slug}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2 h-2 rounded-full ${site.is_active ? 'bg-emerald-500' : 'bg-zinc-600'}`} />
+                      <a href={siteUrl} target="_blank" rel="noopener noreferrer"
+                        onClick={e => e.stopPropagation()}
+                        className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 transition-all">
+                        <ExternalLink className="w-3 h-3 text-zinc-500 hover:text-white transition-colors" />
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {/* Плашка «Добавить ещё» */}
+            <div
+              onClick={() => navigate('/chatplatform')}
+              className="border-2 border-dashed border-zinc-800 rounded-[2rem] p-8 flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-blue-500/30 transition-all group">
+              <Plus className="w-6 h-6 text-zinc-700 group-hover:text-blue-500/50 transition-colors" />
+              <span className="text-zinc-600 text-[9px] font-black uppercase tracking-widest">Новый сайт</span>
             </div>
           </div>
-        );
-      })}
-      {/* Плашка «Добавить ещё» */}
-      <div
-        onClick={() => navigate('/chatplatform')}
-        className="border-2 border-dashed border-zinc-800 rounded-[2rem] p-8 flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-blue-500/30 transition-all group">
-        <Plus className="w-6 h-6 text-zinc-700 group-hover:text-blue-500/50 transition-colors" />
-        <span className="text-zinc-600 text-[9px] font-black uppercase tracking-widest">Новый сайт</span>
-      </div>
-    </div>
-  )}
-</section>
+        )}
+      </section>
 
       {/* OVERLAY: Просмотр PDF документа */}
       {isFaqOpen && (
