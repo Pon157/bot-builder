@@ -2000,11 +2000,45 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
       <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-tight">Выберите период для мгновенной активации</p>
     </div>
 
-    <div className="w-full lg:w-auto flex flex-wrap lg:flex-nowrap gap-2">
+    <div className="bg-[#111] border border-zinc-800 p-6 rounded-[2.5rem] flex flex-col lg:flex-row items-center gap-8">
+  {/* Левая часть: Статус */}
+  <div className="flex-1 w-full">
+    <div className="flex items-center gap-3 mb-1">
+      <div className="w-10 h-10 rounded-2xl bg-indigo-500/10 flex items-center justify-center">
+        <AppWindow className="w-5 h-5 text-indigo-400" />
+      </div>
+      <div>
+        <h3 className="text-sm font-black text-white uppercase tracking-wider">Мини-приложения</h3>
+        <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-tight">Веб-интерфейсы внутри бота</p>
+      </div>
+    </div>
+
+    <div className="grid grid-cols-2 gap-4 mt-4">
+      <div className="bg-black border border-zinc-800 p-3 rounded-2xl text-center">
+        <p className={`text-lg font-black ${licenseActive ? 'text-emerald-400' : 'text-rose-400'}`}>
+          {licenseActive ? 'Активна' : 'Истекла'}
+        </p>
+        <p className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest">Статус лицензии</p>
+      </div>
+      <div className="bg-black border border-zinc-800 p-3 rounded-2xl text-center">
+        <p className="text-lg font-black text-blue-400">
+          {bot.license_expires_at ? new Date(bot.license_expires_at).toLocaleDateString() : '—'}
+        </p>
+        <p className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest">Действует до</p>
+      </div>
+    </div>
+  </div>
+
+  {/* Правая часть: Быстрая покупка (как в AI) */}
+  <div className="w-full lg:w-auto flex flex-col gap-2">
+    <p className="text-[9px] text-zinc-500 font-bold uppercase ml-1 tracking-widest text-center lg:text-left">
+      Продлить подписку
+    </p>
+    <div className="flex flex-wrap lg:flex-nowrap gap-2">
       {[
-        { id: 'miniapp_30d',  label: '1 мес',  price: 90,  days: 30 },
-        { id: 'miniapp_90d',  label: '3 мес',  price: 250, days: 90 },
-        { id: 'miniapp_365d', label: '1 год',  price: 900, days: 365 },
+        { id: 'miniapp_30d',  label: '30 дней', price: 90 },
+        { id: 'miniapp_90d',  label: '90 дней', price: 250 },
+        { id: 'miniapp_365d', label: '1 год',   price: 900 }
       ].map((pkg) => (
         <button
           key={pkg.id}
@@ -2015,27 +2049,44 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
             try {
               const res = await api.buyService(bot.owner_id, pkg.id, bot.id);
               if (res && res.status === 'ok') {
-                setKeyStatus(`✅ Подписка продлена на ${pkg.label}!`);
-                // Если в компоненте есть функция обновления данных бота, вызываем её
-                // fetchBotData(); 
+                setKeyStatus(`✅ Продлено на ${pkg.label}!`);
+                // Важно: вызываем onUpdate, чтобы изменения сохранились в базе и не сбросились
+                onUpdate({
+                  ...bot,
+                  license_expires_at: (Math.max(bot.license_expires_at || 0, Date.now())) + 
+                                      (pkg.id === 'miniapp_30d' ? 30 : pkg.id === 'miniapp_90d' ? 90 : 365) * 86400000
+                });
               } else {
-                setKeyStatus(`❌ ${res?.detail || 'Недостаточно средств'}`);
+                setKeyStatus(`❌ ${res?.detail || 'Нет средств'}`);
               }
             } catch (e) {
-              setKeyStatus('❌ Ошибка соединения');
+              setKeyStatus('❌ Ошибка сети');
             } finally {
               setActivatingKey(false);
             }
           }}
           disabled={activatingKey}
-          className="flex-1 lg:flex-none px-5 py-3 bg-black border border-zinc-800 hover:border-indigo-500/50 rounded-2xl transition-all group"
+          className="flex-1 lg:flex-none px-4 py-3 bg-zinc-900 border border-zinc-800 hover:border-indigo-500/50 rounded-xl transition-all group text-center"
         >
-          <div className="text-indigo-400 font-black text-xs group-hover:scale-110 transition-transform">{pkg.label}</div>
-          <div className="text-[9px] text-zinc-600 font-bold italic">{pkg.price} ₽</div>
+          <div className="text-indigo-400 font-black text-xs group-hover:scale-110 transition-transform">
+            {pkg.label}
+          </div>
+          <div className="text-[9px] text-zinc-500 font-bold italic">{pkg.price} ₽</div>
         </button>
       ))}
     </div>
+    <p className="text-[8px] text-zinc-700 text-center lg:text-left italic">
+      Списание с личного счета
+    </p>
+    {keyStatus && (
+      <p className={`text-[10px] font-bold text-center mt-1 uppercase ${
+        keyStatus.includes('✅') ? 'text-emerald-500' : 'text-rose-500'
+      }`}>
+        {keyStatus}
+      </p>
+    )}
   </div>
+</div>
 
   {keyStatus && (
     <p className={`text-[10px] font-black text-center mt-4 uppercase tracking-widest ${
