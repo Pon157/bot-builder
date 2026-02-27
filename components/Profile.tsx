@@ -81,7 +81,7 @@ const Profile: React.FC<ProfileProps> = ({ user, bots, onUpdateBots }) => {
     // Проверяем успешный редирект с ЮMoney
     const params = new URLSearchParams(window.location.search);
     if (params.get('payment') === 'success') {
-      setTimeout(loadWallet, 3000); // ждём webhook
+      setTimeout(loadWallet, 5000); // ждём webhook от ЮKassa
       window.history.replaceState({}, '', '/profile');
     }
     bots.forEach(bot => {
