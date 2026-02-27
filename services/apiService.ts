@@ -578,16 +578,25 @@ adminLogin: async (login: string, pass: string) => {
     } catch { return null; }
   },
 
-  buyService: async (userId: string, serviceKey: string, targetId: string): Promise<any | null> => {
+  buyService: async (userId: string, serviceKey: string, targetId: string): Promise<any> => {
     try {
       const r = await fetchWithTimeout(`${getApiBase()}/payments/buy`, {
         method: 'POST',
         body: JSON.stringify({ user_id: userId, service_key: serviceKey, target_id: targetId })
       });
-      return await r.json();
-    } catch { return null; }
+      
+      const data = await r.json();
+      if (!r.ok) {
+        // Если сервер ответил ошибкой (например, 402 или 500)
+        throw new Error(data.detail || `Ошибка сервера: ${r.status}`);
+      }
+      return data;
+    } catch (error: any) {
+      // Выводим в консоль для отладки
+      console.error("API Error [buyService]:", error);
+      throw error; // Пробрасываем ошибку в компонент
+    }
   },
-
 
   // --- BOT MANAGEMENT ---
 
