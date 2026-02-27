@@ -1724,9 +1724,12 @@ const MiniFormSettings: React.FC<{
 const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isVK: boolean }> = ({ bot, onUpdate, isVK }) => {
   const [apps, setApps]                   = React.useState<MiniApp[]>([]);
   const [loading, setLoading]             = React.useState(true);
-  const [isProcessing, setIsProcessing]   = React.useState(false); // <── ДОБАВЬТЕ ЭТУ СТРОКУ
+  const [isProcessing, setIsProcessing]   = React.useState(false);
   const isLicenseValid = bot.license_expires_at ? new Date(bot.license_expires_at) > new Date() : false;
   const expiryDateStr = bot.license_expires_at ? new Date(bot.license_expires_at).toLocaleDateString() : '—';
+  // Эти две переменные раньше не были объявлены — отсюда ReferenceError при покупке
+  const [licenseActive, setLicenseActive] = React.useState<boolean>(isLicenseValid);
+  const [licenseExpiry, setLicenseExpiry] = React.useState<number>(bot.license_expires_at || 0);
   const [licenseKey, setLicenseKey]       = React.useState('');
   const [activatingKey, setActivatingKey] = React.useState(false);
   const [keyStatus, setKeyStatus]         = React.useState('');
@@ -1944,22 +1947,15 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
                 const res = await api.buyService(bot.owner_id, 'miniapp_30d', bot.id);
                 
                 if (res && res.status === 'ok') {
-                  // 2. Рассчитываем новую дату (текущий момент + 30 дней)
+                  // Берём expires_at из ответа сервера, или считаем локально как fallback
                   const addMs = 30 * 86400000;
                   const currentExp = bot.license_expires_at || Date.now();
-                  const newExp = Math.max(currentExp, Date.now()) + addMs;
+                  const newExp = res.expires_at || (Math.max(currentExp, Date.now()) + addMs);
 
-                  // 3. Обновляем родительский компонент (BotEditor)
-                  // Это заставит весь интерфейс увидеть новую дату истечения
-                  onUpdate({ 
-                    ...bot, 
-                    license_expires_at: newExp 
-                  });
-
-                  // 4. Обновляем локальные состояния, чтобы скрыть этот экран
+                  // Обновляем родительский компонент чтобы данные сохранились
+                  onUpdate({ ...bot, license_expires_at: newExp });
                   setLicenseActive(true);
                   setLicenseExpiry(newExp);
-
                   alert('Мини-приложения успешно активированы!');
                 } else {
                   alert(res?.detail || 'Недостаточно средств на балансе. Пополните его в профиле.');
@@ -2062,8 +2058,10 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
                     if (res?.status === 'ok') {
                       const days = pkg.id === 'miniapp_30d' ? 30 : 90;
                       const currentExp = bot.license_expires_at || Date.now();
-                      const newExp = Math.max(currentExp, Date.now()) + (days * 86400000);
+                      const newExp = res.expires_at || (Math.max(currentExp, Date.now()) + (days * 86400000));
                       onUpdate({ ...bot, license_expires_at: newExp });
+                      setLicenseActive(true);
+                      setLicenseExpiry(newExp);
                       alert('Подписка продлена!');
                     } else {
                       alert(res?.detail || 'Недостаточно средств');
