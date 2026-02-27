@@ -66,19 +66,15 @@ const Dashboard: React.FC<DashboardProps> = ({ bots, user, onSelectBot, onAddBot
         </div>
 
         {/* НОВЫЙ БЛОК БАЛАНСА ВМЕСТО ТРАНЗАКЦИЙ */}
-        <div className="bg-blue-600 border border-blue-500 p-8 rounded-[2.5rem] shadow-lg shadow-blue-600/20 relative overflow-hidden group">
-            {/* Декоративный свет на фоне */}
-            <div className="absolute -right-4 -top-4 w-32 h-32 bg-white/10 rounded-full blur-2xl group-hover:bg-white/20 transition-all"></div>
-            
-            <p className="text-blue-100 text-[10px] font-bold uppercase tracking-widest mb-4 relative z-10">Ваш баланс</p>
-            <div className="flex items-baseline gap-2 relative z-10">
-                <span className="text-5xl font-black text-white">
-                    {user.balance?.toLocaleString() || 0}
-                </span>
-                <span className="text-2xl font-bold text-blue-200">₽</span>
-            </div>
-        </div>
-
+        <div className="bg-[#111] p-8 rounded-[2.5rem] border border-zinc-800">
+    <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest mb-4">Ваш баланс</p>
+    <div className="flex items-baseline gap-2">
+        <p className="text-5xl font-black text-white">
+            {user.balance?.toLocaleString() || 0}
+        </p>
+        <p className="text-2xl font-bold text-zinc-700">₽</p>
+    </div>
+</div>
         {/* КАРТОЧКА FAQ */}
         <div 
           onClick={() => setIsFaqOpen(true)}
