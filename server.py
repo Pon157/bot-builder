@@ -4053,18 +4053,29 @@ async def buy_service(d: dict):
         days   = int(meta.get("days", 30))
         add_ms = days * 86_400_000
         ml_r   = await db.get("miniapp_licenses", params={"bot_id": f"eq.{target_id}"})
+        
+        # Сначала определяем новую дату окончания
         if ml_r.json():
             curr_exp = ml_r.json()[0].get("expires_at") or now_ms
             new_exp  = max(curr_exp, now_ms) + add_ms
+            # Обновляем существующую лицензию
             await db.patch("miniapp_licenses",
                            params={"bot_id": f"eq.{target_id}"},
                            json={"expires_at": new_exp, "is_active": True})
         else:
+            new_exp = now_ms + add_ms
+            # Создаем новую запись лицензии
             await db.post("miniapp_licenses",
                           json={"bot_id": target_id,
-                                "expires_at": now_ms + add_ms,
+                                "expires_at": new_exp,
                                 "is_active": True})
-        logger.info(f"✅ Мини-апп лицензия бота {target_id} продлена на {days} дней")
+        
+        # ВАЖНО: Синхронизируем дату в таблицу bots, чтобы фронтенд видел её при обновлении
+        await db.patch("bots", 
+                       params={"id": f"eq.{target_id}"}, 
+                       json={"license_expires_at": new_exp})
+
+        logger.info(f"✅ Лицензия бота {target_id} обновлена в базе до {new_exp}")
 
     return {
         "status":      "ok",
