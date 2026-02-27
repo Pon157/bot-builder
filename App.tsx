@@ -17,6 +17,7 @@ import ChatPlatform from './components/ChatPlatform';
 import ChatSiteApp from './components/ChatSiteApp';
 import RefundPolicy from './components/RefundPolicy'; 
 import Contacts from './components/Contacts';
+import SuccessPage from './components/Success';
 import { api } from './services/apiService';
 import { Menu, X, ArrowLeft } from 'lucide-react';
 
@@ -381,6 +382,8 @@ const App: React.FC = () => {
 
         {/* 17. Контакты и реквизиты */}
         <Route path="/contacts" element={<Contacts />} />
+
+        <Route path="/success" element={<SuccessPage />} />
 
         
 
