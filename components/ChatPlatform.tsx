@@ -15,6 +15,7 @@ import {
   CreditCard
 } from 'lucide-react';
 import { User as AppUser } from '../types';
+import { api } from '../services/apiService';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
