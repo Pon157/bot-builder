@@ -1724,6 +1724,7 @@ const MiniFormSettings: React.FC<{
 const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isVK: boolean }> = ({ bot, onUpdate, isVK }) => {
   const [apps, setApps]                   = React.useState<MiniApp[]>([]);
   const [loading, setLoading]             = React.useState(true);
+  const [isProcessing, setIsProcessing]   = React.useState(false); // <── ДОБАВЬТЕ ЭТУ СТРОКУ
   const [licenseActive, setLicenseActive] = React.useState(false);
   const [licenseExpiry, setLicenseExpiry] = React.useState(0);
   const [licenseKey, setLicenseKey]       = React.useState('');
