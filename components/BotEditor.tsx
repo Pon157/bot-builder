@@ -1051,68 +1051,73 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
           ВКЛАДКА: ИИ-АССИСТЕНТ
       ════════════════════════════════════════════ */}
       {activeTab === 'ai' && isSupportBot && (
-        <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-          {/* Баланс токенов */}
-          <div className="bg-[#111] border border-zinc-800 p-6 rounded-[2.5rem] flex flex-col md:flex-row items-center gap-6">
-            <div className="flex-1">
-              <h3 className="text-sm font-black text-white flex items-center gap-2 mb-1">
-                <Coins className="w-4 h-4 text-amber-500" /> AI-токены
-              </h3>
-              {aiBalance ? (
-                <div className="grid grid-cols-3 gap-4 mt-3">
-                  {[
-                    { label: 'Остаток', val: aiBalance.tokens_balance, color: 'text-emerald-400' },
-                    { label: 'Всего',   val: aiBalance.tokens_total,   color: 'text-blue-400' },
-                    { label: 'Потрачено',val: aiBalance.tokens_used,   color: 'text-rose-400' },
-                  ].map(({ label, val, color }) => (
-                    <div key={label} className="bg-black border border-zinc-800 p-3 rounded-2xl text-center">
-                      <p className={`text-lg font-black ${color}`}>{val.toLocaleString()}</p>
-                      <p className="text-[8px] text-zinc-600 uppercase font-bold">{label}</p>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-xs text-zinc-500 mt-2">Загрузка баланса...</p>
-              )}
-            </div>
-            <div className="w-full md:w-auto space-y-2">
-              <p className="text-[9px] text-zinc-500 font-bold uppercase ml-1">Активировать ключ AI</p>
-              <div className="flex gap-2">
-                <input
-                  className="flex-1 bg-black border border-zinc-800 rounded-xl p-3 text-xs text-white font-mono outline-none focus:border-amber-500 transition-all min-w-[180px]"
-                  placeholder="AITOK-XXXXXX-NNN"
-                  value={aiKeyInput}
-                  onChange={e => setAiKeyInput(e.target.value)}
-                />
-                <button
-                  onClick={async () => {
-                    if (!aiKeyInput.trim()) return;
-                    setAiKeyStatus('⏳ Активация...');
-                    try {
-                      const r = await fetch('/api/ai/activate-tokens', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ key: aiKeyInput.trim().toUpperCase(), botId: bot.id })
-                      });
-                      const res = await r.json();
-                      if (res.status === 'ok') {
-                        setAiKeyStatus(`✅ +${res.tokens_added?.toLocaleString()} токенов!`);
-                        setAiKeyInput('');
-                        fetch(`/api/ai/balance/${bot.id}`).then(r => r.json()).then(setAiBalance);
-                      } else {
-                        setAiKeyStatus(`❌ ${res.message}`);
-                      }
-                    } catch { setAiKeyStatus('❌ Ошибка сети'); }
-                  }}
-                  className="px-4 py-3 bg-amber-500/10 text-amber-500 border border-amber-500/20 rounded-xl text-xs font-black hover:bg-amber-500/20 transition-all"
-                >
-                  Активировать
-                </button>
+  <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    {/* Баланс токенов */}
+    <div className="bg-[#111] border border-zinc-800 p-6 rounded-[2.5rem] flex flex-col lg:flex-row items-center gap-8">
+      <div className="flex-1 w-full">
+        <h3 className="text-sm font-black text-white flex items-center gap-2 mb-1">
+          <Coins className="w-4 h-4 text-amber-500" /> AI-токены
+        </h3>
+        {aiBalance ? (
+          <div className="grid grid-cols-3 gap-4 mt-3">
+            {[
+              { label: 'Остаток', val: aiBalance.tokens_balance, color: 'text-emerald-400' },
+              { label: 'Всего',   val: aiBalance.tokens_total,   color: 'text-blue-400' },
+              { label: 'Потрачено',val: aiBalance.tokens_used,   color: 'text-rose-400' },
+            ].map(({ label, val, color }) => (
+              <div key={label} className="bg-black border border-zinc-800 p-3 rounded-2xl text-center">
+                <p className={`text-lg font-black ${color}`}>{val.toLocaleString()}</p>
+                <p className="text-[8px] text-zinc-600 uppercase font-bold">{label}</p>
               </div>
-              {aiKeyStatus && <p className="text-[10px] text-zinc-400 ml-1">{aiKeyStatus}</p>}
-            </div>
+            ))}
           </div>
+        ) : (
+          <p className="text-xs text-zinc-500 mt-2 italic">Загрузка баланса...</p>
+        )}
+      </div>
 
+      {/* Кнопки быстрой покупки */}
+      <div className="w-full lg:w-auto flex flex-col gap-2">
+        <p className="text-[9px] text-zinc-500 font-bold uppercase ml-1 tracking-widest text-center lg:text-left">Пополнить пакет токенов</p>
+        <div className="flex flex-wrap lg:flex-nowrap gap-2">
+          {[
+            { id: 'ai_500k',  label: '500K',  price: 90 },
+            { id: 'ai_1500k', label: '1.5M',  price: 250 },
+            { id: 'ai_5000k', label: '5M',    price: 700 }
+          ].map((pkg) => (
+            <button
+              key={pkg.id}
+              onClick={async () => {
+                if (!window.confirm(`Списать ${pkg.price} ₽ за ${pkg.label} токенов?`)) return;
+                setIsProcessing(true);
+                try {
+                  const res = await api.buyService(bot.owner_id, pkg.id, bot.id);
+                  if (res && res.status === 'ok') {
+                    // Обновляем баланс AI после покупки
+                    const newBal = await fetch(`/api/ai/balance/${bot.id}`).then(r => r.json());
+                    setAiBalance(newBal);
+                    alert(`✅ Пакет ${pkg.label} успешно активирован!`);
+                  } else {
+                    alert(res?.detail || 'Недостаточно средств на балансе');
+                  }
+                } catch (e) {
+                  alert('Ошибка соединения с сервером');
+                } finally {
+                  setIsProcessing(false);
+                }
+              }}
+              disabled={isProcessing}
+              className="flex-1 lg:flex-none px-4 py-3 bg-zinc-900 border border-zinc-800 hover:border-amber-500/50 rounded-xl transition-all group text-center"
+            >
+              <div className="text-amber-500 font-black text-xs group-hover:scale-110 transition-transform">{pkg.label}</div>
+              <div className="text-[9px] text-zinc-500 font-bold italic">{pkg.price} ₽</div>
+            </button>
+          ))}
+        </div>
+        <p className="text-[8px] text-zinc-700 text-center lg:text-left italic">Средства спишутся с вашего личного счета</p>
+      </div>
+    </div>
+    
           {/* Настройки AI — блокируются если нет токенов */}
           {(!aiBalance || aiBalance.tokens_balance <= 0) ? (
             <div className="bg-amber-500/5 border border-amber-500/20 p-8 rounded-[2.5rem] text-center">
@@ -1919,29 +1924,53 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
         <div className="w-14 h-14 bg-indigo-500/10 border border-indigo-500/20 rounded-2xl flex items-center justify-center mx-auto">
           <AppWindow className="w-7 h-7 text-indigo-400" />
         </div>
+        
         <div>
           <p className="text-white font-black text-lg mb-2">Подписка не активна</p>
-          <p className="text-zinc-500 text-sm leading-relaxed">
-            Публичные веб-страницы с формами, кнопками и контентом.<br />
-            Стоимость: <strong className="text-indigo-400">90 руб / месяц</strong> за бота.
+          <p className="text-zinc-500 text-sm leading-relaxed max-w-sm mx-auto">
+            Публичные веб-страницы с формами и контентом для вашего бота.<br />
+            Стоимость: <strong className="text-indigo-400">90 ₽ / 30 дней</strong>.
           </p>
         </div>
-        <div className="bg-black/40 border border-zinc-800 rounded-2xl p-5 space-y-3 max-w-sm mx-auto">
-          <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Активировать ключ</p>
-          <input value={licenseKey} onChange={e => setLicenseKey(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && activateKey()}
-            placeholder="MAPP-XXXXXX-NNN"
-            className="w-full bg-black border border-zinc-800 focus:border-indigo-500 text-white text-sm p-3 rounded-xl outline-none transition-all font-mono text-center" />
-          <button onClick={activateKey} disabled={activatingKey || !licenseKey.trim()}
-            className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-black py-3 rounded-xl text-xs uppercase tracking-widest transition-all">
-            {activatingKey ? 'Активация...' : 'Активировать'}
+
+        <div className="max-w-sm mx-auto pt-4">
+          <button 
+            onClick={async () => {
+              if (!window.confirm('Списать 90 ₽ с баланса для активации Мини-приложений?')) return;
+              setActivatingKey(true);
+              try {
+                // Вызываем API покупки (услуга miniapp_30d)
+                const res = await api.buyService(bot.owner_id, 'miniapp_30d', bot.id);
+                if (res && res.status === 'ok') {
+                  // Вызываем обновление, чтобы UI переключился на редактор
+                  setLicenseActive(true);
+                  // Опционально: можно обновить дату в объекте бота, если нужно
+                } else {
+                  alert(res?.detail || 'Недостаточно средств на балансе. Пополните его в профиле.');
+                }
+              } catch (e) {
+                alert('Ошибка при связи с сервером. Попробуйте позже.');
+              } finally {
+                setActivatingKey(false);
+              }
+            }}
+            disabled={activatingKey}
+            className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-black py-4 rounded-2xl text-xs uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-3 shadow-lg shadow-indigo-600/20"
+          >
+            {activatingKey ? (
+              <RefreshCw className="w-4 h-4 animate-spin" />
+            ) : (
+              <>
+                <Zap className="w-4 h-4 fill-current" />
+                Оплатить с баланса
+              </>
+            )}
           </button>
-          {keyStatus && <p className="text-xs text-zinc-400 text-center">{keyStatus}</p>}
+          
+          <p className="mt-4 text-[10px] text-zinc-600 font-bold uppercase tracking-wider">
+            Средства будут списаны с вашего личного счета
+          </p>
         </div>
-        <a href="https://t.me/dialogengine_bot" target="_blank" rel="noopener noreferrer"
-          className="inline-flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-black rounded-2xl text-xs uppercase tracking-widest transition-all">
-          <ExternalLink className="w-3.5 h-3.5" /> Купить ключ — 90 руб/мес
-        </a>
       </div>
     </div>
   );
