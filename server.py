@@ -3698,7 +3698,11 @@ async def chat_site_license_status(slug: str):
     else:
         # Лицензия истекла
         return {"expired": True, "reason": "expired", "expired_at": expires_at}
-#-------------------- НАСТРОЙКИ ЮКАССЫ --------------
+
+# ================================================================
+
+# pip install yookassa --break-system-packages
+# ================================================================
 
 from yookassa import Configuration, Payment as YKPayment
 import uuid as _uuid
@@ -3706,7 +3710,7 @@ import uuid as _uuid
 # Инициализируем ЮKassa
 YK_SHOP_ID  = os.getenv("YOOKASSA_SHOP_ID", "")
 YK_SECRET   = os.getenv("YOOKASSA_SECRET_KEY", "")
-FRONTEND_URL = os.getenv("FRONTEND_URL")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://yourdomain.com")
 
 if YK_SHOP_ID and YK_SECRET:
     Configuration.account_id = YK_SHOP_ID
@@ -3833,6 +3837,69 @@ async def initiate_topup(d: dict):
         "payment_id":  payment_id,
         "amount":      amount
     }
+
+# ─── АКТИВНАЯ ПРОВЕРКА СТАТУСА ПЛАТЕЖА (FALLBACK если webhook не пришёл) ─────
+
+@app.get("/api/payments/check/{payment_id}")
+async def check_payment_status(payment_id: str):
+    """
+    Фронтенд вызывает каждые 3 сек во время polling.
+    Сервер сам спрашивает ЮKassa — не ждёт webhook.
+    Если платёж succeeded и ещё не зачислен — зачисляем сами.
+    """
+    if not YK_SHOP_ID or not YK_SECRET:
+        raise HTTPException(500, "ЮKassa не настроена")
+
+    # Ищем транзакцию в БД
+    tx_r = await db.get("payment_transactions", params={"yk_payment_id": f"eq.{payment_id}"})
+    if not tx_r.json():
+        raise HTTPException(404, "Транзакция не найдена")
+
+    tx = tx_r.json()[0]
+
+    # Уже обработана — сразу отвечаем
+    if tx["status"] == "completed":
+        return {"status": "completed", "balance": None}
+    if tx["status"] == "failed":
+        return {"status": "failed"}
+
+    # Спрашиваем ЮKassa напрямую
+    try:
+        real_payment = await run_in_threadpool(lambda: YKPayment.find_one(payment_id))
+    except Exception as e:
+        logger.error(f"❌ check_payment find_one error: {e}")
+        return {"status": "pending"}
+
+    yk_status = real_payment.status  # pending / waiting_for_capture / succeeded / canceled
+
+    if yk_status == "succeeded":
+        # Платёж прошёл, но webhook не дошёл — зачисляем через polling
+        user_id     = tx["user_id"]
+        amount_paid = float(real_payment.amount.value)
+
+        rpc_r = await _rpc("topup_user_balance", {
+            "p_user_id": user_id,
+            "p_amount":  amount_paid,
+            "p_yk_id":   payment_id
+        })
+
+        if rpc_r.status_code == 200:
+            new_balance = rpc_r.json()
+            logger.info(f"✅ [POLLING] Баланс {user_id} +{amount_paid}₽ → {new_balance}₽")
+            return {"status": "completed", "balance": float(new_balance)}
+        else:
+            # Вероятно уже зачислено (гонка webhook + polling) — читаем баланс
+            u_r = await db.get("users", params={"id": f"eq.{user_id}", "select": "id,balance"})
+            bal = float(u_r.json()[0]["balance"]) if u_r.json() else 0
+            return {"status": "completed", "balance": bal}
+
+    elif yk_status == "canceled":
+        await db.patch("payment_transactions",
+                       params={"yk_payment_id": f"eq.{payment_id}"},
+                       json={"status": "failed"})
+        return {"status": "canceled"}
+
+    return {"status": "pending"}
 
 # ─── WEBHOOK ОТ ЮKASSA ───────────────────────────────────────────────────────
 
