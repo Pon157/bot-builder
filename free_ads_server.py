@@ -771,16 +771,15 @@ async def start_free_bot(bot_id: str):
     if not pm:
         raise HTTPException(500, "BotManager не инициализирован")
     
-    db = _get_server().db
+    db = server.db
     r = await db.get("bots", params={"id": f"eq.{bot_id}"})
     if not r.json():
         raise HTTPException(404, "Бот не найден")
     
     bot_data = r.json()[0]
-    
-    # ИСПРАВЛЕНИЕ: Убираем await, так как метод синхронный
-    # Но чтобы не блокировать основной поток FastAPI, лучше использовать run_in_threadpool
-    success = await run_in_threadpool(pm.start_bot, bot_id, bot_data.get("token"))
+
+    # ИСПРАВЛЕНИЕ: Просто вызываем с await, так как метод асинхронный
+    success = await pm.start_bot(bot_id, bot_data.get("token"), bot_data.get("config", {}))
     
     if success:
         return {"status": "ok", "message": "Бот запущен"}
