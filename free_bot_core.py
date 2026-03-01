@@ -1182,8 +1182,22 @@ class FreeBotInstance:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python3 free_bot_core.py <config_path.json>")
-        sys.exit(1)
+        # PM2 запустил free_bot_core.py напрямую без конфига.
+        # Это нормально — просто ждём, не выходим с кодом 1
+        # (иначе PM2 будет бесконечно перезапускать).
+        # Настоящий запуск всегда идёт от server.py с аргументом cfg_path.
+        print("INFO: free_bot_core.py is a worker script. "
+              "It should be started by server.py with a config path argument.\n"
+              "Sleeping to prevent PM2 restart loop...", flush=True)
+        import signal
+        stop_event = asyncio.Event()
+        def _sig(*_): stop_event.set()
+        signal.signal(signal.SIGTERM, _sig)
+        signal.signal(signal.SIGINT, _sig)
+        async def _idle():
+            await stop_event.wait()
+        asyncio.run(_idle())
+        sys.exit(0)
 
     async def main():
         cfg_path = sys.argv[1]
