@@ -762,3 +762,41 @@ async def free_user_info(user_id: str):
             }
 
     return result
+
+
+@router.post("/api/bots/{bot_id}/start")
+async def start_free_bot(bot_id: str):
+    server = _get_server()
+    pm = getattr(server, 'pm', None)
+    if not pm:
+        raise HTTPException(500, "BotManager не инициализирован")
+    
+    # Проверяем, существует ли бот в БД
+    db = _get_server().db
+    r = await db.get("bots", params={"id": f"eq.{bot_id}"})
+    if not r.json():
+        raise HTTPException(404, "Бот не найден")
+    
+    bot_data = r.json()[0]
+    # Запускаем через менеджер процессов
+    success = await pm.start_bot(bot_id, bot_data.get("token"), bot_data.get("config", {}))
+    
+    if success:
+        return {"status": "ok", "message": "Бот запущен"}
+    else:
+        raise HTTPException(500, "Не удалось запустить бота")
+
+@router.post("/api/bots/{bot_id}/stop")
+async def stop_free_bot(bot_id: str):
+    server = _get_server()
+    pm = getattr(server, 'pm', None)
+    if not pm:
+        raise HTTPException(500, "BotManager не инициализирован")
+    
+    success = await pm.stop_bot(bot_id)
+    if success:
+        return {"status": "ok", "message": "Бот остановлен"}
+    else:
+        # Даже если не удалось остановить (например, уже стопнут), 
+        # возвращаем ок для фронтенда
+        return {"status": "ok", "message": "Бот уже был остановлен или не найден в процессах"}
