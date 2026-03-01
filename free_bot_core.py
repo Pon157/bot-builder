@@ -305,6 +305,14 @@ class FreeBotInstance:
         if self._broadcast_day.get("date") != today:
             self._broadcast_day = {"date": today, "count": 0}
         self._broadcast_day["count"] += 1
+        # Пишем в stats для аналитики
+        self.stats_data["broadcastsToday"] = self._broadcast_day["count"]
+        self.stats_data["broadcastsTotal"] = self.stats_data.get("broadcastsTotal", 0) + 1
+        # Пишем в историю текущего дня
+        history = self.stats_data.get("history", [])
+        if history and history[-1].get("date") == today:
+            history[-1]["broadcasts"] = history[-1].get("broadcasts", 0) + 1
+        self.stats_data["history"] = history
 
     # ─────────────────────────────────────────────────────────────────────────
     # АНТИСПАМ
@@ -386,6 +394,35 @@ class FreeBotInstance:
         if not thread_id and self.use_topics:
             thread_id = await self.resolve_thread(user, force_new=True)
 
+        # Выбор метода пересылки:
+        # forwardMessages=True → нативный forward (без заголовка, как исходное сообщение)
+        # forwardMessages=False (default) → copy_message с кастомным заголовком
+        use_native_forward = self.settings.get("forwardMessages", False)
+
+        if use_native_forward:
+            # Нативный форвард — просто пересылаем без заголовка
+            try:
+                sent = await self.bot.forward_message(
+                    chat_id=self.admin_chat_id,
+                    from_chat_id=m.chat.id,
+                    message_id=m.message_id,
+                    message_thread_id=thread_id,
+                )
+                if sent:
+                    self.msg_map[sent.message_id] = user["id"]
+            except TelegramBadRequest as e:
+                if "message thread not found" in str(e):
+                    user["last_topic_id"] = None
+                    new_tid = await self.resolve_thread(user, force_new=True)
+                    if new_tid:
+                        await self.forward_to_admin(m, user, is_first, btn_text, is_ai_request)
+                else:
+                    logger.error(f"forward_to_admin(native) error: {e}")
+            except Exception as e:
+                logger.error(f"forward_to_admin(native) error: {e}")
+            return
+
+        # Режим copy_message с заголовком (по умолчанию)
         header = format_admin_header(m, self.settings, is_first, btn_text)
 
         try:
@@ -572,22 +609,29 @@ class FreeBotInstance:
                             message_id=target_msg_id
                         )
                         sent_c += 1
-                        await asyncio.sleep(0.07)
+                        await asyncio.sleep(0.05)
                     except TelegramForbiddenError:
                         user["is_active"] = False
                         err_c += 1
+                    except TelegramRetryAfter as e:
+                        await asyncio.sleep(e.retry_after)
+                        try:
+                            await self.bot.copy_message(int(user["id"]), m.chat.id, target_msg_id)
+                            sent_c += 1
+                        except Exception:
+                            err_c += 1
                     except Exception:
                         err_c += 1
 
-                self._broadcast_increment()   # считаем 1 рассылку, а не кол-во получателей
+                self._broadcast_increment()   # считаем 1 рассылку + пишем в stats
                 new_today = self._broadcast_today_count()
+                await self._save_to_db()
                 await status_msg.edit_text(
                     f"✅ <b>Рассылка завершена!</b>\n\n"
                     f"👤 Доставлено: {sent_c}\n"
                     f"🚫 Ошибки: {err_c}\n"
                     f"📊 Рассылок сегодня: {new_today}/{FREE_BROADCAST_DAY}"
                 )
-                await self._save_to_db()
             else:
                 self.broadcast_cache[m.from_user.id] = "WAITING"
                 remaining = FREE_BROADCAST_DAY - today_count
@@ -864,24 +908,58 @@ class FreeBotInstance:
 
             reply_kb  = self.get_main_keyboard()
             inline_kb = self.build_inline_from_list(self.welcome_inline)
+            main_kb   = inline_kb if inline_kb else reply_kb
+
+            # Получаем рекламу заранее
+            ad = await self.get_active_ad() if self.ad_enabled else None
+
+            # Формируем текст: приветствие + реклама интегрирована снизу
+            welcome = self.welcome_text or "Здравствуйте!"
+            if ad:
+                ad_text  = ad.get("text", "")
+                ad_media = ad.get("media_url", "")
+                combined = (
+                    f"{welcome}\n\n"
+                    f"─────────────────\n"
+                    f"📢 <b>Реклама</b>\n"
+                    f"{ad_text}"
+                )
+            else:
+                combined = welcome
+                ad_media = None
 
             try:
+                # Если у приветствия есть фото — отправляем фото с комбинированным текстом
                 if self.welcome_photo:
                     await m.answer_photo(
                         photo=self.welcome_photo,
-                        caption=self.welcome_text,
-                        reply_markup=inline_kb if inline_kb else reply_kb,
+                        caption=combined,
+                        reply_markup=main_kb,
+                    )
+                    # Если у рекламы отдельное медиа — шлём его следующим
+                    if ad and ad_media and ad_media != self.welcome_photo:
+                        await m.answer_photo(
+                            photo=ad_media,
+                            caption=f"📢 {ad_text}",
+                        )
+                elif ad and ad_media:
+                    # Рекламное фото — сначала текст приветствия, потом фото с рекламой
+                    await m.answer(text=welcome, reply_markup=main_kb)
+                    await m.answer_photo(
+                        photo=ad_media,
+                        caption=f"📢 <b>Реклама</b>\n{ad_text}",
                     )
                 else:
                     await m.answer(
-                        text=self.welcome_text,
-                        reply_markup=inline_kb if inline_kb else reply_kb,
+                        text=combined,
+                        reply_markup=main_kb,
                     )
-            except Exception:
-                await m.answer(text=self.welcome_text, reply_markup=reply_kb)
-
-            # FREE: показываем рекламу после welcome
-            await self.send_ad_to_user(m)
+            except Exception as e:
+                logger.warning(f"handle_start send error: {e}")
+                try:
+                    await m.answer(text=welcome, reply_markup=reply_kb)
+                except Exception:
+                    pass
 
             await self.log_and_update(user["id"], m.from_user.full_name, "/start")
 
@@ -923,22 +1001,29 @@ class FreeBotInstance:
                             message_id=m.message_id
                         )
                         sent_c += 1
-                        await asyncio.sleep(0.07)
+                        await asyncio.sleep(0.05)   # 20 msg/s — ниже лимита Telegram
                     except TelegramForbiddenError:
                         user["is_active"] = False
                         err_c += 1
+                    except TelegramRetryAfter as e:
+                        await asyncio.sleep(e.retry_after)
+                        try:
+                            await self.bot.copy_message(int(user["id"]), m.chat.id, m.message_id)
+                            sent_c += 1
+                        except Exception:
+                            err_c += 1
                     except Exception:
                         err_c += 1
 
-                self._broadcast_increment()   # +1 рассылка
+                self._broadcast_increment()   # +1 рассылка + запись в stats
                 new_today = self._broadcast_today_count()
+                await self._save_to_db()
                 await status_msg.edit_text(
                     f"✅ <b>Рассылка завершена!</b>\n\n"
                     f"👤 Доставлено: {sent_c}\n"
                     f"🚫 Ошибки: {err_c}\n"
                     f"📊 Рассылок сегодня: {new_today}/{FREE_BROADCAST_DAY}"
                 )
-                await self._save_to_db()
                 return
 
             # Ответ пользователю (через реплай или топик)
@@ -1054,6 +1139,9 @@ class FreeBotInstance:
             if await self.check_antispam(uid):
                 return
 
+            # ── ВАЖНО: кнопки и триггеры проверяем ДО forwardAll ──────────────
+            # Иначе при forwardAll кнопки переставали работать
+
             # Режим активного тикета
             if user.get("_in_ticket"):
                 close_label = user.get("_ticket_close_label", "Закрыть обращение")
@@ -1075,6 +1163,7 @@ class FreeBotInstance:
                             pass
                     await m.answer("Обращение закрыто.", reply_markup=self.get_main_keyboard())
                     return
+                # В активном тикете — форвардим и продолжаем
                 await self.forward_to_admin(m, user)
                 await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
                 return
@@ -1088,7 +1177,7 @@ class FreeBotInstance:
                     await m.answer("Главное меню:", reply_markup=self.get_main_keyboard())
                     return
 
-                # Кнопки меню
+                # Кнопки меню — ВСЕГДА проверяем, даже при forwardAll
                 matched_btn = next(
                     (b for b in self.buttons if b.get("text", "").lower() == lower), None
                 )
@@ -1122,19 +1211,16 @@ class FreeBotInstance:
                     await self.log_and_update(uid, m.from_user.full_name, f"КНОПКА: {matched_btn['text']}")
                     return
 
-                # Триггеры
+                # Триггеры — тоже всегда до forwardAll
                 for trig in self.triggers:
                     if trig.get("keyword") and trig["keyword"].lower() in lower:
                         await m.answer(trig.get("response") or "")
                         await self.log_and_update(uid, m.from_user.full_name, f"ТРИГГЕР: {trig['keyword']}")
                         return
 
-            # Форвард первого обращения / режим forward_all
-            if is_new:
-                await self.forward_to_admin(m, user, is_first=True)
-                await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
-            elif self.forward_all:
-                await self.forward_to_admin(m, user)
+            # ── Форвард: первое обращение или режим forward_all ───────────────
+            if is_new or self.forward_all:
+                await self.forward_to_admin(m, user, is_first=is_new)
                 await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
             else:
                 await m.answer(
