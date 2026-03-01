@@ -598,6 +598,37 @@ adminLogin: async (login: string, pass: string) => {
     }
   },
 
+  adminGetAdPosts: async (token: string, status: string = 'pending') => {
+    const r = await fetchWithTimeout(
+      `${getApiBase()}/admin/ads/posts?status=${status}`,
+      { method: 'GET', headers: { 'X-Admin-Token': token } }
+    );
+    return r.ok ? await r.json() : [];
+  },
+
+  adminApproveAdPost: async (token: string, postId: string) => {
+    const r = await fetchWithTimeout(
+      `${getApiBase()}/admin/ads/posts/${postId}/approve`,
+      { method: 'POST', headers: { 'X-Admin-Token': token } }
+    );
+    return r.ok;
+  },
+
+  adminRejectAdPost: async (token: string, postId: string, reason: string) => {
+    const r = await fetchWithTimeout(
+      `${getApiBase()}/admin/ads/posts/${postId}/reject`,
+      { method: 'POST', headers: { 'X-Admin-Token': token }, body: JSON.stringify({ reason }) }
+    );
+    return r.ok;
+  },
+
+  adminGetAdsStats: async (token: string) => {
+    const r = await fetchWithTimeout(
+      `${getApiBase()}/admin/ads/stats`,
+      { method: 'GET', headers: { 'X-Admin-Token': token } }
+    );
+    return r.ok ? await r.json() : null;
+  },
   // --- BOT MANAGEMENT ---
 
   // --- ДОБАВИТЬ В api.ts ---
