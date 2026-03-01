@@ -457,8 +457,8 @@ async def ads_payment_webhook(request: Request):
         return {"ok": True}
 
     # Верификация: переспрашиваем ЮКассу по API (защита от фейковых вебхуков)
-    yk_shop_id  = os.getenv("YUKASSA_SHOP_ID", "")
-    yk_secret   = os.getenv("YUKASSA_SECRET_KEY", "")
+    yk_shop_id  = os.getenv("YOOKASSA_SHOP_ID", "")
+    yk_secret   = os.getenv("YOOKASSA_SECRET_KEY", "")
     if yk_shop_id and yk_secret:
         try:
             async with httpx.AsyncClient(timeout=5) as client:
@@ -502,11 +502,11 @@ async def ads_create_payment(d: dict, authorization: str = Header(...)):
     if amount < 10:
         raise HTTPException(400, "Минимальная сумма пополнения — 10 ₽")
 
-    yk_shop_id = os.getenv("YUKASSA_SHOP_ID", "")
-    yk_secret  = os.getenv("YUKASSA_SECRET_KEY", "")
+    yk_shop_id = os.getenv("YOOKASSA_SHOP_ID", "")
+    yk_secret  = os.getenv("YOOKASSA_SECRET_KEY", "")
     if not yk_shop_id or not yk_secret:
-        raise HTTPException(503, "YUKASSA_SHOP_ID / YUKASSA_SECRET_KEY не настроены")
-
+        raise HTTPException(503, "YOOKASSA_SHOP_ID / YOOKASSA_SECRET_KEY не настроены")
+        
     return_url   = os.getenv("SERVER_BASE_URL", "http://localhost:8000") + "/ads"
     idempotency  = str(uuid.uuid4())
 
