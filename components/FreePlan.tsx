@@ -517,8 +517,8 @@ type View = 'list' | 'editor' | 'analytics';
 
 const FreePlan: React.FC = () => {
   const navigate = useNavigate();
-  const userId   = localStorage.getItem('user_id') || '';
-
+  const savedUser = localStorage.getItem('active_session_user');
+  const userId = savedUser ? JSON.parse(savedUser).id : '';
   const [view,      setView]      = useState<View>('list');
   const [activeBot, setActiveBot] = useState<FreeBot | null>(null);
   const [bots,      setBots]      = useState<FreeBot[]>([]);
