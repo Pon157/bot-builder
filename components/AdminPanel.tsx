@@ -7,7 +7,8 @@ import {
   ChevronRight, HardDrive, Cpu, MessageSquare, 
   AlertCircle, Menu, X, Globe, Zap, CheckCircle2,
   Lock, Trash2, Filter, MoreVertical, Ban, Briefcase,
-  Mail, Star, ChevronDown, ChevronUp, Megaphone, Code2, UserCheck
+  Mail, Star, ChevronDown, ChevronUp, Megaphone, Code2, UserCheck,
+  CheckCircle, XCircle, Loader2, AlertTriangle, Eye, BarChart2
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -16,7 +17,7 @@ interface AdminUser {
   id: string;
   email: string;
   created_at?: string;
-  is_banned?: boolean; // Добавлено поле бана
+  is_banned?: boolean;
 }
 
 interface AdminBot {
@@ -25,13 +26,15 @@ interface AdminBot {
   owner_id: string;
   status: string;
   token: string;
-  license_expires_at?: number; // В БД это bigint (число)
+  license_expires_at?: number;
   config?: any;
 }
 
 interface AdminPanelProps {
   onLogout: () => void;
 }
+
+const fmtDate = (ms: number) => ms ? new Date(ms).toLocaleDateString('ru-RU', { day:'2-digit', month:'short', year:'numeric' }) : '—';
 
 const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const navigate = useNavigate();
@@ -42,7 +45,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [password, setPassword] = useState('');
   
   // --- UI State ---
-  const [activeTab, setActiveTab] = useState<'dash' | 'users' | 'bots' | 'keys' | 'monitoring' | 'applications' | 'chatsites' | 'allmsgs'>('dash');
+  const [activeTab, setActiveTab] = useState<'dash' | 'users' | 'bots' | 'keys' | 'monitoring' | 'applications' | 'chatsites' | 'allmsgs' | 'ads'>('dash');
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -90,7 +93,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       const [uData, bData, logsData, dashboardData, appsData] = await Promise.all([
         api.getAllUsers(t),
         api.getAllBots(t),
-        api.getSystemLogs(t), // Реальные логи из bot_messages
+        api.getSystemLogs(t),
         api.getAdminDashboard(t),
         api.getApplications(t),
       ]);
@@ -169,32 +172,27 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     try {
       const res = await api.generateKey(token, keyDuration, 0);
       setGeneratedKey(res.key);
-      loadAllData(token); // Обновить счетчики
+      loadAllData(token); 
     } catch (e) { alert("Ошибка генерации ключа"); }
   };
 
-const handleConfigAccess = async (botId: string) => {
-  // 1. Спрашиваем ключ
-  const userKey = window.prompt("Введите активный лицензионный ключ для доступа к редактированию:");
-  if (!userKey) return;
+  const handleConfigAccess = async (botId: string) => {
+    const userKey = window.prompt("Введите активный лицензионный ключ для доступа к редактированию:");
+    if (!userKey) return;
 
-  try {
-    // 2. Вызываем метод из apiService.ts
-    // Он отправит POST { key: userKey, bot_id: botId }
-    const data = await api.verifyAccessKey(userKey, botId);
+    try {
+      const data = await api.verifyAccessKey(userKey, botId);
 
-    if (data && data.ok) {
-      // 3. Успех! Переходим в редактор
-      navigate(`/admin/editor/${botId}`);
-    } else {
-      alert("Доступ запрещен: Неверный или просроченный ключ.");
+      if (data && data.ok) {
+        navigate(`/admin/editor/${botId}`);
+      } else {
+        alert("Доступ запрещен: Неверный или просроченный ключ.");
+      }
+    } catch (err: any) {
+      console.error("403 Error Details:", err);
+      alert(err.message || "Ошибка доступа (403). Ключ не подходит к этому боту.");
     }
-  } catch (err: any) {
-    // Если сервер вернул 403, мы увидим причину здесь
-    console.error("403 Error Details:", err);
-    alert(err.message || "Ошибка доступа (403). Ключ не подходит к этому боту.");
-  }
-};
+  };
 
   const toggleBot = async (bot: AdminBot) => {
     if (!token) return;
@@ -230,7 +228,6 @@ const handleConfigAccess = async (botId: string) => {
     } catch { setChatMessages([]); }
   };
 
-  // НОВАЯ ЛОГИКА: Бан пользователя
   const handleBanUser = async (user: AdminUser) => {
     if (!token) return;
     const confirmMsg = user.is_banned 
@@ -245,16 +242,12 @@ const handleConfigAccess = async (botId: string) => {
     } catch (e) { alert("Ошибка изменения статуса"); }
   };
 
-  // Фильтрация данных
   const filteredUsers = users.filter(u => u.email.toLowerCase().includes(searchQuery.toLowerCase()));
   const filteredBots = bots.filter(b => b.name.toLowerCase().includes(searchQuery.toLowerCase()));
 
-  // Форматирование даты
-  const formatDate = (ts?: string | number) => {
+  const formatDateString = (ts?: string | number) => {
     if (!ts) return 'N/A';
-    // Если число (bigint из БД)
     if (typeof ts === 'number') return new Date(ts).toLocaleDateString('ru-RU');
-    // Если строка (timestamp)
     return new Date(ts).toLocaleDateString('ru-RU');
   };
 
@@ -309,13 +302,14 @@ const handleConfigAccess = async (botId: string) => {
           </div>
         </div>
         
-        <nav className="space-y-1.5">
+        <nav className="space-y-1.5 overflow-y-auto no-scrollbar">
           <p className="text-[9px] font-black text-zinc-600 uppercase mb-4 px-4 tracking-widest">Main Modules</p>
           <NavBtn icon={LayoutDashboard} label="Обзор / Дашборд" active={activeTab === 'dash'} onClick={() => setActiveTab('dash')} />
           <NavBtn icon={Users} label="Клиенты системы" active={activeTab === 'users'} onClick={() => setActiveTab('users')} />
           <NavBtn icon={Bot} label="Управление ботами" active={activeTab === 'bots'} onClick={() => setActiveTab('bots')} />
           <NavBtn icon={Key} label="Центр лицензий" active={activeTab === 'keys'} onClick={() => setActiveTab('keys')} />
           <NavBtn icon={Activity} label="Мониторинг" active={activeTab === 'monitoring'} onClick={() => setActiveTab('monitoring')} />
+          <NavBtn icon={Megaphone} label="Рекламные посты" active={activeTab === 'ads'} onClick={() => setActiveTab('ads')} />
           <NavBtn icon={Briefcase} label="Отклики" active={activeTab === 'applications'} onClick={() => setActiveTab('applications')} badge={applications.filter((a:any)=>a.status==='new').length} />
           <NavBtn icon={MessageSquare} label="Чат-сайты" active={activeTab === 'chatsites'} onClick={() => setActiveTab('chatsites')} />
           <NavBtn icon={Mail} label="Все сообщения" active={activeTab === 'allmsgs'} onClick={() => setActiveTab('allmsgs')} />
@@ -336,12 +330,13 @@ const handleConfigAccess = async (botId: string) => {
       </aside>
 
       {/* --- MOBILE NAVIGATION --- */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-[#080808]/80 border-t border-zinc-800 z-[100] flex justify-around items-center p-3 backdrop-blur-2xl">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-[#080808]/80 border-t border-zinc-800 z-[100] flex justify-around items-center p-3 backdrop-blur-2xl overflow-x-auto no-scrollbar gap-2">
         <MobileNavBtn icon={LayoutDashboard} active={activeTab === 'dash'} onClick={() => setActiveTab('dash')} />
         <MobileNavBtn icon={Users} active={activeTab === 'users'} onClick={() => setActiveTab('users')} />
         <MobileNavBtn icon={Bot} active={activeTab === 'bots'} onClick={() => setActiveTab('bots')} />
         <MobileNavBtn icon={Key} active={activeTab === 'keys'} onClick={() => setActiveTab('keys')} />
         <MobileNavBtn icon={Activity} active={activeTab === 'monitoring'} onClick={() => setActiveTab('monitoring')} />
+        <MobileNavBtn icon={Megaphone} active={activeTab === 'ads'} onClick={() => setActiveTab('ads')} />
         <MobileNavBtn icon={Briefcase} active={activeTab === 'applications'} onClick={() => setActiveTab('applications')} badge={applications.filter((a:any)=>a.status==='new').length} />
         <MobileNavBtn icon={MessageSquare} active={activeTab === 'chatsites'} onClick={() => setActiveTab('chatsites')} />
         <MobileNavBtn icon={Mail} active={activeTab === 'allmsgs'} onClick={() => setActiveTab('allmsgs')} />
@@ -360,9 +355,10 @@ const handleConfigAccess = async (botId: string) => {
                 {activeTab === 'bots' && 'Fleet Operations'}
                 {activeTab === 'keys' && 'Licensing Hub'}
                 {activeTab === 'monitoring' && 'System Logs'}
+                {activeTab === 'ads' && 'Модерация рекламы'}
                 {activeTab === 'applications' && 'Отклики на вакансии'}
-              {activeTab === 'chatsites' && 'Диалоги чат-сайтов'}
-              {activeTab === 'allmsgs' && 'Все сообщения'}
+                {activeTab === 'chatsites' && 'Диалоги чат-сайтов'}
+                {activeTab === 'allmsgs' && 'Все сообщения'}
               </h1>
               <div className="flex items-center gap-3 mt-4">
                 <div className="h-1 w-16 bg-red-600 rounded-full" />
@@ -377,7 +373,7 @@ const handleConfigAccess = async (botId: string) => {
             </div>
           </div>
 
-          {/* --- TAB: DASHBOARD --- */}
+          {/* TAB CONTENT COMPONENTS */}
           {activeTab === 'dash' && stats && (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 animate-in fade-in duration-700">
               <StatCard icon={Users} label="Total Users" value={stats.total_users || 0} color="text-blue-500" trend="Real DB Data" />
@@ -385,7 +381,6 @@ const handleConfigAccess = async (botId: string) => {
               <StatCard icon={Zap} label="Keys Issued" value={stats.total_keys || 0} color="text-yellow-500" trend="Licenses" />
               <StatCard icon={ShieldCheck} label="Est. Revenue" value={`$${stats.revenue || 0}`} color="text-emerald-500" trend="Calculated" />
               
-              {/* Fake Graph Visual Only (No time series data in prompt) */}
               <div className="lg:col-span-3 bg-zinc-900/20 border border-zinc-800/50 p-8 rounded-[3rem] h-80 flex items-center justify-center relative overflow-hidden">
                  <div className="absolute inset-0 opacity-10 flex items-center justify-center"><Activity size={300} strokeWidth={0.5} /></div>
                  <p className="text-zinc-600 font-black uppercase text-xs tracking-widest relative z-10">Real-time Traffic Visualization (Coming Soon)</p>
@@ -401,7 +396,6 @@ const handleConfigAccess = async (botId: string) => {
             </div>
           )}
 
-          {/* --- TAB: USERS --- */}
           {activeTab === 'users' && (
             <div className="space-y-4 animate-in slide-in-from-bottom-4 duration-500">
               <div className="flex justify-between items-center px-4">
@@ -440,7 +434,6 @@ const handleConfigAccess = async (botId: string) => {
             </div>
           )}
 
-          {/* --- TAB: BOTS --- */}
           {activeTab === 'bots' && (
             <div className="grid gap-6 animate-in fade-in duration-500">
               {filteredBots.map(b => (
@@ -454,7 +447,6 @@ const handleConfigAccess = async (botId: string) => {
                     <div>
                       <div className="flex items-center gap-3">
                         <h3 className="text-xl md:text-2xl font-black text-white uppercase tracking-tighter">{b.name}</h3>
-                        {/* Проверка даты */}
                         {b.license_expires_at && b.license_expires_at > Date.now() && (
                             <div className="p-1 px-2 bg-emerald-500/10 text-emerald-500 text-[8px] font-black rounded-md border border-emerald-500/20 uppercase">Licensed</div>
                         )}
@@ -476,7 +468,6 @@ const handleConfigAccess = async (botId: string) => {
                       {b.status === 'RUNNING' ? <Square size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
                       {b.status === 'RUNNING' ? 'Stop' : 'Run'}
                     </button>
-                    {/* КНОПКА КОНФИГУРАЦИИ: Ведет на спец-роут */}
                     <button onClick={() => handleConfigAccess(b.id)} className="flex-1 flex items-center justify-center gap-3 bg-zinc-800 hover:bg-white text-zinc-400 hover:text-black px-8 py-5 rounded-2xl transition-all text-[10px] font-black uppercase tracking-widest active:scale-95 shadow-lg">
                       <ExternalLink size={16} /> Edit Config
                     </button>
@@ -486,7 +477,6 @@ const handleConfigAccess = async (botId: string) => {
             </div>
           )}
 
-          {/* --- TAB: KEYS --- */}
           {activeTab === 'keys' && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-10 animate-in zoom-in-95 duration-500">
               <div className="lg:col-span-1">
@@ -532,7 +522,7 @@ const handleConfigAccess = async (botId: string) => {
                       </div>
                       <div className="text-right">
                         <p className="text-emerald-500 font-mono text-base font-black tracking-tighter">
-                          {formatDate(b.license_expires_at)}
+                          {formatDateString(b.license_expires_at)}
                         </p>
                         <p className="text-[9px] text-zinc-700 uppercase font-black tracking-widest mt-1">Expiry Date</p>
                       </div>
@@ -548,7 +538,6 @@ const handleConfigAccess = async (botId: string) => {
             </div>
           )}
 
-          {/* --- TAB: MONITORING (REAL LOGS) --- */}
           {activeTab === 'monitoring' && (
             <div className="space-y-8 animate-in fade-in duration-500">
               
@@ -577,7 +566,13 @@ const handleConfigAccess = async (botId: string) => {
             </div>
           )}
 
-          {/* --- TAB: APPLICATIONS --- */}
+          {/* --- РЕКЛАМНЫЕ ПОСТЫ (ПАТЧ) --- */}
+          {activeTab === 'ads' && token && (
+            <div className="animate-in fade-in duration-500">
+              <AdsModTab token={token} />
+            </div>
+          )}
+
           {activeTab === 'applications' && (
             <div className="space-y-6 animate-in fade-in duration-500">
               <div className="flex items-center justify-between px-2">
@@ -609,7 +604,6 @@ const handleConfigAccess = async (botId: string) => {
                     return (
                       <div key={app.id} className={`border rounded-[2rem] overflow-hidden transition-all ${isNew ? 'bg-blue-950/20 border-blue-900/40' : 'bg-zinc-900/20 border-zinc-800/40'}`}>
                         
-                        {/* Card header */}
                         <button
                           onClick={() => setAppExpandedId(isExpanded ? null : app.id)}
                           className="w-full flex items-center gap-5 p-6 text-left group"
@@ -636,7 +630,6 @@ const handleConfigAccess = async (botId: string) => {
                           </div>
                         </button>
 
-                        {/* Expanded body */}
                         {isExpanded && (
                           <div className="px-6 pb-6 space-y-4 animate-in fade-in duration-150">
                             <div className="h-px bg-zinc-800/60" />
@@ -668,7 +661,6 @@ const handleConfigAccess = async (botId: string) => {
                               </div>
                             )}
 
-                            {/* Actions */}
                             <div className="flex gap-3 pt-1">
                               {isNew && (
                                 <button
@@ -711,12 +703,9 @@ const handleConfigAccess = async (botId: string) => {
             </div>
           )}
 
-
-          {/* --- TAB: CHAT SITES MODERATION --- */}
           {activeTab === 'chatsites' && (
             <div className="space-y-6 animate-in fade-in duration-500">
               <div className="flex gap-4">
-                {/* Sites list */}
                 <div className="w-64 shrink-0 space-y-2">
                   <p className="text-[9px] font-black text-zinc-600 uppercase tracking-widest px-2 mb-3">Чат-сайты ({chatSites.length})</p>
                   {chatSitesLoading ? (
@@ -741,7 +730,6 @@ const handleConfigAccess = async (botId: string) => {
                   ))}
                 </div>
 
-                {/* Conversations list */}
                 {selectedChatSite && (
                   <div className="w-72 shrink-0 space-y-2">
                     <p className="text-[9px] font-black text-zinc-600 uppercase tracking-widest px-2 mb-3">
@@ -779,10 +767,8 @@ const handleConfigAccess = async (botId: string) => {
                   </div>
                 )}
 
-                {/* Messages view */}
                 {selectedChatConv && selectedChatSite && (
                   <div className="flex-1 bg-zinc-900/20 border border-zinc-800 rounded-[2rem] overflow-hidden flex flex-col" style={{ minHeight: '500px' }}>
-                    {/* Header */}
                     <div className="flex items-center gap-3 p-5 border-b border-zinc-800">
                       <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center text-white font-black">
                         {(selectedChatConv.user_name || '?')[0]?.toUpperCase()}
@@ -799,7 +785,6 @@ const handleConfigAccess = async (botId: string) => {
                       </button>
                     </div>
 
-                    {/* Messages */}
                     <div className="flex-1 overflow-y-auto p-5 space-y-3">
                       {chatMessages.length === 0 ? (
                         <div className="flex items-center justify-center h-full">
@@ -862,7 +847,6 @@ const handleConfigAccess = async (botId: string) => {
                       })}
                     </div>
 
-                    {/* Refresh button */}
                     <div className="p-4 border-t border-zinc-800">
                       <button
                         onClick={() => loadChatMessages(selectedChatSite, selectedChatConv)}
@@ -877,10 +861,8 @@ const handleConfigAccess = async (botId: string) => {
             </div>
           )}
 
-          {/* --- TAB: ALL MESSAGES --- */}
           {activeTab === 'allmsgs' && (
             <div className="space-y-4 animate-in fade-in duration-500">
-              {/* Filter bar */}
               <div className="flex items-center gap-3 flex-wrap">
                 <button onClick={() => setAllMsgsSiteFilter('all')}
                   className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border ${allMsgsSiteFilter === 'all' ? 'bg-red-600/20 border-red-600/30 text-red-400' : 'border-zinc-800 text-zinc-500 hover:text-white'}`}>
@@ -916,7 +898,6 @@ const handleConfigAccess = async (botId: string) => {
                       const absUrl = msg.media_url ? (msg.media_url.startsWith('http') ? msg.media_url : window.location.origin + msg.media_url) : null;
                       return (
                         <div key={msg.id} className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-4 hover:border-zinc-700 transition-all">
-                          {/* Meta row */}
                           <div className="flex items-center gap-3 mb-2.5 flex-wrap">
                             <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-black shrink-0"
                               style={{ background: isSystem ? '#27272a' : isAdmin ? p + '40' : '#27272a' }}>
@@ -945,7 +926,6 @@ const handleConfigAccess = async (botId: string) => {
                               </p>
                             </div>
                           </div>
-                          {/* Content */}
                           {msg.sticker_emoji && <div className="text-3xl mb-1">{msg.sticker_emoji}</div>}
                           {msg.text && (
                             <div className="text-sm text-zinc-300 leading-relaxed break-words">
@@ -1031,5 +1011,207 @@ const StatCard = ({ icon: Icon, label, value, color, trend }: any) => (
     <p className="text-3xl font-black text-white tracking-tighter">{value}</p>
   </div>
 );
+
+// --- ADS MODERATION COMPONENT (PATCH) ---
+
+const StatusBadge: React.FC<{ s: string }> = ({ s }) => {
+  const map: Record<string, string> = {
+    pending: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+    approved: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+    active: 'bg-green-500/10 text-green-400 border-green-500/20',
+    rejected: 'bg-red-500/10 text-red-400 border-red-500/20',
+    finished: 'bg-zinc-800 text-zinc-500 border-zinc-700',
+  };
+  const labels: Record<string, string> = {
+    pending: 'Ожидает', approved: 'Одобрено', active: 'Активно',
+    rejected: 'Отклонено', finished: 'Завершено',
+  };
+  return (
+    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest border ${map[s] || 'bg-zinc-800 text-zinc-500 border-zinc-700'}`}>
+      {labels[s] || s}
+    </span>
+  );
+};
+
+export const AdsModTab: React.FC<{ token: string }> = ({ token }) => {
+  const [posts, setPosts]       = useState<any[]>([]);
+  const [stats, setStats]       = useState<any>(null);
+  const [filter, setFilter]     = useState('pending');
+  const [loading, setLoading]   = useState(false);
+  const [rejectId, setRejectId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [actionMsg, setActionMsg] = useState('');
+
+  const fetchPosts = async (f: string = filter) => {
+    setLoading(true);
+    try {
+      const r = await fetch(`/api/admin/ads/posts?status=${f}`, {
+        headers: { 'X-Admin-Token': token }
+      });
+      if (r.ok) setPosts(await r.json());
+
+      const sr = await fetch('/api/admin/ads/stats', {
+        headers: { 'X-Admin-Token': token }
+      });
+      if (sr.ok) setStats(await sr.json());
+    } catch {}
+    setLoading(false);
+  };
+
+  useEffect(() => { fetchPosts(); }, [filter]);
+
+  const handleApprove = async (postId: string) => {
+    const r = await fetch(`/api/admin/ads/posts/${postId}/approve`, {
+      method: 'POST',
+      headers: { 'X-Admin-Token': token }
+    });
+    if (r.ok) {
+      setActionMsg('✅ Пост одобрен');
+      fetchPosts();
+      setTimeout(() => setActionMsg(''), 3000);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!rejectId) return;
+    const r = await fetch(`/api/admin/ads/posts/${rejectId}/reject`, {
+      method: 'POST',
+      headers: { 'X-Admin-Token': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: rejectReason || 'Не соответствует правилам' })
+    });
+    if (r.ok) {
+      setActionMsg('✅ Пост отклонён');
+      setRejectId(null); setRejectReason('');
+      fetchPosts();
+      setTimeout(() => setActionMsg(''), 3000);
+    }
+  };
+
+  return (
+    <div>
+      {/* Stats */}
+      {stats && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+          <div className="p-4 bg-zinc-900/60 border border-zinc-800 rounded-2xl">
+            <div className="text-xl font-black text-white font-mono">{stats.agents_count}</div>
+            <div className="text-[10px] text-zinc-500 uppercase tracking-widest mt-0.5">Рекламодателей</div>
+          </div>
+          <div className="p-4 bg-zinc-900/60 border border-zinc-800 rounded-2xl">
+            <div className="text-xl font-black text-amber-400 font-mono">{stats.posts_by_status?.pending || 0}</div>
+            <div className="text-[10px] text-zinc-500 uppercase tracking-widest mt-0.5">На модерации</div>
+          </div>
+          <div className="p-4 bg-zinc-900/60 border border-zinc-800 rounded-2xl">
+            <div className="text-xl font-black text-green-400 font-mono">{(stats.total_impressions_used || 0).toLocaleString()}</div>
+            <div className="text-[10px] text-zinc-500 uppercase tracking-widest mt-0.5">Показов выдано</div>
+          </div>
+          <div className="p-4 bg-zinc-900/60 border border-zinc-800 rounded-2xl">
+            <div className="text-xl font-black text-blue-400 font-mono">{(stats.total_revenue_rub || 0).toFixed(2)} ₽</div>
+            <div className="text-[10px] text-zinc-500 uppercase tracking-widest mt-0.5">Доход</div>
+          </div>
+        </div>
+      )}
+
+      {actionMsg && (
+        <div className="mb-4 p-3 bg-green-500/10 border border-green-500/20 rounded-xl text-green-400 text-xs">
+          {actionMsg}
+        </div>
+      )}
+
+      {/* Filter */}
+      <div className="flex gap-2 mb-4 flex-wrap">
+        {['pending', 'approved', 'active', 'rejected', 'finished', 'all'].map(f => (
+          <button key={f} onClick={() => setFilter(f)}
+            className={`px-3 py-1.5 rounded-xl text-[11px] font-bold uppercase tracking-widest transition-colors
+              ${filter === f ? 'bg-amber-500 text-black' : 'bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white'}`}>
+            {f === 'all' ? 'Все' : f === 'pending' ? 'Ожидают' : f === 'approved' ? 'Одобрено' : f === 'active' ? 'Активные' : f === 'rejected' ? 'Отклонено' : 'Завершено'}
+          </button>
+        ))}
+        <button onClick={() => fetchPosts(filter)}
+          className="p-2 bg-zinc-900 border border-zinc-800 rounded-xl text-zinc-500 hover:text-white transition-colors ml-auto">
+          <RefreshCw size={14} />
+        </button>
+      </div>
+
+      {/* Posts */}
+      {loading ? (
+        <div className="flex justify-center py-10"><Loader2 size={20} className="animate-spin text-zinc-600" /></div>
+      ) : posts.length === 0 ? (
+        <div className="text-center py-12 bg-zinc-900/40 border border-zinc-800 rounded-2xl">
+          <Megaphone size={28} className="text-zinc-700 mx-auto mb-2" />
+          <p className="text-zinc-600 text-sm">Постов нет</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {posts.map((post: any) => (
+            <div key={post.id} className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-4">
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-white leading-snug mb-1">{post.text}</div>
+                  {post.media_url && (
+                    <a href={post.media_url} target="_blank" rel="noreferrer"
+                      className="text-[10px] text-blue-400 hover:underline flex items-center gap-1">
+                      <Eye size={11} /> Медиа
+                    </a>
+                  )}
+                  <div className="text-[10px] text-zinc-600 mt-1">
+                    ID агента: {post.agent_id} · {fmtDate(post.created_at)}
+                  </div>
+                </div>
+                <StatusBadge s={post.status} />
+              </div>
+
+              {post.status === 'pending' && (
+                <div className="flex gap-2">
+                  <button onClick={() => handleApprove(post.id)}
+                    className="flex-1 py-2 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 rounded-xl text-xs font-bold text-green-400 transition-colors flex items-center justify-center gap-1.5">
+                    <CheckCircle size={13} /> Одобрить
+                  </button>
+                  <button onClick={() => { setRejectId(post.id); setRejectReason(''); }}
+                    className="flex-1 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-xl text-xs font-bold text-red-400 transition-colors flex items-center justify-center gap-1.5">
+                    <XCircle size={13} /> Отклонить
+                  </button>
+                </div>
+              )}
+
+              {post.status === 'active' && (
+                <div className="text-xs text-zinc-500">
+                  Показов: {post.impressions_used}/{post.impressions_paid}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Reject Modal */}
+      {rejectId && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="w-full max-w-sm bg-zinc-900 border border-zinc-800 rounded-2xl p-5">
+            <h3 className="font-black text-white mb-3 text-sm flex items-center gap-2">
+              <AlertTriangle size={15} className="text-red-400" /> Причина отклонения
+            </h3>
+            <textarea
+              value={rejectReason}
+              onChange={e => setRejectReason(e.target.value)}
+              rows={3}
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500 resize-none mb-3"
+              placeholder="Не соответствует правилам площадки..."
+            />
+            <div className="flex gap-2">
+              <button onClick={() => setRejectId(null)}
+                className="flex-1 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-xl text-xs font-bold transition-colors">
+                Отмена
+              </button>
+              <button onClick={handleReject}
+                className="flex-1 py-2 bg-red-600 hover:bg-red-700 rounded-xl text-xs font-black text-white transition-colors">
+                Отклонить
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 export default AdminPanel;
