@@ -780,7 +780,7 @@ async def start_free_bot(bot_id: str):
     
     # ИСПРАВЛЕНИЕ: Убираем await, так как метод синхронный
     # Но чтобы не блокировать основной поток FastAPI, лучше использовать run_in_threadpool
-    success = await run_in_threadpool(pm.start_bot, bot_id, bot_data.get("token"), bot_data.get("config", {}))
+    success = await run_in_threadpool(pm.start_bot, bot_id, bot_data.get("token"))
     
     if success:
         return {"status": "ok", "message": "Бот запущен"}
