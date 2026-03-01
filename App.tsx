@@ -19,24 +19,24 @@ import RefundPolicy from './components/RefundPolicy';
 import Contacts from './components/Contacts';
 import SuccessPage from './components/Success';
 import { api } from './services/apiService';
-import { Menu, X, ArrowLeft } from 'lucide-react';
+import { Menu, X, ArrowLeft, ShieldAlert } from 'lucide-react';
+
+// ── NEW: Free Plan & Ads ──────────────────────────────────────────────────
+import FreePlan from './components/FreePlan';
+import AdsAuth from './components/AdsAuth';
+import AdsPortal from './components/AdsPortal';
 
 // --- [ КОМПОНЕНТ: РЕДАКТОР ДЛЯ АДМИНИСТРАТОРА ] ---
-/**
- * Этот компонент используется, когда админ заходит в редактор чужого бота 
- * через кнопку "Edit Bot" в админ-панели.
- */
 const AdminBotEditorWrapper: React.FC = () => {
   const { botId } = useParams<{ botId: string }>();
   const [bot, setBot] = useState<BotConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [accessKey, setAccessKey] = useState<string>(""); // Для ввода ключа, если его нет
   const navigate = useNavigate();
   
   const adminToken = localStorage.getItem('admin_token');
 
-  const loadBotData = async (keyToUse?: string) => {
+  const loadBotData = async () => {
     if (!adminToken || !botId) {
       navigate('/admin-zone');
       return;
@@ -45,18 +45,13 @@ const AdminBotEditorWrapper: React.FC = () => {
     try {
       setLoading(true);
       setError(null);
-      
-      // Запрашиваем данные бота. 
-      // Сервер проверит adminToken и наличие ключа в TEMP_ADMIN_ACCESS
       const data = await api.getBotAsAdmin(adminToken, botId);
-      
       if (data) {
         setBot(data);
       } else {
         setError("Доступ закрыт. Пользователь должен сгенерировать ключ доступа в своей панели.");
       }
     } catch (err: any) {
-      console.error("Admin Editor Error:", err);
       setError(err.message || "Ошибка авторизации в режиме поддержки");
     } finally {
       setLoading(false);
@@ -80,7 +75,6 @@ const AdminBotEditorWrapper: React.FC = () => {
     );
   }
 
-  // Если доступ не подтвержден (нужен ключ или время истекло)
   if (error || !bot) {
     return (
       <div className="min-h-screen bg-[#050505] flex flex-col items-center justify-center p-6 text-center">
@@ -90,18 +84,14 @@ const AdminBotEditorWrapper: React.FC = () => {
           {error || "Для редактирования этого бота требуется активный временный ключ доступа."}
         </div>
         <div className="flex gap-4">
-            <button 
-                onClick={() => navigate('/admin-zone')} 
-                className="px-8 py-4 bg-zinc-900 border border-zinc-800 rounded-2xl text-white text-[10px] font-black uppercase tracking-widest hover:bg-zinc-800 transition-all"
-            >
-                В терминал
-            </button>
-            <button 
-                onClick={() => loadBotData()} 
-                className="px-8 py-4 bg-red-600 rounded-2xl text-white text-[10px] font-black uppercase tracking-widest hover:bg-red-700 transition-all shadow-lg shadow-red-600/20"
-            >
-                Повторить попытку
-            </button>
+          <button onClick={() => navigate('/admin-zone')} 
+            className="px-8 py-4 bg-zinc-900 border border-zinc-800 rounded-2xl text-white text-[10px] font-black uppercase tracking-widest hover:bg-zinc-800 transition-all">
+            В терминал
+          </button>
+          <button onClick={loadBotData}
+            className="px-8 py-4 bg-red-600 rounded-2xl text-white text-[10px] font-black uppercase tracking-widest hover:bg-red-700 transition-all shadow-lg shadow-red-600/20">
+            Повторить
+          </button>
         </div>
       </div>
     );
@@ -110,31 +100,24 @@ const AdminBotEditorWrapper: React.FC = () => {
   return (
     <div className="bg-[#050505] min-h-screen p-4 md:p-12 overflow-y-auto">
       <div className="max-w-6xl mx-auto">
-        {/* Хедер режима поддержки (Admin Mode) */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-12">
-          <button 
-            onClick={() => navigate('/admin-zone')} 
-            className="flex items-center gap-2 text-zinc-500 hover:text-white transition-colors uppercase text-[10px] font-black tracking-widest group"
-          >
+          <button onClick={() => navigate('/admin-zone')} 
+            className="flex items-center gap-2 text-zinc-500 hover:text-white transition-colors uppercase text-[10px] font-black tracking-widest group">
             <ArrowLeft size={14} className="group-hover:-translate-x-1 transition-transform" /> 
             Back to Terminal
           </button>
-          
           <div className="flex items-center gap-4">
-              <div className="flex flex-col items-end">
-                  <span className="text-white text-[10px] font-black uppercase tracking-widest">{bot.name}</span>
-                  <span className="text-zinc-600 text-[8px] font-bold uppercase tracking-tighter">Support Session Active</span>
-              </div>
-              <div className="flex items-center gap-3 px-4 py-2 bg-red-600/10 border border-red-600/20 rounded-full">
-                <div className="w-2 h-2 bg-red-600 rounded-full animate-pulse" />
-                <span className="text-red-500 text-[10px] font-black uppercase tracking-widest">
-                  Support Mode
-                </span>
-              </div>
+            <div className="flex flex-col items-end">
+              <span className="text-white text-[10px] font-black uppercase tracking-widest">{bot.name}</span>
+              <span className="text-zinc-600 text-[8px] font-bold uppercase tracking-tighter">Support Session Active</span>
+            </div>
+            <div className="flex items-center gap-3 px-4 py-2 bg-red-600/10 border border-red-600/20 rounded-full">
+              <div className="w-2 h-2 bg-red-600 rounded-full animate-pulse" />
+              <span className="text-red-500 text-[10px] font-black uppercase tracking-widest">Support Mode</span>
+            </div>
           </div>
         </div>
 
-        {/* ПЕРЕДАЕМ isAdminMode={true} чтобы скрыть кнопку удаления */}
         <BotEditor 
           bot={bot} 
           isAdminMode={true} 
@@ -149,8 +132,6 @@ const AdminBotEditorWrapper: React.FC = () => {
             }
           }} 
           onDelete={() => {
-            // Эта функция не будет вызвана, так как кнопка скроется,
-            // но оставляем заглушку для безопасности
             console.warn("Delete attempt in support mode blocked.");
           }}
         />
@@ -177,12 +158,8 @@ const MainLayout: React.FC<{
 
   return (
     <div className="flex h-screen bg-[#0a0a0a] text-zinc-300 overflow-hidden font-sans relative">
-      {/* Overlay для мобилки */}
       {isSidebarOpen && (
-        <div 
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden" 
-          onClick={() => setIsSidebarOpen(false)} 
-        />
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden" onClick={() => setIsSidebarOpen(false)} />
       )}
       
       <Sidebar 
@@ -198,7 +175,6 @@ const MainLayout: React.FC<{
       />
 
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
-        {/* Мобильный хедер */}
         <header className="md:hidden flex items-center justify-between p-4 bg-[#121212] border-b border-zinc-800 shrink-0">
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 bg-blue-600 rounded flex items-center justify-center font-bold text-white text-[10px]">BE</div>
@@ -209,7 +185,6 @@ const MainLayout: React.FC<{
           </button>
         </header>
         
-        {/* Основной контент */}
         <main className="flex-1 overflow-y-auto p-4 md:p-12 no-scrollbar">
           <div className="max-w-6xl mx-auto">
             {children}
@@ -224,28 +199,19 @@ const MainLayout: React.FC<{
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [bots, setBots] = useState<BotConfig[]>([]);
+  const [loading, setLoading] = useState(true);
   const [selectedBotId, setSelectedBotId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
 
-  // Синхронизация данных пользователя и его ботов
   const syncData = async (userId: string) => {
     try {
-      const [serverBots, updatedUser] = await Promise.all([
-        api.getBots(userId),
-        api.getUser(userId)
-      ]);
-      setBots(serverBots || []);
-      if (updatedUser) {
-        setUser(updatedUser);
-        localStorage.setItem('active_session_user', JSON.stringify(updatedUser));
-      }
+      const botsData = await api.getBots(userId);
+      if (botsData) setBots(botsData);
     } catch (e) {
       console.error("Sync error:", e);
     }
   };
 
-  // Инициализация при загрузке страницы
   useEffect(() => {
     const init = async () => {
       try {
@@ -292,7 +258,7 @@ const App: React.FC = () => {
       token: token,
       status: BotStatus.IDLE,
       created_at: Date.now(),
-      license_expires_at: Date.now() + (3 * 24 * 3600 * 1000), // 3 дня триала
+      license_expires_at: Date.now() + (3 * 24 * 3600 * 1000),
       usersCount: 0,
       description: 'Новый бот BotEngine',
       adminChatId: '',
@@ -302,24 +268,12 @@ const App: React.FC = () => {
       subscribers: [],
       triggers: [],
       buttons: [],
-      stats: { 
-        totalMessages: 0, incomingToday: 0, outgoingToday: 0, 
-        activeUsers24h: 0, bannedCount: 0, history: [] 
-      },
+      stats: { totalMessages: 0, incomingToday: 0, outgoingToday: 0, activeUsers24h: 0, bannedCount: 0, history: [] },
       settings: { 
-        useTopics: false, 
-        topicPerRequest: false, 
-        anonymousTopics: false,
-        autoApproveJoin: false, 
-        forwardToAdmin: true, 
-        antiSpam: true, 
-        rateLimit: 1, 
-        showUserInfo: true, 
-        showUsername: true, 
-        autoBanThreshold: 0,
-        showHeaderId: true,
-        showHeaderName: true,
-        showHeaderUsername: true
+        useTopics: false, topicPerRequest: false, anonymousTopics: false,
+        autoApproveJoin: false, forwardToAdmin: true, antiSpam: true, 
+        rateLimit: 1, showUserInfo: true, showUsername: true, autoBanThreshold: 0,
+        showHeaderId: true, showHeaderName: true, showHeaderUsername: true
       }
     };
 
@@ -345,49 +299,49 @@ const App: React.FC = () => {
   return (
     <BrowserRouter>
       <Routes>
-        {/* --- [ ПУБЛИЧНЫЕ РОУТЫ ] --- */}
-        
-        {/* 0. Лендинг (главная страница) */}
+        {/* --- ПУБЛИЧНЫЕ РОУТЫ --- */}
         <Route path="/" element={<Landing />} />
-        
-        {/* Публичный рендер мини-приложения */}
         <Route path="/app/:appId" element={<MiniAppRenderer />} />
-
-        {/* Публичный чат-сайт */}
         <Route path="/chat/:slug" element={<ChatSiteApp />} />
-
-        {/* 1а. Страница вакансий */}
         <Route path="/careers" element={<Careers />} />
+        <Route path="/refund" element={<RefundPolicy />} />
+        <Route path="/contacts" element={<Contacts />} />
+        <Route path="/success" element={<SuccessPage />} />
 
-        {/* 1. Авторизация пользователей */}
+        {/* ── FREE PLAN ─────────────────────────────────────────────── */}
+        {/*
+          /free — бесплатный план (не требует Pro лицензии, но требует авторизации)
+          Аккаунт берётся из того же localStorage что и у Pro
+        */}
+        <Route path="/free" element={<FreePlan />} />
+
+        {/* ── ADS PLATFORM ─────────────────────────────────────────── */}
+        {/*
+          /adsauth — регистрация/вход для рекламных агентов
+          /ads     — личный кабинет рекламного агента
+          Отдельная система авторизации, хранится в ads_agent_token
+        */}
+        <Route path="/adsauth" element={<AdsAuth />} />
+        <Route
+          path="/ads"
+          element={
+            localStorage.getItem('ads_agent_token')
+              ? <AdsPortal />
+              : <Navigate to="/adsauth" replace />
+          }
+        />
+
+        {/* --- АВТОРИЗАЦИЯ --- */}
         <Route 
           path="/auth" 
           element={!user ? <Auth onLogin={handleLogin} /> : <Navigate to="/dashboard" replace />} 
         />
 
-        {/* 2. Админ-панель (Терминал) */}
-        <Route 
-           path="/admin-zone" 
-           element={<AdminPanel onLogout={() => window.location.href = '/auth'} />} 
-        />
+        {/* --- АДМИН-ЗОНА --- */}
+        <Route path="/admin-zone" element={<AdminPanel onLogout={() => window.location.href = '/auth'} />} />
+        <Route path="/admin/editor/:botId" element={<AdminBotEditorWrapper />} />
 
-        {/* 3. Редактор админа (Режим поддержки) */}
-        <Route 
-          path="/admin/editor/:botId" 
-          element={<AdminBotEditorWrapper />} 
-        />
-
-        {/* 1б. Политика возврата */}
-        <Route path="/refund" element={<RefundPolicy />} />
-
-        {/* 17. Контакты и реквизиты */}
-        <Route path="/contacts" element={<Contacts />} />
-
-        <Route path="/success" element={<SuccessPage />} />
-
-        
-
-        {/* --- [ ЗАЩИЩЕННЫЕ РОУТЫ (С ЛАЙАУТОМ) ] --- */}
+        {/* --- ЗАЩИЩЁННЫЕ РОУТЫ --- */}
         <Route 
           path="*" 
           element={
@@ -405,9 +359,9 @@ const App: React.FC = () => {
                     <Dashboard 
                       bots={bots} 
                       user={user}
-                      onSelectBot={(id) => { setSelectedBotId(id); }} 
+                      onSelectBot={(id) => setSelectedBotId(id)} 
                       onAddBot={() => setIsModalOpen(true)}
-                      onNavigate={(path) => { /* handled by Sidebar */ }}
+                      onNavigate={() => {}}
                     />
                   } />
                   
@@ -419,31 +373,26 @@ const App: React.FC = () => {
                     />
                   } />
                   
-<Route path="/editor" element={
-  (() => {
-    const currentBot = bots.find(b => b.id === selectedBotId);
-    return currentBot ? (
-      <BotEditor 
-        // ДОБАВЬ ЭТУ СТРОКУ НИЖЕ:
-        key={currentBot.id} 
-        bot={currentBot} 
-        onUpdate={(updated) => setBots(prev => prev.map(b => b.id === updated.id ? updated : b))} 
-        onDelete={async () => { 
-          if (window.confirm("Удалить бота навсегда?")) {
-            await api.deleteBot(user.id, selectedBotId!); 
-            syncData(user.id);
-            navigate('/dashboard');
-          }
-        }} 
-      />
-    ) : <Navigate to="/dashboard" replace />;
-  })()
-} />
+                  <Route path="/editor" element={(() => {
+                    const currentBot = bots.find(b => b.id === selectedBotId);
+                    return currentBot ? (
+                      <BotEditor 
+                        key={currentBot.id} 
+                        bot={currentBot} 
+                        onUpdate={(updated) => setBots(prev => prev.map(b => b.id === updated.id ? updated : b))} 
+                        onDelete={async () => { 
+                          if (window.confirm("Удалить бота навсегда?")) {
+                            await api.deleteBot(user.id, selectedBotId!); 
+                            syncData(user.id);
+                          }
+                        }} 
+                      />
+                    ) : <Navigate to="/dashboard" replace />;
+                  })()} />
                   
                   <Route path="/broadcast" element={<BroadcastManager bots={bots} />} />
                   <Route path="/miniapps" element={<MiniAppBuilder user={user} />} />
                   <Route path="/chatplatform" element={<ChatPlatform user={user} />} />
-                  
                   <Route path="/dashboard" element={<Navigate to="/dashboard" replace />} />
                 </Routes>
               </MainLayout>
