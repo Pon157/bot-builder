@@ -30,9 +30,9 @@ def _get_server():
 
 router = APIRouter()
 
-FREE_MAX_BUTTONS  = 2
-FREE_MAX_TRIGGERS = 2
-FREE_MEMORY_MB    = 25
+FREE_MAX_BUTTONS  = 9999   # без ограничений
+FREE_MAX_TRIGGERS = 9999   # без ограничений
+FREE_MEMORY_MB    = 0      # без лимита памяти
 PRICE_PER_IMP     = 0.2   # рублей за показ
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -105,10 +105,7 @@ async def free_create_bot(d: dict):
 
     db = _db()
 
-    # Проверяем лимит: не более 1 бота на free-плане (строго)
-    existing = await db.get("bots", params={"owner_id": f"eq.{user_id}", "is_free_plan": "eq.true"})
-    if existing.json():
-        raise HTTPException(409, "На free-плане разрешён только 1 бот. Перейдите на Pro для большего количества.")
+    # Лимит ботов убран — можно создавать сколько угодно
 
     s = _get_server()
     enc_fn  = getattr(s, 'encrypt_val', lambda x: x)
@@ -123,19 +120,29 @@ async def free_create_bot(d: dict):
         "status":            "IDLE",
         "platform":          "telegram",
         "is_free_plan":      True,
-        "memory_limit_mb":   FREE_MEMORY_MB,
+        "memory_limit_mb":   0,          # 0 = нет лимита
         "ad_enabled":        True,
-        "license_expires_at": now_ms + 999 * 24 * 3600 * 1000,  # free = бессрочно
+        "license_expires_at": now_ms + 9999 * 24 * 3600 * 1000,  # free = бессрочно
         "created_at":        now_ms,
         "config": {
             "welcomeMessage": f"Добро пожаловать в {name}!",
             "adminChatId":    "",
             "buttons":        [],
             "triggers":       [],
+            "connectedUsers": [],
+            "stats": {
+                "totalMessages": 0, "incomingToday": 0, "outgoingToday": 0,
+                "activeUsers24h": 0, "bannedCount": 0,
+                "broadcastsToday": 0, "broadcastsTotal": 0, "history": []
+            },
             "settings": {
-                "forwardToAdmin": True,
-                "antiSpam": True,
-                "rateLimit": 1,
+                "forwardAll": False, "forwardMessages": False,
+                "useTopics": False, "topicPerRequest": False, "anonymousTopics": False,
+                "rateLimit": 1, "autoBanThreshold": 3,
+                "showHeaderId": True, "showHeaderName": True, "showHeaderUsername": True,
+                "firstMessageHeader": "🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ:</b>",
+                "ticketMessageHeader": "🆘 <b>ЗАЯВКА [{btn}]:</b>",
+                "commonMessageHeader": "📩 <b>СООБЩЕНИЕ:</b>",
             }
         }
     }
@@ -248,7 +255,7 @@ async def free_bot_stats(bot_id: str, user_id: str):
     def _safe_max(key: str) -> int:
         return max(int(db_stats.get(key) or 0), int(cfg_stats.get(key) or 0))
 
-    # Мержим историю по дате (берём максимум на каждый день)
+    # Мержим историю по дате
     history_map: dict = {}
     for src in [cfg_stats.get("history") or [], db_stats.get("history") or []]:
         for entry in src:
@@ -257,10 +264,7 @@ async def free_bot_stats(bot_id: str, user_id: str):
                 history_map[date] = dict(entry)
             else:
                 for k in ["incoming", "outgoing", "totalUsers", "activeUsers", "broadcasts"]:
-                    history_map[date][k] = max(
-                        history_map[date].get(k, 0),
-                        entry.get(k, 0)
-                    )
+                    history_map[date][k] = max(history_map[date].get(k, 0), entry.get(k, 0))
     merged_history = sorted(history_map.values(), key=lambda x: x.get("date", ""))[-14:]
 
     merged_stats = {
@@ -269,24 +273,26 @@ async def free_bot_stats(bot_id: str, user_id: str):
         "outgoingToday":    _safe_max("outgoingToday"),
         "bannedCount":      _safe_max("bannedCount"),
         "activeUsers24h":   _safe_max("activeUsers24h"),
-        "broadcastsTotal":  _safe_max("broadcastsTotal"),   # рассылки за всё время
-        "broadcastsToday":  _safe_max("broadcastsToday"),   # рассылки сегодня
+        "broadcastsTotal":  _safe_max("broadcastsTotal"),
+        "broadcastsToday":  _safe_max("broadcastsToday"),
         "history":          merged_history,
     }
 
-    # users_count из connectedUsers
-    users_list = cfg.get("connectedUsers") or []
-    users_count = len(users_list)
+    # users_count — из connectedUsers (реальный список)
+    connected = cfg.get("connectedUsers") or []
+    users_count = len(connected)
+    active_count = sum(1 for u in connected if u.get("is_active", True) and not u.get("is_banned"))
 
     return {
-        "bot_id":       bot_id,
-        "name":         bot.get("name"),
-        "status":       bot.get("status"),
-        "users_count":  users_count,
-        "stats":        merged_stats,
-        "ad_enabled":   bot.get("ad_enabled", True),
-        "memory_limit": bot.get("memory_limit_mb", FREE_MEMORY_MB),
-        "plan":         "free"
+        "bot_id":        bot_id,
+        "name":          bot.get("name"),
+        "status":        bot.get("status"),
+        "users_count":   users_count,
+        "active_count":  active_count,
+        "stats":         merged_stats,
+        "ad_enabled":    bot.get("ad_enabled", True),
+        "memory_limit":  bot.get("memory_limit_mb", 0),
+        "plan":          "free"
     }
 
 
