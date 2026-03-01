@@ -48,6 +48,9 @@ from fastapi import Query
 
 MAX_FILE_SIZE = 25 * 1024 * 1024
 
+from free_ads_server import router as free_ads_router
+app.include_router(free_ads_router)
+
 import secrets
 
 def _gen_id(prefix: str) -> str:
