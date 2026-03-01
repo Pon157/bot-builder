@@ -155,35 +155,54 @@ const FreeBotEditor: React.FC<{
   const handleSave = async () => {
     setSaving(true); setError('');
     try {
-      // Если токен изменился — обновляем его отдельно
-      if (token && token !== (bot.token || cfg.token || '')) {
-        const tr = await fetch(`/api/bots/${bot.id}/token`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token })
-        });
-        if (!tr.ok) console.warn('Token update failed');
-      }
+      const payload = {
+        user_id: userId,
+        name,
+        // Токен на корневом уровне для бекенда
+        token: token || undefined,
+        // Конфиг полностью
+        config: {
+          welcomeMessage:      welcome,
+          welcomePhoto:        welcomePhoto,
+          adminChatId:         adminId,
+          settings:            stg,
+          firstMessageHeader:  stg.firstMessageHeader,
+          ticketMessageHeader: stg.ticketMessageHeader,
+          commonMessageHeader: stg.commonMessageHeader,
+        },
+        buttons,
+        triggers,
+      };
 
       const res = await fetch(FREE_API(`/bots/${bot.id}/config`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          user_id: userId, name,
-          config: {
-            welcomeMessage: welcome,
-            welcomePhoto,
-            adminChatId:  adminId,
-            settings:     stg,
-          },
-          buttons, triggers
-        })
+        body: JSON.stringify(payload),
       });
-      if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Ошибка сохранения'); }
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.detail || 'Ошибка сохранения');
+      }
       const updated = await res.json();
-      onSave({
-        ...bot, name, token,
-        config: { ...cfg, welcomeMessage: welcome, welcomePhoto, adminChatId: adminId, settings: stg, buttons, triggers }
-      });
+      const updatedBot: FreeBot = {
+        ...bot,
+        name,
+        token: token || bot.token,
+        config: {
+          ...cfg,
+          welcomeMessage: welcome,
+          welcomePhoto,
+          adminChatId: adminId,
+          settings: stg,
+          buttons,
+          triggers,
+        },
+      };
+      onSave(updatedBot);
+      setError('');
+      // Показываем успех кратко
+      const btn = document.querySelector('[data-save-btn]') as HTMLButtonElement | null;
+      if (btn) { btn.textContent = '✅ Сохранено!'; setTimeout(() => { btn.textContent = '💾 Сохранить'; }, 2000); }
     } catch (e: any) { setError(e.message); }
     finally { setSaving(false); }
   };
@@ -298,12 +317,20 @@ const FreeBotEditor: React.FC<{
         <Section title="Режим пересылки" icon={<Send size={13} className="text-blue-400" />}>
           <Toggle value={!!stg.forwardAll} onChange={v => updateStg('forwardAll', v)}
             label="Пересылать все сообщения в чат"
-            sub="Без создания тикета — всё идёт в админ-чат"
+            sub="Без создания тикета — всё идёт в админ-чат (кнопки по-прежнему работают)"
             color="blue" />
           {stg.forwardAll && (
-            <p className="text-[10px] text-blue-300/60 bg-blue-500/5 border border-blue-500/10 rounded-xl p-3 leading-relaxed">
-              💡 В этом режиме все сообщения пользователей сразу пересылаются в админ-чат. Тикетные кнопки можно не добавлять.
-            </p>
+            <div className="space-y-2">
+              <Toggle value={!!stg.forwardMessages} onChange={v => updateStg('forwardMessages', v)}
+                label="Нативный форвард (без заголовка)"
+                sub="Если включено — forward_message без имени/id. Если выкл — copy_message с заголовком пользователя"
+                color="zinc" />
+              {stg.forwardMessages && (
+                <p className="text-[10px] text-zinc-400/60 bg-zinc-800/30 border border-zinc-700/30 rounded-xl p-3 leading-relaxed">
+                  ℹ️ В нативном режиме сообщение пересылается «как есть» — имя пользователя, аватар, дата сохраняются. Отвечать на них через реплай тоже будет работать.
+                </p>
+              )}
+            </div>
           )}
         </Section>
 
@@ -439,7 +466,7 @@ const FreeBotEditor: React.FC<{
 
         {/* Fixed save button */}
         <div className="fixed bottom-0 left-0 right-0 p-4 bg-[#0a0a0a]/95 backdrop-blur-sm border-t border-zinc-800 flex justify-center">
-          <button onClick={handleSave} disabled={saving}
+          <button data-save-btn onClick={handleSave} disabled={saving}
             className="px-8 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-zinc-800 rounded-2xl text-sm font-black uppercase tracking-widest transition-colors flex items-center gap-2 min-w-[200px] justify-center">
             {saving ? <><Loader2 size={16} className="animate-spin" /> Сохранение...</> : <><Save size={16} /> Сохранить</>}
           </button>
@@ -461,12 +488,14 @@ const FreeBotAnalytics: React.FC<{ bot: FreeBot; userId: string; onBack: () => v
   }, [bot.id, userId]);
   const s = stats?.stats || {};
   const statCards = [
-    { label: 'Всего сообщений', value: s.totalMessages || 0, color: 'text-blue-400' },
-    { label: 'Входящих сегодня', value: s.incomingToday || 0, color: 'text-green-400' },
-    { label: 'Исходящих сегодня', value: s.outgoingToday || 0, color: 'text-amber-400' },
-    { label: 'Активных 24ч', value: s.activeUsers24h || 0, color: 'text-purple-400' },
-    { label: 'Пользователей', value: stats?.users_count || 0, color: 'text-cyan-400' },
-    { label: 'Заблокировано', value: s.bannedCount || 0, color: 'text-red-400' },
+    { label: 'Всего сообщений',   value: s.totalMessages   || 0, color: 'text-blue-400'   },
+    { label: 'Входящих сегодня',  value: s.incomingToday   || 0, color: 'text-green-400'  },
+    { label: 'Исходящих сегодня', value: s.outgoingToday   || 0, color: 'text-amber-400'  },
+    { label: 'Активных 24ч',      value: s.activeUsers24h  || 0, color: 'text-purple-400' },
+    { label: 'Пользователей',     value: stats?.users_count || 0, color: 'text-cyan-400'  },
+    { label: 'Заблокировано',     value: s.bannedCount     || 0, color: 'text-red-400'    },
+    { label: 'Рассылок сегодня',  value: s.broadcastsToday || 0, color: 'text-orange-400' },
+    { label: 'Рассылок всего',    value: s.broadcastsTotal || 0, color: 'text-pink-400'   },
   ];
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white p-6 md:p-10">
@@ -517,8 +546,8 @@ type View = 'list' | 'editor' | 'analytics';
 
 const FreePlan: React.FC = () => {
   const navigate = useNavigate();
-  const savedUser = localStorage.getItem('active_session_user');
-  const userId = savedUser ? JSON.parse(savedUser).id : '';
+  const userId   = localStorage.getItem('user_id') || '';
+
   const [view,      setView]      = useState<View>('list');
   const [activeBot, setActiveBot] = useState<FreeBot | null>(null);
   const [bots,      setBots]      = useState<FreeBot[]>([]);
@@ -696,7 +725,7 @@ const FreePlan: React.FC = () => {
               <div className="text-center py-10 text-zinc-600">
                 <Bot size={32} className="mx-auto mb-3 opacity-30" />
                 <p className="text-sm font-bold">Нет ботов</p>
-                <p className="text-xs mt-1">Создайте бесплатного бота</p>
+                <p className="text-xs mt-1">Создайте бесплатного бота (1 бот на аккаунт)</p>
               </div>
             )}
 
@@ -708,9 +737,9 @@ const FreePlan: React.FC = () => {
             )}
 
             {bots.length > 0 && !showCreateForm && (
-              <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-4 text-center">
-                <p className="text-[11px] text-zinc-600 uppercase font-bold tracking-widest">Free: 1 бот</p>
-                <p className="text-[10px] text-zinc-700 mt-1">Для дополнительных ботов перейдите на Pro</p>
+              <div className="bg-amber-500/5 border border-amber-500/20 rounded-2xl p-4 text-center">
+                <p className="text-[11px] text-amber-500 uppercase font-bold tracking-widest">⚠️ Лимит достигнут: 1 бот на free-плане</p>
+                <p className="text-[10px] text-zinc-600 mt-1">Чтобы создать ещё ботов — перейдите на Pro</p>
               </div>
             )}
 
