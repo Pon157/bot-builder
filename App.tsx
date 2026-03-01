@@ -393,7 +393,12 @@ const App: React.FC = () => {
                   <Route path="/broadcast" element={<BroadcastManager bots={bots} />} />
                   <Route path="/miniapps" element={<MiniAppBuilder user={user} />} />
                   <Route path="/chatplatform" element={<ChatPlatform user={user} />} />
+                  {/* ── Free и Ads доступны и залогиненным пользователям ── */}
+                  <Route path="/free" element={<FreePlan />} />
+                  <Route path="/ads" element={<AdsPortal />} />
+                  <Route path="/adsauth" element={<AdsAuth />} />
                   <Route path="/dashboard" element={<Navigate to="/dashboard" replace />} />
+                  <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Routes>
               </MainLayout>
             ) : (
