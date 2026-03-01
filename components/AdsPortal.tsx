@@ -9,8 +9,12 @@ import {
 
 const API = (path: string) => path;
 
-const fmt = (n: number) => new Intl.NumberFormat('ru-RU').format(n);
-const fmtRub = (n: number) => `${n.toFixed(2)} ₽`;
+const fmt = (n: number | null | undefined) => new Intl.NumberFormat('ru-RU').format(n ?? 0);
+// Безопасный fmtRub — не падает на undefined/null/NaN
+const fmtRub = (n: number | null | undefined) => {
+  const val = parseFloat(String(n ?? 0));
+  return `${isNaN(val) ? '0.00' : val.toFixed(2)} ₽`;
+};
 const fmtDate = (ms: number) => ms ? new Date(ms).toLocaleDateString('ru-RU', { day:'2-digit', month:'short', year:'numeric' }) : '—';
 
 type Tab = 'dashboard' | 'posts' | 'balance' | 'create' | 'stats';
@@ -71,20 +75,39 @@ const AdsPortal: React.FC = () => {
     const a = localStorage.getItem('ads_agent');
     if (!t) { navigate('/adsauth'); return; }
     setToken(t);
-    if (a) try { setAgent(JSON.parse(a)); } catch {}
+    // Пробуем восстановить агента из кеша пока грузится
+    if (a) {
+      try {
+        const cached = JSON.parse(a);
+        if (cached && cached.id) setAgent(cached);
+      } catch {}
+    }
     loadDashboard(t);
   }, []);
 
   const authHeader = (t: string) => ({ Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' });
 
   const loadDashboard = async (t: string) => {
-    setLoading(true);
+    setLoading(true); setError('');
     try {
       const r = await fetch('/api/ads/dashboard', { headers: authHeader(t) });
-      if (r.status === 401) { navigate('/adsauth'); return; }
+      if (r.status === 401) {
+        localStorage.removeItem('ads_agent_token');
+        localStorage.removeItem('ads_agent');
+        navigate('/adsauth');
+        return;
+      }
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || `Ошибка сервера: ${r.status}`);
+      }
       const d = await r.json();
       setData(d);
-      setAgent(d.agent);
+      if (d.agent) {
+        setAgent(d.agent);
+        // Синхронизируем кеш
+        localStorage.setItem('ads_agent', JSON.stringify({ ...d.agent, password_hash: undefined }));
+      }
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -128,10 +151,11 @@ const AdsPortal: React.FC = () => {
         headers: authHeader(token),
         body: JSON.stringify({ impressions: buyCount })
       });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.detail || 'Ошибка');
-      setBuyMsg(`✅ Куплено ${fmt(buyCount)} показов. Новый баланс: ${fmtRub(d.new_balance)}`);
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || 'Ошибка покупки показов');
+      // Перезагружаем дашборд чтобы получить актуальный баланс
       await loadDashboard(token);
+      setBuyMsg(`✅ Куплено ${fmt(buyCount)} показов!`);
       setTimeout(() => { setBuyingPost(null); setBuyMsg(''); }, 3000);
     } catch (e: any) {
       setBuyMsg(`❌ ${e.message}`);
@@ -170,7 +194,8 @@ const AdsPortal: React.FC = () => {
   const txs   = data?.transactions || [];
   const stats = data?.stats || {};
   const sysSt = data?.system_stats || {};
-  const balance = parseFloat(agent?.balance_rub || 0);
+  // Безопасный парсинг баланса — не падает при undefined/null/NaN
+  const balance = parseFloat(String(agent?.balance_rub ?? data?.agent?.balance_rub ?? 0)) || 0;
 
   const PRICE_PER_IMP = 0.2;
 
@@ -307,8 +332,8 @@ const AdsPortal: React.FC = () => {
             ) : (
               <div className="space-y-3">
                 {posts.map((p: any) => {
-                  const pct = p.impressions_paid > 0 ? Math.round(p.impressions_used / p.impressions_paid * 100) : 0;
-                  const remaining = p.impressions_paid - p.impressions_used;
+                  const pct = (p.impressions_paid || 0) > 0 ? Math.round((p.impressions_used || 0) / p.impressions_paid * 100) : 0;
+                  const remaining = (p.impressions_paid || 0) - (p.impressions_used || 0);
                   return (
                     <div key={p.id} className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-4">
                       <div className="flex items-start justify-between gap-3 mb-3">
@@ -595,8 +620,8 @@ const AdsPortal: React.FC = () => {
               ) : (
                 <div className="space-y-3">
                   {posts.map((p: any) => {
-                    const ctr = p.impressions_paid > 0 ? (p.impressions_used / p.impressions_paid * 100).toFixed(1) : '0';
-                    const spent = (p.impressions_used * 0.2).toFixed(2);
+                    const ctr = (p.impressions_paid || 0) > 0 ? ((p.impressions_used || 0) / p.impressions_paid * 100).toFixed(1) : '0';
+                    const spent = ((p.impressions_used || 0) * 0.2).toFixed(2);
                     return (
                       <div key={p.id} className="p-3 bg-zinc-800/40 rounded-xl">
                         <div className="text-xs text-white truncate mb-2">{p.text}</div>
