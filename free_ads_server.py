@@ -285,6 +285,128 @@ async def ads_register(d: dict):
     return {"token": token, "agent": {**agent, "password_hash": "***"}}
 
 
+@router.post("/api/ads/auth/send-code")
+async def ads_send_code(d: dict):
+    """
+    Отправляет код подтверждения на email.
+    type: 'register' | 'reset'
+    """
+    import random as _random
+    email = d.get("email", "").strip().lower()
+    code_type = d.get("type", "register").upper()   # REGISTER | RESET
+    if not email:
+        raise HTTPException(400, "Email обязателен")
+
+    db = _db()
+
+    if code_type == "REGISTER":
+        # Проверяем что email не занят
+        check = await db.get("ad_agents", params={"email": f"eq.{email}"})
+        if check.json():
+            raise HTTPException(409, "Email уже зарегистрирован")
+    elif code_type == "RESET":
+        # Проверяем что агент существует
+        check = await db.get("ad_agents", params={"email": f"eq.{email}"})
+        if not check.json():
+            # Не раскрываем наличие аккаунта — просто возвращаем OK
+            return {"ok": True}
+    else:
+        raise HTTPException(400, f"Неверный тип кода: {code_type}")
+
+    code = str(_random.randint(100000, 999999))
+    now_ms = int(time.time() * 1000)
+    expires_ms = now_ms + 15 * 60 * 1000  # 15 минут
+
+    # Сохраняем код в ad_email_codes (или temp_codes если та же таблица)
+    await db.post("ad_email_codes", json={
+        "email":      email,
+        "code":       code,
+        "type":       code_type,
+        "expires_at": expires_ms,
+        "used":       False,
+    }, headers={"Prefer": "resolution=merge-duplicates"})
+
+    # Отправляем письмо через EmailService из server.py
+    s = _get_server()
+    email_svc = getattr(s, 'EmailService', None)
+    sent = False
+
+    if email_svc:
+        try:
+            from starlette.concurrency import run_in_threadpool
+            if code_type == "REGISTER":
+                sent = await run_in_threadpool(email_svc.send_verification_code, email, code)
+            else:
+                sent = await run_in_threadpool(email_svc.send_password_reset, email, code)
+        except Exception as e:
+            _logger().error(f"Email send error: {e}")
+
+    if not sent:
+        # Fallback: пробуем httpx отправить через наш API
+        try:
+            base_url = os.getenv("SERVER_BASE_URL", "http://localhost:8000")
+            async with httpx.AsyncClient(timeout=5) as client:
+                if code_type == "REGISTER":
+                    await client.post(f"{base_url}/api/ads/auth/_send-email",
+                        json={"email": email, "code": code, "type": "register"})
+                else:
+                    await client.post(f"{base_url}/api/ads/auth/_send-email",
+                        json={"email": email, "code": code, "type": "reset"})
+        except Exception as e:
+            _logger().warning(f"Fallback email send failed: {e}")
+            # Возвращаем OK — код сохранён в БД, пользователь может запросить повторно
+
+    _logger().info(f"📧 Код {code_type} отправлен на {email} (code={code[:2]}****)")
+    return {"ok": True}
+
+
+@router.post("/api/ads/auth/register-verify")
+async def ads_register_verify(d: dict):
+    """Верифицирует код и регистрирует агента."""
+    email = d.get("email", "").strip().lower()
+    code  = d.get("code", "").strip()
+    pwd   = d.get("password", "").strip()
+
+    if not email or not code or not pwd or len(pwd) < 6:
+        raise HTTPException(400, "Заполните все поля")
+
+    db = _db()
+    now_ms = int(time.time() * 1000)
+
+    # Проверяем код
+    code_r = await db.get("ad_email_codes", params={
+        "email": f"eq.{email}", "code": f"eq.{code}",
+        "type":  "eq.REGISTER",  "used": "eq.false",
+        "expires_at": f"gt.{now_ms}"
+    })
+    if not code_r.json():
+        raise HTTPException(400, "Неверный или истёкший код. Запросите новый.")
+
+    # Проверяем что email не занят
+    check = await db.get("ad_agents", params={"email": f"eq.{email}"})
+    if check.json():
+        raise HTTPException(409, "Email уже зарегистрирован")
+
+    agent_id = f"ag_{secrets.token_hex(6)}"
+    agent    = {
+        "id":            agent_id,
+        "email":         email,
+        "password_hash": _hash(pwd),
+        "balance_rub":   0,
+        "is_banned":     False,
+        "created_at":    now_ms,
+    }
+    r = await db.post("ad_agents", json=agent, headers={"Prefer": "return=representation"})
+    if r.status_code not in (200, 201):
+        raise HTTPException(500, "Ошибка регистрации")
+
+    # Помечаем код как использованный
+    await db.patch("ad_email_codes", params={"email": f"eq.{email}", "type": "eq.REGISTER"}, json={"used": True})
+
+    token = _make_agent_token(agent_id)
+    return {"token": token, "agent": {**agent, "password_hash": "***"}}
+
+
 @router.post("/api/ads/auth/login")
 async def ads_login(d: dict):
     email = d.get("email", "").strip().lower()
@@ -308,6 +430,43 @@ async def ads_me(authorization: str = Header(...)):
     if not agent:
         raise HTTPException(401, "Неверный токен")
     return {**agent, "password_hash": "***"}
+
+
+@router.post("/api/ads/auth/reset-password")
+async def ads_reset_password(d: dict):
+    """Сбрасывает пароль агента по коду из письма."""
+    email       = d.get("email", "").strip().lower()
+    code        = d.get("code", "").strip()
+    new_password = d.get("newPassword", "").strip()
+
+    if not email or not code or not new_password or len(new_password) < 6:
+        raise HTTPException(400, "Заполните все поля. Пароль минимум 6 символов.")
+
+    db = _db()
+    now_ms = int(time.time() * 1000)
+
+    # Проверяем код
+    code_r = await db.get("ad_email_codes", params={
+        "email": f"eq.{email}", "code": f"eq.{code}",
+        "type":  "eq.RESET",    "used": "eq.false",
+        "expires_at": f"gt.{now_ms}"
+    })
+    if not code_r.json():
+        raise HTTPException(400, "Неверный или истёкший код. Запросите новый.")
+
+    # Обновляем пароль
+    r = await db.patch("ad_agents",
+        params={"email": f"eq.{email}"},
+        json={"password_hash": _hash(new_password)},
+        headers={"Prefer": "return=representation"}
+    )
+    if not r.json():
+        raise HTTPException(404, "Агент не найден")
+
+    # Помечаем код как использованный
+    await db.patch("ad_email_codes", params={"email": f"eq.{email}", "type": "eq.RESET"}, json={"used": True})
+
+    return {"ok": True, "message": "Пароль успешно изменён"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -397,16 +556,76 @@ async def ads_buy_impressions(post_id: str, d: dict, authorization: str = Header
     if impressions < 1:
         raise HTTPException(400, "Минимум 1 показ")
 
-    rpc_r = await _rpc_local("buy_ad_impressions", {
-        "p_agent_id":    agent["id"],
-        "p_post_id":     post_id,
-        "p_impressions": impressions
-    })
+    db = _db()
 
-    result = rpc_r.json() if hasattr(rpc_r, 'json') else rpc_r
-    if isinstance(result, dict) and not result.get("ok"):
-        raise HTTPException(402, result.get("error", "Ошибка покупки"))
-    return result
+    # Проверяем что пост существует и принадлежит агенту
+    post_r = await db.get("ad_posts", params={"id": f"eq.{post_id}", "agent_id": f"eq.{agent['id']}"})
+    if not post_r.json():
+        raise HTTPException(404, "Пост не найден")
+    post = post_r.json()[0]
+    if post["status"] not in ("approved", "active"):
+        raise HTTPException(422, f"Пост должен быть одобрен (статус: {post['status']}). Дождитесь модерации.")
+
+    # Пробуем через RPC (если настроен)
+    rpc_ok = False
+    try:
+        rpc_r = await _rpc_local("buy_ad_impressions", {
+            "p_agent_id":    agent["id"],
+            "p_post_id":     post_id,
+            "p_impressions": impressions
+        })
+        result = rpc_r.json() if hasattr(rpc_r, 'json') else rpc_r
+        if isinstance(result, dict) and result.get("ok") is False:
+            raise HTTPException(402, result.get("error", "Ошибка покупки"))
+        rpc_ok = True
+    except HTTPException:
+        raise
+    except Exception as e:
+        _logger().warning(f"buy_ad_impressions RPC failed: {e}, falling back to manual")
+
+    if not rpc_ok:
+        # Fallback: вручную списываем баланс и добавляем показы
+        cost = impressions * PRICE_PER_IMP
+        agent_fresh = await _get_agent(agent["id"])
+        if not agent_fresh:
+            raise HTTPException(404, "Агент не найден")
+        balance = float(agent_fresh.get("balance_rub", 0))
+        if balance < cost:
+            raise HTTPException(402, f"Недостаточно средств. Нужно {cost:.2f}₽, на балансе {balance:.2f}₽")
+
+        now_ms = int(time.time() * 1000)
+        new_balance   = balance - cost
+        new_imp_paid  = post.get("impressions_paid", 0) + impressions
+        tx_id = f"tx_{secrets.token_hex(6)}"
+
+        # Обновляем агента
+        await db.patch("ad_agents", params={"id": f"eq.{agent['id']}"}, json={"balance_rub": new_balance})
+        # Обновляем пост
+        await db.patch("ad_posts", params={"id": f"eq.{post_id}"}, json={"impressions_paid": new_imp_paid})
+        # Записываем транзакцию
+        await db.post("ad_transactions", json={
+            "id": tx_id, "agent_id": agent["id"], "post_id": post_id,
+            "type": "spend", "amount_rub": cost, "impressions": impressions,
+            "created_at": now_ms
+        }, headers={"Prefer": "return=minimal"})
+
+    # Активируем пост если он approved и теперь есть оплаченные показы
+    current_imp = (post.get("impressions_paid", 0) or 0) + (impressions if not rpc_ok else 0)
+    if post["status"] == "approved" or (rpc_ok and post["status"] in ("approved",)):
+        # После покупки — ставим active
+        activate_r = await db.patch("ad_posts",
+            params={"id": f"eq.{post_id}"},
+            json={"status": "active"},
+            headers={"Prefer": "return=representation"}
+        )
+        _logger().info(f"✅ Пост {post_id} активирован после покупки {impressions} показов")
+        post_data = activate_r.json()
+        if isinstance(post_data, list) and post_data:
+            return post_data[0]
+
+    # Возвращаем обновлённый пост
+    updated = await db.get("ad_posts", params={"id": f"eq.{post_id}"})
+    return updated.json()[0] if updated.json() else {"ok": True}
 
 
 @router.get("/api/ads/posts/{post_id}")
@@ -587,9 +806,16 @@ async def admin_approve_post(post_id: str, x_admin_token: str = Header(...)):
         raise HTTPException(403, "Forbidden")
     db     = _db()
     now_ms = int(time.time() * 1000)
+    # Читаем пост
+    post_r = await db.get("ad_posts", params={"id": f"eq.{post_id}"})
+    if not post_r.json():
+        raise HTTPException(404, "Пост не найден")
+    post = post_r.json()[0]
+    # Если у поста уже куплены показы — сразу в active, иначе approved
+    new_status = "active" if (post.get("impressions_paid", 0) or 0) > 0 else "approved"
     r = await db.patch("ad_posts",
         params={"id": f"eq.{post_id}"},
-        json={"status": "approved", "approved_at": now_ms},
+        json={"status": new_status, "approved_at": now_ms},
         headers={"Prefer": "return=representation"}
     )
     return r.json()
@@ -770,29 +996,33 @@ async def start_free_bot(bot_id: str):
     pm = getattr(server, 'pm', None)
     if not pm:
         raise HTTPException(500, "BotManager не инициализирован")
-    
+
     db = server.db
     r = await db.get("bots", params={"id": f"eq.{bot_id}"})
     if not r.json():
         raise HTTPException(404, "Бот не найден")
-    
+
     bot_data = r.json()[0]
 
-    # ИСПРАВЛЕНИЕ: Мы создаем словарь config «на лету» 
-    # и кладем туда токен, как того ожидает метод в server.py
-    bot_config = bot_data.get("config", {})
-    if not bot_config: bot_config = {}
-    
-    # Убеждаемся, что токен есть в этом конфиге
-    bot_config['token'] = bot_data.get("token")
+    # Проверяем бан владельца
+    owner_id = bot_data.get("owner_id")
+    if owner_id:
+        u_r = await db.get("users", params={"id": f"eq.{owner_id}"})
+        if u_r.json() and u_r.json()[0].get("is_banned"):
+            raise HTTPException(403, "Ваш аккаунт заблокирован")
 
-    # Теперь передаем bot_id и словарь bot_config
-    success = await pm.start_bot(bot_id, bot_config)
-    
-    if success:
+    # Мержим config с корневыми полями (как в основном start_handler)
+    inner_cfg = bot_data.get("config") or {}
+    merged = {**inner_cfg, **bot_data}
+    # Явно проставляем флаг — BotManager выберет free_bot_core.py
+    merged['is_free_plan'] = True
+
+    success = await pm.start_bot(bot_id, merged)
+    if success is True:
+        await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "RUNNING"})
         return {"status": "ok", "message": "Бот запущен"}
     else:
-        raise HTTPException(500, "Не удалось запустить бота")
+        raise HTTPException(500, f"Не удалось запустить бота: {success}")
 
 @router.post("/api/bots/{bot_id}/stop")
 async def stop_free_bot(bot_id: str):
@@ -800,11 +1030,12 @@ async def stop_free_bot(bot_id: str):
     pm = getattr(server, 'pm', None)
     if not pm:
         raise HTTPException(500, "BotManager не инициализирован")
-    
-    success = await pm.stop_bot(bot_id)
-    if success:
-        return {"status": "ok", "message": "Бот остановлен"}
-    else:
-        # Даже если не удалось остановить (например, уже стопнут), 
-        # возвращаем ок для фронтенда
-        return {"status": "ok", "message": "Бот уже был остановлен или не найден в процессах"}
+
+    await pm.stop_bot(bot_id)
+    # Синхронизируем статус в БД
+    try:
+        db = server.db
+        await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "IDLE"})
+    except Exception:
+        pass
+    return {"status": "ok", "message": "Бот остановлен"}
