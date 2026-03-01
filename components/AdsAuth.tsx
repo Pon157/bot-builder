@@ -128,7 +128,7 @@ const AdsAuth: React.FC = () => {
             </li>
             <li className="flex items-start gap-2">
               <span className="text-amber-500 font-bold shrink-0">3.</span>
-              Пополните баланс через ЮКасса и купите показы
+              Пополните баланс через Юкасса и купите показы
             </li>
             <li className="flex items-start gap-2">
               <span className="text-amber-500 font-bold shrink-0">4.</span>
