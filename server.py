@@ -164,7 +164,11 @@ class BotManager:
         self.log_paths[bid] = log_path
         platform = config.get('platform', 'telegram').lower()
         _CORE = {'vk': 'vkbot_core.py', 'poster': 'poster_core.py', 'randomizer': 'randomizer_core.py'}
-        bot_file = _CORE.get(platform, 'bot_core.py')
+        # Бесплатные боты используют free_bot_core.py
+        if config.get('is_free_plan', False):
+            bot_file = 'free_bot_core.py'
+        else:
+            bot_file = _CORE.get(platform, 'bot_core.py')
         
         try:
             # 1. Подготовка окружения
@@ -875,6 +879,8 @@ async def start_handler(req: dict):
     # 3. Мержим config (JSONB) с корневыми полями — vkbot_core ждёт platform, admin_chat_id и т.д. на верхнем уровне
     inner_cfg = bot_data.get("config") or {}
     merged = {**inner_cfg, **bot_data}
+    # Явно проставляем флаг free_plan, чтобы BotManager мог выбрать нужный core-файл
+    merged['is_free_plan'] = bot_data.get('is_free_plan', False)
     if await pm.start_bot(bid, merged) is True:
         await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "RUNNING"})
         logger.info(f"🚀 Бот {bid} успешно запущен")
@@ -887,6 +893,24 @@ async def stop_handler(bid: str):
     await pm.stop_bot(bid)
     await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "IDLE"})
     return True
+
+@app.get("/api/bots/status/{bid}")
+async def get_bot_status(bid: str):
+    """Возвращает актуальный статус бота: запущен ли процесс."""
+    is_running = bid in pm.procs and pm.procs[bid].returncode is None
+    # Дополнительно синхронизируем статус в БД
+    status_val = "RUNNING" if is_running else "IDLE"
+    try:
+        r = await db.get("bots", params={"id": f"eq.{bid}", "select": "id,status"})
+        if r.json():
+            db_status = r.json()[0].get("status", "IDLE")
+            # Если процесс умер но в БД ещё RUNNING — обновляем
+            if not is_running and db_status == "RUNNING":
+                await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "IDLE"})
+            status_val = "RUNNING" if is_running else db_status
+    except Exception:
+        pass
+    return {"status": status_val, "pid": pm.procs[bid].pid if is_running else None}
 
 @app.delete("/api/bots/delete/{uid}/{bid}")
 async def delete_handler(uid: str, bid: str):
@@ -3708,9 +3732,12 @@ from yookassa import Configuration, Payment as YKPayment
 import uuid as _uuid
 
 # Инициализируем ЮKassa
-YK_SHOP_ID  = os.getenv("YOOKASSA_SHOP_ID", "")
-YK_SECRET   = os.getenv("YOOKASSA_SECRET_KEY", "")
-FRONTEND_URL = os.getenv("FRONTEND_URL")
+YK_SHOP_ID   = os.getenv("YOOKASSA_SHOP_ID", "")
+YK_SECRET    = os.getenv("YOOKASSA_SECRET_KEY", "")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "")
+# Публичный URL сервера (используется для return_url платежей)
+# Примеры: https://dialogengine.webtm.ru
+SERVER_PUBLIC_URL = os.getenv("SERVER_BASE_URL", FRONTEND_URL or "https://dialogengine.webtm.ru")
 
 if YK_SHOP_ID and YK_SECRET:
     Configuration.account_id = YK_SHOP_ID
@@ -3802,7 +3829,7 @@ async def initiate_topup(d: dict):
                 },
                 "confirmation": {
                     "type":       "redirect",
-                    "return_url": f"{FRONTEND_URL}/profile?payment=success"
+                    "return_url": f"{SERVER_PUBLIC_URL}/profile?payment=success"
                 },
                 "capture":      True,
                 "description":  f"Пополнение баланса DialogEngine на {amount:.0f} ₽",
@@ -3889,19 +3916,23 @@ async def check_payment_status(payment_id: str):
             
     return {"status": real_payment.status}
 # ─── WEBHOOK ОТ ЮKASSA ───────────────────────────────────────────────────────
+# Один эндпоинт обрабатывает ОБА типа платежей:
+#   - user_id в metadata  → пополнение баланса pro-пользователя
+#   - agent_id в metadata → пополнение рекламного баланса агента (free_ads)
 
 @app.post("/api/payments/yookassa/callback/")
+@app.post("/api/payments/yookassa/callback")  # без слэша — обе формы
 async def yookassa_callback(request: Request):
     """
     ЮKassa шлёт POST-уведомление при изменении статуса платежа.
 
-    В Личном кабинете ЮKassa:
-    Интеграция → HTTP-уведомления → добавить URL:
-    https://yourdomain.com/api/payments/yookassa/callback
+    Webhook URL в Личном кабинете ЮKassa:
+    https://dialogengine.webtm.ru/api/payments/yookassa/callback
     Событие: payment.succeeded
 
-    ЮKassa не шлёт подпись в теле — нужно ВСЕГДА перепроверять
-    платёж через их API по payment_id, чтобы не зачислить фейк.
+    Маршрутизация по metadata:
+      • metadata.user_id  → пополнение pro-баланса
+      • metadata.agent_id → пополнение рекламного баланса
     """
     try:
         body = await request.json()
@@ -3910,7 +3941,6 @@ async def yookassa_callback(request: Request):
 
     logger.info(f"💳 ЮKassa webhook: event={body.get('event')} object_id={body.get('object', {}).get('id')}")
 
-    # Нас интересует только успешная оплата
     if body.get("event") != "payment.succeeded":
         return {"ok": True}
 
@@ -3919,39 +3949,50 @@ async def yookassa_callback(request: Request):
     if not payment_id:
         raise HTTPException(400, "payment_id missing")
 
-    # ── КРИТИЧЕСКИ ВАЖНО: перепроверяем статус через ЮKassa API ──────────────
-    # Никогда не доверяй данным из тела webhook — злоумышленник может прислать
-    # поддельный запрос с чужим payment_id и большой суммой.
+    # ── Перепроверяем через ЮKassa API (защита от фейков) ──────────────────
     try:
-        real_payment = await run_in_threadpool(
-            lambda: YKPayment.find_one(payment_id)
-        )
+        real_payment = await run_in_threadpool(lambda: YKPayment.find_one(payment_id))
     except Exception as e:
         logger.error(f"❌ ЮKassa find_one ошибка: {e}")
         raise HTTPException(502, "Не удалось проверить платёж")
 
     if real_payment.status != "succeeded":
-        logger.warning(f"⚠️ Webhook пришёл, но статус платежа {payment_id}: {real_payment.status}")
+        logger.warning(f"⚠️ Webhook: статус платежа {payment_id}: {real_payment.status}")
         return {"ok": True}
 
-    # Сумма и метаданные из проверенного объекта
     amount_paid = float(real_payment.amount.value)
-    user_id     = (real_payment.metadata or {}).get("user_id", "")
+    metadata    = real_payment.metadata or {}
+    user_id     = metadata.get("user_id", "")
+    agent_id    = metadata.get("agent_id", "")
 
-    if not user_id:
-        logger.error(f"❌ В платеже {payment_id} нет metadata.user_id")
+    # ── Рекламный платёж (agent_id) ──────────────────────────────────────────
+    if agent_id and not user_id:
+        logger.info(f"💛 Рекламный платёж {payment_id}: агент={agent_id} сумма={amount_paid}₽")
+        rpc_r = await _rpc("topup_ad_agent_balance", {
+            "p_agent_id": agent_id,
+            "p_amount":   amount_paid,
+            "p_yk_id":    payment_id
+        })
+        if rpc_r.status_code == 200:
+            logger.info(f"✅ Рекламный баланс агента {agent_id} пополнен на {amount_paid}₽")
+        else:
+            logger.error(f"❌ RPC topup_ad_agent_balance ошибка: {rpc_r.status_code} {rpc_r.text}")
         return {"ok": True}
 
-    # Ищем pending-транзакцию
+    # ── Обычный платёж (user_id) ──────────────────────────────────────────────
+    if not user_id:
+        logger.error(f"❌ В платеже {payment_id} нет metadata.user_id и metadata.agent_id")
+        return {"ok": True}
+
+    # Ищем pending-транзакцию (защита от дублей)
     tx_r = await db.get("payment_transactions", params={
         "yk_payment_id": f"eq.{payment_id}",
         "status":        "eq.pending"
     })
     if not tx_r.json():
         logger.warning(f"⚠️ Транзакция {payment_id} не найдена или уже обработана")
-        return {"ok": True}  # 200 — чтобы ЮKassa не повторяла
+        return {"ok": True}
 
-    # Зачисляем баланс через Supabase RPC (атомарно)
     rpc_r = await _rpc("topup_user_balance", {
         "p_user_id":  user_id,
         "p_amount":   amount_paid,
