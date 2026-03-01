@@ -133,8 +133,8 @@ const FreeBotEditor: React.FC<{
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const MAX_BUTTONS  = 2;
-  const MAX_TRIGGERS = 2;
+  const MAX_BUTTONS  = 100;  // без ограничений
+  const MAX_TRIGGERS = 100;  // без ограничений
 
   const updateStg = (key: string, val: any) => setStg(prev => ({ ...prev, [key]: val }));
 
@@ -222,15 +222,10 @@ const FreeBotEditor: React.FC<{
           </div>
         </div>
 
-        {/* Limits strip */}
-        <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-4">
-          <div className="flex items-center gap-2 mb-3"><Info size={13} className="text-blue-400" /><span className="text-[11px] text-zinc-400 font-bold uppercase tracking-widest">Лимиты Free-плана</span></div>
-          <LimitBadge current={buttons.length}  max={MAX_BUTTONS}  label="Кнопки" />
-          <LimitBadge current={triggers.length} max={MAX_TRIGGERS} label="Триггеры" />
-          <div className="flex items-center justify-between text-xs mt-1">
-            <span className="text-zinc-500 uppercase tracking-widest text-[10px]">Память</span>
-            <span className="font-bold text-zinc-300 font-mono">{bot.memory_limit_mb} МБ</span>
-          </div>
+        {/* Info strip */}
+        <div className="bg-amber-500/5 border border-amber-500/20 rounded-2xl p-4 flex items-center gap-3">
+          <span className="text-amber-400 text-lg">📢</span>
+          <p className="text-[11px] text-zinc-400 leading-relaxed">На free-плане после /start автоматически показывается реклама. Переходите на Pro для отключения рекламы и разблокировки всех функций.</p>
         </div>
 
         {/* ── Основные настройки ─────────────────────────────────────────────── */}
@@ -488,14 +483,15 @@ const FreeBotAnalytics: React.FC<{ bot: FreeBot; userId: string; onBack: () => v
   }, [bot.id, userId]);
   const s = stats?.stats || {};
   const statCards = [
-    { label: 'Всего сообщений',   value: s.totalMessages   || 0, color: 'text-blue-400'   },
-    { label: 'Входящих сегодня',  value: s.incomingToday   || 0, color: 'text-green-400'  },
-    { label: 'Исходящих сегодня', value: s.outgoingToday   || 0, color: 'text-amber-400'  },
-    { label: 'Активных 24ч',      value: s.activeUsers24h  || 0, color: 'text-purple-400' },
-    { label: 'Пользователей',     value: stats?.users_count || 0, color: 'text-cyan-400'  },
-    { label: 'Заблокировано',     value: s.bannedCount     || 0, color: 'text-red-400'    },
-    { label: 'Рассылок сегодня',  value: s.broadcastsToday || 0, color: 'text-orange-400' },
-    { label: 'Рассылок всего',    value: s.broadcastsTotal || 0, color: 'text-pink-400'   },
+    { label: 'Пользователей всего',  value: stats?.users_count  || 0, color: 'text-cyan-400'   },
+    { label: 'Активных пользователей', value: stats?.active_count || 0, color: 'text-green-400'  },
+    { label: 'Всего сообщений',       value: s.totalMessages     || 0, color: 'text-blue-400'   },
+    { label: 'Входящих сегодня',      value: s.incomingToday     || 0, color: 'text-emerald-400' },
+    { label: 'Исходящих сегодня',     value: s.outgoingToday     || 0, color: 'text-amber-400'  },
+    { label: 'Активных 24ч',          value: s.activeUsers24h    || 0, color: 'text-purple-400' },
+    { label: 'Заблокировано',         value: s.bannedCount       || 0, color: 'text-red-400'    },
+    { label: 'Рассылок сегодня',      value: s.broadcastsToday   || 0, color: 'text-orange-400' },
+    { label: 'Рассылок всего',        value: s.broadcastsTotal   || 0, color: 'text-pink-400'   },
   ];
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white p-6 md:p-10">
@@ -546,7 +542,24 @@ type View = 'list' | 'editor' | 'analytics';
 
 const FreePlan: React.FC = () => {
   const navigate = useNavigate();
-  const userId   = localStorage.getItem('user_id') || '';
+
+  // Читаем user_id из любого доступного источника в localStorage
+  const getUserId = (): string => {
+    // Вариант 1: прямой ключ user_id (free-auth)
+    const direct = localStorage.getItem('user_id');
+    if (direct && direct !== 'undefined') return direct;
+    // Вариант 2: вложен в active_session_user (Pro-аккаунт)
+    try {
+      const session = localStorage.getItem('active_session_user');
+      if (session && session !== 'undefined' && session !== 'null') {
+        const parsed = JSON.parse(session);
+        if (parsed && parsed.id) return String(parsed.id);
+      }
+    } catch {}
+    return '';
+  };
+
+  const userId = getUserId();
 
   const [view,      setView]      = useState<View>('list');
   const [activeBot, setActiveBot] = useState<FreeBot | null>(null);
@@ -563,7 +576,11 @@ const FreePlan: React.FC = () => {
   const [statusMap, setStatusMap] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    if (!userId) { navigate('/auth'); return; }
+    if (!userId) {
+      // Не редиректим — показываем форму регистрации прямо здесь
+      setLoading(false);
+      return;
+    }
     loadBots();
   }, [userId]);
 
@@ -645,6 +662,31 @@ const FreePlan: React.FC = () => {
   };
 
   // ─── Sub-views ───────────────────────────────────────────────────────────────
+
+  // Не залогинен — показываем экран входа прямо здесь (без редиректа)
+  if (!userId) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0a] text-white flex items-center justify-center p-6">
+        <div className="max-w-md w-full text-center space-y-6">
+          <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto font-black text-2xl">BE</div>
+          <div>
+            <h1 className="text-2xl font-black text-white">BotEngine Free</h1>
+            <p className="text-zinc-500 text-sm mt-2">Войдите в аккаунт чтобы управлять ботами</p>
+          </div>
+          <div className="flex flex-col gap-3">
+            <a href="/auth" className="block w-full py-3 bg-blue-600 hover:bg-blue-700 rounded-2xl text-sm font-black uppercase tracking-widest transition-colors text-center">
+              Войти / Зарегистрироваться
+            </a>
+            <a href="/" className="block w-full py-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-2xl text-sm font-bold text-zinc-400 transition-colors text-center">
+              На главную
+            </a>
+          </div>
+          <p className="text-[10px] text-zinc-700 uppercase tracking-widest">Free Plan · Без ограничений · С рекламой</p>
+        </div>
+      </div>
+    );
+  }
+
   if (view === 'editor' && activeBot) {
     return <FreeBotEditor bot={activeBot} userId={userId}
       onSave={updated => { setBots(prev => prev.map(b => b.id === updated.id ? updated : b)); setActiveBot(updated); }}
@@ -676,7 +718,7 @@ const FreePlan: React.FC = () => {
           {[
             { icon: '✅', label: 'Аналитика' }, { icon: '✅', label: 'Тикеты' },
             { icon: '✅', label: 'Модерация' }, { icon: '✅', label: 'Рассылки' },
-            { icon: '✅', label: 'Топики',    }, { icon: '✅', label: '2 кнопки' },
+            { icon: '✅', label: 'Топики'    }, { icon: '✅', label: 'Кнопки'  },
             { icon: '❌', label: 'ИИ-ассистент' }, { icon: '❌', label: 'Мини-приложения' },
           ].map(f => (
             <div key={f.label} className="bg-zinc-900/40 border border-zinc-800 rounded-xl p-2.5 text-center">
@@ -725,22 +767,15 @@ const FreePlan: React.FC = () => {
               <div className="text-center py-10 text-zinc-600">
                 <Bot size={32} className="mx-auto mb-3 opacity-30" />
                 <p className="text-sm font-bold">Нет ботов</p>
-                <p className="text-xs mt-1">Создайте бесплатного бота (1 бот на аккаунт)</p>
+                <p className="text-xs mt-1">Создайте бесплатного бота (без ограничений по количеству)</p>
               </div>
             )}
 
-            {bots.length === 0 && !showCreateForm && (
+            {!showCreateForm && (
               <button onClick={() => setShowCreateForm(true)}
                 className="w-full py-3 rounded-2xl border border-dashed border-blue-500/30 text-blue-400 text-sm font-bold uppercase tracking-widest hover:bg-blue-500/5 transition-all flex items-center justify-center gap-2">
                 <Plus size={16} /> Создать бота
               </button>
-            )}
-
-            {bots.length > 0 && !showCreateForm && (
-              <div className="bg-amber-500/5 border border-amber-500/20 rounded-2xl p-4 text-center">
-                <p className="text-[11px] text-amber-500 uppercase font-bold tracking-widest">⚠️ Лимит достигнут: 1 бот на free-плане</p>
-                <p className="text-[10px] text-zinc-600 mt-1">Чтобы создать ещё ботов — перейдите на Pro</p>
-              </div>
             )}
 
             {showCreateForm && (
