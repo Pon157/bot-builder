@@ -778,8 +778,16 @@ async def start_free_bot(bot_id: str):
     
     bot_data = r.json()[0]
 
-    # ИСПРАВЛЕНИЕ: Удаляем третий аргумент bot_data.get("config", {})
-    success = await pm.start_bot(bot_id, bot_data.get("token"))
+    # ИСПРАВЛЕНИЕ: Мы создаем словарь config «на лету» 
+    # и кладем туда токен, как того ожидает метод в server.py
+    bot_config = bot_data.get("config", {})
+    if not bot_config: bot_config = {}
+    
+    # Убеждаемся, что токен есть в этом конфиге
+    bot_config['token'] = bot_data.get("token")
+
+    # Теперь передаем bot_id и словарь bot_config
+    success = await pm.start_bot(bot_id, bot_config)
     
     if success:
         return {"status": "ok", "message": "Бот запущен"}
