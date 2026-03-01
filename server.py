@@ -4119,6 +4119,8 @@ async def buy_service(d: dict):
         "message":     f"✅ {label} — активировано"
     }
 
+from free_ads_server import router as free_ads_router
+app.include_router(free_ads_router)
 
 if __name__ == "__main__":
     import uvicorn
