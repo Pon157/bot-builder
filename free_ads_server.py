@@ -105,10 +105,10 @@ async def free_create_bot(d: dict):
 
     db = _db()
 
-    # Проверяем лимит: не более 1 бота на free-плане (можно расширить)
+    # Проверяем лимит: не более 1 бота на free-плане (строго)
     existing = await db.get("bots", params={"owner_id": f"eq.{user_id}", "is_free_plan": "eq.true"})
     if existing.json():
-        raise HTTPException(409, "На free-плане разрешён только 1 бот. Перейдите на Pro для большего.")
+        raise HTTPException(409, "На free-плане разрешён только 1 бот. Перейдите на Pro для большего количества.")
 
     s = _get_server()
     enc_fn  = getattr(s, 'encrypt_val', lambda x: x)
@@ -151,6 +151,7 @@ async def free_create_bot(d: dict):
 async def free_update_bot_config(bot_id: str, d: dict):
     """
     Обновить конфиг free-бота с проверкой ограничений.
+    Принимает весь конфиг — сохраняет полностью, мержит с существующим.
     """
     user_id = d.get("user_id", "").strip()
     if not user_id:
@@ -161,42 +162,66 @@ async def free_update_bot_config(bot_id: str, d: dict):
     if not r.json():
         raise HTTPException(404, "Free-бот не найден")
 
-    buttons  = d.get("buttons", [])
-    triggers = d.get("triggers", [])
+    existing_bot = r.json()[0]
+    existing_cfg = existing_bot.get("config") or {}
+
+    buttons  = d.get("buttons",  d.get("config", {}).get("buttons",  existing_cfg.get("buttons",  [])))
+    triggers = d.get("triggers", d.get("config", {}).get("triggers", existing_cfg.get("triggers", [])))
 
     # Жёсткие лимиты
     if len(buttons) > FREE_MAX_BUTTONS:
-        raise HTTPException(422, f"Free-план: максимум {FREE_MAX_BUTTONS} кнопки")
+        buttons = buttons[:FREE_MAX_BUTTONS]   # обрезаем, не падаем
     if len(triggers) > FREE_MAX_TRIGGERS:
-        raise HTTPException(422, f"Free-план: максимум {FREE_MAX_TRIGGERS} триггера")
+        triggers = triggers[:FREE_MAX_TRIGGERS]
 
     # Только базовые типы кнопок
-    allowed_btn_types = {"default", "ticket", ""}
     for btn in buttons:
-        btype = btn.get("type", "default")
-        if btype not in allowed_btn_types:
-            raise HTTPException(422, f"Free-план: тип кнопки '{btype}' недоступен. Разрешено: обычная/тикетная")
-        # Убираем расширенные настройки кнопок
         for blocked_key in ["flow", "ai_prompt", "ai_enabled", "webhook", "payment"]:
             btn.pop(blocked_key, None)
 
-    # Разрешённые поля конфига (аналитика и основные — полные)
-    allowed_config_keys = {
-        "welcomeMessage", "adminChatId", "buttons", "triggers",
-        "settings", "description", "ticketMessageHeader",
-        "firstMessageHeader", "commonMessageHeader",
-        "forwardToAdmin", "antiSpam", "rateLimit"
-    }
-    new_config = {k: v for k, v in d.get("config", {}).items() if k in allowed_config_keys}
+    # Новый конфиг = старый мерженный с новыми данными
+    new_config = {**existing_cfg}
+
+    # Принимаем конфиг из тела напрямую или из поля "config"
+    incoming_cfg = d.get("config", {})
+
+    # Все поля которые могут прийти — копируем (включая welcomePhoto)
+    for key in [
+        "welcomeMessage", "welcomePhoto", "adminChatId",
+        "settings", "description",
+        "firstMessageHeader", "ticketMessageHeader", "commonMessageHeader",
+        "forwardToAdmin", "antiSpam", "rateLimit",
+        "welcomeInline",
+        # аналитика — не трогаем при сохранении, бот пишет сам
+    ]:
+        # Проверяем сначала напрямую в d, потом в d.config
+        if key in d:
+            new_config[key] = d[key]
+        elif key in incoming_cfg:
+            new_config[key] = incoming_cfg[key]
+
     new_config["buttons"]  = buttons
     new_config["triggers"] = triggers
 
+    # Патчим поля на корневом уровне
+    patch_payload = {
+        "config": new_config,
+        "name":   d.get("name", existing_bot.get("name", "Bot")),
+    }
+
+    # Если пришёл токен — обновляем его тоже
+    if d.get("token") and d["token"] != existing_bot.get("token"):
+        s = _get_server()
+        enc_fn = getattr(s, 'encrypt_val', lambda x: x)
+        patch_payload["token"] = enc_fn(d["token"])
+
     patch_r = await db.patch("bots",
         params={"id": f"eq.{bot_id}"},
-        json={"config": new_config, "name": d.get("name", r.json()[0]["name"])},
+        json=patch_payload,
         headers={"Prefer": "return=representation"}
     )
-    return patch_r.json()
+    result = patch_r.json()
+    return result[0] if isinstance(result, list) else result
 
 
 @router.get("/api/free/bots/{user_id}")
@@ -215,12 +240,50 @@ async def free_bot_stats(bot_id: str, user_id: str):
         raise HTTPException(404, "Бот не найден")
     bot = r.json()[0]
     cfg = bot.get("config") or {}
+
+    # Получаем stats из двух источников и мержим
+    db_stats  = bot.get("stats") or {}
+    cfg_stats = cfg.get("stats") or {}
+
+    def _safe_max(key: str) -> int:
+        return max(int(db_stats.get(key) or 0), int(cfg_stats.get(key) or 0))
+
+    # Мержим историю по дате (берём максимум на каждый день)
+    history_map: dict = {}
+    for src in [cfg_stats.get("history") or [], db_stats.get("history") or []]:
+        for entry in src:
+            date = entry.get("date", "")
+            if date not in history_map:
+                history_map[date] = dict(entry)
+            else:
+                for k in ["incoming", "outgoing", "totalUsers", "activeUsers", "broadcasts"]:
+                    history_map[date][k] = max(
+                        history_map[date].get(k, 0),
+                        entry.get(k, 0)
+                    )
+    merged_history = sorted(history_map.values(), key=lambda x: x.get("date", ""))[-14:]
+
+    merged_stats = {
+        "totalMessages":    _safe_max("totalMessages"),
+        "incomingToday":    _safe_max("incomingToday"),
+        "outgoingToday":    _safe_max("outgoingToday"),
+        "bannedCount":      _safe_max("bannedCount"),
+        "activeUsers24h":   _safe_max("activeUsers24h"),
+        "broadcastsTotal":  _safe_max("broadcastsTotal"),   # рассылки за всё время
+        "broadcastsToday":  _safe_max("broadcastsToday"),   # рассылки сегодня
+        "history":          merged_history,
+    }
+
+    # users_count из connectedUsers
+    users_list = cfg.get("connectedUsers") or []
+    users_count = len(users_list)
+
     return {
         "bot_id":       bot_id,
         "name":         bot.get("name"),
         "status":       bot.get("status"),
-        "users_count":  bot.get("usersCount", 0),
-        "stats":        cfg.get("stats", {}),
+        "users_count":  users_count,
+        "stats":        merged_stats,
         "ad_enabled":   bot.get("ad_enabled", True),
         "memory_limit": bot.get("memory_limit_mb", FREE_MEMORY_MB),
         "plan":         "free"
@@ -726,7 +789,7 @@ async def ads_create_payment(d: dict, authorization: str = Header(...)):
     if not yk_shop_id or not yk_secret:
         raise HTTPException(503, "YOOKASSA_SHOP_ID / YOOKASSA_SECRET_KEY не настроены")
         
-    return_url   = os.getenv("SERVER_BASE_URL", "http://localhost:8000") + "/ads"
+    return_url   = os.getenv("FRONTEND_URL", os.getenv("SERVER_BASE_URL", "https://dialogengine.webtm.ru")) + "/ads?payment=success"
     idempotency  = str(uuid.uuid4())
 
     payload = {
