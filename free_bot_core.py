@@ -1,18 +1,19 @@
 """
-free_bot_core.py  v4
-═══════════════════════════════════════════════════════════════════════════════
-Исправления v4:
-  • admin_input: без lambda-фильтра (работает даже если admin_chat_id загружен позже)
-  • кнопки/триггеры: работают при forwardAll=True (проверяются ДО форварда)
-  • /stats, /whois — полноценные команды
-  • заголовки сообщений: читаются из settings (там где сохраняются)
-  • топики: сохраняются и применяются корректно
-  • рассылка: copy_message поддерживает любой тип медиа (стикеры, фото, и т.д.)
-  • дебаунс push_state — бот не зависает
-  • нет memory watchdog
-  • нет лимитов кнопок/триггеров/ботов
-  • drop_pending_updates при старте
-═══════════════════════════════════════════════════════════════════════════════
+free_bot_core.py — BotEngine Free Plan v5
+==========================================
+ИСПРАВЛЕНО:
+  1. Единый @router.message() — нет lambda-фильтра, admin_id проверяется внутри
+  2. Кнопки и триггеры — ПЕРВЫМИ, до любого forwardAll
+  3. После одной команды бот не зависает — bc_wait чистится через .pop()
+  4. Счётчик рассылок персистентен: читается из БД при старте, пишется в БД после каждой
+  5. /stats, /whois, /ban, /unban, /warn, /unwarn — всё работает
+  6. Заголовки сообщений берутся из settings (firstMessageHeader и т.д.)
+  7. Топики: useTopics, topicPerRequest, anonymousTopics — применяются
+  8. Рассылка: copy_message — любой тип медиа (стикеры, голосовые, фото и т.д.)
+  9. push_state: дебаунс 5 сек + принудительный после важных операций
+ 10. config_sync_loop каждые 30 сек — только настройки, не трогает users/stats
+ 11. Нет лимита памяти, ботов, кнопок, триггеров
+ 12. drop_pending_updates при старте
 """
 
 import asyncio
@@ -32,7 +33,7 @@ from aiogram.filters import CommandStart, ChatMemberUpdatedFilter
 from aiogram.types import (
     Message, ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,
-    ReplyKeyboardRemove, ChatMemberUpdated
+    ReplyKeyboardRemove, ChatMemberUpdated,
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
@@ -43,42 +44,50 @@ load_dotenv()
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger("FreeBotCore")
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# MIDDLEWARE — бан
-# ════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
+# MIDDLEWARE
+# ═══════════════════════════════════════════════════════════
 
 class BanMiddleware(BaseMiddleware):
-    def __init__(self, bi): self.bi = bi; super().__init__()
+    def __init__(self, inst):
+        self.inst = inst
+        super().__init__()
+
     async def __call__(self, handler: Callable, event: Any, data: Dict) -> Any:
-        u = getattr(event, "from_user", None)
-        if u:
-            usr = next((x for x in self.bi.users if x.get("id") == u.id), None)
-            if usr and usr.get("is_banned"):
+        fu = getattr(event, "from_user", None)
+        if fu:
+            u = next((x for x in self.inst.users if x.get("id") == fu.id), None)
+            if u and u.get("is_banned"):
                 try:
-                    if isinstance(event, Message): await event.answer("🚫 <b>Вы заблокированы.</b>")
-                    elif isinstance(event, CallbackQuery): await event.answer("🚫 Заблокированы.", show_alert=True)
-                except Exception: pass
+                    if isinstance(event, Message):
+                        await event.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
+                    elif isinstance(event, CallbackQuery):
+                        await event.answer("🚫 Вы заблокированы.", show_alert=True)
+                except Exception:
+                    pass
                 return
         return await handler(event, data)
 
 
-# ════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 # ХЕЛПЕРЫ
-# ════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 
 def anon_id(uid: int) -> str:
     return hashlib.md5(str(uid).encode()).hexdigest()[:6].upper()
 
-def make_header(m: Message, stg: dict, is_first: bool = False, btn: str = "") -> str:
-    uid = m.from_user.id
+
+def build_header(m: Message, stg: dict, is_first: bool = False, btn_text: str = "") -> str:
+    uid     = m.from_user.id
     is_anon = stg.get("anonymousTopics", False)
+
     if is_anon:
-        info = f"👤 <b>Аноним #{anon_id(uid)}</b>"
+        user_info = f"👤 <b>Аноним #{anon_id(uid)}</b>"
     else:
         parts = []
         if stg.get("showHeaderName", True) and m.from_user.full_name:
@@ -87,94 +96,112 @@ def make_header(m: Message, stg: dict, is_first: bool = False, btn: str = "") ->
             parts.append(f"(@{m.from_user.username})")
         if stg.get("showHeaderId", True):
             parts.append(f"ID: <code>{uid}</code>")
-        info = " | ".join(parts) if parts else f"ID: <code>{uid}</code>"
+        user_info = " | ".join(parts) if parts else f"ID: <code>{uid}</code>"
 
-    if btn:
+    if btn_text:
         hdr = stg.get("ticketMessageHeader", "🆘 <b>ЗАЯВКА:</b>")
-        hdr = hdr.replace("{btn}", btn) if "{btn}" in hdr else f"{hdr} [{btn}]:"
+        hdr = hdr.replace("{btn}", btn_text) if "{btn}" in hdr else hdr.rstrip(":") + f" [{btn_text}]:"
     elif is_first:
         hdr = stg.get("firstMessageHeader", "🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ:</b>")
     else:
         hdr = stg.get("commonMessageHeader", "📩 <b>СООБЩЕНИЕ:</b>")
-    return f"{hdr}\n{info}\n\n"
+
+    return f"{hdr}\n{user_info}\n\n"
 
 
-# ════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 # ОСНОВНОЙ КЛАСС
-# ════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 
 class FreeBotInstance:
 
-    def __init__(self, cfg: dict):
-        self.bot_id = cfg.get("id")
-        self.token  = cfg.get("token")
-        self.sb_url = os.getenv("SUPABASE_URL", "").rstrip("/")
-        self.sb_key = os.getenv("SUPABASE_KEY", "")
+    def __init__(self, raw_config: dict):
+        self.bot_id = raw_config.get("id")
+        self.token  = raw_config.get("token")
+
+        self.sb_url  = os.getenv("SUPABASE_URL", "").rstrip("/")
+        self.sb_key  = os.getenv("SUPABASE_KEY", "")
         self.sb_hdrs = {
-            "apikey": self.sb_key,
+            "apikey":        self.sb_key,
             "Authorization": f"Bearer {self.sb_key}",
             "Content-Type":  "application/json",
         }
         self.server_url = os.getenv("SERVER_BASE_URL", "http://localhost:8000")
 
-        self.tg   = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-        self.dp   = Dispatcher()
+        self.tg     = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        self.dp     = Dispatcher()
         self.router = Router()
 
-        # Runtime maps (не сбрасываются при перезагрузке конфига)
-        self.msg_map:    Dict[int, int]  = {}   # admin_msg_id → user_id
-        self.flood:      Dict[int, float] = {}
-        self.bc_waiting: Dict[int, bool]  = {}  # admin_id → ждёт сообщения для рассылки
-        self.mgbuf:      Dict[str, dict]  = {}  # media group buffer
+        # Runtime — не сбрасываются при reload конфига
+        self.msg_map: Dict[int, int]  = {}   # admin_msg_id → user_id
+        self.flood:   Dict[int, float] = {}
+        self.bc_wait: Dict[int, bool]  = {}  # admin_id → ждёт сообщение для рассылки
+        self.mg_buf:  Dict[str, dict]  = {}  # media group buffer
 
-        # Broadcast daily counter
-        self._bc_day = {"date": "", "count": 0}
         self._last_push: float = 0.0
-        self.is_running = True
+        self.is_running: bool  = True
 
-        # Инициализируем из конфига
-        self.users:      list = []
-        self.stats:      dict = {}
-        self._apply(cfg)
+        # Данные бота
+        self.users: list = []
+        self.stats: dict = {}
+        self.stg:   dict = {}
 
-    # ─────────────────────────────────────────────────────────────────────
+        # Настройки
+        self.admin_id:      Optional[int] = None
+        self.use_topics:    bool  = False
+        self.topic_per_req: bool  = False
+        self.forward_all:   bool  = False
+        self.fwd_native:    bool  = False
+        self.rate_limit:    float = 1.0
+        self.ban_thr:       int   = 3
+        self.buttons:       list  = []
+        self.triggers:      list  = []
+        self.welcome:       str   = "Здравствуйте!"
+        self.welcome_photo: str   = ""
+        self.welcome_inline: list = []
+        self.ad_enabled:    bool  = True
+
+        # Счётчик рассылок (персистентный через stats)
+        self._bc_today_count: int = 0
+        self._bc_today_date:  str = ""
+
+        self._apply_config(raw_config)
+
+    # ─────────────────────────────────────────────────────
     # КОНФИГ
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
 
-    def _apply(self, raw: dict):
-        """Применяет конфиг из row БД (или файла). Вызывается при старте."""
+    def _apply_config(self, raw: dict):
         cfg = raw.get("config") or {}
         if isinstance(cfg, str):
-            try: cfg = json.loads(cfg)
+            try:    cfg = json.loads(cfg)
             except: cfg = {}
-        full = {**raw, **cfg}   # raw имеет приоритет над cfg для id/token/etc, но cfg перекрывает остальное
+        full = {**raw, **cfg}
 
-        # Токен / id — не трогаем если уже есть
-        if not getattr(self, "bot_id", None): self.bot_id = raw.get("id")
-        if not getattr(self, "token", None):  self.token  = raw.get("token")
-
-        admin_raw = full.get("adminChatId") or full.get("admin_chat_id") or full.get("adminId")
-        self.admin_id = int(str(admin_raw).strip()) if admin_raw else None
+        admin_raw = full.get("adminChatId") or full.get("admin_chat_id")
+        if admin_raw:
+            try: self.admin_id = int(str(admin_raw).strip())
+            except ValueError: pass
 
         stg = full.get("settings") or {}
-        self.stg          = stg
-        self.use_topics   = bool(stg.get("useTopics"))
-        self.topic_per_req = bool(stg.get("topicPerRequest"))
-        self.forward_all  = bool(stg.get("forwardAll"))
-        self.fwd_native   = bool(stg.get("forwardMessages"))   # нативный forward
-        self.rate_limit   = float(stg.get("rateLimit", 1.0))
-        self.ban_thr      = int(stg.get("autoBanThreshold", 3))
+        self.stg           = stg
+        self.use_topics    = bool(stg.get("useTopics", False))
+        self.topic_per_req = bool(stg.get("topicPerRequest", False))
+        self.forward_all   = bool(stg.get("forwardAll", False))
+        self.fwd_native    = bool(stg.get("forwardMessages", False))
+        self.rate_limit    = float(stg.get("rateLimit", 1.0))
+        self.ban_thr       = int(stg.get("autoBanThreshold", 3))
 
-        self.buttons  = full.get("buttons",  []) or []
-        self.triggers = full.get("triggers", []) or []
-        self.welcome  = full.get("welcomeMessage", "Здравствуйте!") or "Здравствуйте!"
-        self.welcome_photo = full.get("welcomePhoto", "") or ""
-        self.welcome_inline = full.get("welcomeInline", []) or []
-        self.ad_enabled = raw.get("ad_enabled", True)
+        self.buttons        = list(full.get("buttons", []) or [])
+        self.triggers       = list(full.get("triggers", []) or [])
+        self.welcome        = full.get("welcomeMessage", "Здравствуйте!") or "Здравствуйте!"
+        self.welcome_photo  = full.get("welcomePhoto", "") or ""
+        self.welcome_inline = list(full.get("welcomeInline", []) or [])
+        self.ad_enabled     = bool(raw.get("ad_enabled", True))
 
-        # users и stats — только при первом вызове (не перезатираем runtime)
         if not self.users:
             self.users = list(full.get("connectedUsers") or [])
+
         if not self.stats:
             s = full.get("stats") or {}
             self.stats = {
@@ -187,161 +214,202 @@ class FreeBotInstance:
                 "broadcastsTotal": int(s.get("broadcastsTotal", 0)),
                 "history":         list(s.get("history") or []),
             }
+            # Восстанавливаем счётчик рассылок из stats (персистентность)
+            today = datetime.now().strftime("%d.%m")
+            self._bc_today_date  = today
+            self._bc_today_count = int(s.get("broadcastsToday", 0))
 
     def _reload_settings(self, cfg: dict):
-        """
-        Обновляет только настройки из объекта config (без users/stats).
-        Вызывается из config_sync_loop каждые 30 сек.
-        """
+        """Обновляет только настройки. НЕ трогает users и stats."""
         stg = cfg.get("settings") or {}
-        self.stg          = stg
-        self.use_topics   = bool(stg.get("useTopics"))
-        self.topic_per_req = bool(stg.get("topicPerRequest"))
-        self.forward_all  = bool(stg.get("forwardAll"))
-        self.fwd_native   = bool(stg.get("forwardMessages"))
-        self.rate_limit   = float(stg.get("rateLimit", 1.0))
-        self.ban_thr      = int(stg.get("autoBanThreshold", 3))
+        self.stg           = stg
+        self.use_topics    = bool(stg.get("useTopics", False))
+        self.topic_per_req = bool(stg.get("topicPerRequest", False))
+        self.forward_all   = bool(stg.get("forwardAll", False))
+        self.fwd_native    = bool(stg.get("forwardMessages", False))
+        self.rate_limit    = float(stg.get("rateLimit", 1.0))
+        self.ban_thr       = int(stg.get("autoBanThreshold", 3))
 
-        self.buttons  = cfg.get("buttons",  self.buttons) or []
-        self.triggers = cfg.get("triggers", self.triggers) or []
-        self.welcome  = cfg.get("welcomeMessage", self.welcome) or self.welcome
-        self.welcome_photo  = cfg.get("welcomePhoto",  self.welcome_photo) or ""
-        self.welcome_inline = cfg.get("welcomeInline", self.welcome_inline) or []
+        if "buttons"       in cfg: self.buttons        = list(cfg["buttons"] or [])
+        if "triggers"      in cfg: self.triggers       = list(cfg["triggers"] or [])
+        if "welcomeMessage" in cfg: self.welcome       = cfg["welcomeMessage"] or "Здравствуйте!"
+        if "welcomePhoto"  in cfg: self.welcome_photo  = cfg["welcomePhoto"] or ""
+        if "welcomeInline" in cfg: self.welcome_inline = list(cfg["welcomeInline"] or [])
 
         admin_raw = cfg.get("adminChatId") or cfg.get("admin_chat_id")
         if admin_raw:
             try: self.admin_id = int(str(admin_raw).strip())
-            except: pass
+            except ValueError: pass
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
     # РЕКЛАМА
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
 
     async def get_ad(self) -> Optional[dict]:
-        if not self.ad_enabled: return None
+        if not self.ad_enabled:
+            return None
         try:
             async with httpx.AsyncClient(timeout=3.0) as c:
-                r = await c.get(f"{self.server_url}/api/ads/active", params={"bot_id": self.bot_id})
-                if r.status_code == 200: return r.json().get("ad")
-        except: pass
+                r = await c.get(
+                    f"{self.server_url}/api/ads/active",
+                    params={"bot_id": self.bot_id},
+                )
+                if r.status_code == 200:
+                    return r.json().get("ad")
+        except Exception:
+            pass
         return None
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
     # КЛАВИАТУРЫ
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
 
-    def kb_main(self):
+    def kb_reply(self):
         active = [b for b in self.buttons if b.get("text")]
-        if not active: return ReplyKeyboardRemove()
+        if not active:
+            return ReplyKeyboardRemove()
         rows = []
         for i in range(0, len(active), 2):
             rows.append([KeyboardButton(text=b["text"]) for b in active[i:i+2]])
         return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
     def kb_inline(self, btns: list) -> Optional[InlineKeyboardMarkup]:
-        if not btns: return None
+        if not btns:
+            return None
         rows = []
         for i in range(0, len(btns), 2):
-            r = [InlineKeyboardButton(text=b["text"], url=b.get("url","https://t.me")) for b in btns[i:i+2] if b.get("text")]
-            if r: rows.append(r)
+            row = [
+                InlineKeyboardButton(text=b["text"], url=b.get("url", "https://t.me"))
+                for b in btns[i:i+2] if b.get("text")
+            ]
+            if row:
+                rows.append(row)
         return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
     # ТОПИКИ
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
 
-    async def get_thread(self, user: dict, force_new=False) -> Optional[int]:
-        if not self.use_topics or not self.admin_id: return None
+    async def get_thread(self, user: dict, force_new: bool = False) -> Optional[int]:
+        if not self.use_topics or not self.admin_id:
+            return None
         existing = user.get("last_topic_id")
-        if existing and not force_new: return existing
+        if existing and not force_new:
+            return existing
         try:
-            n  = user.get("first_name", "User")
-            un = user.get("username")
-            title = f"{n}" + (f" @{un}" if un else f" #{user['id']}")
+            name  = user.get("first_name", "User")
+            uname = user.get("username")
+            title = name + (f" @{uname}" if uname else f" #{user['id']}")
             t = await self.tg.create_forum_topic(self.admin_id, title[:128])
             user["last_topic_id"] = t.message_thread_id
             return t.message_thread_id
         except Exception as e:
-            log.warning(f"get_thread: {e}"); return None
+            log.warning(f"get_thread: {e}")
+            return None
 
-    # ─────────────────────────────────────────────────────────────────────
-    # ФОРВАРД К АДМИНУ
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
+    # ПЕРЕСЫЛКА К АДМИНУ
+    # ─────────────────────────────────────────────────────
 
-    async def fwd_admin(self, m: Message, user: dict, is_first=False, btn=""):
-        if not self.admin_id: return
-        force = self.topic_per_req and (btn or is_first)
+    async def forward_to_admin(self, m: Message, user: dict,
+                               is_first: bool = False, btn_text: str = ""):
+        if not self.admin_id:
+            return
+
+        force = self.topic_per_req and (btn_text or is_first)
         tid   = await self.get_thread(user, force_new=force)
 
-        # Нативный форвард (без заголовка)
-        if self.fwd_native and not btn and not is_first:
+        # Нативный forward (без заголовка)
+        if self.fwd_native and not btn_text and not is_first:
             try:
-                s = await self.tg.forward_message(self.admin_id, m.chat.id, m.message_id, message_thread_id=tid)
-                if s: self.msg_map[s.message_id] = user["id"]
+                sent = await self.tg.forward_message(
+                    self.admin_id, m.chat.id, m.message_id, message_thread_id=tid)
+                if sent:
+                    self.msg_map[sent.message_id] = user["id"]
             except TelegramBadRequest as e:
                 if "thread" in str(e).lower():
                     user["last_topic_id"] = None
                     tid2 = await self.get_thread(user, force_new=True)
                     try:
-                        s = await self.tg.forward_message(self.admin_id, m.chat.id, m.message_id, message_thread_id=tid2)
-                        if s: self.msg_map[s.message_id] = user["id"]
-                    except Exception: pass
-                else: log.error(f"fwd_admin native: {e}")
-            except Exception as e: log.error(f"fwd_admin native: {e}")
+                        sent = await self.tg.forward_message(
+                            self.admin_id, m.chat.id, m.message_id, message_thread_id=tid2)
+                        if sent:
+                            self.msg_map[sent.message_id] = user["id"]
+                    except Exception:
+                        pass
+                else:
+                    log.error(f"fwd_native: {e}")
+            except Exception as e:
+                log.error(f"fwd_native: {e}")
             return
 
         # copy_message с заголовком
-        hdr = make_header(m, self.stg, is_first, btn)
+        header = build_header(m, self.stg, is_first, btn_text)
 
-        async def _try_send():
+        async def _send():
             nonlocal tid
+            sent = None
             try:
-                s = None
                 if m.photo:
-                    s = await self.tg.send_photo(self.admin_id, m.photo[-1].file_id,
-                        caption=(hdr + (m.caption or ""))[:1024], message_thread_id=tid)
+                    sent = await self.tg.send_photo(
+                        self.admin_id, m.photo[-1].file_id,
+                        caption=(header + (m.caption or ""))[:1024],
+                        message_thread_id=tid)
                 elif m.video:
-                    s = await self.tg.send_video(self.admin_id, m.video.file_id,
-                        caption=(hdr + (m.caption or ""))[:1024], message_thread_id=tid)
+                    sent = await self.tg.send_video(
+                        self.admin_id, m.video.file_id,
+                        caption=(header + (m.caption or ""))[:1024],
+                        message_thread_id=tid)
                 elif m.document:
-                    s = await self.tg.send_document(self.admin_id, m.document.file_id,
-                        caption=(hdr + (m.caption or ""))[:1024], message_thread_id=tid)
+                    sent = await self.tg.send_document(
+                        self.admin_id, m.document.file_id,
+                        caption=(header + (m.caption or ""))[:1024],
+                        message_thread_id=tid)
                 elif m.sticker or m.voice or m.video_note or m.audio:
-                    await self.tg.send_message(self.admin_id, hdr.strip(),
+                    await self.tg.send_message(
+                        self.admin_id, header.strip(),
                         message_thread_id=tid, parse_mode="HTML")
-                    s = await self.tg.copy_message(self.admin_id, m.chat.id, m.message_id, message_thread_id=tid)
+                    sent = await self.tg.copy_message(
+                        self.admin_id, m.chat.id, m.message_id, message_thread_id=tid)
                 else:
-                    txt = (hdr + (m.text or ""))[:4096]
-                    s = await self.tg.send_message(self.admin_id, txt,
+                    txt  = (header + (m.text or ""))[:4096]
+                    sent = await self.tg.send_message(
+                        self.admin_id, txt,
                         message_thread_id=tid, parse_mode="HTML")
-                if s: self.msg_map[s.message_id] = user["id"]
+                if sent:
+                    self.msg_map[sent.message_id] = user["id"]
             except TelegramBadRequest as e:
                 if "thread" in str(e).lower():
                     user["last_topic_id"] = None
                     tid = await self.get_thread(user, force_new=True)
                     try:
-                        txt = (hdr + (m.text or ""))[:4096]
-                        s = await self.tg.send_message(self.admin_id, txt, parse_mode="HTML")
-                        if s: self.msg_map[s.message_id] = user["id"]
-                    except Exception: pass
-                else: log.error(f"fwd_admin: {e}")
-            except Exception as e: log.error(f"fwd_admin: {e}")
+                        txt  = (header + (m.text or ""))[:4096]
+                        sent = await self.tg.send_message(
+                            self.admin_id, txt, parse_mode="HTML")
+                        if sent:
+                            self.msg_map[sent.message_id] = user["id"]
+                    except Exception:
+                        pass
+                else:
+                    log.error(f"fwd_copy TelegramBadRequest: {e}")
+            except Exception as e:
+                log.error(f"fwd_copy: {e}")
 
-        await _try_send()
+        await _send()
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
     # ПОЛЬЗОВАТЕЛЬ
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
 
-    def get_user(self, m: Message):
+    def get_or_create_user(self, m: Message):
         uid  = m.from_user.id
         user = next((u for u in self.users if u["id"] == uid), None)
         is_new = False
         if not user:
             user = {
-                "id":        uid,
+                "id":         uid,
                 "first_name": m.from_user.first_name or "",
-                "username":   m.from_user.username or "",
+                "username":   m.from_user.username   or "",
                 "joined_at":  int(time.time()),
                 "last_seen":  int(time.time()),
                 "is_banned":  False,
@@ -351,323 +419,400 @@ class FreeBotInstance:
             self.users.append(user)
             is_new = True
         else:
-            user["last_seen"]   = int(time.time())
-            user["first_name"]  = m.from_user.first_name or user.get("first_name","")
-            user["username"]    = m.from_user.username   or user.get("username","")
+            user["last_seen"]  = int(time.time())
+            user["first_name"] = m.from_user.first_name or user.get("first_name", "")
+            user["username"]   = m.from_user.username   or user.get("username", "")
         return user, is_new
 
-    async def flood_check(self, uid: int) -> bool:
-        if self.rate_limit <= 0: return False
+    async def check_flood(self, uid: int) -> bool:
+        if self.rate_limit <= 0:
+            return False
         now = time.time()
-        if now - self.flood.get(uid, 0) < self.rate_limit: return True
-        self.flood[uid] = now; return False
+        if now - self.flood.get(uid, 0) < self.rate_limit:
+            return True
+        self.flood[uid] = now
+        return False
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
     # СТАТИСТИКА
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
 
-    def stat_inc(self, is_admin=False):
-        self.stats["totalMessages"] = self.stats.get("totalMessages",0) + 1
+    async def log_msg(self, uid: int, name: str, text: str, is_admin: bool = False):
+        self.stats["totalMessages"] = self.stats.get("totalMessages", 0) + 1
         key = "outgoingToday" if is_admin else "incomingToday"
-        self.stats[key] = self.stats.get(key,0) + 1
+        self.stats[key] = self.stats.get(key, 0) + 1
+        if not is_admin:
+            for u in self.users:
+                if u["id"] == uid:
+                    u["last_seen"]  = int(time.time())
+                    u["first_name"] = name
+                    break
+        asyncio.create_task(self._write_log(uid, name, text, is_admin))
+        asyncio.create_task(self._push_state())
 
-    async def do_log(self, uid: int, name: str, text: str, is_admin=False):
-        self.stat_inc(is_admin)
-        asyncio.create_task(self._log_msg(uid, name, text, is_admin))
-        asyncio.create_task(self._push())
-
-    async def _log_msg(self, uid, name, text, is_admin):
+    async def _write_log(self, uid: int, name: str, text: str, is_admin: bool):
         try:
             async with httpx.AsyncClient(timeout=5) as c:
-                await c.post(f"{self.sb_url}/rest/v1/bot_messages",
-                    json={"bot_id": self.bot_id, "user_id": uid,
-                          "first_name": name, "message_text": (text or "")[:950],
-                          "is_from_admin": is_admin},
-                    headers={**self.sb_hdrs, "Prefer": "return=minimal"})
-        except: pass
+                await c.post(
+                    f"{self.sb_url}/rest/v1/bot_messages",
+                    json={
+                        "bot_id":        self.bot_id,
+                        "user_id":       uid,
+                        "first_name":    name,
+                        "message_text":  (text or "")[:950],
+                        "is_from_admin": is_admin,
+                    },
+                    headers={**self.sb_hdrs, "Prefer": "return=minimal"},
+                )
+        except Exception:
+            pass
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
     # БД
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
 
-    async def _push(self):
-        """Сохраняет users и stats в БД. Дебаунс 5 сек."""
+    async def _push_state(self):
+        """Дебаунс 5 сек."""
         now = time.time()
-        if now - self._last_push < 5.0: return
+        if now - self._last_push < 5.0:
+            return
         self._last_push = now
-        try:
-            async with httpx.AsyncClient(timeout=8) as c:
-                r = await c.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}&select=config",
-                    headers=self.sb_hdrs)
-                if r.status_code != 200 or not r.json(): return
-                old_cfg = r.json()[0].get("config") or {}
-                new_cfg = {**old_cfg, "connectedUsers": self.users, "stats": self.stats}
-                await c.patch(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                    json={"config": new_cfg},
-                    headers={**self.sb_hdrs, "Prefer": "return=minimal"})
-        except Exception as e: log.debug(f"_push: {e}")
+        await self._do_push()
 
     async def _push_force(self):
-        """Принудительный сброс дебаунса + сохранение."""
-        self._last_push = 0
-        await self._push()
+        """Без дебаунса — для важных операций (бан, рассылка и т.д.)."""
+        self._last_push = 0.0
+        await self._do_push()
 
-    # ─────────────────────────────────────────────────────────────────────
-    # BROADCAST
-    # ─────────────────────────────────────────────────────────────────────
+    async def _do_push(self):
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(
+                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}&select=config",
+                    headers=self.sb_hdrs)
+                if r.status_code != 200 or not r.json():
+                    log.warning(f"_do_push: не нашёл бота {self.bot_id}")
+                    return
+                old_cfg = r.json()[0].get("config") or {}
+                new_cfg = {**old_cfg, "connectedUsers": self.users, "stats": self.stats}
+                pr = await c.patch(
+                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                    json={"config": new_cfg},
+                    headers={**self.sb_hdrs, "Prefer": "return=minimal"})
+                if pr.status_code not in (200, 204):
+                    log.warning(f"_do_push patch: {pr.status_code} {pr.text[:200]}")
+        except Exception as e:
+            log.error(f"_do_push: {e}")
 
-    def _bc_count(self) -> int:
+    # ─────────────────────────────────────────────────────
+    # РАССЫЛКА
+    # ─────────────────────────────────────────────────────
+
+    def _bc_get_today(self) -> int:
         today = datetime.now().strftime("%d.%m")
-        if self._bc_day.get("date") != today: self._bc_day = {"date": today, "count": 0}
-        return self._bc_day["count"]
+        if self._bc_today_date != today:
+            self._bc_today_date  = today
+            self._bc_today_count = 0
+            self.stats["broadcastsToday"] = 0
+        return self._bc_today_count
 
-    def _bc_inc(self):
+    def _bc_increment(self):
         today = datetime.now().strftime("%d.%m")
-        if self._bc_day.get("date") != today: self._bc_day = {"date": today, "count": 0}
-        self._bc_day["count"] += 1
-        self.stats["broadcastsToday"] = self._bc_day["count"]
-        self.stats["broadcastsTotal"] = self.stats.get("broadcastsTotal",0) + 1
+        if self._bc_today_date != today:
+            self._bc_today_date  = today
+            self._bc_today_count = 0
+        self._bc_today_count += 1
+        self.stats["broadcastsToday"] = self._bc_today_count
+        self.stats["broadcastsTotal"] = self.stats.get("broadcastsTotal", 0) + 1
+        hist = self.stats.get("history", [])
+        if hist and hist[-1].get("date") == today:
+            hist[-1]["broadcasts"] = hist[-1].get("broadcasts", 0) + 1
 
-    async def do_broadcast(self, m: Message, users: list, src_id: int):
-        sent = err = 0
-        sm = await m.reply(f"🚀 <b>Рассылаю {len(users)} получателям...</b>")
-        for u in users:
+    async def do_broadcast(self, m: Message, active_users: list, src_msg_id: int):
+        sent_c = err_c = 0
+        status = await m.reply(
+            f"🚀 <b>Рассылаю {len(active_users)} получателям...</b>")
+        for user in active_users:
             try:
-                await self.tg.copy_message(int(u["id"]), m.chat.id, src_id)
-                sent += 1
+                await self.tg.copy_message(
+                    chat_id=int(user["id"]),
+                    from_chat_id=m.chat.id,
+                    message_id=src_msg_id)
+                sent_c += 1
                 await asyncio.sleep(0.05)
             except TelegramForbiddenError:
-                u["is_active"] = False; err += 1
+                user["is_active"] = False
+                err_c += 1
             except TelegramRetryAfter as e:
                 await asyncio.sleep(e.retry_after + 1)
                 try:
-                    await self.tg.copy_message(int(u["id"]), m.chat.id, src_id); sent += 1
-                except: err += 1
+                    await self.tg.copy_message(int(user["id"]), m.chat.id, src_msg_id)
+                    sent_c += 1
+                except Exception:
+                    err_c += 1
             except Exception as e:
-                log.debug(f"bc send {u['id']}: {e}"); err += 1
-        self._bc_inc()
+                log.debug(f"bc send {user['id']}: {e}")
+                err_c += 1
+
+        self._bc_increment()
+        # Сохраняем счётчик в БД сразу после рассылки
         await self._push_force()
+
         try:
-            await sm.edit_text(
+            await status.edit_text(
                 f"✅ <b>Рассылка завершена!</b>\n\n"
-                f"👤 Доставлено: <b>{sent}</b>\n"
-                f"🚫 Ошибок: <b>{err}</b>\n"
-                f"📊 Рассылок сегодня: <b>{self._bc_count()}</b>")
-        except: pass
+                f"👤 Доставлено: <b>{sent_c}</b>\n"
+                f"🚫 Ошибок: <b>{err_c}</b>\n"
+                f"📊 Рассылок сегодня: <b>{self._bc_get_today()}</b>")
+        except Exception:
+            pass
 
-    # ─────────────────────────────────────────────────────────────────────
-    # КОМАНДЫ МОДЕРАЦИИ
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
+    # КОМАНДЫ АДМИНИСТРАТОРА
+    # ─────────────────────────────────────────────────────
 
-    async def do_admin_cmd(self, m: Message) -> bool:
-        if not m.text: return False
+    async def handle_admin_cmd(self, m: Message) -> bool:
+        if not m.text:
+            return False
         txt = m.text.strip()
-        if not (txt.startswith("/") or txt.startswith("!")): return False
+        if not (txt.startswith("/") or txt.startswith("!")):
+            return False
 
         parts = txt.split()
         cmd   = parts[0][1:].lower()
 
-        # ── /stats ───────────────────────────────────────────────────────
+        if cmd == "start":
+            return True  # игнорируем /start в admin chat
+
+        # /stats
         if cmd == "stats":
             total  = len(self.users)
             banned = sum(1 for u in self.users if u.get("is_banned"))
-            active = sum(1 for u in self.users if u.get("is_active",True) and not u.get("is_banned"))
-            bc     = self._bc_count()
+            active = sum(1 for u in self.users if u.get("is_active", True) and not u.get("is_banned"))
             await m.reply(
                 f"📊 <b>Статистика бота</b>\n\n"
-                f"👥 Всего пользователей: <b>{total}</b>\n"
+                f"👥 Всего: <b>{total}</b>\n"
                 f"✅ Активных: <b>{active}</b>\n"
-                f"🚫 Заблокировано: <b>{banned}</b>\n"
-                f"📢 Рассылок сегодня: <b>{bc}</b>\n"
-                f"📨 Сообщений всего: <b>{self.stats.get('totalMessages',0)}</b>")
+                f"🚫 Забанено: <b>{banned}</b>\n"
+                f"📨 Сообщений всего: <b>{self.stats.get('totalMessages', 0)}</b>\n"
+                f"📢 Рассылок сегодня: <b>{self._bc_get_today()}</b>\n"
+                f"📢 Рассылок всего: <b>{self.stats.get('broadcastsTotal', 0)}</b>")
             return True
 
-        # ── /broadcast ───────────────────────────────────────────────────
+        # /broadcast
         if cmd == "broadcast":
-            active_users = [u for u in self.users if not u.get("is_banned") and u.get("is_active",True)]
-            if not active_users:
-                await m.reply("Нет активных пользователей."); return True
+            actives = [u for u in self.users if not u.get("is_banned") and u.get("is_active", True)]
+            if not actives:
+                await m.reply("Нет активных пользователей.")
+                return True
             if m.reply_to_message:
-                await self.do_broadcast(m, active_users, m.reply_to_message.message_id)
+                await self.do_broadcast(m, actives, m.reply_to_message.message_id)
             else:
-                self.bc_waiting[m.from_user.id] = True
+                self.bc_wait[m.from_user.id] = True
                 await m.reply(
-                    f"📢 <b>Режим рассылки</b>\n"
-                    f"Следующим сообщением пришлите то, что хотите разослать.\n"
-                    f"<i>Поддерживается любой тип: текст, фото, видео, стикер, голосовой и т.д.</i>")
+                    "📢 <b>Режим рассылки включён</b>\n\n"
+                    "Следующим сообщением отправьте то, что нужно разослать.\n"
+                    "Поддерживается любой тип: текст, фото, видео, стикер, голосовое, документ.")
             return True
 
-        # ── Команды требующие target_user ────────────────────────────────
+        # Команды с target_user
         target = None
         if m.message_thread_id:
-            target = next((u for u in self.users if u.get("last_topic_id") == m.message_thread_id), None)
+            target = next(
+                (u for u in self.users if u.get("last_topic_id") == m.message_thread_id), None)
         if not target and m.reply_to_message:
-            uid_map = self.msg_map.get(m.reply_to_message.message_id)
-            if uid_map:
-                target = next((u for u in self.users if int(u["id"]) == int(uid_map)), None)
+            mapped = self.msg_map.get(m.reply_to_message.message_id)
+            if mapped:
+                target = next((u for u in self.users if int(u["id"]) == int(mapped)), None)
         if not target and len(parts) > 1:
             try:
                 did = int(parts[1])
                 target = next((u for u in self.users if int(u["id"]) == did), None)
-                if not target and cmd in ("ban","unban"):
-                    target = {"id": did, "first_name": f"User#{did}", "username": None,
-                               "is_banned": False, "warns": 0, "joined_at": int(time.time()), "last_seen": int(time.time())}
+                if not target and cmd in ("ban", "unban"):
+                    target = {
+                        "id": did, "first_name": f"User#{did}", "username": None,
+                        "is_banned": False, "warns": 0, "is_active": True,
+                        "joined_at": int(time.time()), "last_seen": int(time.time()),
+                    }
                     self.users.append(target)
                 elif not target:
-                    await m.reply(f"Пользователь <code>{did}</code> не найден."); return True
-            except ValueError: pass
+                    await m.reply(f"Пользователь <code>{did}</code> не найден.")
+                    return True
+            except ValueError:
+                pass
 
-        if not target: return False
+        if not target:
+            return False
 
         uid = target["id"]
 
         if cmd == "whois":
             un   = target.get("username")
-            name = target.get("first_name","—") + (f" (@{un})" if un else "")
-            jt   = datetime.fromtimestamp(target.get("joined_at",0)).strftime("%d.%m.%Y %H:%M") if target.get("joined_at") else "—"
-            ls   = datetime.fromtimestamp(target.get("last_seen",0)).strftime("%d.%m.%Y %H:%M")  if target.get("last_seen") else "—"
+            name = target.get("first_name", "—") + (f" (@{un})" if un else "")
+            jt   = (datetime.fromtimestamp(target["joined_at"]).strftime("%d.%m.%Y %H:%M")
+                    if target.get("joined_at") else "—")
+            ls   = (datetime.fromtimestamp(target["last_seen"]).strftime("%d.%m.%Y %H:%M")
+                    if target.get("last_seen") else "—")
             await m.reply(
                 f"🔍 <b>Пользователь</b> <code>{uid}</code>\n\n"
                 f"👤 {name}\n"
                 f"🚫 Забанен: {'Да' if target.get('is_banned') else 'Нет'}\n"
-                f"⚠️ Варнов: {target.get('warns',0)}/{self.ban_thr or '∞'}\n"
+                f"⚠️ Варнов: {target.get('warns', 0)}/{self.ban_thr or '∞'}\n"
+                f"✅ Активен: {'Да' if target.get('is_active', True) else 'Нет'}\n"
                 f"📅 Зашёл: {jt}\n"
-                f"🕐 Активен: {ls}")
+                f"🕐 Последний раз: {ls}")
             return True
 
         if cmd == "ban":
             target["is_banned"] = True
-            self.stats["bannedCount"] = self.stats.get("bannedCount",0) + 1
+            self.stats["bannedCount"] = self.stats.get("bannedCount", 0) + 1
             await self._push_force()
-            try: await self.tg.send_message(uid, "🚫 <b>Доступ к боту ограничен.</b>")
-            except: pass
+            try: await self.tg.send_message(uid, "🚫 <b>Доступ к боту ограничен администратором.</b>")
+            except Exception: pass
             await m.reply(f"✅ <code>{uid}</code> заблокирован.")
             return True
 
         if cmd == "unban":
-            target["is_banned"] = False; target["warns"] = 0
-            self.stats["bannedCount"] = max(0, self.stats.get("bannedCount",1) - 1)
+            target["is_banned"] = False
+            target["warns"]     = 0
+            self.stats["bannedCount"] = max(0, self.stats.get("bannedCount", 1) - 1)
             await self._push_force()
-            try: await self.tg.send_message(uid, "✅ <b>Доступ восстановлен.</b>")
-            except: pass
+            try: await self.tg.send_message(uid, "✅ <b>Ваш доступ восстановлен.</b>")
+            except Exception: pass
             await m.reply(f"✅ <code>{uid}</code> разблокирован.")
             return True
 
         if cmd == "warn":
-            target["warns"] = target.get("warns",0) + 1
+            target["warns"] = target.get("warns", 0) + 1
             if self.ban_thr > 0 and target["warns"] >= self.ban_thr:
                 target["is_banned"] = True
-                self.stats["bannedCount"] = self.stats.get("bannedCount",0) + 1
-                msg = f"🚨 <b>АВТО-БАН</b> <code>{uid}</code> ({target['warns']}/{self.ban_thr} варнов)"
-                notif = f"🚫 Авто-бан: лимит предупреждений исчерпан."
+                self.stats["bannedCount"] = self.stats.get("bannedCount", 0) + 1
+                msg   = f"🚨 <b>АВТО-БАН</b> <code>{uid}</code>. Варнов: {target['warns']}/{self.ban_thr}"
+                notif = f"🚫 Авто-бан: лимит предупреждений ({target['warns']}/{self.ban_thr}) исчерпан."
             else:
-                msg   = f"⚠️ Варн <code>{uid}</code>: {target['warns']}/{self.ban_thr or '∞'}"
+                msg   = f"⚠️ Варн <code>{uid}</code>. Всего: {target['warns']}/{self.ban_thr or '∞'}"
                 notif = f"⚠️ Предупреждение! ({target['warns']}/{self.ban_thr or '∞'})"
             await self._push_force()
             try: await self.tg.send_message(uid, notif)
-            except: pass
-            await m.reply(msg); return True
+            except Exception: pass
+            await m.reply(msg)
+            return True
 
         if cmd == "unwarn":
-            target["warns"] = max(0, target.get("warns",0) - 1)
+            target["warns"] = max(0, target.get("warns", 0) - 1)
             await self._push_force()
             await m.reply(f"✅ Варн снят. У <code>{uid}</code>: {target['warns']}")
             return True
 
         return False
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
     # ФОНОВЫЕ ЗАДАЧИ
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
 
     async def config_sync_loop(self):
-        """Каждые 30 сек читает конфиг из БД и обновляет настройки."""
         await asyncio.sleep(30)
         while self.is_running:
             try:
                 async with httpx.AsyncClient(timeout=8) as c:
-                    r = await c.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}&select=config",
+                    r = await c.get(
+                        f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}&select=config",
                         headers=self.sb_hdrs)
                     if r.status_code == 200 and r.json():
                         cfg = r.json()[0].get("config") or {}
                         self._reload_settings(cfg)
-                        log.debug(f"[{self.bot_id}] config reloaded: btns={len(self.buttons)} trgs={len(self.triggers)} topics={self.use_topics} fwdAll={self.forward_all}")
-            except Exception as e: log.error(f"config_sync_loop: {e}")
+                        log.debug(
+                            f"[{self.bot_id}] synced: btns={len(self.buttons)} "
+                            f"trgs={len(self.triggers)} topics={self.use_topics} "
+                            f"fwdAll={self.forward_all} admin={self.admin_id}")
+            except Exception as e:
+                log.error(f"config_sync_loop: {e}")
             await asyncio.sleep(30)
 
     async def stats_rotator(self):
-        """Каждую минуту обновляет статистику и пушит в БД."""
         while self.is_running:
             try:
-                now  = datetime.now()
-                date = now.strftime("%d.%m")
-                ago  = int((now - timedelta(days=1)).timestamp())
-                active = sum(1 for u in self.users if u.get("last_seen",0) > ago)
+                now   = datetime.now()
+                today = now.strftime("%d.%m")
+                ago24 = int((now - timedelta(days=1)).timestamp())
+                active = sum(1 for u in self.users if u.get("last_seen", 0) > ago24)
                 self.stats["activeUsers24h"] = active
 
                 hist = self.stats.setdefault("history", [])
                 if not hist:
-                    hist.append({"date": date, "incoming": 0, "outgoing": 0,
-                                 "totalUsers": len(self.users), "activeUsers": active, "broadcasts": 0})
-                if hist[-1]["date"] != date:
-                    hist[-1].update({"incoming": self.stats.get("incomingToday",0),
-                                     "outgoing": self.stats.get("outgoingToday",0),
-                                     "totalUsers": len(self.users), "activeUsers": active})
-                    self.stats["incomingToday"] = self.stats["outgoingToday"] = self.stats["broadcastsToday"] = 0
-                    self._bc_day = {"date": date, "count": 0}
-                    hist.append({"date": date, "incoming": 0, "outgoing": 0,
-                                 "totalUsers": len(self.users), "activeUsers": active, "broadcasts": 0})
+                    hist.append({
+                        "date": today, "incoming": 0, "outgoing": 0,
+                        "totalUsers": len(self.users), "activeUsers": active, "broadcasts": 0})
+
+                if hist[-1].get("date") != today:
+                    hist[-1].update({
+                        "incoming":    self.stats.get("incomingToday", 0),
+                        "outgoing":    self.stats.get("outgoingToday", 0),
+                        "totalUsers":  len(self.users),
+                        "activeUsers": active,
+                    })
+                    self.stats["incomingToday"]   = 0
+                    self.stats["outgoingToday"]   = 0
+                    self.stats["broadcastsToday"] = 0
+                    self._bc_today_count = 0
+                    self._bc_today_date  = today
+                    hist.append({
+                        "date": today, "incoming": 0, "outgoing": 0,
+                        "totalUsers": len(self.users), "activeUsers": active, "broadcasts": 0})
                     self.stats["history"] = hist[-14:]
-                hist[-1].update({"incoming": self.stats.get("incomingToday",0),
-                                 "outgoing": self.stats.get("outgoingToday",0),
-                                 "totalUsers": len(self.users), "activeUsers": active})
+
+                hist[-1].update({
+                    "incoming":    self.stats.get("incomingToday", 0),
+                    "outgoing":    self.stats.get("outgoingToday", 0),
+                    "totalUsers":  len(self.users),
+                    "activeUsers": active,
+                })
                 await self._push_force()
-            except Exception as e: log.error(f"stats_rotator: {e}")
+            except Exception as e:
+                log.error(f"stats_rotator: {e}")
             await asyncio.sleep(60)
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
     # HANDLERS
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
 
-    async def setup(self):
+    async def setup_handlers(self):
         self.router.message.middleware(BanMiddleware(self))
         self.router.callback_query.middleware(BanMiddleware(self))
 
-        # ── Заблокировал бота ─────────────────────────────────────────────
         @self.router.my_chat_member(
             ChatMemberUpdatedFilter(member_status_changed=ChatMemberStatus.KICKED))
-        async def _blocked(ev: ChatMemberUpdated):
-            uid = ev.from_user.id
-            u   = next((x for x in self.users if x["id"] == uid), None)
-            if u:
-                u["is_active"] = False
-                asyncio.create_task(self._push())
+        async def _on_blocked(ev: ChatMemberUpdated):
+            uid  = ev.from_user.id
+            user = next((u for u in self.users if u["id"] == uid), None)
+            if user:
+                user["is_active"] = False
+                asyncio.create_task(self._push_state())
                 if self.admin_id:
-                    try: await self.tg.send_message(self.admin_id,
-                        f"🔴 <b>{ev.from_user.full_name}</b> заблокировал бота.",
-                        message_thread_id=u.get("last_topic_id"))
-                    except: pass
+                    try:
+                        await self.tg.send_message(
+                            self.admin_id,
+                            f"🔴 <b>{ev.from_user.full_name}</b> заблокировал бота.",
+                            message_thread_id=user.get("last_topic_id"))
+                    except Exception:
+                        pass
 
-        # ── /start ────────────────────────────────────────────────────────
         @self.router.message(CommandStart())
-        async def _start(m: Message):
-            user, _ = self.get_user(m)
+        async def _on_start(m: Message):
+            if self.admin_id and m.chat.id == self.admin_id:
+                return
+            user, _ = self.get_or_create_user(m)
             if user.get("is_banned"):
-                await m.answer("🚫 <b>Вы заблокированы.</b>"); return
-
-            reply_kb  = self.kb_main()
+                await m.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
+                return
+            reply_kb  = self.kb_reply()
             inline_kb = self.kb_inline(self.welcome_inline)
             main_kb   = inline_kb or reply_kb
-
-            ad      = await self.get_ad() if self.ad_enabled else None
-            welcome = self.welcome or "Здравствуйте!"
-            if ad:
-                ad_text  = ad.get("text","")
-                ad_media = ad.get("media_url","") or ""
-                combined = f"{welcome}\n\n─────────────────\n📢 <b>Реклама</b>\n{ad_text}"
-            else:
-                combined = welcome; ad_text = ""; ad_media = ""
-
+            ad        = await self.get_ad() if self.ad_enabled else None
+            welcome   = self.welcome or "Здравствуйте!"
+            ad_text   = ad.get("text", "") if ad else ""
+            ad_media  = (ad.get("media_url") or "") if ad else ""
+            combined  = f"{welcome}\n\n─────────────────\n📢 <b>Реклама</b>\n{ad_text}" if ad else welcome
             try:
                 if self.welcome_photo:
                     await m.answer_photo(self.welcome_photo, caption=combined[:1024], reply_markup=main_kb)
@@ -679,51 +824,56 @@ class FreeBotInstance:
                 else:
                     await m.answer(combined, reply_markup=main_kb)
             except Exception as e:
-                log.warning(f"_start send: {e}")
+                log.warning(f"start send: {e}")
                 try: await m.answer(welcome, reply_markup=reply_kb)
-                except: pass
+                except Exception: pass
+            await self.log_msg(user["id"], m.from_user.full_name, "/start")
 
-            await self.do_log(user["id"], m.from_user.full_name, "/start")
-
-        # ── Все сообщения (единый handler — сам разбирает источник) ───────
+        # ── ГЛАВНЫЙ HANDLER ─────────────────────────────────────────────
         @self.router.message()
-        async def _all(m: Message):
+        async def _on_message(m: Message):
 
-            # ── СООБЩЕНИЯ ОТ АДМИНИСТРАТОРА ──────────────────────────────
+            # ════════════ ВЕТКА АДМИНИСТРАТОРА ════════════
             if self.admin_id and m.chat.id == self.admin_id:
-                # Команды
-                if await self.do_admin_cmd(m): return
 
-                # Режим рассылки
-                if self.bc_waiting.pop(m.from_user.id, False):
-                    actives = [u for u in self.users if not u.get("is_banned") and u.get("is_active",True)]
-                    if actives: await self.do_broadcast(m, actives, m.message_id)
-                    else: await m.reply("Нет активных пользователей.")
+                # Команды
+                if await self.handle_admin_cmd(m):
                     return
 
-                # Ответ пользователю через топик или реплай
-                tid = None
+                # Режим рассылки — bc_wait сбрасывается через .pop()
+                # Это значит: только ОДНО следующее сообщение уйдёт в рассылку
+                if self.bc_wait.pop(m.from_user.id, False):
+                    actives = [u for u in self.users if not u.get("is_banned") and u.get("is_active", True)]
+                    if actives:
+                        await self.do_broadcast(m, actives, m.message_id)
+                    else:
+                        await m.reply("Нет активных пользователей.")
+                    return
+
+                # Ответ пользователю
+                target_uid = None
                 if m.message_thread_id:
                     u = next((x for x in self.users if x.get("last_topic_id") == m.message_thread_id), None)
-                    if u: tid = u["id"]
-                if not tid and m.reply_to_message:
-                    tid = self.msg_map.get(m.reply_to_message.message_id)
+                    if u: target_uid = u["id"]
+                if not target_uid and m.reply_to_message:
+                    target_uid = self.msg_map.get(m.reply_to_message.message_id)
 
-                if tid:
+                if target_uid:
                     try:
-                        await self.tg.copy_message(tid, m.chat.id, m.message_id)
-                        await self.do_log(tid, "Admin", m.text or "[Медиа]", is_admin=True)
+                        await self.tg.copy_message(target_uid, m.chat.id, m.message_id)
+                        await self.log_msg(target_uid, "Admin", m.text or "[Медиа]", is_admin=True)
                     except TelegramForbiddenError:
                         await m.reply("❌ Пользователь заблокировал бота.")
                     except Exception as e:
                         await m.reply(f"❌ Ошибка: {e}")
-                return  # ← всё от admin_id — обработано
+                return
+            # ══════ конец ветки администратора ══════
 
-            # ── СООБЩЕНИЯ ОТ ПОЛЬЗОВАТЕЛЕЙ ───────────────────────────────
-            user, is_new = self.get_user(m)
+            # ════════════ ВЕТКА ПОЛЬЗОВАТЕЛЯ ════════════
+            user, is_new = self.get_or_create_user(m)
             if user.get("is_banned"):
-                try: await m.answer("🚫 <b>Вы заблокированы.</b>")
-                except: pass
+                try: await m.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
+                except Exception: pass
                 return
 
             uid = user["id"]
@@ -731,155 +881,175 @@ class FreeBotInstance:
             # Media group
             if m.media_group_id:
                 gid = m.media_group_id
-                if gid not in self.mgbuf:
-                    self.mgbuf[gid] = {"msgs": [], "user": user, "is_new": is_new, "in_ticket": user.get("_in_ticket",False)}
+                if gid not in self.mg_buf:
+                    self.mg_buf[gid] = {
+                        "msgs": [], "user": user, "is_new": is_new,
+                        "in_ticket": bool(user.get("_in_ticket")),
+                    }
                     async def _flush(gid=gid):
-                        await asyncio.sleep(1.0)
-                        buf = self.mgbuf.pop(gid, None)
+                        await asyncio.sleep(1.2)
+                        buf = self.mg_buf.pop(gid, None)
                         if not buf or not buf["msgs"]: return
                         if not (buf["in_ticket"] or self.forward_all or buf["is_new"]): return
                         if not self.admin_id: return
                         try:
                             from aiogram.types import InputMediaPhoto, InputMediaVideo, InputMediaDocument
                             first = buf["msgs"][0]
-                            hdr   = make_header(first, self.stg, buf["is_new"])
+                            hdr   = build_header(first, self.stg, buf["is_new"])
                             items = []
                             for i, msg in enumerate(buf["msgs"]):
-                                cap = ((hdr if i==0 else "") + (msg.caption or ""))[:1024]
-                                if msg.photo:   items.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=cap or None, parse_mode="HTML"))
-                                elif msg.video: items.append(InputMediaVideo(media=msg.video.file_id,   caption=cap or None, parse_mode="HTML"))
-                                elif msg.document: items.append(InputMediaDocument(media=msg.document.file_id, caption=cap or None, parse_mode="HTML"))
+                                cap = ((hdr if i == 0 else "") + (msg.caption or ""))[:1024]
+                                if msg.photo:
+                                    items.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=cap or None, parse_mode="HTML"))
+                                elif msg.video:
+                                    items.append(InputMediaVideo(media=msg.video.file_id, caption=cap or None, parse_mode="HTML"))
+                                elif msg.document:
+                                    items.append(InputMediaDocument(media=msg.document.file_id, caption=cap or None, parse_mode="HTML"))
                             if items:
-                                await self.tg.send_media_group(self.admin_id, items,
+                                await self.tg.send_media_group(
+                                    self.admin_id, items,
                                     message_thread_id=buf["user"].get("last_topic_id"))
-                        except Exception as e: log.error(f"mg flush: {e}")
-                        await self.do_log(buf["user"]["id"], buf["msgs"][0].from_user.full_name, "[МедиаГруппа]")
+                        except Exception as e:
+                            log.error(f"mg_flush: {e}")
+                        await self.log_msg(buf["user"]["id"], buf["msgs"][0].from_user.full_name, "[МедиаГруппа]")
                     asyncio.create_task(_flush())
-                self.mgbuf[gid]["msgs"].append(m)
+                self.mg_buf[gid]["msgs"].append(m)
                 return
 
             # Антиспам
-            if await self.flood_check(uid): return
-
-            # ── ТИКЕТ: активный ──────────────────────────────────────────
-            if user.get("_in_ticket"):
-                close = user.get("_ticket_close_label","Закрыть обращение")
-                if m.text and m.text.strip() in (close, "Закрыть обращение"):
-                    user.pop("_in_ticket", None); user.pop("_ticket_close_label", None)
-                    asyncio.create_task(self._push())
-                    if self.admin_id:
-                        try:
-                            n = user.get("first_name",str(uid))
-                            if user.get("username"): n += f" (@{user['username']})"
-                            await self.tg.send_message(self.admin_id,
-                                f"Обращение закрыто.\n{n} | ID: <code>{uid}</code>",
-                                message_thread_id=user.get("last_topic_id"))
-                        except: pass
-                    await m.answer("Обращение закрыто.", reply_markup=self.kb_main()); return
-                await self.fwd_admin(m, user)
-                await self.do_log(uid, m.from_user.full_name, m.text or "[Медиа]")
+            if await self.check_flood(uid):
                 return
 
-            # ── КНОПКИ И ТРИГГЕРЫ — всегда до forwardAll ─────────────────
+            # Активный тикет
+            if user.get("_in_ticket"):
+                close_label = user.get("_ticket_close_label", "Закрыть обращение")
+                if m.text and m.text.strip() in (close_label, "Закрыть обращение"):
+                    user.pop("_in_ticket", None)
+                    user.pop("_ticket_close_label", None)
+                    asyncio.create_task(self._push_state())
+                    if self.admin_id:
+                        try:
+                            nl = user.get("first_name", str(uid))
+                            if user.get("username"): nl += f" (@{user['username']})"
+                            await self.tg.send_message(
+                                self.admin_id,
+                                f"🔒 Обращение закрыто.\n{nl} | ID: <code>{uid}</code>",
+                                message_thread_id=user.get("last_topic_id"))
+                        except Exception: pass
+                    await m.answer("🔒 Обращение закрыто.", reply_markup=self.kb_reply())
+                    return
+                await self.forward_to_admin(m, user)
+                await self.log_msg(uid, m.from_user.full_name, m.text or "[Медиа]")
+                return
+
+            # ══ КНОПКИ и ТРИГГЕРЫ — ВСЕГДА ДО forwardAll ══
             if m.text:
                 clean = m.text.strip()
                 lower = clean.lower()
 
                 if clean in ("⬅️ Назад", "Назад"):
-                    await m.answer("Главное меню:", reply_markup=self.kb_main()); return
+                    await m.answer("Главное меню:", reply_markup=self.kb_reply())
+                    return
 
-                btn_match = next((b for b in self.buttons if b.get("text","").lower() == lower), None)
+                btn_match = next(
+                    (b for b in self.buttons if b.get("text", "").lower() == lower), None)
                 if btn_match:
-                    btype = btn_match.get("type","default")
+                    btype = btn_match.get("type", "default")
                     if btype == "ticket":
-                        user["_in_ticket"] = True
+                        user["_in_ticket"]         = True
                         user["_ticket_close_label"] = "Закрыть обращение"
-                        await self.fwd_admin(m, user, btn=btn_match["text"])
-                        resp = btn_match.get("response","Ваше обращение принято. Ожидайте ответа.")
+                        await self.forward_to_admin(m, user, btn_text=btn_match["text"])
+                        resp = btn_match.get("response", "Ваше обращение принято. Ожидайте ответа оператора.")
                         close_kb = ReplyKeyboardMarkup(
                             keyboard=[[KeyboardButton(text="Закрыть обращение")]],
                             resize_keyboard=True)
-                        await m.answer(f"{resp}\n\nПишите — сообщения доставят оператору.", reply_markup=close_kb)
+                        await m.answer(
+                            f"{resp}\n\nПишите — все сообщения доставят оператору.",
+                            reply_markup=close_kb)
                     else:
-                        resp  = btn_match.get("response","")
-                        ikb   = self.kb_inline(btn_match.get("inline",[]))
-                        await m.answer(resp or "✅", reply_markup=ikb or self.kb_main())
-                    await self.do_log(uid, m.from_user.full_name, f"КНОПКА: {btn_match['text']}")
+                        resp  = btn_match.get("response", "")
+                        ikb   = self.kb_inline(btn_match.get("inline", []))
+                        await m.answer(resp or "✅", reply_markup=ikb or self.kb_reply())
+                    await self.log_msg(uid, m.from_user.full_name, f"КНОПКА: {btn_match['text']}")
                     return
 
-                # Триггеры
                 for trig in self.triggers:
-                    kw = trig.get("keyword","")
+                    kw = trig.get("keyword", "")
                     if kw and kw.lower() in lower:
                         await m.answer(trig.get("response") or "✅")
-                        await self.do_log(uid, m.from_user.full_name, f"ТРИГГЕР: {kw}")
+                        await self.log_msg(uid, m.from_user.full_name, f"ТРИГГЕР: {kw}")
                         return
 
-            # ── ФОРВАРД: первое обращение или forwardAll ──────────────────
+            # Форвард: первое обращение или forward_all
             if is_new or self.forward_all:
-                await self.fwd_admin(m, user, is_first=is_new)
-                await self.do_log(uid, m.from_user.full_name, m.text or "[Медиа]")
+                await self.forward_to_admin(m, user, is_first=is_new)
+                await self.log_msg(uid, m.from_user.full_name, m.text or "[Медиа]")
             else:
-                await m.answer("Воспользуйтесь меню или нажмите кнопку.", reply_markup=self.kb_main())
+                await m.answer(
+                    "Воспользуйтесь меню или нажмите кнопку для связи с оператором.",
+                    reply_markup=self.kb_reply())
 
-        # ── Закрытие тикета inline ────────────────────────────────────────
         @self.router.callback_query(lambda c: c.data == "ticket_close")
-        async def _cb_close(cb: CallbackQuery):
-            uid = cb.from_user.id
-            u   = next((x for x in self.users if x["id"] == uid), None)
-            if u:
-                u.pop("_in_ticket", None)
-                asyncio.create_task(self._push())
+        async def _on_cb_close(cb: CallbackQuery):
+            uid  = cb.from_user.id
+            user = next((u for u in self.users if u["id"] == uid), None)
+            if user:
+                user.pop("_in_ticket", None)
+                asyncio.create_task(self._push_state())
                 if self.admin_id:
                     try:
-                        n = u.get("first_name",str(uid))
-                        if u.get("username"): n += f" (@{u['username']})"
-                        await self.tg.send_message(self.admin_id,
-                            f"Обращение закрыто.\n{n} | ID: <code>{uid}</code>",
-                            message_thread_id=u.get("last_topic_id"))
-                    except: pass
+                        nl = user.get("first_name", str(uid))
+                        if user.get("username"): nl += f" (@{user['username']})"
+                        await self.tg.send_message(
+                            self.admin_id,
+                            f"🔒 Обращение закрыто.\n{nl} | ID: <code>{uid}</code>",
+                            message_thread_id=user.get("last_topic_id"))
+                    except Exception: pass
             try: await cb.message.delete()
-            except: pass
-            try: await cb.answer("Закрыто.")
-            except: pass
-            try: await self.tg.send_message(uid, "Обращение закрыто.", reply_markup=self.kb_main())
-            except: pass
+            except Exception: pass
+            try: await cb.answer("Обращение закрыто.")
+            except Exception: pass
+            try: await self.tg.send_message(uid, "🔒 <b>Обращение закрыто.</b>", reply_markup=self.kb_reply())
+            except Exception: pass
 
-    # ─────────────────────────────────────────────────────────────────────
-    # ЗАГРУЗКА КОНФИГА ПРИ СТАРТЕ
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
+    # ЗАГРУЗКА ИЗ БД И ЗАПУСК
+    # ─────────────────────────────────────────────────────
 
     async def load_from_db(self):
         try:
             async with httpx.AsyncClient(timeout=10) as c:
-                r = await c.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                r = await c.get(
+                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
                     headers=self.sb_hdrs)
                 if r.status_code == 200 and r.json():
                     row = r.json()[0]
                     rc  = row.get("config") or {}
                     if isinstance(rc, str):
                         try: rc = json.loads(rc)
-                        except: rc = {}
-                    self._apply({**row, "config": rc})
-                    log.info(f"✅ [{self.bot_id}] loaded: btns={len(self.buttons)} trgs={len(self.triggers)} users={len(self.users)} admin={self.admin_id} topics={self.use_topics}")
-        except Exception as e: log.error(f"load_from_db: {e}")
-
-    # ─────────────────────────────────────────────────────────────────────
-    # ЗАПУСК
-    # ─────────────────────────────────────────────────────────────────────
+                        except Exception: rc = {}
+                    self._apply_config({**row, "config": rc})
+                    log.info(
+                        f"✅ [{self.bot_id}] Загружен: users={len(self.users)} "
+                        f"btns={len(self.buttons)} trgs={len(self.triggers)} "
+                        f"admin={self.admin_id} topics={self.use_topics} "
+                        f"fwdAll={self.forward_all} bc_today={self._bc_today_count}")
+                else:
+                    log.error(f"load_from_db: бот {self.bot_id} не найден (status={r.status_code})")
+        except Exception as e:
+            log.error(f"load_from_db: {e}")
 
     async def run(self):
         log.info(f"[FREE] Бот {self.bot_id} стартует...")
         await self.load_from_db()
-
         asyncio.create_task(self.config_sync_loop())
         asyncio.create_task(self.stats_rotator())
-
-        await self.setup()
+        await self.setup_handlers()
         self.dp.include_router(self.router)
-
-        log.info(f"[FREE] {self.bot_id} готов: btns={len(self.buttons)} trgs={len(self.triggers)} "
-                 f"users={len(self.users)} admin={self.admin_id} topics={self.use_topics} fwdAll={self.forward_all}")
+        log.info(
+            f"[FREE] {self.bot_id} готов | users={len(self.users)} "
+            f"btns={len(self.buttons)} trgs={len(self.triggers)} "
+            f"admin={self.admin_id} topics={self.use_topics} fwdAll={self.forward_all}")
         try:
             await self.dp.start_polling(
                 self.tg,
@@ -890,26 +1060,27 @@ class FreeBotInstance:
             await self.tg.session.close()
 
 
-# ════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 # ТОЧКА ВХОДА
-# ════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("INFO: free_bot_core.py — worker script, started by server.py. Sleeping.", flush=True)
+        print("INFO: worker script. Sleeping.", flush=True)
         import signal
-        ev = asyncio.Event()
-        signal.signal(signal.SIGTERM, lambda *_: ev.set())
-        signal.signal(signal.SIGINT,  lambda *_: ev.set())
-        asyncio.run(ev.wait())
+        _ev = asyncio.Event()
+        signal.signal(signal.SIGTERM, lambda *_: _ev.set())
+        signal.signal(signal.SIGINT,  lambda *_: _ev.set())
+        asyncio.run(_ev.wait())
         sys.exit(0)
 
-    async def main():
+    async def _main():
         try:
             with open(sys.argv[1], encoding="utf-8") as f:
                 cfg = json.load(f)
             await FreeBotInstance(cfg).run()
         except Exception as e:
             log.error(f"FATAL: {e}", exc_info=True)
+            sys.exit(1)
 
-    asyncio.run(main())
+    asyncio.run(_main())
