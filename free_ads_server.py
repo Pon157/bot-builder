@@ -157,76 +157,80 @@ async def free_create_bot(d: dict):
 @router.put("/api/free/bots/{bot_id}/config")
 async def free_update_bot_config(bot_id: str, d: dict):
     """
-    Обновить конфиг free-бота с проверкой ограничений.
-    Принимает весь конфиг — сохраняет полностью, мержит с существующим.
+    Обновить конфиг free-бота.
+    Фронтенд шлёт: { user_id, name, token?, config: { welcomeMessage, welcomePhoto,
+    adminChatId, settings: {...}, firstMessageHeader, ticketMessageHeader, commonMessageHeader },
+    buttons: [...], triggers: [...] }
     """
-    user_id = d.get("user_id", "").strip()
+    user_id = str(d.get("user_id", "")).strip()
     if not user_id:
         raise HTTPException(400, "user_id обязателен")
 
     db = _db()
     r = await db.get("bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}", "is_free_plan": "eq.true"})
     if not r.json():
-        raise HTTPException(404, "Free-бот не найден")
+        raise HTTPException(404, "Free-бот не найден или нет прав")
 
     existing_bot = r.json()[0]
     existing_cfg = existing_bot.get("config") or {}
 
-    buttons  = d.get("buttons",  d.get("config", {}).get("buttons",  existing_cfg.get("buttons",  [])))
-    triggers = d.get("triggers", d.get("config", {}).get("triggers", existing_cfg.get("triggers", [])))
+    # Входящий config-объект (там лежат все настройки)
+    inc = d.get("config") or {}
 
-    # Жёсткие лимиты
-    if len(buttons) > FREE_MAX_BUTTONS:
-        buttons = buttons[:FREE_MAX_BUTTONS]   # обрезаем, не падаем
-    if len(triggers) > FREE_MAX_TRIGGERS:
-        triggers = triggers[:FREE_MAX_TRIGGERS]
+    # Кнопки и триггеры — на корне payload или в config
+    buttons  = d.get("buttons")
+    if buttons is None: buttons  = inc.get("buttons",  existing_cfg.get("buttons",  []))
+    triggers = d.get("triggers")
+    if triggers is None: triggers = inc.get("triggers", existing_cfg.get("triggers", []))
 
-    # Только базовые типы кнопок
-    for btn in buttons:
-        for blocked_key in ["flow", "ai_prompt", "ai_enabled", "webhook", "payment"]:
-            btn.pop(blocked_key, None)
+    # Убираем Pro-only ключи из кнопок
+    for btn in (buttons or []):
+        for k in ["flow", "ai_prompt", "ai_enabled", "webhook", "payment"]:
+            btn.pop(k, None)
 
-    # Новый конфиг = старый мерженный с новыми данными
-    new_config = {**existing_cfg}
+    # settings: мержим — не перетираем лишние ключи
+    old_stg = existing_cfg.get("settings") or {}
+    new_stg = inc.get("settings") or {}
+    merged_stg = {**old_stg, **new_stg}
 
-    # Принимаем конфиг из тела напрямую или из поля "config"
-    incoming_cfg = d.get("config", {})
+    # Собираем новый config — берём старый за основу, применяем новые поля
+    new_cfg = {**existing_cfg}
+    new_cfg["settings"] = merged_stg
+    new_cfg["buttons"]  = buttons
+    new_cfg["triggers"] = triggers
 
-    # Все поля которые могут прийти — копируем (включая welcomePhoto)
-    for key in [
-        "welcomeMessage", "welcomePhoto", "adminChatId",
-        "settings", "description",
-        "firstMessageHeader", "ticketMessageHeader", "commonMessageHeader",
-        "forwardToAdmin", "antiSpam", "rateLimit",
-        "welcomeInline",
-        # аналитика — не трогаем при сохранении, бот пишет сам
-    ]:
-        # Проверяем сначала напрямую в d, потом в d.config
-        if key in d:
-            new_config[key] = d[key]
-        elif key in incoming_cfg:
-            new_config[key] = incoming_cfg[key]
+    # Скалярные поля из inc и из d напрямую
+    for key in ["welcomeMessage", "welcomePhoto", "adminChatId",
+                "firstMessageHeader", "ticketMessageHeader", "commonMessageHeader",
+                "welcomeInline", "description"]:
+        if key in inc:
+            new_cfg[key] = inc[key]
+        elif key in d:
+            new_cfg[key] = d[key]
 
-    new_config["buttons"]  = buttons
-    new_config["triggers"] = triggers
+    # adminChatId ещё может быть в settings (legacy)
+    if "adminChatId" not in new_cfg and merged_stg.get("adminChatId"):
+        new_cfg["adminChatId"] = merged_stg["adminChatId"]
 
-    # Патчим поля на корневом уровне
     patch_payload = {
-        "config": new_config,
-        "name":   d.get("name", existing_bot.get("name", "Bot")),
+        "config": new_cfg,
+        "name":   d.get("name") or existing_bot.get("name") or "Bot",
     }
 
-    # Если пришёл токен — обновляем его тоже
-    if d.get("token") and d["token"] != existing_bot.get("token"):
-        s = _get_server()
-        enc_fn = getattr(s, 'encrypt_val', lambda x: x)
-        patch_payload["token"] = enc_fn(d["token"])
+    # Токен — обновляем если пришёл
+    new_token = d.get("token") or inc.get("token")
+    if new_token and new_token != existing_bot.get("token"):
+        try:
+            s = _get_server()
+            enc_fn = getattr(s, 'encrypt_val', lambda x: x)
+            patch_payload["token"] = enc_fn(new_token)
+        except Exception:
+            patch_payload["token"] = new_token
 
     patch_r = await db.patch("bots",
         params={"id": f"eq.{bot_id}"},
         json=patch_payload,
-        headers={"Prefer": "return=representation"}
-    )
+        headers={"Prefer": "return=representation"})
     result = patch_r.json()
     return result[0] if isinstance(result, list) else result
 
