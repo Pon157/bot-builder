@@ -259,7 +259,11 @@ async def free_get_user_bots(user_id: str):
 
 @router.get("/api/free/bots/{bot_id}/stats")
 async def free_bot_stats(bot_id: str, user_id: str):
-    """Полная аналитика."""
+    """
+    Полная аналитика.
+    ФИКС: stats всегда внутри config, не на корне row.
+    bannedCount считаем из реального connectedUsers (не из stats).
+    """
     db = _db()
     r = await db.get("bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}"})
     if not r.json():
@@ -267,16 +271,13 @@ async def free_bot_stats(bot_id: str, user_id: str):
     bot = r.json()[0]
     cfg = bot.get("config") or {}
 
-    db_stats  = bot.get("stats") or {}
+    # stats всегда живёт внутри config — только оттуда читаем
     cfg_stats = cfg.get("stats") or {}
 
-    def _safe_max(key: str) -> int:
-        return max(int(db_stats.get(key) or 0), int(cfg_stats.get(key) or 0))
-
     history_map: dict = {}
-    for src in [cfg_stats.get("history") or [], db_stats.get("history") or []]:
-        for entry in src:
-            date = entry.get("date", "")
+    for entry in (cfg_stats.get("history") or []):
+        date = entry.get("date", "")
+        if date:
             if date not in history_map:
                 history_map[date] = dict(entry)
             else:
@@ -284,20 +285,22 @@ async def free_bot_stats(bot_id: str, user_id: str):
                     history_map[date][k] = max(history_map[date].get(k, 0), entry.get(k, 0))
     merged_history = sorted(history_map.values(), key=lambda x: x.get("date", ""))[-14:]
 
-    merged_stats = {
-        "totalMessages":    _safe_max("totalMessages"),
-        "incomingToday":    _safe_max("incomingToday"),
-        "outgoingToday":    _safe_max("outgoingToday"),
-        "bannedCount":      _safe_max("bannedCount"),
-        "activeUsers24h":   _safe_max("activeUsers24h"),
-        "broadcastsTotal":  _safe_max("broadcastsTotal"),
-        "broadcastsToday":  _safe_max("broadcastsToday"),
-        "history":          merged_history,
-    }
-
     connected    = cfg.get("connectedUsers") or []
     users_count  = len(connected)
     active_count = sum(1 for u in connected if u.get("is_active", True) and not u.get("is_banned"))
+    # ФИКС: bannedCount считаем из реального списка юзеров, не из устаревшего счётчика
+    banned_count = sum(1 for u in connected if u.get("is_banned"))
+
+    merged_stats = {
+        "totalMessages":    int(cfg_stats.get("totalMessages",  0)),
+        "incomingToday":    int(cfg_stats.get("incomingToday",  0)),
+        "outgoingToday":    int(cfg_stats.get("outgoingToday",  0)),
+        "bannedCount":      banned_count,
+        "activeUsers24h":   int(cfg_stats.get("activeUsers24h", 0)),
+        "broadcastsTotal":  int(cfg_stats.get("broadcastsTotal", 0)),
+        "broadcastsToday":  int(cfg_stats.get("broadcastsToday", 0)),
+        "history":          merged_history,
+    }
 
     return {
         "bot_id":        bot_id,
@@ -306,6 +309,7 @@ async def free_bot_stats(bot_id: str, user_id: str):
         "users_count":   users_count,
         "active_count":  active_count,
         "stats":         merged_stats,
+        "connected_users": connected,
         "ad_enabled":    bot.get("ad_enabled", True),
         "memory_limit":  bot.get("memory_limit_mb", 0),
         "plan":          "free"
