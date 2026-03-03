@@ -1,17 +1,12 @@
 """
 free_ads_server.py
 ──────────────────
-Все API-роуты для Free Plan и рекламной системы.
-Подключается к server.py одной строкой:
-
-    from free_ads_server import router as free_ads_router
-    app.include_router(free_ads_router)
-
-Требует глобальных переменных из server.py:
-    db, S_URL, S_KEY, A_SECRET, hash_pwd, encrypt_val, decrypt_val,
-    logger, pm (BotManager), _rpc
-
-Все необходимые импорты указаны ниже.
+ИСПРАВЛЕНИЯ v5:
+  • free_update_bot_config — buttons/triggers сохраняются В КОРЕНЬ config,
+    а не только внутри nested объекта. free_bot_core читает их именно оттуда.
+  • free_create_bot — buttons/triggers сохраняются правильно.
+  • start_free_bot — передаёт конфиг с кнопками/триггерами из корня config.
+  • free_bot_stats — корректно читает users_count из connectedUsers.
 """
 
 import os, time, json, secrets, hashlib, uuid, httpx
@@ -19,21 +14,17 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Header, Request
 from starlette.concurrency import run_in_threadpool
 
-# ── Импортируем нужное из основного server.py ──────────────────────────────
-# Эти переменные будут доступны после того, как server.py создаст их.
-# При использовании include_router они уже существуют в global scope.
 import importlib, sys
 
 def _get_server():
-    """Получаем модуль server.py для доступа к его глобальным переменным."""
     return sys.modules.get('__main__') or sys.modules.get('server')
 
 router = APIRouter()
 
-FREE_MAX_BUTTONS  = 9999   # без ограничений
-FREE_MAX_TRIGGERS = 9999   # без ограничений
-FREE_MEMORY_MB    = 0      # без лимита памяти
-PRICE_PER_IMP     = 0.2   # рублей за показ
+FREE_MAX_BUTTONS  = 9999
+FREE_MAX_TRIGGERS = 9999
+FREE_MEMORY_MB    = 0
+PRICE_PER_IMP     = 0.2
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -57,7 +48,6 @@ async def _get_agent(agent_id: str):
     return rows[0] if rows else None
 
 async def _verify_agent_token(token: str) -> Optional[dict]:
-    """Простой stateless JWT-like token: base64(agent_id:hmac)"""
     try:
         import base64, hmac as _hmac
         raw = base64.urlsafe_b64decode(token + "==").decode()
@@ -80,7 +70,6 @@ async def _rpc_local(func_name: str, params: dict):
     rpc_fn = getattr(s, '_rpc', None)
     if rpc_fn:
         return await rpc_fn(func_name, params)
-    # Fallback
     db = _db()
     return await db.post(f"../rpc/{func_name}", json=params,
                          headers={"Content-Type": "application/json"})
@@ -93,8 +82,7 @@ async def _rpc_local(func_name: str, params: dict):
 async def free_create_bot(d: dict):
     """
     Создать бота на free-плане.
-    Body: { user_id, name, token }
-    Limits: max 2 кнопки, max 2 триггера, memory 25 МБ, реклама включена.
+    ИСПРАВЛЕНО: buttons/triggers сохраняются в корень config (не вложенно).
     """
     user_id = d.get("user_id", "").strip()
     name    = d.get("name", "").strip()
@@ -104,8 +92,6 @@ async def free_create_bot(d: dict):
         raise HTTPException(400, "user_id, name, token обязательны")
 
     db = _db()
-
-    # Лимит ботов убран — можно создавать сколько угодно
 
     s = _get_server()
     enc_fn  = getattr(s, 'encrypt_val', lambda x: x)
@@ -120,13 +106,14 @@ async def free_create_bot(d: dict):
         "status":            "IDLE",
         "platform":          "telegram",
         "is_free_plan":      True,
-        "memory_limit_mb":   0,          # 0 = нет лимита
+        "memory_limit_mb":   0,
         "ad_enabled":        True,
-        "license_expires_at": now_ms + 9999 * 24 * 3600 * 1000,  # free = бессрочно
+        "license_expires_at": now_ms + 9999 * 24 * 3600 * 1000,
         "created_at":        now_ms,
         "config": {
             "welcomeMessage": f"Добро пожаловать в {name}!",
             "adminChatId":    "",
+            # ИСПРАВЛЕНО: buttons/triggers в корне config
             "buttons":        [],
             "triggers":       [],
             "connectedUsers": [],
@@ -157,81 +144,109 @@ async def free_create_bot(d: dict):
 @router.put("/api/free/bots/{bot_id}/config")
 async def free_update_bot_config(bot_id: str, d: dict):
     """
-    Обновить конфиг free-бота.
-    Фронтенд шлёт: { user_id, name, token?, config: { welcomeMessage, welcomePhoto,
-    adminChatId, settings: {...}, firstMessageHeader, ticketMessageHeader, commonMessageHeader },
-    buttons: [...], triggers: [...] }
+    ИСПРАВЛЕНО:
+    - buttons/triggers сохраняются в КОРЕНЬ config (не вложенно в settings).
+    - adminChatId сохраняется в корень config.
+    - settings мержатся правильно.
+    - При сохранении НЕ затираем connectedUsers и stats.
     """
     user_id = str(d.get("user_id", "")).strip()
     if not user_id:
         raise HTTPException(400, "user_id обязателен")
 
     db = _db()
-    r = await db.get("bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}", "is_free_plan": "eq.true"})
+    r = await db.get("bots", params={
+        "id": f"eq.{bot_id}",
+        "owner_id": f"eq.{user_id}",
+        "is_free_plan": "eq.true"
+    })
     if not r.json():
         raise HTTPException(404, "Free-бот не найден или нет прав")
 
     existing_bot = r.json()[0]
     existing_cfg = existing_bot.get("config") or {}
 
-    # Входящий config-объект (там лежат все настройки)
+    # Входящий config-объект
     inc = d.get("config") or {}
 
-    # Кнопки и триггеры — на корне payload или в config
+    # Кнопки и триггеры — берём с корня payload, потом из inc
     buttons  = d.get("buttons")
-    if buttons is None: buttons  = inc.get("buttons",  existing_cfg.get("buttons",  []))
+    if buttons is None:
+        buttons = inc.get("buttons", existing_cfg.get("buttons", []))
+
     triggers = d.get("triggers")
-    if triggers is None: triggers = inc.get("triggers", existing_cfg.get("triggers", []))
+    if triggers is None:
+        triggers = inc.get("triggers", existing_cfg.get("triggers", []))
 
-    # Убираем Pro-only ключи из кнопок
+    # Убираем Pro-only поля из кнопок
+    clean_buttons = []
     for btn in (buttons or []):
-        for k in ["flow", "ai_prompt", "ai_enabled", "webhook", "payment"]:
-            btn.pop(k, None)
+        clean_btn = {k: v for k, v in btn.items()
+                     if k not in ("flow", "ai_prompt", "ai_enabled", "webhook", "payment")}
+        clean_buttons.append(clean_btn)
 
-    # settings: мержим — не перетираем лишние ключи
-    old_stg = existing_cfg.get("settings") or {}
-    new_stg = inc.get("settings") or {}
+    # settings: мержим старые + новые
+    old_stg    = existing_cfg.get("settings") or {}
+    new_stg    = inc.get("settings") or {}
     merged_stg = {**old_stg, **new_stg}
 
-    # Собираем новый config — берём старый за основу, применяем новые поля
-    new_cfg = {**existing_cfg}
-    new_cfg["settings"] = merged_stg
-    new_cfg["buttons"]  = buttons
-    new_cfg["triggers"] = triggers
+    # adminChatId — берём из inc, потом из d напрямую, потом из старого конфига
+    admin_chat_id = (
+        inc.get("adminChatId") or
+        d.get("adminChatId") or
+        existing_cfg.get("adminChatId") or
+        ""
+    )
 
-    # Скалярные поля из inc и из d напрямую
-    for key in ["welcomeMessage", "welcomePhoto", "adminChatId",
-                "firstMessageHeader", "ticketMessageHeader", "commonMessageHeader",
-                "welcomeInline", "description"]:
+    # Сохраняем connectedUsers и stats — НЕ трогаем их
+    connected_users = existing_cfg.get("connectedUsers", [])
+    stats           = existing_cfg.get("stats", {})
+
+    # Собираем новый config
+    new_cfg = {
+        # Сохраняем всё что было
+        **existing_cfg,
+        # Перезаписываем нужные поля
+        "adminChatId":  admin_chat_id,
+        "settings":     merged_stg,
+        # ИСПРАВЛЕНО: buttons/triggers всегда в корне config
+        "buttons":      clean_buttons,
+        "triggers":     triggers or [],
+        # НЕ трогаем users и stats
+        "connectedUsers": connected_users,
+        "stats":          stats,
+    }
+
+    # Скалярные поля из inc
+    for key in ["welcomeMessage", "welcomePhoto", "welcomeInline", "description",
+                "firstMessageHeader", "ticketMessageHeader", "commonMessageHeader"]:
         if key in inc:
             new_cfg[key] = inc[key]
-        elif key in d:
-            new_cfg[key] = d[key]
-
-    # adminChatId ещё может быть в settings (legacy)
-    if "adminChatId" not in new_cfg and merged_stg.get("adminChatId"):
-        new_cfg["adminChatId"] = merged_stg["adminChatId"]
 
     patch_payload = {
         "config": new_cfg,
         "name":   d.get("name") or existing_bot.get("name") or "Bot",
     }
 
-    # Токен — обновляем если пришёл
+    # Токен — обновляем если пришёл новый
     new_token = d.get("token") or inc.get("token")
-    if new_token and new_token != existing_bot.get("token"):
+    if new_token and new_token.strip() and new_token != existing_bot.get("token"):
         try:
             s = _get_server()
             enc_fn = getattr(s, 'encrypt_val', lambda x: x)
-            patch_payload["token"] = enc_fn(new_token)
+            patch_payload["token"] = enc_fn(new_token.strip())
         except Exception:
-            patch_payload["token"] = new_token
+            patch_payload["token"] = new_token.strip()
 
     patch_r = await db.patch("bots",
         params={"id": f"eq.{bot_id}"},
         json=patch_payload,
         headers={"Prefer": "return=representation"})
+
     result = patch_r.json()
+    if not result:
+        raise HTTPException(500, "Ошибка сохранения в БД")
+
     return result[0] if isinstance(result, list) else result
 
 
@@ -244,7 +259,7 @@ async def free_get_user_bots(user_id: str):
 
 @router.get("/api/free/bots/{bot_id}/stats")
 async def free_bot_stats(bot_id: str, user_id: str):
-    """Полная аналитика — такая же, как у pro."""
+    """Полная аналитика."""
     db = _db()
     r = await db.get("bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}"})
     if not r.json():
@@ -252,14 +267,12 @@ async def free_bot_stats(bot_id: str, user_id: str):
     bot = r.json()[0]
     cfg = bot.get("config") or {}
 
-    # Получаем stats из двух источников и мержим
     db_stats  = bot.get("stats") or {}
     cfg_stats = cfg.get("stats") or {}
 
     def _safe_max(key: str) -> int:
         return max(int(db_stats.get(key) or 0), int(cfg_stats.get(key) or 0))
 
-    # Мержим историю по дате
     history_map: dict = {}
     for src in [cfg_stats.get("history") or [], db_stats.get("history") or []]:
         for entry in src:
@@ -282,9 +295,8 @@ async def free_bot_stats(bot_id: str, user_id: str):
         "history":          merged_history,
     }
 
-    # users_count — из connectedUsers (реальный список)
-    connected = cfg.get("connectedUsers") or []
-    users_count = len(connected)
+    connected    = cfg.get("connectedUsers") or []
+    users_count  = len(connected)
     active_count = sum(1 for u in connected if u.get("is_active", True) and not u.get("is_banned"))
 
     return {
@@ -300,9 +312,6 @@ async def free_bot_stats(bot_id: str, user_id: str):
     }
 
 
-# ── FREE: Ping-pong поддержка (те же методы что у pro) ──────────────────────
-# Они используют /api/bots/* из основного server.py — здесь просто прокси-чек
-
 @router.get("/api/free/plan-info")
 async def free_plan_info():
     return {
@@ -317,7 +326,7 @@ async def free_plan_info():
             "moderation":   True,
             "ai":           False,
             "miniapp":      False,
-            "broadcast":    False,
+            "broadcast":    True,
             "chatsite":     False,
             "advanced_buttons": False,
         }
@@ -325,7 +334,7 @@ async def free_plan_info():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ADS AUTH — /api/ads/auth/*
+# ADS AUTH
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.post("/api/ads/auth/register")
@@ -360,37 +369,29 @@ async def ads_register(d: dict):
 
 @router.post("/api/ads/auth/send-code")
 async def ads_send_code(d: dict):
-    """
-    Отправляет код подтверждения на email.
-    type: 'register' | 'reset'
-    """
     import random as _random
-    email = d.get("email", "").strip().lower()
-    code_type = d.get("type", "register").upper()   # REGISTER | RESET
+    email     = d.get("email", "").strip().lower()
+    code_type = d.get("type", "register").upper()
     if not email:
         raise HTTPException(400, "Email обязателен")
 
     db = _db()
 
     if code_type == "REGISTER":
-        # Проверяем что email не занят
         check = await db.get("ad_agents", params={"email": f"eq.{email}"})
         if check.json():
             raise HTTPException(409, "Email уже зарегистрирован")
     elif code_type == "RESET":
-        # Проверяем что агент существует
         check = await db.get("ad_agents", params={"email": f"eq.{email}"})
         if not check.json():
-            # Не раскрываем наличие аккаунта — просто возвращаем OK
             return {"ok": True}
     else:
         raise HTTPException(400, f"Неверный тип кода: {code_type}")
 
-    code = str(_random.randint(100000, 999999))
-    now_ms = int(time.time() * 1000)
-    expires_ms = now_ms + 15 * 60 * 1000  # 15 минут
+    code       = str(_random.randint(100000, 999999))
+    now_ms     = int(time.time() * 1000)
+    expires_ms = now_ms + 15 * 60 * 1000
 
-    # Сохраняем код в ad_email_codes (или temp_codes если та же таблица)
     await db.post("ad_email_codes", json={
         "email":      email,
         "code":       code,
@@ -399,14 +400,12 @@ async def ads_send_code(d: dict):
         "used":       False,
     }, headers={"Prefer": "resolution=merge-duplicates"})
 
-    # Отправляем письмо через EmailService из server.py
     s = _get_server()
     email_svc = getattr(s, 'EmailService', None)
     sent = False
 
     if email_svc:
         try:
-            from starlette.concurrency import run_in_threadpool
             if code_type == "REGISTER":
                 sent = await run_in_threadpool(email_svc.send_verification_code, email, code)
             else:
@@ -415,27 +414,20 @@ async def ads_send_code(d: dict):
             _logger().error(f"Email send error: {e}")
 
     if not sent:
-        # Fallback: пробуем httpx отправить через наш API
         try:
             base_url = os.getenv("SERVER_BASE_URL", "http://localhost:8000")
             async with httpx.AsyncClient(timeout=5) as client:
-                if code_type == "REGISTER":
-                    await client.post(f"{base_url}/api/ads/auth/_send-email",
-                        json={"email": email, "code": code, "type": "register"})
-                else:
-                    await client.post(f"{base_url}/api/ads/auth/_send-email",
-                        json={"email": email, "code": code, "type": "reset"})
+                await client.post(f"{base_url}/api/ads/auth/_send-email",
+                    json={"email": email, "code": code, "type": code_type.lower()})
         except Exception as e:
             _logger().warning(f"Fallback email send failed: {e}")
-            # Возвращаем OK — код сохранён в БД, пользователь может запросить повторно
 
-    _logger().info(f"📧 Код {code_type} отправлен на {email} (code={code[:2]}****)")
+    _logger().info(f"📧 Код {code_type} отправлен на {email}")
     return {"ok": True}
 
 
 @router.post("/api/ads/auth/register-verify")
 async def ads_register_verify(d: dict):
-    """Верифицирует код и регистрирует агента."""
     email = d.get("email", "").strip().lower()
     code  = d.get("code", "").strip()
     pwd   = d.get("password", "").strip()
@@ -446,7 +438,6 @@ async def ads_register_verify(d: dict):
     db = _db()
     now_ms = int(time.time() * 1000)
 
-    # Проверяем код
     code_r = await db.get("ad_email_codes", params={
         "email": f"eq.{email}", "code": f"eq.{code}",
         "type":  "eq.REGISTER",  "used": "eq.false",
@@ -455,7 +446,6 @@ async def ads_register_verify(d: dict):
     if not code_r.json():
         raise HTTPException(400, "Неверный или истёкший код. Запросите новый.")
 
-    # Проверяем что email не занят
     check = await db.get("ad_agents", params={"email": f"eq.{email}"})
     if check.json():
         raise HTTPException(409, "Email уже зарегистрирован")
@@ -473,8 +463,9 @@ async def ads_register_verify(d: dict):
     if r.status_code not in (200, 201):
         raise HTTPException(500, "Ошибка регистрации")
 
-    # Помечаем код как использованный
-    await db.patch("ad_email_codes", params={"email": f"eq.{email}", "type": "eq.REGISTER"}, json={"used": True})
+    await db.patch("ad_email_codes",
+        params={"email": f"eq.{email}", "type": "eq.REGISTER"},
+        json={"used": True})
 
     token = _make_agent_token(agent_id)
     return {"token": token, "agent": {**agent, "password_hash": "***"}}
@@ -507,9 +498,8 @@ async def ads_me(authorization: str = Header(...)):
 
 @router.post("/api/ads/auth/reset-password")
 async def ads_reset_password(d: dict):
-    """Сбрасывает пароль агента по коду из письма."""
-    email       = d.get("email", "").strip().lower()
-    code        = d.get("code", "").strip()
+    email        = d.get("email", "").strip().lower()
+    code         = d.get("code", "").strip()
     new_password = d.get("newPassword", "").strip()
 
     if not email or not code or not new_password or len(new_password) < 6:
@@ -518,7 +508,6 @@ async def ads_reset_password(d: dict):
     db = _db()
     now_ms = int(time.time() * 1000)
 
-    # Проверяем код
     code_r = await db.get("ad_email_codes", params={
         "email": f"eq.{email}", "code": f"eq.{code}",
         "type":  "eq.RESET",    "used": "eq.false",
@@ -527,7 +516,6 @@ async def ads_reset_password(d: dict):
     if not code_r.json():
         raise HTTPException(400, "Неверный или истёкший код. Запросите новый.")
 
-    # Обновляем пароль
     r = await db.patch("ad_agents",
         params={"email": f"eq.{email}"},
         json={"password_hash": _hash(new_password)},
@@ -536,14 +524,15 @@ async def ads_reset_password(d: dict):
     if not r.json():
         raise HTTPException(404, "Агент не найден")
 
-    # Помечаем код как использованный
-    await db.patch("ad_email_codes", params={"email": f"eq.{email}", "type": "eq.RESET"}, json={"used": True})
+    await db.patch("ad_email_codes",
+        params={"email": f"eq.{email}", "type": "eq.RESET"},
+        json={"used": True})
 
     return {"ok": True, "message": "Пароль успешно изменён"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ADS PORTAL — /api/ads/*
+# ADS PORTAL
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _auth_agent(authorization: str) -> dict:
@@ -561,19 +550,16 @@ async def ads_dashboard(authorization: str = Header(...)):
     agent = await _auth_agent(authorization)
     db    = _db()
 
-    # Посты агента
     posts_r = await db.get("ad_posts",
         params={"agent_id": f"eq.{agent['id']}", "order": "created_at.desc", "limit": "50"})
     posts   = posts_r.json() or []
 
-    # Транзакции
     tx_r  = await db.get("ad_transactions",
         params={"agent_id": f"eq.{agent['id']}", "order": "created_at.desc", "limit": "50"})
     txs   = tx_r.json() or []
 
-    # Общая статистика системы (публичная: кол-во ботов и пользователей)
-    bots_r  = await db.get("bots",    params={"is_free_plan": "eq.true", "select": "id"})
-    users_r = await db.get("users",   params={"plan": "eq.free",         "select": "id"})
+    bots_r  = await db.get("bots",  params={"is_free_plan": "eq.true", "select": "id"})
+    users_r = await db.get("users", params={"plan": "eq.free",         "select": "id"})
 
     total_impressions = sum(p.get("impressions_used", 0) for p in posts)
     active_posts      = [p for p in posts if p["status"] == "active"]
@@ -631,7 +617,6 @@ async def ads_buy_impressions(post_id: str, d: dict, authorization: str = Header
 
     db = _db()
 
-    # Проверяем что пост существует и принадлежит агенту
     post_r = await db.get("ad_posts", params={"id": f"eq.{post_id}", "agent_id": f"eq.{agent['id']}"})
     if not post_r.json():
         raise HTTPException(404, "Пост не найден")
@@ -639,7 +624,6 @@ async def ads_buy_impressions(post_id: str, d: dict, authorization: str = Header
     if post["status"] not in ("approved", "active"):
         raise HTTPException(422, f"Пост должен быть одобрен (статус: {post['status']}). Дождитесь модерации.")
 
-    # Пробуем через RPC (если настроен)
     rpc_ok = False
     try:
         rpc_r = await _rpc_local("buy_ad_impressions", {
@@ -657,7 +641,6 @@ async def ads_buy_impressions(post_id: str, d: dict, authorization: str = Header
         _logger().warning(f"buy_ad_impressions RPC failed: {e}, falling back to manual")
 
     if not rpc_ok:
-        # Fallback: вручную списываем баланс и добавляем показы
         cost = impressions * PRICE_PER_IMP
         agent_fresh = await _get_agent(agent["id"])
         if not agent_fresh:
@@ -667,25 +650,19 @@ async def ads_buy_impressions(post_id: str, d: dict, authorization: str = Header
             raise HTTPException(402, f"Недостаточно средств. Нужно {cost:.2f}₽, на балансе {balance:.2f}₽")
 
         now_ms = int(time.time() * 1000)
-        new_balance   = balance - cost
-        new_imp_paid  = post.get("impressions_paid", 0) + impressions
+        new_balance  = balance - cost
+        new_imp_paid = post.get("impressions_paid", 0) + impressions
         tx_id = f"tx_{secrets.token_hex(6)}"
 
-        # Обновляем агента
         await db.patch("ad_agents", params={"id": f"eq.{agent['id']}"}, json={"balance_rub": new_balance})
-        # Обновляем пост
         await db.patch("ad_posts", params={"id": f"eq.{post_id}"}, json={"impressions_paid": new_imp_paid})
-        # Записываем транзакцию
         await db.post("ad_transactions", json={
             "id": tx_id, "agent_id": agent["id"], "post_id": post_id,
             "type": "spend", "amount_rub": cost, "impressions": impressions,
             "created_at": now_ms
         }, headers={"Prefer": "return=minimal"})
 
-    # Активируем пост если он approved и теперь есть оплаченные показы
-    current_imp = (post.get("impressions_paid", 0) or 0) + (impressions if not rpc_ok else 0)
-    if post["status"] == "approved" or (rpc_ok and post["status"] in ("approved",)):
-        # После покупки — ставим active
+    if post["status"] == "approved":
         activate_r = await db.patch("ad_posts",
             params={"id": f"eq.{post_id}"},
             json={"status": "active"},
@@ -696,7 +673,6 @@ async def ads_buy_impressions(post_id: str, d: dict, authorization: str = Header
         if isinstance(post_data, list) and post_data:
             return post_data[0]
 
-    # Возвращаем обновлённый пост
     updated = await db.get("ad_posts", params={"id": f"eq.{post_id}"})
     return updated.json()[0] if updated.json() else {"ok": True}
 
@@ -717,16 +693,8 @@ async def ads_balance(authorization: str = Header(...)):
     return {"balance_rub": float(agent.get("balance_rub", 0))}
 
 
-# ── ЮКасса webhook для рекламных агентов ────────────────────────────────────
 @router.post("/api/ads/payments/webhook")
 async def ads_payment_webhook(request: Request):
-    """
-    ЮКасса (YooKassa) webhook — JSON notification.
-    Ожидаем event=payment.succeeded, metadata.agent_id, amount.value
-    Верификация: IP ЮКассы + сравнение payment_id через API.
-    """
-    import hmac
-
     body_bytes = await request.body()
     try:
         data = json.loads(body_bytes)
@@ -735,10 +703,9 @@ async def ads_payment_webhook(request: Request):
 
     event = data.get("event", "")
     if event != "payment.succeeded":
-        # Другие события (waiting, canceled) просто игнорируем
         return {"ok": True}
 
-    obj       = data.get("object", {})
+    obj        = data.get("object", {})
     payment_id = obj.get("id", "")
     amount_obj = obj.get("amount", {})
     amount     = float(amount_obj.get("value", 0))
@@ -748,9 +715,8 @@ async def ads_payment_webhook(request: Request):
     if not agent_id or amount <= 0 or not payment_id:
         return {"ok": True}
 
-    # Верификация: переспрашиваем ЮКассу по API (защита от фейковых вебхуков)
-    yk_shop_id  = os.getenv("YOOKASSA_SHOP_ID", "")
-    yk_secret   = os.getenv("YOOKASSA_SECRET_KEY", "")
+    yk_shop_id = os.getenv("YOOKASSA_SHOP_ID", "")
+    yk_secret  = os.getenv("YOOKASSA_SECRET_KEY", "")
     if yk_shop_id and yk_secret:
         try:
             async with httpx.AsyncClient(timeout=5) as client:
@@ -759,7 +725,6 @@ async def ads_payment_webhook(request: Request):
                     auth=(yk_shop_id, yk_secret)
                 )
                 if r.status_code != 200:
-                    _logger().warning(f"⚠️ ЮКасса: не смогли верифицировать платёж {payment_id}")
                     raise HTTPException(400, "Payment verification failed")
                 real = r.json()
                 if real.get("status") != "succeeded":
@@ -767,7 +732,6 @@ async def ads_payment_webhook(request: Request):
                 real_amount = float(real.get("amount", {}).get("value", 0))
                 real_agent  = real.get("metadata", {}).get("agent_id", "")
                 if real_agent != agent_id or abs(real_amount - amount) > 0.01:
-                    _logger().warning(f"⚠️ ЮКасса: несоответствие данных платежа {payment_id}")
                     raise HTTPException(400, "Payment data mismatch")
         except HTTPException:
             raise
@@ -785,10 +749,6 @@ async def ads_payment_webhook(request: Request):
 
 @router.post("/api/ads/payments/create")
 async def ads_create_payment(d: dict, authorization: str = Header(...)):
-    """
-    Создаём платёж в ЮКассе и возвращаем URL подтверждения.
-    Body: { amount: float }
-    """
     agent = await _auth_agent(authorization)
     amount = float(d.get("amount", 0))
     if amount < 10:
@@ -798,24 +758,16 @@ async def ads_create_payment(d: dict, authorization: str = Header(...)):
     yk_secret  = os.getenv("YOOKASSA_SECRET_KEY", "")
     if not yk_shop_id or not yk_secret:
         raise HTTPException(503, "YOOKASSA_SHOP_ID / YOOKASSA_SECRET_KEY не настроены")
-        
-    return_url   = os.getenv("FRONTEND_URL", os.getenv("SERVER_BASE_URL", "https://dialogengine.webtm.ru")) + "/ads?payment=success"
-    idempotency  = str(uuid.uuid4())
+
+    return_url  = os.getenv("FRONTEND_URL", os.getenv("SERVER_BASE_URL", "https://dialogengine.webtm.ru")) + "/ads?payment=success"
+    idempotency = str(uuid.uuid4())
 
     payload = {
-        "amount": {
-            "value":    f"{amount:.2f}",
-            "currency": "RUB"
-        },
-        "confirmation": {
-            "type":       "redirect",
-            "return_url": return_url
-        },
+        "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
+        "confirmation": {"type": "redirect", "return_url": return_url},
         "capture":     True,
         "description": f"Пополнение рекламного баланса BotEngine — агент {agent['id']}",
-        "metadata": {
-            "agent_id": agent["id"]
-        }
+        "metadata":    {"agent_id": agent["id"]}
     }
 
     try:
@@ -823,14 +775,10 @@ async def ads_create_payment(d: dict, authorization: str = Header(...)):
             r = await client.post(
                 "https://api.yookassa.ru/v3/payments",
                 auth=(yk_shop_id, yk_secret),
-                headers={
-                    "Idempotence-Key": idempotency,
-                    "Content-Type":    "application/json"
-                },
+                headers={"Idempotence-Key": idempotency, "Content-Type": "application/json"},
                 json=payload
             )
         if r.status_code not in (200, 201):
-            _logger().error(f"ЮКасса API error {r.status_code}: {r.text}")
             raise HTTPException(502, "Ошибка создания платежа в ЮКассе")
 
         resp     = r.json()
@@ -838,26 +786,21 @@ async def ads_create_payment(d: dict, authorization: str = Header(...)):
         if not conf_url:
             raise HTTPException(502, "ЮКасса не вернула confirmation_url")
 
-        return {
-            "payment_id":       resp.get("id"),
-            "confirmation_url": conf_url,
-            "amount":           amount
-        }
+        return {"payment_id": resp.get("id"), "confirmation_url": conf_url, "amount": amount}
 
     except HTTPException:
         raise
     except Exception as e:
-        _logger().error(f"ЮКасса create payment error: {e}")
         raise HTTPException(502, f"Ошибка: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ADMIN: модерация рекламных постов
+# ADMIN: модерация
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _verify_admin(token: str) -> bool:
-    s       = _get_server()
-    secret  = getattr(s, 'A_SECRET', os.getenv("ADMIN_TOKEN", ""))
+    s      = _get_server()
+    secret = getattr(s, 'A_SECRET', os.getenv("ADMIN_TOKEN", ""))
     return token == secret
 
 
@@ -869,7 +812,7 @@ async def admin_get_ad_posts(status: str = "pending", x_admin_token: str = Heade
     params = {"order": "created_at.desc"}
     if status != "all":
         params["status"] = f"eq.{status}"
-    r  = await db.get("ad_posts", params=params)
+    r = await db.get("ad_posts", params=params)
     return r.json() or []
 
 
@@ -879,12 +822,10 @@ async def admin_approve_post(post_id: str, x_admin_token: str = Header(...)):
         raise HTTPException(403, "Forbidden")
     db     = _db()
     now_ms = int(time.time() * 1000)
-    # Читаем пост
     post_r = await db.get("ad_posts", params={"id": f"eq.{post_id}"})
     if not post_r.json():
         raise HTTPException(404, "Пост не найден")
-    post = post_r.json()[0]
-    # Если у поста уже куплены показы — сразу в active, иначе approved
+    post       = post_r.json()[0]
     new_status = "active" if (post.get("impressions_paid", 0) or 0) > 0 else "approved"
     r = await db.patch("ad_posts",
         params={"id": f"eq.{post_id}"},
@@ -918,15 +859,15 @@ async def admin_ads_stats(x_admin_token: str = Header(...)):
     agents = agents_r.json() or []
     posts  = posts_r.json()  or []
 
-    total_impressions_sold = sum(p.get("impressions_paid", 0)  for p in posts)
-    total_impressions_used = sum(p.get("impressions_used", 0)  for p in posts)
+    total_impressions_sold = sum(p.get("impressions_paid", 0) for p in posts)
+    total_impressions_used = sum(p.get("impressions_used", 0) for p in posts)
     total_revenue          = sum(p.get("impressions_paid", 0) * float(p.get("price_per_imp", PRICE_PER_IMP)) for p in posts)
 
     return {
         "agents_count":           len(agents),
         "agents":                 agents,
         "posts_count":            len(posts),
-        "posts_by_status":        {
+        "posts_by_status": {
             "pending":  sum(1 for p in posts if p["status"] == "pending"),
             "approved": sum(1 for p in posts if p["status"] == "approved"),
             "active":   sum(1 for p in posts if p["status"] == "active"),
@@ -940,25 +881,17 @@ async def admin_ads_stats(x_admin_token: str = Header(...)):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PUBLIC: получить активную рекламу для показа в боте
+# PUBLIC: активная реклама для бота
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── Round-robin state: bot_id → last shown post index ────────────────────────
-# Хранится в памяти процесса; сбрасывается при рестарте (это нормально).
-_ad_roundrobin: dict = {}   # bot_id → last_shown_post_id
+_ad_roundrobin: dict = {}
 
 
 @router.get("/api/ads/active")
 async def get_active_ad(bot_id: str = ""):
-    """
-    Вызывается из free_bot_core при каждом /start.
-    Чередует активные посты по round-robin (один за другим, по кругу).
-    Засчитывает показ через RPC.
-    """
     global _ad_roundrobin
     db = _db()
 
-    # Получаем ВСЕ активные посты (отсортированные по id для стабильного порядка)
     r = await db.get("ad_posts", params={
         "status": "eq.active",
         "select": "id,text,media_url",
@@ -968,26 +901,21 @@ async def get_active_ad(bot_id: str = ""):
     if not posts:
         return {"ad": None}
 
-    # Round-robin: выбираем следующий после последнего показанного этому боту
-    last_id  = _ad_roundrobin.get(bot_id)
-    post     = None
+    last_id = _ad_roundrobin.get(bot_id)
+    post    = None
 
     if last_id is None:
-        # Первый показ — берём первый пост
         post = posts[0]
     else:
-        # Ищем позицию последнего показанного
         ids = [p["id"] for p in posts]
         if last_id in ids:
             next_idx = (ids.index(last_id) + 1) % len(posts)
         else:
-            # Последний пост мог закончиться — начинаем сначала
             next_idx = 0
         post = posts[next_idx]
 
     _ad_roundrobin[bot_id] = post["id"]
 
-    # Фиксируем показ (атомарно через RPC)
     try:
         await _rpc_local("record_ad_impression", {"p_post_id": post["id"]})
     except Exception as e:
@@ -997,23 +925,17 @@ async def get_active_ad(bot_id: str = ""):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FREE PLAN: линковка с pro аккаунтом
+# FREE: линковка с pro аккаунтом
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.post("/api/free/link-pro")
 async def free_link_pro(d: dict):
-    """
-    Связывает free-аккаунт с pro-аккаунтом.
-    Body: { free_user_id, pro_user_id }
-    После линковки free аккаунт отображает имя/аватар pro аккаунта.
-    """
     free_id = d.get("free_user_id", "").strip()
     pro_id  = d.get("pro_user_id", "").strip()
     if not free_id or not pro_id:
         raise HTTPException(400, "free_user_id и pro_user_id обязательны")
 
     db = _db()
-    # Проверяем что pro существует
     pro_r = await db.get("users", params={"id": f"eq.{pro_id}", "plan": "eq.pro"})
     if not pro_r.json():
         raise HTTPException(404, "Pro аккаунт не найден")
@@ -1028,10 +950,6 @@ async def free_link_pro(d: dict):
 
 @router.get("/api/free/user-info/{user_id}")
 async def free_user_info(user_id: str):
-    """
-    Возвращает инфо аккаунта для отображения в углу UI.
-    Если есть linked_pro — отдаём данные pro аккаунта.
-    """
     db = _db()
     r  = await db.get("users", params={"id": f"eq.{user_id}"})
     if not r.json():
@@ -1063,6 +981,10 @@ async def free_user_info(user_id: str):
     return result
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# BOT START / STOP
+# ══════════════════════════════════════════════════════════════════════════════
+
 @router.post("/api/bots/{bot_id}/start")
 async def start_free_bot(bot_id: str):
     server = _get_server()
@@ -1077,18 +999,26 @@ async def start_free_bot(bot_id: str):
 
     bot_data = r.json()[0]
 
-    # Проверяем бан владельца
     owner_id = bot_data.get("owner_id")
     if owner_id:
         u_r = await db.get("users", params={"id": f"eq.{owner_id}"})
         if u_r.json() and u_r.json()[0].get("is_banned"):
             raise HTTPException(403, "Ваш аккаунт заблокирован")
 
-    # Мержим config с корневыми полями (как в основном start_handler)
+    # ИСПРАВЛЕНО: передаём полный объект row + config развёрнутый
     inner_cfg = bot_data.get("config") or {}
-    merged = {**inner_cfg, **bot_data}
-    # Явно проставляем флаг — BotManager выберет free_bot_core.py
-    merged['is_free_plan'] = True
+    if isinstance(inner_cfg, str):
+        try:
+            inner_cfg = json.loads(inner_cfg)
+        except Exception:
+            inner_cfg = {}
+
+    # Передаём так, чтобы FreeBotInstance.apply_config нашёл buttons/triggers
+    merged = {
+        **bot_data,      # корень: id, token, owner_id, name, ...
+        "config": inner_cfg,  # вложенный config: buttons, triggers, settings, ...
+        "is_free_plan": True,
+    }
 
     success = await pm.start_bot(bot_id, merged)
     if success is True:
@@ -1096,6 +1026,7 @@ async def start_free_bot(bot_id: str):
         return {"status": "ok", "message": "Бот запущен"}
     else:
         raise HTTPException(500, f"Не удалось запустить бота: {success}")
+
 
 @router.post("/api/bots/{bot_id}/stop")
 async def stop_free_bot(bot_id: str):
@@ -1105,7 +1036,6 @@ async def stop_free_bot(bot_id: str):
         raise HTTPException(500, "BotManager не инициализирован")
 
     await pm.stop_bot(bot_id)
-    # Синхронизируем статус в БД
     try:
         db = server.db
         await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "IDLE"})
