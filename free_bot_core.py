@@ -228,6 +228,10 @@ class FreeBotInstance:
                 "broadcastsTotal": st.get("broadcastsTotal", 0),
                 "history":         st.get("history", []),
             }
+            # ФИКС: восстанавливаем _broadcast_day из stats после рестарта
+            # иначе счётчик рассылок в памяти обнуляется и не совпадает с БД
+            _today = datetime.now().strftime("%d.%m")
+            self._broadcast_day = {"date": _today, "count": int(self.stats_data.get("broadcastsToday", 0))}
 
     def reload_config_from_remote(self, remote_cfg: dict):
         """
@@ -941,9 +945,19 @@ class FreeBotInstance:
                 )
                 if res.status_code == 200 and res.json():
                     row = res.json()[0]
-                    # apply_config ожидает row из БД как есть
-                    # row["config"] — там живут все настройки
                     self.apply_config(row)
+
+                    # Сбрасываем зависшие _in_ticket флаги (старше 24ч без активности)
+                    stale_threshold = int(time.time()) - 86400
+                    cleaned = 0
+                    for u in self.users_list:
+                        if u.get("_in_ticket") and u.get("last_seen", 0) < stale_threshold:
+                            u.pop("_in_ticket", None)
+                            u.pop("_ticket_close_label", None)
+                            cleaned += 1
+                    if cleaned:
+                        logger.info(f"[{self.bot_id}] Сброшено {cleaned} зависших тикетов")
+
                     logger.info(
                         f"✅ [{self.bot_id}] Конфиг загружен: "
                         f"кнопок={len(self.buttons)}, триггеров={len(self.triggers)}, "
@@ -1145,7 +1159,7 @@ class FreeBotInstance:
                 f"forwardAll={self.forward_all} in_ticket={user.get('_in_ticket')} is_new={is_new}"
             )
 
-            # Media group
+            # ── Media group ─────────────────────────────────────────────────
             if m.media_group_id:
                 gid = m.media_group_id
                 if gid not in self.media_group_buffer:
@@ -1174,7 +1188,6 @@ class FreeBotInstance:
                                         elif msg.document:
                                             items.append(InputMediaDocument(media=msg.document.file_id, caption=cap[:1024] or None, parse_mode="HTML"))
                                     if items:
-                                        # ИСПРАВЛЕНО: берём thread_id из актуального user объекта
                                         await self.bot.send_media_group(
                                             self.admin_chat_id, items,
                                             message_thread_id=buf["user"].get("last_topic_id")
@@ -1186,58 +1199,63 @@ class FreeBotInstance:
                 self.media_group_buffer[gid]["messages"].append(m)
                 return
 
-            # Антиспам
+            # ── Антиспам ────────────────────────────────────────────────────
             if await self.check_antispam(uid):
                 return
 
-            # ── Тикет: активный режим ───────────────────────────────────────
-            if user.get("_in_ticket"):
-                close_label = user.get("_ticket_close_label", "Закрыть обращение")
-                if m.text and m.text.strip() in (close_label, "Закрыть обращение"):
-                    user.pop("_in_ticket", None)
-                    user.pop("_ticket_close_label", None)
-                    await self._push_state_immediate()
-                    if self.admin_chat_id:
-                        try:
-                            name_line = user.get("first_name", str(uid))
-                            if user.get("username"):
-                                name_line += f" (@{user['username']})"
-                            await self.bot.send_message(
-                                self.admin_chat_id,
-                                f"Обращение закрыто пользователем.\n{name_line} | ID: <code>{uid}</code>",
-                                message_thread_id=user.get("last_topic_id"),
-                            )
-                        except Exception:
-                            pass
-                    await m.answer("Обращение закрыто.", reply_markup=self.get_main_keyboard())
-                    return
-                # В тикете — форвардим
-                await self.forward_to_admin(m, user)
-                await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
-                return
-
-            # ── Кнопки и триггеры ──────────────────────────────────────────
-            # ВАЖНО: это должно быть ДО проверки forwardAll
+            # ════════════════════════════════════════════════════════════════
+            # КНОПКИ И ТРИГГЕРЫ — проверяем ВСЕГДА, ДО всего остального.
+            # Даже если юзер в тикете — кнопки меню работают (могут открыть
+            # новый тикет, получить ответ и т.д.)
+            # ════════════════════════════════════════════════════════════════
             if m.text:
                 clean = m.text.strip()
                 lower = clean.lower()
 
-                # Кнопка "Назад"
-                if clean in ("⬅️ Назад", "Назад"):
-                    await m.answer("Главное меню:", reply_markup=self.get_main_keyboard())
+                # Кнопка "Назад" / "Закрыть обращение"
+                close_label = user.get("_ticket_close_label", "Закрыть обращение")
+                if clean in (close_label, "Закрыть обращение", "⬅️ Назад", "Назад"):
+                    # Закрываем тикет если был открыт
+                    was_in_ticket = user.get("_in_ticket", False)
+                    user.pop("_in_ticket", None)
+                    user.pop("_ticket_close_label", None)
+                    if was_in_ticket:
+                        await self._push_state_immediate()
+                        if self.admin_chat_id:
+                            try:
+                                name_line = user.get("first_name", str(uid))
+                                if user.get("username"):
+                                    name_line += f" (@{user['username']})"
+                                await self.bot.send_message(
+                                    self.admin_chat_id,
+                                    f"Обращение закрыто пользователем.\n{name_line} | ID: <code>{uid}</code>",
+                                    message_thread_id=user.get("last_topic_id"),
+                                )
+                            except Exception:
+                                pass
+                        await m.answer("Обращение закрыто.", reply_markup=self.get_main_keyboard())
+                    else:
+                        await m.answer("Главное меню:", reply_markup=self.get_main_keyboard())
                     return
 
-                # Reply-кнопки меню
+                # Reply-кнопки меню (точное совпадение)
                 matched_btn = next(
-                    (b for b in self.buttons if b.get("text", "").strip().lower() == lower), None
+                    (b for b in self.buttons if b.get("text", "").strip().lower() == lower),
+                    None
                 )
                 if matched_btn:
                     btn_type = matched_btn.get("type", "default")
+
+                    # Если юзер уже в тикете и нажал обычную кнопку — закрываем тикет
+                    if user.get("_in_ticket") and btn_type != "ticket":
+                        user.pop("_in_ticket", None)
+                        user.pop("_ticket_close_label", None)
+
                     if btn_type == "ticket":
-                        user["_in_ticket"]         = True
+                        user["_in_ticket"]          = True
                         user["_ticket_close_label"] = "Закрыть обращение"
                         await self.forward_to_admin(m, user, btn_text=matched_btn["text"])
-                        resp     = matched_btn.get("response", "Ваше обращение принято. Ожидайте ответа оператора.")
+                        resp     = matched_btn.get("response") or "Ваше обращение принято. Ожидайте ответа оператора."
                         close_kb = ReplyKeyboardMarkup(
                             keyboard=[[KeyboardButton(text="Закрыть обращение")]],
                             resize_keyboard=True
@@ -1253,27 +1271,41 @@ class FreeBotInstance:
                             resp or "✅",
                             reply_markup=inline_kb if inline_kb else self.get_main_keyboard()
                         )
+
                     await self.log_and_update(uid, m.from_user.full_name, f"КНОПКА: {matched_btn['text']}")
                     return
 
-                # Триггеры
+                # Триггеры (вхождение ключевого слова)
                 for trig in self.triggers:
-                    kw = trig.get("keyword", "")
+                    kw = trig.get("keyword", "").strip()
                     if kw and kw.lower() in lower:
                         resp = trig.get("response") or "✅"
                         await m.answer(resp)
                         await self.log_and_update(uid, m.from_user.full_name, f"ТРИГГЕР: {kw}")
                         return
 
-            # ── Форвард: первое обращение или forwardAll ────────────────────
+            # ════════════════════════════════════════════════════════════════
+            # Дошли сюда — сообщение не совпало ни с одной кнопкой/триггером.
+            # Теперь решаем: форвардить или нет.
+            # ════════════════════════════════════════════════════════════════
+
+            # Если юзер в тикете — форвардим в админ-чат
+            if user.get("_in_ticket"):
+                await self.forward_to_admin(m, user)
+                await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
+                return
+
+            # Первое сообщение или режим "пересылать всё"
             if is_new or self.forward_all:
                 await self.forward_to_admin(m, user, is_first=is_new)
                 await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
-            else:
-                await m.answer(
-                    "Воспользуйтесь меню или нажмите кнопку для связи с оператором.",
-                    reply_markup=self.get_main_keyboard()
-                )
+                return
+
+            # Не в тикете, не forwardAll, не кнопка — показываем меню
+            await m.answer(
+                "Воспользуйтесь меню или нажмите кнопку для связи с оператором.",
+                reply_markup=self.get_main_keyboard()
+            )
 
     # ─────────────────────────────────────────────────────────────────────────
     # ЗАПУСК
