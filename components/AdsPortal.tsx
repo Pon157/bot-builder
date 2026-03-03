@@ -253,9 +253,6 @@ const AdsPortal: React.FC = () => {
                 icon={<Eye size={16} />} color="text-blue-400" />
               <MetricCard label="Free-ботов в сети" value={sysSt.free_bots || 0}
                 icon={<Bot size={16} />} color="text-amber-400" />
-              <MetricCard label="Аудитория" value={fmt(sysSt.free_users || 0)}
-                icon={<Users size={16} />} color="text-purple-400"
-                sub={`~${sysSt.free_users || 0} пользователей`} />
             </div>
 
             {/* Recent posts */}
@@ -604,10 +601,6 @@ const AdsPortal: React.FC = () => {
                 <div className="p-3 bg-zinc-800/50 rounded-xl">
                   <div className="text-lg font-black text-amber-400 font-mono">{fmt(sysSt.free_bots || 0)}</div>
                   <div className="text-[10px] text-zinc-500 mt-0.5">Активных ботов</div>
-                </div>
-                <div className="p-3 bg-zinc-800/50 rounded-xl">
-                  <div className="text-lg font-black text-blue-400 font-mono">{fmt(sysSt.free_users || 0)}</div>
-                  <div className="text-[10px] text-zinc-500 mt-0.5">Пользователей</div>
                 </div>
               </div>
             </div>
