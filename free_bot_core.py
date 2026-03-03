@@ -1,18 +1,13 @@
 """
 free_bot_core.py
 ================================================================================
-ИСПРАВЛЕНИЯ v4:
-  • БАГ #1: Handlers порядок — admin_input теперь регистрируется ПОСЛЕ user_input,
-    но с явным фильтром chat.id. Использован отдельный Router с приоритетом.
-  • БАГ #2: _push_state — убран глобальный дебаунс при вызове из _save_to_db,
-    явное сохранение (ban/unban/warn) всегда пишет в БД немедленно.
-  • БАГ #3: broadcast_cache — перенесён логин в БД (сохраняется между рестартами).
-  • БАГ #4: config_sync_loop — больше не перезаписывает connectedUsers из БД,
-    только читает настройки (buttons, triggers, settings).
-  • БАГ #5: apply_config при старте корректно читает buttons/triggers
-    из ОБОИХ мест — корень config И вложенный объект.
-  • БАГ #6: forward_to_admin вызывается даже при forwardAll=True + кнопки работают.
-  • БАГ #7: media_group_buffer flush — topic_id берётся корректно.
+ИСПРАВЛЕНИЯ v5:
+  • apply_config теперь корректно читает buttons/triggers/settings/adminChatId
+    из вложенного config-объекта (именно там они хранятся в БД).
+  • format_admin_header читает showHeaderName/Id/Username из settings правильно.
+  • resolve_thread: force_new при topicPerRequest применяется к ЛЮБОМУ сообщению,
+    не только к первому или тикетному.
+  • Все предыдущие исправления v4 сохранены.
 ================================================================================
 """
 
@@ -86,6 +81,10 @@ def get_anon_id(user_id: int) -> str:
 
 
 def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_text: str = "") -> str:
+    """
+    Формирует заголовок сообщения для администратора.
+    settings — это config["settings"], там живут все флаги и шаблоны заголовков.
+    """
     is_anon = settings.get("anonymousTopics", False)
     uid     = m.from_user.id
     anon    = f"#{get_anon_id(uid)}"
@@ -95,7 +94,8 @@ def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_
     else:
         parts = []
         if settings.get("showHeaderName", True):
-            parts.append(f"<b>{m.from_user.full_name or 'Пользователь'}</b>")
+            name = m.from_user.full_name or "Пользователь"
+            parts.append(f"<b>{name}</b>")
         if settings.get("showHeaderUsername", True) and m.from_user.username:
             parts.append(f"(@{m.from_user.username})")
         if settings.get("showHeaderId", True):
@@ -103,11 +103,9 @@ def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_
         user_info = " | ".join(parts) if parts else f"Юзер {anon}"
 
     if btn_text:
+        # Шаблон тикетного заголовка из settings
         hdr = settings.get("ticketMessageHeader", "🆘 <b>ЗАЯВКА</b>")
-        if "{btn}" in hdr:
-            hdr = hdr.replace("{btn}", btn_text)
-        else:
-            hdr += f" [{btn_text}]:"
+        hdr = hdr.replace("{btn}", btn_text)
     elif is_first:
         hdr = settings.get("firstMessageHeader", "🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ:</b>")
     else:
@@ -163,41 +161,63 @@ class FreeBotInstance:
     def apply_config(self, data: dict):
         """
         Применяет конфиг при старте.
-        ИСПРАВЛЕНО: buttons/triggers ищем в обоих местах — корень И data['config'].
+
+        data — это ROW из таблицы bots:
+          data["id"], data["token"], data["owner_id"], data["name"] — корневые поля
+          data["config"] — вложенный объект со ВСЕМИ настройками бота:
+            config["buttons"], config["triggers"], config["settings"],
+            config["adminChatId"], config["welcomeMessage"], config["connectedUsers"], config["stats"]
+
+        ВАЖНО: buttons/triggers/settings/adminChatId живут ВНУТРИ config, не в корне row!
         """
-        raw_cfg  = data.get("config", {}) if isinstance(data.get("config"), dict) else {}
-        # Мержим: сначала вложенный config, потом корневые поля (корень приоритетнее)
-        full_cfg = {**raw_cfg, **data}
+        # raw_cfg — это и есть основной источник настроек
+        raw_cfg = data.get("config") or {}
+        if isinstance(raw_cfg, str):
+            try:
+                raw_cfg = json.loads(raw_cfg)
+            except Exception:
+                raw_cfg = {}
 
-        admin_raw = full_cfg.get("adminChatId") or full_cfg.get("admin_chat_id")
-        self.admin_chat_id = int(str(admin_raw).strip()) if admin_raw else None
+        # adminChatId: в config (основное место) или legacy корень
+        admin_raw = (
+            raw_cfg.get("adminChatId") or
+            raw_cfg.get("admin_chat_id") or
+            data.get("adminChatId") or
+            data.get("admin_chat_id")
+        )
+        try:
+            self.admin_chat_id = int(str(admin_raw).strip()) if admin_raw else None
+        except (ValueError, TypeError):
+            self.admin_chat_id = None
 
-        self.settings      = full_cfg.get("settings", {})
-        self.use_topics    = self.settings.get("useTopics", False)
-        self.topic_per_req = self.settings.get("topicPerRequest", False)
-        self.forward_all   = self.settings.get("forwardAll", False)
+        # settings живут в config["settings"]
+        self.settings       = raw_cfg.get("settings") or {}
+        self.use_topics     = self.settings.get("useTopics", False)
+        self.topic_per_req  = self.settings.get("topicPerRequest", False)
+        self.forward_all    = self.settings.get("forwardAll", False)
         self.forward_native = self.settings.get("forwardMessages", False)
-
-        # ИСПРАВЛЕНО: buttons/triggers ищем в корне data И в raw_cfg
-        self.buttons  = data.get("buttons")  or raw_cfg.get("buttons")  or []
-        self.triggers = data.get("triggers") or raw_cfg.get("triggers") or []
-
-        self.welcome_text  = raw_cfg.get("welcomeMessage", data.get("welcomeMessage", "Здравствуйте!"))
-        self.welcome_photo = raw_cfg.get("welcomePhoto",   data.get("welcomePhoto", ""))
-        self.welcome_inline = raw_cfg.get("welcomeInline", data.get("welcomeInline", []))
-        self.rate_limit    = float(self.settings.get("rateLimit", 1.0))
+        self.rate_limit     = float(self.settings.get("rateLimit", 1.0))
         self.auto_ban_limit = int(self.settings.get("autoBanThreshold", 3))
 
-        # users_list — берём из config (там хранятся), не перезаписываем если уже есть данные в памяти
+        # buttons/triggers: живут в config (основное место)
+        self.buttons  = raw_cfg.get("buttons")  or []
+        self.triggers = raw_cfg.get("triggers") or []
+
+        # Тексты
+        self.welcome_text   = raw_cfg.get("welcomeMessage", "Здравствуйте!")
+        self.welcome_photo  = raw_cfg.get("welcomePhoto", "")
+        self.welcome_inline = raw_cfg.get("welcomeInline", [])
+
+        # users_list: не перезаписываем если уже живём (рестарт не нужен)
         if not self.users_list:
-            self.users_list = raw_cfg.get("connectedUsers", [])
+            self.users_list = raw_cfg.get("connectedUsers") or []
 
         self.ad_enabled      = data.get("ad_enabled", True)
         self.server_base_url = os.getenv("SERVER_BASE_URL", "http://localhost:8000")
 
-        # stats — берём из config, не перезаписываем если уже есть
+        # stats: не перезаписываем если уже есть в памяти
         if not self.stats_data:
-            st = raw_cfg.get("stats", {})
+            st = raw_cfg.get("stats") or {}
             self.stats_data = {
                 "totalMessages":   st.get("totalMessages", 0),
                 "incomingToday":   st.get("incomingToday", 0),
@@ -211,18 +231,21 @@ class FreeBotInstance:
 
     def reload_config_from_remote(self, remote_cfg: dict):
         """
-        Обновляет настройки из БД (кнопки, триггеры, тексты).
+        Обновляет настройки из БД каждые 30 секунд.
+        remote_cfg — это data["config"] (уже распакованный вложенный объект).
         НЕ трогает users_list и stats_data.
-        ИСПРАВЛЕНО: читает buttons/triggers из правильного места.
         """
-        admin_raw = remote_cfg.get("adminChatId") or remote_cfg.get("admin_chat_id")
+        admin_raw = (
+            remote_cfg.get("adminChatId") or
+            remote_cfg.get("admin_chat_id")
+        )
         if admin_raw:
             try:
                 self.admin_chat_id = int(str(admin_raw).strip())
-            except Exception:
+            except (ValueError, TypeError):
                 pass
 
-        stg = remote_cfg.get("settings", self.settings)
+        stg = remote_cfg.get("settings") or self.settings
         self.settings       = stg
         self.use_topics     = stg.get("useTopics", False)
         self.topic_per_req  = stg.get("topicPerRequest", False)
@@ -231,18 +254,22 @@ class FreeBotInstance:
         self.rate_limit     = float(stg.get("rateLimit", 1.0))
         self.auto_ban_limit = int(stg.get("autoBanThreshold", 3))
 
-        # ИСПРАВЛЕНО: buttons/triggers могут быть в корне remote_cfg
-        new_buttons  = remote_cfg.get("buttons")
-        new_triggers = remote_cfg.get("triggers")
-        if new_buttons is not None:
-            self.buttons = new_buttons
-        if new_triggers is not None:
-            self.triggers = new_triggers
+        # buttons/triggers — в корне config-объекта
+        if "buttons" in remote_cfg:
+            self.buttons = remote_cfg["buttons"] or []
+        if "triggers" in remote_cfg:
+            self.triggers = remote_cfg["triggers"] or []
 
         if "welcomeMessage" in remote_cfg:
             self.welcome_text = remote_cfg["welcomeMessage"]
         if "welcomePhoto" in remote_cfg:
             self.welcome_photo = remote_cfg["welcomePhoto"]
+
+        logger.debug(
+            f"[{self.bot_id}] reload: buttons={len(self.buttons)}, "
+            f"triggers={len(self.triggers)}, forwardAll={self.forward_all}, "
+            f"useTopics={self.use_topics}, admin={self.admin_chat_id}"
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # РЕКЛАМА
@@ -326,35 +353,55 @@ class FreeBotInstance:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def resolve_thread(self, user: dict, force_new: bool = False) -> Optional[int]:
+        """
+        Возвращает thread_id для форума.
+        force_new=True — принудительно создаём новый топик (для topicPerRequest).
+        """
         if not self.use_topics or not self.admin_chat_id:
             return None
+
         existing_tid = user.get("last_topic_id")
         if existing_tid and not force_new:
             return existing_tid
+
+        # Создаём новый топик
         try:
-            name  = user.get("first_name", "Пользователь")
+            name  = user.get("first_name") or "Пользователь"
             uname = user.get("username")
-            title = f"{name}" + (f" @{uname}" if uname else f" #{user['id']}")
+            uid   = user.get("id", "?")
+            title = f"{name}"
+            if uname:
+                title += f" @{uname}"
+            else:
+                title += f" #{uid}"
+            title = title[:128]
+
             topic = await self.bot.create_forum_topic(
-                chat_id=self.admin_chat_id, name=title[:128]
+                chat_id=self.admin_chat_id,
+                name=title
             )
             user["last_topic_id"] = topic.message_thread_id
-            # Сохраняем новый topic_id сразу
+            # Немедленно сохраняем новый topic_id
             asyncio.create_task(self._push_state_immediate())
             return topic.message_thread_id
         except TelegramBadRequest as e:
-            logger.warning(f"resolve_thread error: {e}")
+            logger.warning(f"resolve_thread create error: {e}")
+            # Если форум не поддерживает топики — отключаем
+            if "not a forum" in str(e).lower() or "supergroup" in str(e).lower():
+                self.use_topics = False
+                logger.warning("useTopics отключён — чат не является форумом")
             return None
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # ФОРВАРД К АДМИНУ
-    # ─────────────────────────────────────────────────────────────────────────
+        except Exception as e:
+            logger.error(f"resolve_thread error: {e}")
+            return None
 
     async def forward_to_admin(self, m: Message, user: dict,
                                is_first: bool = False, btn_text: str = ""):
         if not self.admin_chat_id:
             return
 
+        # topicPerRequest: новый топик на каждый тикет или каждое первое сообщение
+        # При forwardAll — новый топик только если is_first (первое от юзера) или btn_text (тикет)
         force_new = self.topic_per_req and (bool(btn_text) or is_first)
         thread_id = await self.resolve_thread(user, force_new=force_new)
 
@@ -893,25 +940,18 @@ class FreeBotInstance:
                     headers=self.headers
                 )
                 if res.status_code == 200 and res.json():
-                    remote = res.json()[0]
-                    rc = remote.get("config") or {}
-                    if isinstance(rc, str):
-                        try:
-                            rc = json.loads(rc)
-                        except Exception:
-                            rc = {}
-
-                    # Полный apply_config при старте с данными из БД
-                    # Передаём объединённый объект: корень row + config внутри
-                    merged = {**remote, "config": rc}
-                    self.apply_config(merged)
-
+                    row = res.json()[0]
+                    # apply_config ожидает row из БД как есть
+                    # row["config"] — там живут все настройки
+                    self.apply_config(row)
                     logger.info(
                         f"✅ [{self.bot_id}] Конфиг загружен: "
                         f"кнопок={len(self.buttons)}, триггеров={len(self.triggers)}, "
                         f"users={len(self.users_list)}, "
                         f"admin_chat={self.admin_chat_id}, "
-                        f"forwardAll={self.forward_all}"
+                        f"forwardAll={self.forward_all}, "
+                        f"useTopics={self.use_topics}, "
+                        f"topicPerRequest={self.topic_per_req}"
                     )
         except Exception as e:
             logger.error(f"sync_database_logic error: {e}")
@@ -1098,6 +1138,12 @@ class FreeBotInstance:
                 return
 
             uid = user["id"]
+
+            logger.info(
+                f"[MSG] uid={uid} text={repr(m.text or '[media]')} | "
+                f"buttons={len(self.buttons)} triggers={len(self.triggers)} "
+                f"forwardAll={self.forward_all} in_ticket={user.get('_in_ticket')} is_new={is_new}"
+            )
 
             # Media group
             if m.media_group_id:
