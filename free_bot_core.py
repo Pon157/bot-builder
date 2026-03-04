@@ -378,6 +378,10 @@ class FreeBotInstance:
                 title += f" @{uname}"
             else:
                 title += f" #{uid}"
+            # БАГ #6 ФИХ: при topicPerRequest добавляем время —
+            # чтобы каждое обращение имело уникальный топик и было понятно когда
+            if force_new:
+                title += f" {datetime.now().strftime('%d.%m %H:%M')}"
             title = title[:128]
 
             topic = await self.bot.create_forum_topic(
@@ -442,87 +446,68 @@ class FreeBotInstance:
 
         # copy_message с заголовком
         header = format_admin_header(m, self.settings, is_first, btn_text)
+        cap    = (header + (m.caption or ""))[:1024]
+
+        async def _do_send(tid: Optional[int]) -> Optional[Any]:
+            """Отправляет одно сообщение в топик tid. Возвращает sent object."""
+            if m.photo:
+                # БАГ #3 ФИХ: добавлен parse_mode="HTML" для медиа-заголовков
+                return await self.bot.send_photo(
+                    self.admin_chat_id, photo=m.photo[-1].file_id,
+                    caption=cap, parse_mode="HTML",
+                    message_thread_id=tid,
+                )
+            elif m.video:
+                return await self.bot.send_video(
+                    self.admin_chat_id, video=m.video.file_id,
+                    caption=cap, parse_mode="HTML",
+                    message_thread_id=tid,
+                )
+            elif m.document:
+                return await self.bot.send_document(
+                    self.admin_chat_id, document=m.document.file_id,
+                    caption=cap, parse_mode="HTML",
+                    message_thread_id=tid,
+                )
+            elif m.audio or m.voice or m.sticker or m.video_note:
+                # Сначала текстовый заголовок, потом само медиа
+                await self.bot.send_message(
+                    self.admin_chat_id, header.strip(),
+                    message_thread_id=tid, parse_mode="HTML"
+                )
+                return await self.bot.copy_message(
+                    self.admin_chat_id, m.chat.id, m.message_id,
+                    message_thread_id=tid
+                )
+            else:
+                txt = (header + (m.text or ""))[:4096]
+                return await self.bot.send_message(
+                    self.admin_chat_id, txt,
+                    message_thread_id=tid, parse_mode="HTML"
+                )
 
         async def _send():
             nonlocal thread_id
-            s = None
             try:
-                if m.photo:
-                    s = await self.bot.send_photo(
-                        self.admin_chat_id, photo=m.photo[-1].file_id,
-                        caption=(header + (m.caption or ""))[:1024],
-                        message_thread_id=thread_id,
-                    )
-                elif m.video:
-                    s = await self.bot.send_video(
-                        self.admin_chat_id, video=m.video.file_id,
-                        caption=(header + (m.caption or ""))[:1024],
-                        message_thread_id=thread_id,
-                    )
-                elif m.document:
-                    s = await self.bot.send_document(
-                        self.admin_chat_id, document=m.document.file_id,
-                        caption=(header + (m.caption or ""))[:1024],
-                        message_thread_id=thread_id,
-                    )
-                elif m.audio:
-                    await self.bot.send_message(
-                        self.admin_chat_id, header.strip(),
-                        message_thread_id=thread_id, parse_mode="HTML"
-                    )
-                    s = await self.bot.copy_message(
-                        self.admin_chat_id, m.chat.id, m.message_id,
-                        message_thread_id=thread_id
-                    )
-                elif m.voice:
-                    await self.bot.send_message(
-                        self.admin_chat_id, header.strip(),
-                        message_thread_id=thread_id, parse_mode="HTML"
-                    )
-                    s = await self.bot.copy_message(
-                        self.admin_chat_id, m.chat.id, m.message_id,
-                        message_thread_id=thread_id
-                    )
-                elif m.sticker:
-                    await self.bot.send_message(
-                        self.admin_chat_id, header.strip(),
-                        message_thread_id=thread_id, parse_mode="HTML"
-                    )
-                    s = await self.bot.copy_message(
-                        self.admin_chat_id, m.chat.id, m.message_id,
-                        message_thread_id=thread_id
-                    )
-                elif m.video_note:
-                    await self.bot.send_message(
-                        self.admin_chat_id, header.strip(),
-                        message_thread_id=thread_id, parse_mode="HTML"
-                    )
-                    s = await self.bot.copy_message(
-                        self.admin_chat_id, m.chat.id, m.message_id,
-                        message_thread_id=thread_id
-                    )
-                else:
-                    txt = (header + (m.text or ""))[:4096]
-                    s = await self.bot.send_message(
-                        self.admin_chat_id, txt,
-                        message_thread_id=thread_id, parse_mode="HTML"
-                    )
+                s = await _do_send(thread_id)
                 if s:
                     self.msg_map[s.message_id] = user["id"]
             except TelegramBadRequest as e:
                 err_str = str(e).lower()
                 if "message thread not found" in err_str or "thread" in err_str:
+                    # БАГ #4 ФИХ: пересоздаём топик и повторяем с НОВЫМ thread_id
+                    logger.warning(
+                        f"[{self.bot_id}] Thread {thread_id} not found, "
+                        f"creating new for uid={user.get('id')}"
+                    )
                     user["last_topic_id"] = None
                     thread_id = await self.resolve_thread(user, force_new=True)
                     try:
-                        txt = (header + (m.text or ""))[:4096]
-                        s2 = await self.bot.send_message(
-                            self.admin_chat_id, txt, parse_mode="HTML"
-                        )
+                        s2 = await _do_send(thread_id)
                         if s2:
                             self.msg_map[s2.message_id] = user["id"]
-                    except Exception:
-                        pass
+                    except Exception as e2:
+                        logger.error(f"forward_to_admin retry error: {e2}")
                 else:
                     logger.error(f"forward_to_admin TelegramBadRequest: {e}")
             except Exception as e:
@@ -947,16 +932,18 @@ class FreeBotInstance:
                     row = res.json()[0]
                     self.apply_config(row)
 
-                    # Сбрасываем зависшие _in_ticket флаги (старше 24ч без активности)
-                    stale_threshold = int(time.time()) - 86400
+                    # БАГ #1 ФИХ: сбрасываем ВСЕ _in_ticket при каждом старте.
+                    # Порог 24ч не работает — юзер мог быть активен только что.
+                    # Тикет = runtime-состояние активного сеанса; после рестарта
+                    # бота юзер открывает тикет заново нажав кнопку.
                     cleaned = 0
                     for u in self.users_list:
-                        if u.get("_in_ticket") and u.get("last_seen", 0) < stale_threshold:
+                        if u.get("_in_ticket"):
                             u.pop("_in_ticket", None)
                             u.pop("_ticket_close_label", None)
                             cleaned += 1
                     if cleaned:
-                        logger.info(f"[{self.bot_id}] Сброшено {cleaned} зависших тикетов")
+                        logger.info(f"[{self.bot_id}] Сброшено {cleaned} тикетов при старте")
 
                     logger.info(
                         f"✅ [{self.bot_id}] Конфиг загружен: "
@@ -1188,9 +1175,15 @@ class FreeBotInstance:
                                         elif msg.document:
                                             items.append(InputMediaDocument(media=msg.document.file_id, caption=cap[:1024] or None, parse_mode="HTML"))
                                     if items:
+                                        # БАГ #5 ФИХ: вызываем resolve_thread чтобы
+                                        # получить/создать правильный thread_id
+                                        force_mg = self.topic_per_req and buf["is_first"]
+                                        mg_tid   = await self.resolve_thread(
+                                            buf["user"], force_new=force_mg
+                                        )
                                         await self.bot.send_media_group(
                                             self.admin_chat_id, items,
-                                            message_thread_id=buf["user"].get("last_topic_id")
+                                            message_thread_id=mg_tid
                                         )
                                 except Exception as e:
                                     logger.error(f"MediaGroup flush error: {e}")
@@ -1246,10 +1239,13 @@ class FreeBotInstance:
                 if matched_btn:
                     btn_type = matched_btn.get("type", "default")
 
-                    # Если юзер уже в тикете и нажал обычную кнопку — закрываем тикет
+                    # БАГ #7 ФИХ: если юзер в тикете и нажал default-кнопку —
+                    # сообщение идёт в тикет, кнопка НЕ обрабатывается.
+                    # Закрыть тикет можно только кнопкой "Закрыть обращение".
                     if user.get("_in_ticket") and btn_type != "ticket":
-                        user.pop("_in_ticket", None)
-                        user.pop("_ticket_close_label", None)
+                        await self.forward_to_admin(m, user)
+                        await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
+                        return
 
                     if btn_type == "ticket":
                         user["_in_ticket"]          = True
