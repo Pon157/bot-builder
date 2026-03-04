@@ -177,17 +177,15 @@ const FreeBotEditor: React.FC<{
         user_id: userId,
         name,
         token:   token.trim() || undefined,
-        // Кнопки и триггеры — на корне (сервер запишет их в config.buttons / config.triggers)
+        // Кнопки и триггеры на корне — сервер кладёт их в config.buttons / config.triggers
         buttons,
         triggers,
         config: {
-          welcomeMessage:      welcome,
-          welcomePhoto:        welcomePhoto,
-          adminChatId:         adminId,
-          settings:            stg,
-          firstMessageHeader:  stg.firstMessageHeader,
-          ticketMessageHeader: stg.ticketMessageHeader,
-          commonMessageHeader: stg.commonMessageHeader,
+          welcomeMessage: welcome,
+          welcomePhoto:   welcomePhoto,
+          adminChatId:    adminId,
+          // settings содержит ВСЕ флаги включая useTopics, topicPerRequest и заголовки
+          settings:       stg,
         },
       };
 
@@ -469,7 +467,10 @@ const FreeBotEditor: React.FC<{
               min="0"
               className="w-16 bg-zinc-900 border border-zinc-700 rounded-lg p-2 text-center text-xs text-white focus:outline-none"
               value={stg.rateLimit}
-              onChange={e => updateStg('rateLimit', parseFloat(e.target.value) || 0)}
+              onChange={e => {
+                const v = e.target.value;
+                updateStg('rateLimit', v === '' ? 1 : parseFloat(v) || 1);
+              }}
             />
           </div>
           <div className="flex items-center justify-between p-4 rounded-xl bg-black border border-zinc-800">
@@ -482,7 +483,10 @@ const FreeBotEditor: React.FC<{
               min="0"
               className="w-16 bg-zinc-900 border border-zinc-700 rounded-lg p-2 text-center text-xs text-white focus:outline-none"
               value={stg.autoBanThreshold}
-              onChange={e => updateStg('autoBanThreshold', parseInt(e.target.value) || 0)}
+              onChange={e => {
+                const v = e.target.value;
+                updateStg('autoBanThreshold', v === '' ? 0 : parseInt(v) || 0);
+              }}
             />
           </div>
         </Section>
@@ -633,73 +637,140 @@ const FreeBotEditor: React.FC<{
 
 // ─── Analytics Panel ──────────────────────────────────────────────────────────
 const FreeBotAnalytics: React.FC<{ bot: FreeBot; userId: string; onBack: () => void }> = ({ bot, userId, onBack }) => {
-  const [stats,   setStats]   = useState<any>(null);
+  const [data,    setData]    = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [tab,     setTab]     = useState<'stats' | 'audience'>('stats');
 
-  useEffect(() => {
+  const load = () => {
+    setLoading(true);
     fetch(FREE_API(`/bots/${bot.id}/stats?user_id=${userId}`))
       .then(r => r.ok ? r.json() : null)
-      .then(d => { setStats(d); setLoading(false); })
+      .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
-  }, [bot.id, userId]);
+  };
 
-  const s = stats?.stats || {};
+  useEffect(() => { load(); }, [bot.id, userId]);
+
+  const s    = data?.stats || {};
+  const users: any[] = data?.connected_users || [];
+
   const statCards = [
-    { label: 'Пользователей всего',    value: stats?.users_count   || 0, color: 'text-cyan-400'   },
-    { label: 'Активных пользователей', value: stats?.active_count  || 0, color: 'text-green-400'  },
-    { label: 'Всего сообщений',        value: s.totalMessages      || 0, color: 'text-blue-400'   },
-    { label: 'Входящих сегодня',       value: s.incomingToday      || 0, color: 'text-emerald-400' },
-    { label: 'Исходящих сегодня',      value: s.outgoingToday      || 0, color: 'text-amber-400'  },
-    { label: 'Активных 24ч',           value: s.activeUsers24h     || 0, color: 'text-purple-400' },
-    { label: 'Заблокировано',          value: s.bannedCount        || 0, color: 'text-red-400'    },
-    { label: 'Рассылок сегодня',       value: s.broadcastsToday    || 0, color: 'text-orange-400' },
-    { label: 'Рассылок всего',         value: s.broadcastsTotal    || 0, color: 'text-pink-400'   },
+    { label: 'Пользователей всего',    value: data?.users_count   ?? 0, color: 'text-cyan-400'   },
+    { label: 'Активных',               value: data?.active_count  ?? 0, color: 'text-green-400'  },
+    { label: 'Всего сообщений',        value: s.totalMessages     ?? 0, color: 'text-blue-400'   },
+    { label: 'Входящих сегодня',       value: s.incomingToday     ?? 0, color: 'text-emerald-400' },
+    { label: 'Исходящих сегодня',      value: s.outgoingToday     ?? 0, color: 'text-amber-400'  },
+    { label: 'Активных 24ч',           value: s.activeUsers24h    ?? 0, color: 'text-purple-400' },
+    { label: 'Заблокировано',          value: s.bannedCount       ?? 0, color: 'text-red-400'    },
+    { label: 'Рассылок сегодня',       value: s.broadcastsToday   ?? 0, color: 'text-orange-400' },
+    { label: 'Рассылок всего',         value: s.broadcastsTotal   ?? 0, color: 'text-pink-400'   },
   ];
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white p-6 md:p-10">
       <div className="max-w-2xl mx-auto">
-        <div className="flex items-center gap-4 mb-8">
+
+        {/* Header */}
+        <div className="flex items-center gap-4 mb-6">
           <button onClick={onBack} className="p-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 transition-colors">
             <ArrowLeft size={16} />
           </button>
-          <div>
+          <div className="flex-1 min-w-0">
             <h1 className="text-lg font-black text-white">Аналитика</h1>
-            <div className="text-xs text-zinc-500">{bot.name}</div>
+            <div className="text-xs text-zinc-500 truncate">{bot.name}</div>
           </div>
+          <button onClick={load} className="p-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 transition-colors text-zinc-400">
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          </button>
         </div>
+
+        {/* Tabs */}
+        <div className="flex gap-1 bg-zinc-900/60 border border-zinc-800 rounded-xl p-1 mb-5">
+          {(['stats', 'audience'] as const).map(t => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`flex-1 py-2 rounded-lg text-xs font-bold uppercase tracking-widest transition-all ${tab === t ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
+            >
+              {t === 'stats' ? '📊 Статистика' : '👥 Аудитория'}
+            </button>
+          ))}
+        </div>
+
         {loading ? (
           <div className="flex justify-center py-16">
             <Loader2 size={24} className="animate-spin text-zinc-600" />
           </div>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {statCards.map(c => (
-              <div key={c.label} className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-4">
-                <div className={`text-2xl font-black mb-1 ${c.color}`}>{c.value}</div>
-                <div className="text-[10px] text-zinc-500 uppercase tracking-widest">{c.label}</div>
+        ) : tab === 'stats' ? (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {statCards.map(c => (
+                <div key={c.label} className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-4">
+                  <div className={`text-2xl font-black mb-1 ${c.color}`}>{c.value}</div>
+                  <div className="text-[10px] text-zinc-500 uppercase tracking-widest leading-tight">{c.label}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* History chart */}
+            {s.history?.length > 0 && (
+              <div className="mt-5 bg-zinc-900/60 border border-zinc-800 rounded-2xl p-5">
+                <h3 className="text-xs font-black text-zinc-400 uppercase tracking-widest mb-4">История (до 14 дней)</h3>
+                <div className="flex items-end gap-1 h-24">
+                  {s.history.map((d: any, i: number) => {
+                    const maxVal = Math.max(...s.history.map((h: any) => (h.incoming || 0) + (h.outgoing || 0)), 1);
+                    const barH   = Math.max(4, Math.round(((d.incoming + d.outgoing) / maxVal) * 88));
+                    return (
+                      <div key={d.date || i} className="flex-1 flex flex-col items-center gap-1 group relative">
+                        <div
+                          title={`${d.date}: вх ${d.incoming || 0}, исх ${d.outgoing || 0}, броадкастов ${d.broadcasts || 0}`}
+                          className="w-full bg-blue-500/30 hover:bg-blue-500/60 transition-colors rounded-sm cursor-pointer"
+                          style={{ height: `${barH}px` }}
+                        />
+                        <span className="text-[7px] text-zinc-700 group-hover:text-zinc-400">{d.date}</span>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            ))}
-          </div>
-        )}
-        {stats?.stats?.history?.length > 0 && (
-          <div className="mt-6 bg-zinc-900/60 border border-zinc-800 rounded-2xl p-5">
-            <h3 className="text-xs font-black text-zinc-400 uppercase tracking-widest mb-4">История (14 дней)</h3>
-            <div className="flex items-end gap-1 h-24">
-              {stats.stats.history.map((d: any, i: number) => {
-                const maxVal = Math.max(...stats.stats.history.map((h: any) => (h.incoming || 0) + (h.outgoing || 0)), 1);
-                const h = Math.max(4, Math.round(((d.incoming + d.outgoing) / maxVal) * 88));
+            )}
+          </>
+        ) : (
+          /* Audience tab */
+          <div className="space-y-2">
+            {users.length === 0 ? (
+              <div className="text-center py-12 text-zinc-600 text-sm">Нет пользователей</div>
+            ) : (
+              users.map((u: any) => {
+                const name     = u.first_name || u.name || `ID ${u.id}`;
+                const username = u.username ? `@${u.username}` : null;
+                const isBanned = u.is_banned;
+                const inTicket = u._in_ticket;
+                const warns    = u.warns || 0;
+                const lastSeen = u.last_seen
+                  ? new Date(u.last_seen * 1000).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+                  : '—';
                 return (
-                  <div key={d.date || i} className="flex-1 flex flex-col items-center gap-1 group">
-                    <div
-                      className="w-full bg-blue-500/30 hover:bg-blue-500/50 transition-colors rounded-sm"
-                      style={{ height: `${h}px` }}
-                    />
-                    <span className="text-[7px] text-zinc-700 group-hover:text-zinc-500">{d.date}</span>
+                  <div key={u.id} className={`bg-zinc-900/60 border rounded-xl p-3 flex items-center gap-3 ${isBanned ? 'border-red-900/40' : 'border-zinc-800'}`}>
+                    <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-black ${isBanned ? 'bg-red-900/40 text-red-400' : 'bg-zinc-800 text-zinc-400'}`}>
+                      {name[0]?.toUpperCase() || '?'}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-sm font-bold text-white truncate">{name}</span>
+                        {username && <span className="text-[10px] text-zinc-500">{username}</span>}
+                        {isBanned  && <span className="text-[9px] bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded-full font-bold uppercase">Бан</span>}
+                        {inTicket  && <span className="text-[9px] bg-blue-500/15 text-blue-400 px-1.5 py-0.5 rounded-full font-bold uppercase">В тикете</span>}
+                        {warns > 0 && <span className="text-[9px] bg-amber-500/15 text-amber-400 px-1.5 py-0.5 rounded-full font-bold uppercase">{warns} предупр.</span>}
+                      </div>
+                      <div className="text-[10px] text-zinc-600 mt-0.5">
+                        ID: {u.id} · был {lastSeen}
+                      </div>
+                    </div>
                   </div>
                 );
-              })}
-            </div>
+              })
+            )}
           </div>
         )}
       </div>
