@@ -123,7 +123,7 @@ const Landing = () => {
             </a>
 
             <a href="https://dialogengine.webtm.ru/ads" className="inline-flex items-center justify-center gap-2 border border-slate-700 hover:border-slate-500 text-slate-300 hover:text-white font-medium text-lg px-8 py-4 transition-colors w-full sm:w-auto">
-              Купить рекламу (Free)
+              Купить рекламу (в FreePlan)
             </a>
           </div>
         </div>
