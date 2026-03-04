@@ -217,9 +217,10 @@ async def free_update_bot_config(bot_id: str, d: dict):
         "stats":          stats,
     }
 
-    # Скалярные поля из inc
-    for key in ["welcomeMessage", "welcomePhoto", "welcomeInline", "description",
-                "firstMessageHeader", "ticketMessageHeader", "commonMessageHeader"]:
+    # Скалярные поля из inc (только не-settings поля)
+    # firstMessageHeader/ticketMessageHeader/commonMessageHeader живут в settings,
+    # поэтому их НЕ копируем в корень config во избежание путаницы двух источников
+    for key in ["welcomeMessage", "welcomePhoto", "welcomeInline", "description"]:
         if key in inc:
             new_cfg[key] = inc[key]
 
