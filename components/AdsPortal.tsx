@@ -282,9 +282,10 @@ const AdsPortal: React.FC = () => {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
               <MetricCard label="Активных постов" value={stats.active_posts || 0}   icon={<Zap size={16} />}   color="text-green-400" />
               <MetricCard label="Всего показов"   value={fmt(stats.total_impressions || 0)} icon={<Eye size={16} />} color="text-blue-400" />
-              <MetricCard label="Free-ботов"      value={sysSt.free_bots || 0}       icon={<Bot size={16} />}   color="text-amber-400" />
+              <MetricCard label="Free-ботов" value={sysSt.free_bots || 0} icon={<Bot size={16} />} color="text-amber-400"
+                sub={`${sysSt.running_bots || 0} запущено`} />
               <MetricCard label="Аудитория" value={fmt(sysSt.free_users || 0)} icon={<Users size={16} />} color="text-purple-400"
-                sub={`${fmt(sysSt.free_users || 0)} пользователей`} />
+                sub="пользователей ботов" />
             </div>
 
             <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-5 mb-4">
@@ -629,11 +630,12 @@ const AdsPortal: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <div className="p-3 bg-zinc-800/50 rounded-xl">
                   <div className="text-lg font-black text-amber-400 font-mono">{fmt(sysSt.free_bots || 0)}</div>
-                  <div className="text-[10px] text-zinc-500 mt-0.5">Активных ботов</div>
+                  <div className="text-[10px] text-zinc-500 mt-0.5">Всего free-ботов</div>
+                  <div className="text-[10px] text-green-500 mt-0.5">{sysSt.running_bots || 0} запущено</div>
                 </div>
                 <div className="p-3 bg-zinc-800/50 rounded-xl">
                   <div className="text-lg font-black text-blue-400 font-mono">{fmt(sysSt.free_users || 0)}</div>
-                  <div className="text-[10px] text-zinc-500 mt-0.5">Пользователей</div>
+                  <div className="text-[10px] text-zinc-500 mt-0.5">Польз. всех ботов</div>
                 </div>
               </div>
             </div>
