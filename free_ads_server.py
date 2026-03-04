@@ -190,13 +190,14 @@ async def free_update_bot_config(bot_id: str, d: dict):
     new_stg    = inc.get("settings") or {}
     merged_stg = {**old_stg, **new_stg}
 
-    # adminChatId — берём из inc, потом из d напрямую, потом из старого конфига
-    admin_chat_id = (
-        inc.get("adminChatId") or
-        d.get("adminChatId") or
-        existing_cfg.get("adminChatId") or
-        ""
-    )
+    # adminChatId — явная проверка на None/присутствие ключа,
+    # чтобы пустая строка "" корректно сбрасывала значение (or не работает с "")
+    if "adminChatId" in inc:
+        admin_chat_id = inc["adminChatId"] or ""
+    elif "adminChatId" in d:
+        admin_chat_id = d["adminChatId"] or ""
+    else:
+        admin_chat_id = existing_cfg.get("adminChatId") or ""
 
     # Сохраняем connectedUsers и stats — НЕ трогаем их
     connected_users = existing_cfg.get("connectedUsers", [])
