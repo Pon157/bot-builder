@@ -1,3 +1,4 @@
+import json
 """
 free_ads_server.py
 ──────────────────
@@ -564,8 +565,23 @@ async def ads_dashboard(authorization: str = Header(...)):
         params={"agent_id": f"eq.{agent['id']}", "order": "created_at.desc", "limit": "50"})
     txs   = tx_r.json() or []
 
-    bots_r  = await db.get("bots",  params={"is_free_plan": "eq.true", "select": "id"})
-    users_r = await db.get("users", params={"plan": "eq.free",         "select": "id"})
+    # Грузим все free-боты с config — аудитория хранится в config.connectedUsers,
+    # а НЕ в таблице users (там только владельцы ботов, их мало).
+    bots_r       = await db.get("bots", params={"is_free_plan": "eq.true", "select": "id,status,config"})
+    all_bots     = bots_r.json() or []
+
+    total_users  = 0
+    running_bots = 0
+    for b in all_bots:
+        cfg = b.get("config") or {}
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except Exception:
+                cfg = {}
+        total_users  += len(cfg.get("connectedUsers") or [])
+        if b.get("status") == "RUNNING":
+            running_bots += 1
 
     total_impressions = sum(p.get("impressions_used", 0) for p in posts)
     active_posts      = [p for p in posts if p["status"] == "active"]
@@ -581,8 +597,9 @@ async def ads_dashboard(authorization: str = Header(...)):
             "pending_posts":     sum(1 for p in posts if p["status"] == "pending"),
         },
         "system_stats": {
-            "free_bots":  len(bots_r.json()  or []),
-            "free_users": len(users_r.json() or []),
+            "free_bots":    len(all_bots),   # всего free-ботов
+            "running_bots": running_bots,     # сейчас запущенных
+            "free_users":   total_users,      # реальная аудитория из connectedUsers
         }
     }
 
