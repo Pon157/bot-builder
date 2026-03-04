@@ -5,7 +5,6 @@ import {
   AlertTriangle, ArrowLeft, CheckCircle, KeyRound, RefreshCw
 } from 'lucide-react';
 
-// ─── API helpers ──────────────────────────────────────────────────────────────
 const post = async (url: string, body: object) => {
   const r = await fetch(url, {
     method: 'POST',
@@ -19,7 +18,7 @@ const post = async (url: string, body: object) => {
 
 type Screen = 'login' | 'register' | 'register_code' | 'forgot' | 'reset_code';
 
-// ─── EmailCodeInput ────────────────────────────────────────────────────────────
+// ─── EmailCodeInput ─────────────────────────────────────────────────────────────
 const EmailCodeInput: React.FC<{
   value: string; onChange: (v: string) => void; disabled?: boolean;
 }> = ({ value, onChange, disabled }) => (
@@ -30,31 +29,137 @@ const EmailCodeInput: React.FC<{
     inputMode="numeric"
     pattern="[0-9]*"
     maxLength={6}
+    autoComplete="one-time-code"
     placeholder="_ _ _ _ _ _"
     className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-center text-xl font-mono text-white tracking-[0.5em] focus:outline-none focus:border-amber-500 transition-colors disabled:opacity-50"
   />
 );
 
-// ─── Main Component ────────────────────────────────────────────────────────────
+// ─── Standalone field components (outside main component to avoid re-mount) ────
+// БАГ-ФИХ: Если объявлять InputEmail/InputPassword внутри AdsAuth,
+// React при каждом ре-рендере считает их новыми типами и размонтирует DOM-узел,
+// что сбрасывает фокус и переносит набор текста в другой инпут.
+// Решение: вынести в отдельные компоненты вне тела AdsAuth.
+
+interface EmailFieldProps {
+  value: string;
+  onChange: (v: string) => void;
+}
+const EmailField: React.FC<EmailFieldProps> = ({ value, onChange }) => (
+  <div>
+    <label className="text-[10px] text-zinc-500 uppercase tracking-widest block mb-1.5">Email</label>
+    <div className="relative">
+      <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
+      <input
+        type="email"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        autoComplete="email"
+        autoFocus
+        className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-9 pr-3 py-2.5 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500 transition-colors"
+        placeholder="agency@company.com"
+      />
+    </div>
+  </div>
+);
+
+interface PasswordFieldProps {
+  label?: string;
+  placeholder?: string;
+  value: string;
+  onChange: (v: string) => void;
+  showPwd: boolean;
+  onToggleShow: () => void;
+  autoComplete?: string;
+}
+const PasswordField: React.FC<PasswordFieldProps> = ({
+  label = 'Пароль',
+  placeholder = '••••••••',
+  value,
+  onChange,
+  showPwd,
+  onToggleShow,
+  autoComplete = 'current-password',
+}) => (
+  <div>
+    <label className="text-[10px] text-zinc-500 uppercase tracking-widest block mb-1.5">{label}</label>
+    <div className="relative">
+      <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
+      <input
+        type={showPwd ? 'text' : 'password'}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        autoComplete={autoComplete}
+        minLength={6}
+        className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500 transition-colors"
+        placeholder={placeholder}
+      />
+      <button
+        type="button"
+        onClick={onToggleShow}
+        className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-zinc-400"
+      >
+        {showPwd ? <EyeOff size={14} /> : <Eye size={14} />}
+      </button>
+    </div>
+  </div>
+);
+
+interface PasswordConfirmFieldProps {
+  value: string;
+  password: string;
+  onChange: (v: string) => void;
+  showPwd: boolean;
+  onToggleShow: () => void;
+}
+const PasswordConfirmField: React.FC<PasswordConfirmFieldProps> = ({ value, password, onChange, showPwd, onToggleShow }) => (
+  <div>
+    <label className="text-[10px] text-zinc-500 uppercase tracking-widest block mb-1.5">Повторите пароль</label>
+    <div className="relative">
+      <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
+      <input
+        type={showPwd ? 'text' : 'password'}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        autoComplete="new-password"
+        className={`w-full bg-zinc-900 border rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-zinc-600 focus:outline-none transition-colors ${
+          value && password !== value ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-amber-500'
+        }`}
+        placeholder="••••••••"
+      />
+      <button
+        type="button"
+        onClick={onToggleShow}
+        className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-zinc-400"
+      >
+        {showPwd ? <EyeOff size={14} /> : <Eye size={14} />}
+      </button>
+    </div>
+    {value && password !== value && (
+      <p className="text-[10px] text-red-400 mt-1 ml-1">Пароли не совпадают</p>
+    )}
+  </div>
+);
+
+// ─── Main Component ─────────────────────────────────────────────────────────────
 const AdsAuth: React.FC = () => {
   const navigate = useNavigate();
 
-  const [screen,   setScreen]   = useState<Screen>('login');
-  const [email,    setEmail]    = useState('');
-  const [password, setPassword] = useState('');
-  const [password2,setPassword2]= useState('');
-  const [code,     setCode]     = useState('');
-  const [showPwd,  setShowPwd]  = useState(false);
-  const [loading,  setLoading]  = useState(false);
-  const [error,    setError]    = useState('');
-  const [success,  setSuccess]  = useState('');
-  const [cooldown, setCooldown] = useState(0);
+  const [screen,    setScreen]   = useState<Screen>('login');
+  const [email,     setEmail]    = useState('');
+  const [password,  setPassword] = useState('');
+  const [password2, setPassword2] = useState('');
+  const [code,      setCode]     = useState('');
+  const [showPwd,   setShowPwd]  = useState(false);
+  const [loading,   setLoading]  = useState(false);
+  const [error,     setError]    = useState('');
+  const [success,   setSuccess]  = useState('');
+  const [cooldown,  setCooldown] = useState(0);
 
   const err   = (msg: string) => { setError(msg); setLoading(false); };
   const ok    = (msg: string) => { setSuccess(msg); setLoading(false); };
   const reset = () => { setError(''); setSuccess(''); };
 
-  // Cooldown timer
   const startCooldown = (sec = 60) => {
     setCooldown(sec);
     const t = setInterval(() => {
@@ -62,7 +167,6 @@ const AdsAuth: React.FC = () => {
     }, 1000);
   };
 
-  // ── LOGIN ────────────────────────────────────────────────────────────────────
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim() || !password) return err('Заполните все поля');
@@ -75,7 +179,6 @@ const AdsAuth: React.FC = () => {
     } catch (e: any) { err(e.message); }
   };
 
-  // ── REGISTER: step 1 — send code ─────────────────────────────────────────────
   const handleRegisterStep1 = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim() || !password || !password2) return err('Заполните все поля');
@@ -86,11 +189,10 @@ const AdsAuth: React.FC = () => {
       await post('/api/ads/auth/send-code', { email: email.trim().toLowerCase(), type: 'register' });
       startCooldown(60);
       setScreen('register_code');
-      ok('Код отправлен на почту. Проверьте папку «Входящие» и «Спам».');
+      ok('Код отправлен на почту. Проверьте «Входящие» и «Спам».');
     } catch (e: any) { err(e.message); }
   };
 
-  // ── REGISTER: step 2 — verify code ───────────────────────────────────────────
   const handleRegisterStep2 = async (e: React.FormEvent) => {
     e.preventDefault();
     if (code.length < 6) return err('Введите 6-значный код из письма');
@@ -105,7 +207,6 @@ const AdsAuth: React.FC = () => {
     } catch (e: any) { err(e.message); }
   };
 
-  // ── FORGOT: step 1 — send reset code ─────────────────────────────────────────
   const handleForgotStep1 = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim()) return err('Введите email');
@@ -118,7 +219,6 @@ const AdsAuth: React.FC = () => {
     } catch (e: any) { err(e.message); }
   };
 
-  // ── FORGOT: step 2 — reset password ──────────────────────────────────────────
   const handleResetStep2 = async (e: React.FormEvent) => {
     e.preventDefault();
     if (code.length < 6) return err('Введите 6-значный код');
@@ -130,11 +230,12 @@ const AdsAuth: React.FC = () => {
         email: email.trim().toLowerCase(), code, newPassword: password
       });
       ok('Пароль успешно изменён!');
-      setTimeout(() => { setScreen('login'); setCode(''); setPassword(''); setPassword2(''); setSuccess(''); }, 2000);
+      setTimeout(() => {
+        setScreen('login'); setCode(''); setPassword(''); setPassword2(''); setSuccess('');
+      }, 2000);
     } catch (e: any) { err(e.message); }
   };
 
-  // ── Resend code ───────────────────────────────────────────────────────────────
   const resendCode = async () => {
     if (cooldown > 0) return;
     setLoading(true); reset();
@@ -146,47 +247,6 @@ const AdsAuth: React.FC = () => {
     } catch (e: any) { err(e.message); }
     setLoading(false);
   };
-
-  // ─── SHARED UI ────────────────────────────────────────────────────────────────
-  const InputEmail = () => (
-    <div>
-      <label className="text-[10px] text-zinc-500 uppercase tracking-widest block mb-1.5">Email</label>
-      <div className="relative">
-        <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
-        <input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoFocus
-          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-9 pr-3 py-2.5 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500 transition-colors"
-          placeholder="agency@company.com" />
-      </div>
-    </div>
-  );
-
-  const InputPassword = ({ label = 'Пароль', placeholder = '••••••••' } = {}) => (
-    <div>
-      <label className="text-[10px] text-zinc-500 uppercase tracking-widest block mb-1.5">{label}</label>
-      <div className="relative">
-        <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
-        <input type={showPwd ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} required minLength={6}
-          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500 transition-colors"
-          placeholder={placeholder} />
-        <button type="button" onClick={() => setShowPwd(!showPwd)} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-zinc-400">
-          {showPwd ? <EyeOff size={14} /> : <Eye size={14} />}
-        </button>
-      </div>
-    </div>
-  );
-
-  const InputPassword2 = () => (
-    <div>
-      <label className="text-[10px] text-zinc-500 uppercase tracking-widest block mb-1.5">Повторите пароль</label>
-      <div className="relative">
-        <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
-        <input type={showPwd ? 'text' : 'password'} value={password2} onChange={e => setPassword2(e.target.value)} required
-          className={`w-full bg-zinc-900 border rounded-xl pl-9 pr-3 py-2.5 text-sm text-white placeholder-zinc-600 focus:outline-none transition-colors ${password2 && password !== password2 ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-amber-500'}`}
-          placeholder="••••••••" />
-      </div>
-      {password2 && password !== password2 && <p className="text-[10px] text-red-400 mt-1 ml-1">Пароли не совпадают</p>}
-    </div>
-  );
 
   const Feedback = () => (<>
     {error   && <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-xs"><AlertTriangle size={13} className="shrink-0" />{error}</div>}
@@ -201,7 +261,8 @@ const AdsAuth: React.FC = () => {
     </button>
   );
 
-  // ─── RENDER ───────────────────────────────────────────────────────────────────
+  const togglePwd = () => setShowPwd(p => !p);
+
   return (
     <div className="min-h-screen bg-[#060608] flex flex-col items-center justify-center p-6"
       style={{ backgroundImage: 'radial-gradient(ellipse 80% 40% at 50% 0%, rgba(234,179,8,0.07), transparent)' }}>
@@ -218,7 +279,7 @@ const AdsAuth: React.FC = () => {
             navigate('/');
           }
         }} className="flex items-center gap-1.5 text-zinc-600 hover:text-zinc-400 text-xs font-bold uppercase tracking-widest mb-8 transition-colors">
-          <ArrowLeft size={14} /> {['login','register'].includes(screen) ? 'Назад' : 'Вернуться'}
+          <ArrowLeft size={14} /> {['login', 'register'].includes(screen) ? 'Назад' : 'Вернуться'}
         </button>
 
         {/* Logo */}
@@ -232,16 +293,19 @@ const AdsAuth: React.FC = () => {
 
         {/* ── LOGIN ─────────────────────────────────────────────────────────── */}
         {screen === 'login' && (<>
-          {/* Tabs */}
           <div className="flex gap-1 p-1 bg-zinc-900 border border-zinc-800 rounded-2xl mb-6">
-            <button onClick={() => { setScreen('login'); reset(); }}
+            <button type="button" onClick={() => { setScreen('login'); reset(); }}
               className="flex-1 py-2 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all bg-amber-500 text-black">Войти</button>
-            <button onClick={() => { setScreen('register'); reset(); }}
+            <button type="button" onClick={() => { setScreen('register'); reset(); }}
               className="flex-1 py-2 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all text-zinc-500 hover:text-zinc-300">Регистрация</button>
           </div>
           <form onSubmit={handleLogin} className="space-y-3">
-            <InputEmail />
-            <InputPassword />
+            <EmailField value={email} onChange={setEmail} />
+            <PasswordField
+              value={password} onChange={setPassword}
+              showPwd={showPwd} onToggleShow={togglePwd}
+              autoComplete="current-password"
+            />
             <Feedback />
             <SubmitBtn label="Войти" />
             <button type="button" onClick={() => { setScreen('forgot'); reset(); setCode(''); setPassword(''); setPassword2(''); }}
@@ -251,23 +315,32 @@ const AdsAuth: React.FC = () => {
           </form>
         </>)}
 
-        {/* ── REGISTER step 1 ────────────────────────────────────────────────── */}
+        {/* ── REGISTER step 1 ─────────────────────────────────────────────── */}
         {screen === 'register' && (<>
           <div className="flex gap-1 p-1 bg-zinc-900 border border-zinc-800 rounded-2xl mb-6">
-            <button onClick={() => { setScreen('login'); reset(); }}
+            <button type="button" onClick={() => { setScreen('login'); reset(); }}
               className="flex-1 py-2 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all text-zinc-500 hover:text-zinc-300">Войти</button>
-            <button className="flex-1 py-2 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all bg-amber-500 text-black">Регистрация</button>
+            <button type="button" className="flex-1 py-2 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all bg-amber-500 text-black">Регистрация</button>
           </div>
           <form onSubmit={handleRegisterStep1} className="space-y-3">
-            <InputEmail />
-            <InputPassword label="Пароль" placeholder="Минимум 6 символов" />
-            <InputPassword2 />
+            <EmailField value={email} onChange={setEmail} />
+            <PasswordField
+              label="Пароль" placeholder="Минимум 6 символов"
+              value={password} onChange={setPassword}
+              showPwd={showPwd} onToggleShow={togglePwd}
+              autoComplete="new-password"
+            />
+            <PasswordConfirmField
+              value={password2} password={password}
+              onChange={setPassword2}
+              showPwd={showPwd} onToggleShow={togglePwd}
+            />
             <Feedback />
             <SubmitBtn label="Получить код по email" />
           </form>
         </>)}
 
-        {/* ── REGISTER step 2 — verify code ──────────────────────────────────── */}
+        {/* ── REGISTER step 2 — verify code ───────────────────────────────── */}
         {screen === 'register_code' && (
           <form onSubmit={handleRegisterStep2} className="space-y-4">
             <div className="text-center mb-2">
@@ -289,20 +362,20 @@ const AdsAuth: React.FC = () => {
           </form>
         )}
 
-        {/* ── FORGOT step 1 ───────────────────────────────────────────────────── */}
+        {/* ── FORGOT step 1 ───────────────────────────────────────────────── */}
         {screen === 'forgot' && (
           <form onSubmit={handleForgotStep1} className="space-y-3">
             <div className="text-center mb-4">
               <h2 className="text-sm font-black text-white">Сброс пароля</h2>
               <p className="text-xs text-zinc-500 mt-1">Введите email для получения кода</p>
             </div>
-            <InputEmail />
+            <EmailField value={email} onChange={setEmail} />
             <Feedback />
             <SubmitBtn label="Отправить код" />
           </form>
         )}
 
-        {/* ── FORGOT step 2 — reset code ──────────────────────────────────────── */}
+        {/* ── FORGOT step 2 — reset code ──────────────────────────────────── */}
         {screen === 'reset_code' && (
           <form onSubmit={handleResetStep2} className="space-y-3">
             <div className="text-center mb-2">
@@ -314,8 +387,17 @@ const AdsAuth: React.FC = () => {
               <label className="text-[10px] text-zinc-500 uppercase tracking-widest block mb-1.5">6-значный код из письма</label>
               <EmailCodeInput value={code} onChange={setCode} disabled={loading} />
             </div>
-            <InputPassword label="Новый пароль" placeholder="Минимум 6 символов" />
-            <InputPassword2 />
+            <PasswordField
+              label="Новый пароль" placeholder="Минимум 6 символов"
+              value={password} onChange={setPassword}
+              showPwd={showPwd} onToggleShow={togglePwd}
+              autoComplete="new-password"
+            />
+            <PasswordConfirmField
+              value={password2} password={password}
+              onChange={setPassword2}
+              showPwd={showPwd} onToggleShow={togglePwd}
+            />
             <Feedback />
             <SubmitBtn label="Изменить пароль" />
             <button type="button" onClick={resendCode} disabled={cooldown > 0 || loading}
@@ -331,13 +413,14 @@ const AdsAuth: React.FC = () => {
           <div className="mt-8 p-4 bg-zinc-900/60 border border-zinc-800 rounded-2xl">
             <div className="text-[10px] text-zinc-500 uppercase tracking-widest mb-2 font-bold">Как работает</div>
             <ol className="space-y-1.5 text-xs text-zinc-500">
-              {['Создайте рекламный пост — текст до 250 символов',
+              {[
+                'Создайте рекламный пост — текст до 250 символов',
                 'Пост проходит модерацию (до 24 часов)',
                 'Пополните баланс через ЮКассу и купите показы',
-                'Реклама показывается в free-ботах · 0.2 ₽ / показ'
+                'Реклама показывается в free-ботах · 0.2 ₽ / показ',
               ].map((s, i) => (
                 <li key={i} className="flex items-start gap-2">
-                  <span className="text-amber-500 font-bold shrink-0">{i+1}.</span>{s}
+                  <span className="text-amber-500 font-bold shrink-0">{i + 1}.</span>{s}
                 </li>
               ))}
             </ol>
