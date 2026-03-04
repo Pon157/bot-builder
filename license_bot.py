@@ -6,7 +6,7 @@ from aiogram.filters import Command
 
 # Загружаем переменные из .env
 load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("ADMIN_BOT_TOKEN")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
