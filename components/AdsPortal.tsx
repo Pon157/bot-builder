@@ -9,33 +9,33 @@ import {
 
 const API = (path: string) => path;
 
-const fmt = (n: number | null | undefined) => new Intl.NumberFormat('ru-RU').format(n ?? 0);
-// Безопасный fmtRub — не падает на undefined/null/NaN
+const fmt    = (n: number | null | undefined) => new Intl.NumberFormat('ru-RU').format(n ?? 0);
 const fmtRub = (n: number | null | undefined) => {
   const val = parseFloat(String(n ?? 0));
   return `${isNaN(val) ? '0.00' : val.toFixed(2)} ₽`;
 };
-const fmtDate = (ms: number) => ms ? new Date(ms).toLocaleDateString('ru-RU', { day:'2-digit', month:'short', year:'numeric' }) : '—';
+const fmtDate = (ms: number) =>
+  ms ? new Date(ms).toLocaleDateString('ru-RU', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 
 type Tab = 'dashboard' | 'posts' | 'balance' | 'create' | 'stats';
 
-// ── Status Badge ─────────────────────────────────────────────────────────────
 const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
   const map: Record<string, { label: string; cls: string }> = {
     pending:  { label: 'На модерации', cls: 'bg-amber-500/10 text-amber-400 border-amber-500/20' },
-    approved: { label: 'Одобрено', cls: 'bg-blue-500/10 text-blue-400 border-blue-500/20' },
-    active:   { label: 'Активно', cls: 'bg-green-500/10 text-green-400 border-green-500/20' },
-    paused:   { label: 'Пауза', cls: 'bg-zinc-500/10 text-zinc-400 border-zinc-500/20' },
-    rejected: { label: 'Отклонено', cls: 'bg-red-500/10 text-red-400 border-red-500/20' },
-    finished: { label: 'Завершено', cls: 'bg-zinc-800 text-zinc-500 border-zinc-700' },
+    approved: { label: 'Одобрено',     cls: 'bg-blue-500/10 text-blue-400 border-blue-500/20'   },
+    active:   { label: 'Активно',      cls: 'bg-green-500/10 text-green-400 border-green-500/20' },
+    paused:   { label: 'Пауза',        cls: 'bg-zinc-500/10 text-zinc-400 border-zinc-500/20'    },
+    rejected: { label: 'Отклонено',    cls: 'bg-red-500/10 text-red-400 border-red-500/20'       },
+    finished: { label: 'Завершено',    cls: 'bg-zinc-800 text-zinc-500 border-zinc-700'          },
   };
   const { label, cls } = map[status] || { label: status, cls: 'bg-zinc-800 text-zinc-500 border-zinc-700' };
   return <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest border ${cls}`}>{label}</span>;
 };
 
-// ── Metric Card ──────────────────────────────────────────────────────────────
-const MetricCard: React.FC<{ label: string; value: string | number; icon: React.ReactNode; color: string; sub?: string }> = ({ label, value, icon, color, sub }) => (
-  <div className={`p-4 bg-zinc-900/60 border border-zinc-800 rounded-2xl`}>
+const MetricCard: React.FC<{
+  label: string; value: string | number; icon: React.ReactNode; color: string; sub?: string;
+}> = ({ label, value, icon, color, sub }) => (
+  <div className="p-4 bg-zinc-900/60 border border-zinc-800 rounded-2xl">
     <div className={`mb-2 ${color}`}>{icon}</div>
     <div className="text-xl font-black text-white font-mono">{value}</div>
     <div className="text-[10px] text-zinc-500 uppercase tracking-widest mt-0.5">{label}</div>
@@ -43,31 +43,67 @@ const MetricCard: React.FC<{ label: string; value: string | number; icon: React.
   </div>
 );
 
-// ── Main Component ────────────────────────────────────────────────────────────
+// ── Числовой инпут без бага "нельзя удалить первую цифру" ────────────────────
+// Проблема: value={Math.max(1, parseInt(e.target.value) || 1)} применяет min сразу,
+// что не даёт очистить поле перед вводом нового числа.
+// Решение: храним строковое значение в state, конвертируем только при blur/confirm.
+const NumericInput: React.FC<{
+  value: number;
+  onChange: (n: number) => void;
+  min?: number;
+  max?: number;
+  className?: string;
+}> = ({ value, onChange, min = 1, max, className = '' }) => {
+  const [raw, setRaw] = useState(String(value));
+
+  // Синхронизируем если value изменился снаружи (напр. кнопка быстрого выбора)
+  useEffect(() => { setRaw(String(value)); }, [value]);
+
+  const commit = (str: string) => {
+    const n = parseInt(str, 10);
+    if (!isNaN(n)) {
+      const clamped = max !== undefined ? Math.max(min, Math.min(max, n)) : Math.max(min, n);
+      onChange(clamped);
+      setRaw(String(clamped));
+    } else {
+      setRaw(String(value)); // откат к последнему валидному
+    }
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      pattern="[0-9]*"
+      value={raw}
+      className={className}
+      onChange={e => setRaw(e.target.value.replace(/[^0-9]/g, ''))}
+      onBlur={e => commit(e.target.value)}
+    />
+  );
+};
+
 const AdsPortal: React.FC = () => {
   const navigate = useNavigate();
 
-  const [tab, setTab]         = useState<Tab>('dashboard');
-  const [token, setToken]     = useState<string | null>(null);
-  const [agent, setAgent]     = useState<any>(null);
-  const [data, setData]       = useState<any>(null);
+  const [tab,     setTab]     = useState<Tab>('dashboard');
+  const [token,   setToken]   = useState<string | null>(null);
+  const [agent,   setAgent]   = useState<any>(null);
+  const [data,    setData]    = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState('');
+  const [error,   setError]   = useState('');
 
-  // Create post form
-  const [postText, setPostText]     = useState('');
-  const [postMedia, setPostMedia]   = useState('');
-  const [creating, setCreating]     = useState(false);
-  const [createMsg, setCreateMsg]   = useState('');
-  const [createErr, setCreateErr]   = useState('');
+  const [postText,   setPostText]   = useState('');
+  const [postMedia,  setPostMedia]  = useState('');
+  const [creating,   setCreating]   = useState(false);
+  const [createMsg,  setCreateMsg]  = useState('');
+  const [createErr,  setCreateErr]  = useState('');
 
-  // Buy impressions
   const [buyingPost, setBuyingPost] = useState<any>(null);
-  const [buyCount, setBuyCount]     = useState(100);
-  const [buying, setBuying]         = useState(false);
-  const [buyMsg, setBuyMsg]         = useState('');
+  const [buyCount,   setBuyCount]   = useState(100);
+  const [buying,     setBuying]     = useState(false);
+  const [buyMsg,     setBuyMsg]     = useState('');
 
-  // Topup
   const [topupAmount, setTopupAmount] = useState(500);
 
   useEffect(() => {
@@ -75,7 +111,6 @@ const AdsPortal: React.FC = () => {
     const a = localStorage.getItem('ads_agent');
     if (!t) { navigate('/adsauth'); return; }
     setToken(t);
-    // Пробуем восстановить агента из кеша пока грузится
     if (a) {
       try {
         const cached = JSON.parse(a);
@@ -105,7 +140,6 @@ const AdsPortal: React.FC = () => {
       setData(d);
       if (d.agent) {
         setAgent(d.agent);
-        // Синхронизируем кеш
         localStorage.setItem('ads_agent', JSON.stringify({ ...d.agent, password_hash: undefined }));
       }
     } catch (e: any) {
@@ -128,7 +162,7 @@ const AdsPortal: React.FC = () => {
       const r = await fetch('/api/ads/posts/create', {
         method: 'POST',
         headers: authHeader(token),
-        body: JSON.stringify({ text: postText.trim(), media_url: postMedia.trim() || undefined })
+        body: JSON.stringify({ text: postText.trim(), media_url: postMedia.trim() || undefined }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.detail || 'Ошибка');
@@ -149,11 +183,10 @@ const AdsPortal: React.FC = () => {
       const r = await fetch(`/api/ads/posts/${buyingPost.id}/buy-impressions`, {
         method: 'POST',
         headers: authHeader(token),
-        body: JSON.stringify({ impressions: buyCount })
+        body: JSON.stringify({ impressions: buyCount }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.detail || 'Ошибка покупки показов');
-      // Перезагружаем дашборд чтобы получить актуальный баланс
       await loadDashboard(token);
       setBuyMsg(`✅ Куплено ${fmt(buyCount)} показов!`);
       setTimeout(() => { setBuyingPost(null); setBuyMsg(''); }, 3000);
@@ -167,10 +200,10 @@ const AdsPortal: React.FC = () => {
   const getTopupUrl = async () => {
     if (!token) return;
     try {
-      const r = await fetch(`/api/ads/payments/create`, {
+      const r = await fetch('/api/ads/payments/create', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount: topupAmount })
+        body: JSON.stringify({ amount: topupAmount }),
       });
       const d = await r.json();
       if (d.confirmation_url) {
@@ -190,20 +223,18 @@ const AdsPortal: React.FC = () => {
     </div>
   );
 
-  const posts = data?.posts || [];
-  const txs   = data?.transactions || [];
-  const stats = data?.stats || {};
-  const sysSt = data?.system_stats || {};
-  // Безопасный парсинг баланса — не падает при undefined/null/NaN
+  const posts  = data?.posts || [];
+  const txs    = data?.transactions || [];
+  const stats  = data?.stats || {};
+  const sysSt  = data?.system_stats || {};
   const balance = parseFloat(String(agent?.balance_rub ?? data?.agent?.balance_rub ?? 0)) || 0;
-
   const PRICE_PER_IMP = 0.2;
 
   return (
     <div className="min-h-screen bg-[#060608] text-white"
       style={{ backgroundImage: 'radial-gradient(ellipse 80% 30% at 50% 0%, rgba(234,179,8,0.05), transparent)' }}>
-
       <div className="max-w-4xl mx-auto px-4 py-6">
+
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
@@ -219,7 +250,8 @@ const AdsPortal: React.FC = () => {
             <div className="px-3 py-1.5 bg-amber-500/10 border border-amber-500/20 rounded-xl">
               <span className="text-amber-400 font-black text-sm">{fmtRub(balance)}</span>
             </div>
-            <button onClick={handleLogout} className="p-2 bg-zinc-900 border border-zinc-800 rounded-xl hover:bg-zinc-800 transition-colors text-zinc-500 hover:text-white">
+            <button onClick={handleLogout}
+              className="p-2 bg-zinc-900 border border-zinc-800 rounded-xl hover:bg-zinc-800 transition-colors text-zinc-500 hover:text-white">
               <LogOut size={15} />
             </button>
           </div>
@@ -228,12 +260,12 @@ const AdsPortal: React.FC = () => {
         {/* Tabs */}
         <div className="flex gap-1 p-1 bg-zinc-900/80 border border-zinc-800 rounded-2xl mb-6 overflow-x-auto no-scrollbar">
           {([
-            { id: 'dashboard', icon: <BarChart2 size={13} />, label: 'Обзор' },
-            { id: 'posts',     icon: <FileText size={13} />,  label: 'Посты' },
-            { id: 'create',    icon: <Plus size={13} />,      label: 'Создать' },
-            { id: 'balance',   icon: <Wallet size={13} />,    label: 'Баланс' },
+            { id: 'dashboard', icon: <BarChart2 size={13} />, label: 'Обзор'      },
+            { id: 'posts',     icon: <FileText size={13} />,  label: 'Посты'      },
+            { id: 'create',    icon: <Plus size={13} />,      label: 'Создать'    },
+            { id: 'balance',   icon: <Wallet size={13} />,    label: 'Баланс'     },
             { id: 'stats',     icon: <TrendingUp size={13} />,label: 'Статистика' },
-          ] as {id: Tab; icon: React.ReactNode; label: string}[]).map(t => (
+          ] as { id: Tab; icon: React.ReactNode; label: string }[]).map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[11px] font-bold whitespace-nowrap transition-all
                 ${tab === t.id ? 'bg-amber-500 text-black' : 'text-zinc-500 hover:text-zinc-300'}`}>
@@ -242,29 +274,28 @@ const AdsPortal: React.FC = () => {
           ))}
         </div>
 
-        {/* ── DASHBOARD ────────────────────────────────────────────────── */}
+        {/* ── DASHBOARD ─────────────────────────────────────────────────── */}
         {tab === 'dashboard' && (
           <div>
-            {/* System stats */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-              <MetricCard label="Активных постов" value={stats.active_posts || 0}
-                icon={<Zap size={16} />} color="text-green-400" />
-              <MetricCard label="Всего показов" value={fmt(stats.total_impressions || 0)}
-                icon={<Eye size={16} />} color="text-blue-400" />
-              <MetricCard label="Free-ботов в сети" value={sysSt.free_bots || 0}
-                icon={<Bot size={16} />} color="text-amber-400" />
+              <MetricCard label="Активных постов" value={stats.active_posts || 0}   icon={<Zap size={16} />}   color="text-green-400" />
+              <MetricCard label="Всего показов"   value={fmt(stats.total_impressions || 0)} icon={<Eye size={16} />} color="text-blue-400" />
+              <MetricCard label="Free-ботов"      value={sysSt.free_bots || 0}       icon={<Bot size={16} />}   color="text-amber-400" />
+              <MetricCard label="Аудитория"        value={fmt(sysSt.free_users || 0)} icon={<Users size={16} />} color="text-purple-400"
             </div>
 
-            {/* Recent posts */}
             <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-5 mb-4">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xs font-black text-zinc-300 uppercase tracking-widest">Последние посты</h2>
-                <button onClick={() => setTab('posts')} className="text-[10px] text-amber-400 hover:text-amber-300 font-bold uppercase tracking-widest transition-colors flex items-center gap-1">
+                <button onClick={() => setTab('posts')}
+                  className="text-[10px] text-amber-400 hover:text-amber-300 font-bold uppercase tracking-widest transition-colors flex items-center gap-1">
                   Все <ChevronRight size={12} />
                 </button>
               </div>
               {posts.length === 0 ? (
-                <div className="text-center py-6 text-zinc-600 text-xs">Постов нет. <button onClick={() => setTab('create')} className="text-amber-400 hover:underline">Создать первый</button></div>
+                <div className="text-center py-6 text-zinc-600 text-xs">
+                  Постов нет. <button onClick={() => setTab('create')} className="text-amber-400 hover:underline">Создать первый</button>
+                </div>
               ) : (
                 <div className="space-y-2">
                   {posts.slice(0, 5).map((p: any) => (
@@ -288,16 +319,15 @@ const AdsPortal: React.FC = () => {
               )}
             </div>
 
-            {/* Quick actions */}
             <div className="grid grid-cols-2 gap-3">
               <button onClick={() => setTab('create')}
-                className="p-4 bg-amber-500/10 border border-amber-500/20 hover:border-amber-500/40 rounded-2xl text-left transition-colors group">
+                className="p-4 bg-amber-500/10 border border-amber-500/20 hover:border-amber-500/40 rounded-2xl text-left transition-colors">
                 <Plus size={18} className="text-amber-400 mb-2" />
                 <div className="text-xs font-black text-amber-300 uppercase tracking-widest">Создать пост</div>
                 <div className="text-[10px] text-zinc-500 mt-0.5">Новая рекламная кампания</div>
               </button>
               <button onClick={() => setTab('balance')}
-                className="p-4 bg-zinc-900/60 border border-zinc-800 hover:border-zinc-700 rounded-2xl text-left transition-colors group">
+                className="p-4 bg-zinc-900/60 border border-zinc-800 hover:border-zinc-700 rounded-2xl text-left transition-colors">
                 <Wallet size={18} className="text-green-400 mb-2" />
                 <div className="text-xs font-black text-zinc-300 uppercase tracking-widest">Пополнить</div>
                 <div className="text-[10px] text-zinc-500 mt-0.5">Через ЮМани</div>
@@ -306,7 +336,7 @@ const AdsPortal: React.FC = () => {
           </div>
         )}
 
-        {/* ── POSTS ────────────────────────────────────────────────────── */}
+        {/* ── POSTS ─────────────────────────────────────────────────────── */}
         {tab === 'posts' && (
           <div>
             <div className="flex items-center justify-between mb-4">
@@ -329,7 +359,7 @@ const AdsPortal: React.FC = () => {
             ) : (
               <div className="space-y-3">
                 {posts.map((p: any) => {
-                  const pct = (p.impressions_paid || 0) > 0 ? Math.round((p.impressions_used || 0) / p.impressions_paid * 100) : 0;
+                  const pct       = (p.impressions_paid || 0) > 0 ? Math.round((p.impressions_used || 0) / p.impressions_paid * 100) : 0;
                   const remaining = (p.impressions_paid || 0) - (p.impressions_used || 0);
                   return (
                     <div key={p.id} className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-4">
@@ -346,7 +376,6 @@ const AdsPortal: React.FC = () => {
                         <StatusBadge status={p.status} />
                       </div>
 
-                      {/* Progress bar */}
                       {p.impressions_paid > 0 && (
                         <div className="mb-3">
                           <div className="flex justify-between text-[10px] text-zinc-500 mb-1">
@@ -394,7 +423,11 @@ const AdsPortal: React.FC = () => {
                     <label className="text-[10px] text-zinc-500 uppercase tracking-widest block mb-1.5">
                       Количество показов
                     </label>
-                    <input type="number" value={buyCount} onChange={e => setBuyCount(Math.max(1, parseInt(e.target.value) || 1))}
+                    {/* БАГ-ФИХ: используем NumericInput вместо type="number" с Math.max,
+                        чтобы можно было очистить поле и ввести новое число целиком */}
+                    <NumericInput
+                      value={buyCount}
+                      onChange={setBuyCount}
                       min={1}
                       className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500 font-mono"
                     />
@@ -410,7 +443,6 @@ const AdsPortal: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Quick counts */}
                   <div className="flex gap-2 mb-4">
                     {[100, 500, 1000, 5000].map(n => (
                       <button key={n} onClick={() => setBuyCount(n)}
@@ -445,11 +477,10 @@ const AdsPortal: React.FC = () => {
           </div>
         )}
 
-        {/* ── CREATE ───────────────────────────────────────────────────── */}
+        {/* ── CREATE ────────────────────────────────────────────────────── */}
         {tab === 'create' && (
           <div>
             <h2 className="text-sm font-black text-zinc-300 uppercase tracking-widest mb-5">Новый рекламный пост</h2>
-
             <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-5">
               <div className="space-y-4">
                 <div>
@@ -457,7 +488,8 @@ const AdsPortal: React.FC = () => {
                     Текст рекламы <span className="text-zinc-600">({postText.length}/250)</span>
                   </label>
                   <textarea
-                    value={postText} onChange={e => setPostText(e.target.value.slice(0, 250))}
+                    value={postText}
+                    onChange={e => setPostText(e.target.value.slice(0, 250))}
                     rows={4}
                     className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500 resize-none"
                     placeholder="Краткое и привлекательное объявление. Будет показано в Telegram-ботах."
@@ -468,13 +500,13 @@ const AdsPortal: React.FC = () => {
                     URL изображения <span className="text-zinc-600">(опционально)</span>
                   </label>
                   <input
-                    value={postMedia} onChange={e => setPostMedia(e.target.value)}
+                    value={postMedia}
+                    onChange={e => setPostMedia(e.target.value)}
                     className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500"
                     placeholder="https://example.com/banner.jpg"
                   />
                 </div>
 
-                {/* Preview */}
                 {postText && (
                   <div className="p-3 bg-zinc-800/60 border border-zinc-700 rounded-xl">
                     <div className="text-[10px] text-zinc-500 uppercase tracking-widest mb-2 flex items-center gap-1">
@@ -489,7 +521,6 @@ const AdsPortal: React.FC = () => {
                   </div>
                 )}
 
-                {/* Info */}
                 <div className="flex items-start gap-2 p-3 bg-blue-500/5 border border-blue-500/10 rounded-xl">
                   <Info size={14} className="text-blue-400 shrink-0 mt-0.5" />
                   <p className="text-xs text-zinc-500">
@@ -519,12 +550,11 @@ const AdsPortal: React.FC = () => {
           </div>
         )}
 
-        {/* ── BALANCE ──────────────────────────────────────────────────── */}
+        {/* ── BALANCE ───────────────────────────────────────────────────── */}
         {tab === 'balance' && (
           <div>
             <h2 className="text-sm font-black text-zinc-300 uppercase tracking-widest mb-5">Баланс</h2>
 
-            {/* Current balance */}
             <div className="bg-gradient-to-br from-amber-500/10 to-orange-500/5 border border-amber-500/20 rounded-2xl p-6 mb-5 text-center">
               <div className="text-[10px] text-amber-500/60 uppercase tracking-widest mb-1">Текущий баланс</div>
               <div className="text-4xl font-black text-amber-400 font-mono">{fmtRub(balance)}</div>
@@ -533,20 +563,21 @@ const AdsPortal: React.FC = () => {
               </div>
             </div>
 
-            {/* Topup */}
             <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-5 mb-4">
               <h3 className="text-xs font-black text-zinc-300 uppercase tracking-widest mb-4 flex items-center gap-2">
                 <CreditCard size={14} /> Пополнить через ЮМани
               </h3>
               <div className="mb-3">
                 <label className="text-[10px] text-zinc-500 uppercase tracking-widest block mb-1.5">Сумма пополнения (₽)</label>
-                <input type="number" value={topupAmount} onChange={e => setTopupAmount(Math.max(10, parseInt(e.target.value) || 100))}
+                {/* БАГ-ФИХ: NumericInput для topupAmount */}
+                <NumericInput
+                  value={topupAmount}
+                  onChange={setTopupAmount}
                   min={10}
                   className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500 font-mono"
                 />
                 <div className="text-[10px] text-zinc-600 mt-1">≈{Math.floor(topupAmount / 0.2)} показов</div>
               </div>
-              {/* Quick amounts */}
               <div className="flex gap-2 mb-4">
                 {[100, 300, 500, 1000].map(a => (
                   <button key={a} onClick={() => setTopupAmount(a)}
@@ -560,12 +591,9 @@ const AdsPortal: React.FC = () => {
                 className="w-full py-3 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 rounded-xl text-sm font-black text-black flex items-center justify-center gap-2 transition-all">
                 <ArrowUpRight size={15} /> Перейти к оплате
               </button>
-              <p className="text-[10px] text-zinc-600 text-center mt-2">
-                После оплаты баланс пополнится автоматически
-              </p>
+              <p className="text-[10px] text-zinc-600 text-center mt-2">После оплаты баланс пополнится автоматически</p>
             </div>
 
-            {/* Transactions */}
             <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-5">
               <h3 className="text-xs font-black text-zinc-300 uppercase tracking-widest mb-4">История транзакций</h3>
               {txs.length === 0 ? (
@@ -589,12 +617,10 @@ const AdsPortal: React.FC = () => {
           </div>
         )}
 
-        {/* ── STATISTICS ───────────────────────────────────────────────── */}
+        {/* ── STATISTICS ────────────────────────────────────────────────── */}
         {tab === 'stats' && (
           <div>
             <h2 className="text-sm font-black text-zinc-300 uppercase tracking-widest mb-5">Статистика показов</h2>
-
-            {/* System overview */}
             <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-5 mb-4">
               <h3 className="text-xs font-black text-zinc-400 uppercase tracking-widest mb-4">Охват аудитории</h3>
               <div className="grid grid-cols-2 gap-3">
@@ -605,7 +631,6 @@ const AdsPortal: React.FC = () => {
               </div>
             </div>
 
-            {/* Per-post stats */}
             <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-5">
               <h3 className="text-xs font-black text-zinc-400 uppercase tracking-widest mb-4">По постам</h3>
               {posts.length === 0 ? (
@@ -613,7 +638,7 @@ const AdsPortal: React.FC = () => {
               ) : (
                 <div className="space-y-3">
                   {posts.map((p: any) => {
-                    const ctr = (p.impressions_paid || 0) > 0 ? ((p.impressions_used || 0) / p.impressions_paid * 100).toFixed(1) : '0';
+                    const ctr   = (p.impressions_paid || 0) > 0 ? ((p.impressions_used || 0) / p.impressions_paid * 100).toFixed(1) : '0';
                     const spent = ((p.impressions_used || 0) * 0.2).toFixed(2);
                     return (
                       <div key={p.id} className="p-3 bg-zinc-800/40 rounded-xl">
@@ -634,7 +659,7 @@ const AdsPortal: React.FC = () => {
                         </div>
                         <div className="mt-2 h-1.5 bg-zinc-700 rounded-full overflow-hidden">
                           <div className="h-full bg-gradient-to-r from-amber-500 to-orange-500 rounded-full"
-                            style={{ width: `${p.impressions_paid > 0 ? p.impressions_used/p.impressions_paid*100 : 0}%` }} />
+                            style={{ width: `${p.impressions_paid > 0 ? p.impressions_used / p.impressions_paid * 100 : 0}%` }} />
                         </div>
                       </div>
                     );
