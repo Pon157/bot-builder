@@ -1,7 +1,11 @@
-import json
 """
 free_ads_server.py
 ──────────────────
+ИСПРАВЛЕНИЯ v6:
+  • Добавлены эндпоинты для VK-ботов free-плана (/api/free/vk/bots/*).
+  • free_update_bot_config: теперь сохраняет inlineButtons в корень config.
+  • Все исправления v5 сохранены.
+
 ИСПРАВЛЕНИЯ v5:
   • free_update_bot_config — buttons/triggers сохраняются В КОРЕНЬ config,
     а не только внутри nested объекта. free_bot_core читает их именно оттуда.
@@ -222,6 +226,15 @@ async def free_update_bot_config(bot_id: str, d: dict):
     # Скалярные поля из inc (только не-settings поля)
     # firstMessageHeader/ticketMessageHeader/commonMessageHeader живут в settings,
     # поэтому их НЕ копируем в корень config во избежание путаницы двух источников
+    # FIX v6: сохраняем inlineButtons (новый формат) и welcomeInline (старый)
+    inline_buttons = d.get("inlineButtons")
+    if inline_buttons is None:
+        inline_buttons = inc.get("inlineButtons")
+    if inline_buttons is not None:
+        new_cfg["inlineButtons"] = inline_buttons
+    elif "inlineButtons" in existing_cfg:
+        new_cfg["inlineButtons"] = existing_cfg["inlineButtons"]
+
     for key in ["welcomeMessage", "welcomePhoto", "welcomeInline", "description"]:
         if key in inc:
             new_cfg[key] = inc[key]
@@ -338,6 +351,333 @@ async def free_plan_info():
             "advanced_buttons": False,
         }
     }
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FREE VK BOTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/api/free/vk/bots/create")
+async def free_vk_create_bot(d: dict):
+    """
+    Создать VK-бота на free-плане.
+    token — Community Token из настроек сообщества ВКонтакте.
+    admin_chat_id — peer_id беседы/группы для пересылки сообщений (опционально).
+    """
+    user_id      = d.get("user_id", "").strip()
+    name         = d.get("name", "").strip()
+    token        = d.get("token", "").strip()
+
+    if not all([user_id, name, token]):
+        raise HTTPException(400, "user_id, name, token обязательны")
+
+    db = _db()
+    s  = _get_server()
+    enc_fn = getattr(s, 'encrypt_val', lambda x: x)
+    new_id = f"fvk_{secrets.token_hex(5)}"
+    now_ms = int(time.time() * 1000)
+
+    bot_data = {
+        "id":                new_id,
+        "owner_id":          user_id,
+        "name":              name,
+        "token":             enc_fn(token),
+        "status":            "IDLE",
+        "platform":          "vk",
+        "is_free_plan":      True,
+        "memory_limit_mb":   0,
+        "ad_enabled":        False,   # реклама в VK пока не поддерживается на free
+        "license_expires_at": now_ms + 9999 * 24 * 3600 * 1000,
+        "created_at":        now_ms,
+        "config": {
+            "welcomeMessage": f"Добро пожаловать в {name}!",
+            "adminChatId":    d.get("admin_chat_id", ""),
+            "vk_group_id":    d.get("admin_chat_id", ""),
+            "vkGroupId":      d.get("admin_chat_id", ""),
+            "buttons":        [],
+            "triggers":       [],
+            "inlineButtons":  [],
+            "connectedUsers": [],
+            "stats": {
+                "totalMessages": 0, "incomingToday": 0, "outgoingToday": 0,
+                "activeUsers24h": 0, "bannedCount": 0, "history": []
+            },
+            "settings": {
+                "forwardAll": False, "forwardMessages": False,
+                "anonymousTopics": False,
+                "rateLimit": 1, "autoBanThreshold": 3,
+                "showHeaderId": True, "showHeaderName": True, "showHeaderUsername": True,
+                "firstMessageHeader": "🆕 ПЕРВОЕ ОБРАЩЕНИЕ:",
+                "ticketMessageHeader": "🆘 ЗАЯВКА [{btn}]:",
+                "commonMessageHeader": "📩 СООБЩЕНИЕ:",
+            }
+        }
+    }
+
+    r = await db.post("bots", json=bot_data, headers={"Prefer": "return=representation"})
+    if r.status_code not in (200, 201):
+        raise HTTPException(500, f"Ошибка БД: {r.text}")
+
+    return r.json()[0] if isinstance(r.json(), list) else r.json()
+
+
+@router.put("/api/free/vk/bots/{bot_id}/config")
+async def free_vk_update_bot_config(bot_id: str, d: dict):
+    """
+    Сохранить конфиг VK-бота.
+    Структура payload аналогична TG-боту, кроме отсутствия useTopics/topicPerRequest.
+    Добавлено поле admin_chat_id (peer_id беседы ВКонтакте).
+    """
+    user_id = str(d.get("user_id", "")).strip()
+    if not user_id:
+        raise HTTPException(400, "user_id обязателен")
+
+    db = _db()
+    r  = await db.get("bots", params={
+        "id":           f"eq.{bot_id}",
+        "owner_id":     f"eq.{user_id}",
+        "is_free_plan": "eq.true",
+        "platform":     "eq.vk",
+    })
+    if not r.json():
+        raise HTTPException(404, "VK Free-бот не найден или нет прав")
+
+    existing_bot = r.json()[0]
+    existing_cfg = existing_bot.get("config") or {}
+
+    inc = d.get("config") or {}
+
+    # buttons/triggers — с корня payload или из inc
+    buttons  = d.get("buttons")
+    if buttons is None:
+        buttons = inc.get("buttons", existing_cfg.get("buttons", []))
+
+    triggers = d.get("triggers")
+    if triggers is None:
+        triggers = inc.get("triggers", existing_cfg.get("triggers", []))
+
+    # inlineButtons (кнопки под стартовым сообщением)
+    inline_buttons = d.get("inlineButtons")
+    if inline_buttons is None:
+        inline_buttons = inc.get("inlineButtons", existing_cfg.get("inlineButtons", []))
+
+    # Убираем Pro-only поля
+    clean_buttons = []
+    for btn in (buttons or []):
+        clean_btn = {k: v for k, v in btn.items()
+                     if k not in ("flow", "ai_prompt", "ai_enabled", "webhook", "payment")}
+        clean_buttons.append(clean_btn)
+
+    # settings мержим
+    old_stg    = existing_cfg.get("settings") or {}
+    new_stg    = inc.get("settings") or {}
+    merged_stg = {**old_stg, **new_stg}
+    # VK не поддерживает topics — убираем во избежание путаницы
+    merged_stg.pop("useTopics", None)
+    merged_stg.pop("topicPerRequest", None)
+
+    # admin_chat_id / vk_group_id
+    if "adminChatId" in inc:
+        admin_chat_id = inc["adminChatId"] or ""
+    elif "adminChatId" in d:
+        admin_chat_id = d["adminChatId"] or ""
+    else:
+        admin_chat_id = existing_cfg.get("adminChatId") or existing_cfg.get("vk_group_id") or ""
+
+    connected_users = existing_cfg.get("connectedUsers", [])
+    stats           = existing_cfg.get("stats", {})
+
+    new_cfg = {
+        **existing_cfg,
+        "adminChatId":    admin_chat_id,
+        "vk_group_id":    admin_chat_id,
+        "vkGroupId":      admin_chat_id,
+        "settings":       merged_stg,
+        "buttons":        clean_buttons,
+        "triggers":       triggers or [],
+        "inlineButtons":  inline_buttons or [],
+        "connectedUsers": connected_users,
+        "stats":          stats,
+    }
+
+    for key in ["welcomeMessage", "welcomePhoto", "description"]:
+        if key in inc:
+            new_cfg[key] = inc[key]
+
+    patch_payload = {
+        "config": new_cfg,
+        "name":   d.get("name") or existing_bot.get("name") or "VK Bot",
+    }
+
+    new_token = d.get("token") or inc.get("token")
+    if new_token and new_token.strip() and new_token != existing_bot.get("token"):
+        try:
+            s = _get_server()
+            enc_fn = getattr(s, 'encrypt_val', lambda x: x)
+            patch_payload["token"] = enc_fn(new_token.strip())
+        except Exception:
+            patch_payload["token"] = new_token.strip()
+
+    patch_r = await db.patch("bots",
+        params={"id": f"eq.{bot_id}"},
+        json=patch_payload,
+        headers={"Prefer": "return=representation"})
+
+    result = patch_r.json()
+    if not result:
+        raise HTTPException(500, "Ошибка сохранения в БД")
+
+    return result[0] if isinstance(result, list) else result
+
+
+@router.get("/api/free/vk/bots/{user_id}")
+async def free_vk_get_user_bots(user_id: str):
+    """Список VK-ботов пользователя на free-плане."""
+    db = _db()
+    r  = await db.get("bots", params={
+        "owner_id":     f"eq.{user_id}",
+        "is_free_plan": "eq.true",
+        "platform":     "eq.vk",
+    })
+    return r.json() or []
+
+
+@router.get("/api/free/vk/bots/{bot_id}/stats")
+async def free_vk_bot_stats(bot_id: str, user_id: str):
+    """Аналитика VK-бота."""
+    db = _db()
+    r  = await db.get("bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}"})
+    if not r.json():
+        raise HTTPException(404, "VK-бот не найден")
+    bot = r.json()[0]
+    cfg = bot.get("config") or {}
+
+    cfg_stats = cfg.get("stats") or {}
+
+    history_map: dict = {}
+    for entry in (cfg_stats.get("history") or []):
+        date = entry.get("date", "")
+        if date:
+            if date not in history_map:
+                history_map[date] = dict(entry)
+            else:
+                for k in ["incoming", "outgoing", "totalUsers", "activeUsers"]:
+                    history_map[date][k] = max(history_map[date].get(k, 0), entry.get(k, 0))
+    merged_history = sorted(history_map.values(), key=lambda x: x.get("date", ""))[-14:]
+
+    connected    = cfg.get("connectedUsers") or []
+    users_count  = len(connected)
+    active_count = sum(1 for u in connected if u.get("is_active", True) and not u.get("is_banned"))
+    banned_count = sum(1 for u in connected if u.get("is_banned"))
+
+    merged_stats = {
+        "totalMessages":   int(cfg_stats.get("totalMessages",  0)),
+        "incomingToday":   int(cfg_stats.get("incomingToday",  0)),
+        "outgoingToday":   int(cfg_stats.get("outgoingToday",  0)),
+        "bannedCount":     banned_count,
+        "activeUsers24h":  int(cfg_stats.get("activeUsers24h", 0)),
+        "broadcastsTotal": int(cfg_stats.get("broadcastsTotal", 0)),
+        "broadcastsToday": int(cfg_stats.get("broadcastsToday", 0)),
+        "history":         merged_history,
+    }
+
+    return {
+        "bot_id":          bot_id,
+        "name":            bot.get("name"),
+        "status":          bot.get("status"),
+        "users_count":     users_count,
+        "active_count":    active_count,
+        "stats":           merged_stats,
+        "connected_users": connected,
+        "ad_enabled":      bot.get("ad_enabled", False),
+        "memory_limit":    bot.get("memory_limit_mb", 0),
+        "plan":            "free",
+        "platform":        "vk",
+    }
+
+
+@router.post("/api/free/vk/bots/{bot_id}/start")
+async def free_vk_start_bot(bot_id: str):
+    """Запустить VK-бота free-плана."""
+    server = _get_server()
+    pm     = getattr(server, 'pm', None)
+    if not pm:
+        raise HTTPException(500, "BotManager не инициализирован")
+
+    db = server.db
+    r  = await db.get("bots", params={"id": f"eq.{bot_id}"})
+    if not r.json():
+        raise HTTPException(404, "Бот не найден")
+
+    bot_data = r.json()[0]
+
+    owner_id = bot_data.get("owner_id")
+    if owner_id:
+        u_r = await db.get("users", params={"id": f"eq.{owner_id}"})
+        if u_r.json() and u_r.json()[0].get("is_banned"):
+            raise HTTPException(403, "Ваш аккаунт заблокирован")
+
+    inner_cfg = bot_data.get("config") or {}
+    if isinstance(inner_cfg, str):
+        try:
+            inner_cfg = json.loads(inner_cfg)
+        except Exception:
+            inner_cfg = {}
+
+    merged = {
+        **bot_data,
+        "config": inner_cfg,
+        "is_free_plan": True,
+        "platform": "vk",
+    }
+
+    success = await pm.start_bot(bot_id, merged)
+    if success is True:
+        await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "RUNNING"})
+        return {"status": "ok", "message": "VK-бот запущен"}
+    else:
+        raise HTTPException(500, f"Не удалось запустить бота: {success}")
+
+
+@router.post("/api/free/vk/bots/{bot_id}/stop")
+async def free_vk_stop_bot(bot_id: str):
+    """Остановить VK-бота free-плана."""
+    server = _get_server()
+    pm     = getattr(server, 'pm', None)
+    if not pm:
+        raise HTTPException(500, "BotManager не инициализирован")
+
+    await pm.stop_bot(bot_id)
+    try:
+        db = server.db
+        await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "IDLE"})
+    except Exception:
+        pass
+    return {"status": "ok", "message": "VK-бот остановлен"}
+
+
+@router.delete("/api/free/vk/bots/{user_id}/{bot_id}")
+async def free_vk_delete_bot(user_id: str, bot_id: str):
+    """Удалить VK-бота free-плана."""
+    server = _get_server()
+    pm     = getattr(server, 'pm', None)
+    if pm:
+        try:
+            await pm.stop_bot(bot_id)
+        except Exception:
+            pass
+
+    db = _db()
+    r  = await db.get("bots", params={
+        "id":       f"eq.{bot_id}",
+        "owner_id": f"eq.{user_id}",
+    })
+    if not r.json():
+        raise HTTPException(404, "VK-бот не найден или нет прав")
+
+    await db.delete("bots", params={"id": f"eq.{bot_id}"})
+    return {"ok": True, "deleted": bot_id}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
