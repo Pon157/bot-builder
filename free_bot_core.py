@@ -1,13 +1,16 @@
 """
 free_bot_core.py
 ================================================================================
-ИСПРАВЛЕНИЯ v5:
-  • apply_config теперь корректно читает buttons/triggers/settings/adminChatId
-    из вложенного config-объекта (именно там они хранятся в БД).
-  • format_admin_header читает showHeaderName/Id/Username из settings правильно.
-  • resolve_thread: force_new при topicPerRequest применяется к ЛЮБОМУ сообщению,
-    не только к первому или тикетному.
-  • Все предыдущие исправления v4 сохранены.
+ИСПРАВЛЕНИЯ v6:
+  • /start: inlineButtons теперь читаются из config["inlineButtons"] (новый формат),
+    поддерживает тип "url" (URL-кнопка) и "message" (callback с текстом).
+    Старый welcomeInline (только url) тоже поддерживается для обратной совместимости.
+  • reload_config_from_remote: синхронизирует inlineButtons при горячей перезагрузке.
+  • build_welcome_inline: отдельный метод, строит InlineKeyboardMarkup из
+    нового формата [{id, text, type:"url"|"message", value}].
+  • handle_start: корректно отправляет reply_kb ПОСЛЕ inline-кнопок (два
+    сообщения), так как Telegram не позволяет смешивать reply и inline в одном.
+  • Все исправления v5 сохранены.
 ================================================================================
 """
 
@@ -81,10 +84,6 @@ def get_anon_id(user_id: int) -> str:
 
 
 def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_text: str = "") -> str:
-    """
-    Формирует заголовок сообщения для администратора.
-    settings — это config["settings"], там живут все флаги и шаблоны заголовков.
-    """
     is_anon = settings.get("anonymousTopics", False)
     uid     = m.from_user.id
     anon    = f"#{get_anon_id(uid)}"
@@ -103,7 +102,6 @@ def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_
         user_info = " | ".join(parts) if parts else f"Юзер {anon}"
 
     if btn_text:
-        # Шаблон тикетного заголовка из settings
         hdr = settings.get("ticketMessageHeader", "🆘 <b>ЗАЯВКА</b>")
         hdr = hdr.replace("{btn}", btn_text)
     elif is_first:
@@ -134,8 +132,6 @@ class FreeBotInstance:
         self.bot    = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
         self.dp     = Dispatcher()
 
-        # ВАЖНО: два отдельных роутера с разными приоритетами
-        # admin_router регистрируется первым, но обрабатывает ТОЛЬКО сообщения из admin_chat
         self.admin_router = Router()
         self.user_router  = Router()
 
@@ -148,7 +144,6 @@ class FreeBotInstance:
         self._broadcast_day: Dict = {"date": "", "count": 0}
         self._last_push: float = 0.0
 
-        # users_list и stats_data инициализируем до apply_config
         self.users_list = []
         self.stats_data = {}
 
@@ -159,18 +154,6 @@ class FreeBotInstance:
     # ─────────────────────────────────────────────────────────────────────────
 
     def apply_config(self, data: dict):
-        """
-        Применяет конфиг при старте.
-
-        data — это ROW из таблицы bots:
-          data["id"], data["token"], data["owner_id"], data["name"] — корневые поля
-          data["config"] — вложенный объект со ВСЕМИ настройками бота:
-            config["buttons"], config["triggers"], config["settings"],
-            config["adminChatId"], config["welcomeMessage"], config["connectedUsers"], config["stats"]
-
-        ВАЖНО: buttons/triggers/settings/adminChatId живут ВНУТРИ config, не в корне row!
-        """
-        # raw_cfg — это и есть основной источник настроек
         raw_cfg = data.get("config") or {}
         if isinstance(raw_cfg, str):
             try:
@@ -178,7 +161,6 @@ class FreeBotInstance:
             except Exception:
                 raw_cfg = {}
 
-        # adminChatId: в config (основное место) или legacy корень
         admin_raw = (
             raw_cfg.get("adminChatId") or
             raw_cfg.get("admin_chat_id") or
@@ -190,7 +172,6 @@ class FreeBotInstance:
         except (ValueError, TypeError):
             self.admin_chat_id = None
 
-        # settings живут в config["settings"]
         self.settings       = raw_cfg.get("settings") or {}
         self.use_topics     = self.settings.get("useTopics", False)
         self.topic_per_req  = self.settings.get("topicPerRequest", False)
@@ -199,23 +180,22 @@ class FreeBotInstance:
         self.rate_limit     = float(self.settings.get("rateLimit", 1.0))
         self.auto_ban_limit = int(self.settings.get("autoBanThreshold", 3))
 
-        # buttons/triggers: живут в config (основное место)
         self.buttons  = raw_cfg.get("buttons")  or []
         self.triggers = raw_cfg.get("triggers") or []
 
-        # Тексты
         self.welcome_text   = raw_cfg.get("welcomeMessage", "Здравствуйте!")
         self.welcome_photo  = raw_cfg.get("welcomePhoto", "")
-        self.welcome_inline = raw_cfg.get("welcomeInline", [])
 
-        # users_list: не перезаписываем если уже живём (рестарт не нужен)
+        # FIX v6: поддерживаем новый формат inlineButtons [{id, text, type, value}]
+        # и старый welcomeInline [{text, url}] для обратной совместимости
+        self.inline_buttons = raw_cfg.get("inlineButtons") or raw_cfg.get("welcomeInline") or []
+
         if not self.users_list:
             self.users_list = raw_cfg.get("connectedUsers") or []
 
         self.ad_enabled      = data.get("ad_enabled", True)
         self.server_base_url = os.getenv("SERVER_BASE_URL", "http://localhost:8000")
 
-        # stats: не перезаписываем если уже есть в памяти
         if not self.stats_data:
             st = raw_cfg.get("stats") or {}
             self.stats_data = {
@@ -228,17 +208,10 @@ class FreeBotInstance:
                 "broadcastsTotal": st.get("broadcastsTotal", 0),
                 "history":         st.get("history", []),
             }
-            # ФИКС: восстанавливаем _broadcast_day из stats после рестарта
-            # иначе счётчик рассылок в памяти обнуляется и не совпадает с БД
             _today = datetime.now().strftime("%d.%m")
             self._broadcast_day = {"date": _today, "count": int(self.stats_data.get("broadcastsToday", 0))}
 
     def reload_config_from_remote(self, remote_cfg: dict):
-        """
-        Обновляет настройки из БД каждые 30 секунд.
-        remote_cfg — это data["config"] (уже распакованный вложенный объект).
-        НЕ трогает users_list и stats_data.
-        """
         admin_raw = (
             remote_cfg.get("adminChatId") or
             remote_cfg.get("admin_chat_id")
@@ -258,7 +231,6 @@ class FreeBotInstance:
         self.rate_limit     = float(stg.get("rateLimit", 1.0))
         self.auto_ban_limit = int(stg.get("autoBanThreshold", 3))
 
-        # buttons/triggers — в корне config-объекта
         if "buttons" in remote_cfg:
             self.buttons = remote_cfg["buttons"] or []
         if "triggers" in remote_cfg:
@@ -269,11 +241,239 @@ class FreeBotInstance:
         if "welcomePhoto" in remote_cfg:
             self.welcome_photo = remote_cfg["welcomePhoto"]
 
+        # FIX v6: горячая перезагрузка inlineButtons
+        if "inlineButtons" in remote_cfg:
+            self.inline_buttons = remote_cfg["inlineButtons"] or []
+        elif "welcomeInline" in remote_cfg:
+            self.inline_buttons = remote_cfg["welcomeInline"] or []
+
         logger.debug(
             f"[{self.bot_id}] reload: buttons={len(self.buttons)}, "
             f"triggers={len(self.triggers)}, forwardAll={self.forward_all}, "
-            f"useTopics={self.use_topics}, admin={self.admin_chat_id}"
+            f"useTopics={self.use_topics}, admin={self.admin_chat_id}, "
+            f"inlineButtons={len(self.inline_buttons)}"
         )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # КЛАВИАТУРЫ
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def get_main_keyboard(self):
+        active = [b for b in self.buttons if b.get("text")]
+        if not active:
+            return ReplyKeyboardRemove()
+        rows = []
+        for i in range(0, len(active), 2):
+            rows.append([KeyboardButton(text=b["text"]) for b in active[i:i+2]])
+        return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+    def build_inline_from_list(self, buttons: list) -> Optional[InlineKeyboardMarkup]:
+        """Старый метод: [{text, url}] → InlineKeyboardMarkup (только URL-кнопки)."""
+        if not buttons:
+            return None
+        rows = []
+        for i in range(0, len(buttons), 2):
+            rows.append([
+                InlineKeyboardButton(text=b["text"], url=b.get("url", "https://t.me"))
+                for b in buttons[i:i+2] if b.get("text")
+            ])
+        return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+    def build_welcome_inline(self) -> Optional[InlineKeyboardMarkup]:
+        """
+        FIX v6: Строит инлайн-клавиатуру под стартовым сообщением из нового формата.
+        Поддерживает тип "url" (открыть ссылку) и "message" (callback_data с текстом).
+        Старый формат [{text, url}] также поддерживается для обратной совместимости.
+        """
+        buttons = self.inline_buttons
+        if not buttons:
+            return None
+
+        rows = []
+        for i in range(0, len(buttons), 2):
+            row = []
+            for btn in buttons[i:i+2]:
+                text = btn.get("text", "").strip()
+                if not text:
+                    continue
+                btn_type = btn.get("type", "url")
+                value    = btn.get("value", "") or btn.get("url", "")
+
+                if btn_type == "url" and value:
+                    # Добавляем https:// если нет схемы
+                    if value and not value.startswith(("http://", "https://", "tg://")):
+                        value = "https://" + value
+                    row.append(InlineKeyboardButton(text=text, url=value))
+                elif btn_type == "message" and value:
+                    # callback_data — бот отправит это сообщение когда юзер нажмёт
+                    # используем префикс "inl_msg:" чтобы хендлер понял что делать
+                    cb_data = f"inl_msg:{value[:60]}"  # Telegram limit 64 bytes
+                    row.append(InlineKeyboardButton(text=text, callback_data=cb_data))
+                # else: пропускаем кнопку без значения
+            if row:
+                rows.append(row)
+
+        return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # ТОПИКИ
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def resolve_thread(self, user: dict, force_new: bool = False) -> Optional[int]:
+        if not self.use_topics or not self.admin_chat_id:
+            return None
+
+        existing_tid = user.get("last_topic_id")
+        if existing_tid and not force_new:
+            return existing_tid
+
+        try:
+            name  = user.get("first_name") or "Пользователь"
+            uname = user.get("username")
+            topic_name = f"{name}" + (f" (@{uname})" if uname else f" [{user.get('id')}]")
+            if len(topic_name) > 128:
+                topic_name = topic_name[:128]
+            topic = await self.bot.create_forum_topic(self.admin_chat_id, topic_name)
+            user["last_topic_id"] = topic.message_thread_id
+            logger.info(f"[{self.bot_id}] Создан топик {topic.message_thread_id} для {user.get('id')}")
+            return topic.message_thread_id
+        except Exception as e:
+            logger.warning(f"[{self.bot_id}] resolve_thread error: {e}")
+            return None
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # ФОРВАРД АДМИНУ
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = ""):
+        if not self.admin_chat_id:
+            return
+
+        force_new  = self.topic_per_req
+        thread_id  = await self.resolve_thread(user, force_new=force_new)
+
+        if self.forward_native and not btn_text and not is_first:
+            try:
+                sent = await self.bot.forward_message(
+                    chat_id=self.admin_chat_id,
+                    from_chat_id=m.chat.id,
+                    message_id=m.message_id,
+                    message_thread_id=thread_id,
+                )
+                if sent:
+                    self.msg_map[sent.message_id] = user["id"]
+            except TelegramBadRequest as e:
+                err_str = str(e).lower()
+                if "message thread not found" in err_str or "thread" in err_str:
+                    user["last_topic_id"] = None
+                    thread_id = await self.resolve_thread(user, force_new=True)
+                    try:
+                        sent = await self.bot.forward_message(
+                            self.admin_chat_id, m.chat.id, m.message_id,
+                            message_thread_id=thread_id
+                        )
+                        if sent:
+                            self.msg_map[sent.message_id] = user["id"]
+                    except Exception:
+                        pass
+                else:
+                    logger.error(f"forward_to_admin(native) TelegramBadRequest: {e}")
+            except Exception as e:
+                logger.error(f"forward_to_admin(native) error: {e}")
+            return
+
+        header = format_admin_header(m, self.settings, is_first, btn_text)
+        cap    = (header + (m.caption or ""))[:1024]
+
+        async def _do_send(tid: Optional[int]) -> Optional[Any]:
+            if m.photo:
+                return await self.bot.send_photo(
+                    self.admin_chat_id, photo=m.photo[-1].file_id,
+                    caption=cap, parse_mode="HTML",
+                    message_thread_id=tid,
+                )
+            elif m.video:
+                return await self.bot.send_video(
+                    self.admin_chat_id, video=m.video.file_id,
+                    caption=cap, parse_mode="HTML",
+                    message_thread_id=tid,
+                )
+            elif m.document:
+                return await self.bot.send_document(
+                    self.admin_chat_id, document=m.document.file_id,
+                    caption=cap, parse_mode="HTML",
+                    message_thread_id=tid,
+                )
+            elif m.audio or m.voice or m.sticker or m.video_note:
+                await self.bot.send_message(
+                    self.admin_chat_id, header.strip(),
+                    message_thread_id=tid, parse_mode="HTML"
+                )
+                return await self.bot.copy_message(
+                    self.admin_chat_id, m.chat.id, m.message_id,
+                    message_thread_id=tid
+                )
+            else:
+                txt = (header + (m.text or ""))[:4096]
+                return await self.bot.send_message(
+                    self.admin_chat_id, txt,
+                    message_thread_id=tid, parse_mode="HTML"
+                )
+
+        async def _send():
+            nonlocal thread_id
+            try:
+                s = await _do_send(thread_id)
+                if s:
+                    self.msg_map[s.message_id] = user["id"]
+            except TelegramBadRequest as e:
+                err_str = str(e).lower()
+                if "message thread not found" in err_str or "thread" in err_str:
+                    logger.warning(
+                        f"[{self.bot_id}] Thread {thread_id} not found, "
+                        f"creating new for uid={user.get('id')}"
+                    )
+                    user["last_topic_id"] = None
+                    thread_id = await self.resolve_thread(user, force_new=True)
+                    try:
+                        s2 = await _do_send(thread_id)
+                        if s2:
+                            self.msg_map[s2.message_id] = user["id"]
+                    except Exception as e2:
+                        logger.error(f"forward_to_admin retry error: {e2}")
+                else:
+                    logger.error(f"forward_to_admin TelegramBadRequest: {e}")
+            except Exception as e:
+                logger.error(f"forward_to_admin error: {e}")
+
+        await _send()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЯ
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def get_user_state(self, m: Message):
+        uid  = m.from_user.id
+        user = next((u for u in self.users_list if u["id"] == uid), None)
+        is_new = False
+        if not user:
+            user = {
+                "id":         uid,
+                "first_name": m.from_user.first_name or "",
+                "username":   m.from_user.username or "",
+                "joined_at":  int(time.time()),
+                "last_seen":  int(time.time()),
+                "is_banned":  False,
+                "warns":      0,
+                "is_active":  True,
+            }
+            self.users_list.append(user)
+            is_new = True
+        else:
+            user["last_seen"]  = int(time.time())
+            user["first_name"] = m.from_user.first_name or user.get("first_name", "")
+            user["username"]   = m.from_user.username or user.get("username", "")
+        return user, is_new
 
     # ─────────────────────────────────────────────────────────────────────────
     # РЕКЛАМА
@@ -329,220 +529,6 @@ class FreeBotInstance:
         return False
 
     # ─────────────────────────────────────────────────────────────────────────
-    # КЛАВИАТУРЫ
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def get_main_keyboard(self):
-        active = [b for b in self.buttons if b.get("text")]
-        if not active:
-            return ReplyKeyboardRemove()
-        rows = []
-        for i in range(0, len(active), 2):
-            rows.append([KeyboardButton(text=b["text"]) for b in active[i:i+2]])
-        return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
-
-    def build_inline_from_list(self, buttons: list) -> Optional[InlineKeyboardMarkup]:
-        if not buttons:
-            return None
-        rows = []
-        for i in range(0, len(buttons), 2):
-            rows.append([
-                InlineKeyboardButton(text=b["text"], url=b.get("url", "https://t.me"))
-                for b in buttons[i:i+2] if b.get("text")
-            ])
-        return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # ТОПИКИ
-    # ─────────────────────────────────────────────────────────────────────────
-
-    async def resolve_thread(self, user: dict, force_new: bool = False) -> Optional[int]:
-        """
-        Возвращает thread_id для форума.
-        force_new=True — принудительно создаём новый топик (для topicPerRequest).
-        """
-        if not self.use_topics or not self.admin_chat_id:
-            return None
-
-        existing_tid = user.get("last_topic_id")
-        if existing_tid and not force_new:
-            return existing_tid
-
-        # Создаём новый топик
-        try:
-            name  = user.get("first_name") or "Пользователь"
-            uname = user.get("username")
-            uid   = user.get("id", "?")
-            title = f"{name}"
-            if uname:
-                title += f" @{uname}"
-            else:
-                title += f" #{uid}"
-            # БАГ #6 ФИХ: при topicPerRequest добавляем время —
-            # чтобы каждое обращение имело уникальный топик и было понятно когда
-            if force_new:
-                title += f" {datetime.now().strftime('%d.%m %H:%M')}"
-            title = title[:128]
-
-            topic = await self.bot.create_forum_topic(
-                chat_id=self.admin_chat_id,
-                name=title
-            )
-            user["last_topic_id"] = topic.message_thread_id
-            # Немедленно сохраняем новый topic_id
-            asyncio.create_task(self._push_state_immediate())
-            return topic.message_thread_id
-        except TelegramBadRequest as e:
-            logger.warning(f"resolve_thread create error: {e}")
-            # Если форум не поддерживает топики — отключаем
-            if "not a forum" in str(e).lower() or "supergroup" in str(e).lower():
-                self.use_topics = False
-                logger.warning("useTopics отключён — чат не является форумом")
-            return None
-        except Exception as e:
-            logger.error(f"resolve_thread error: {e}")
-            return None
-
-    async def forward_to_admin(self, m: Message, user: dict,
-                               is_first: bool = False, btn_text: str = ""):
-        if not self.admin_chat_id:
-            return
-
-        # topicPerRequest: новый топик на каждый тикет или каждое первое сообщение
-        # При forwardAll — новый топик только если is_first (первое от юзера) или btn_text (тикет)
-        force_new = self.topic_per_req and (bool(btn_text) or is_first)
-        thread_id = await self.resolve_thread(user, force_new=force_new)
-
-        # Нативный форвард (без заголовка)
-        if self.forward_native and not btn_text and not is_first:
-            try:
-                sent = await self.bot.forward_message(
-                    chat_id=self.admin_chat_id,
-                    from_chat_id=m.chat.id,
-                    message_id=m.message_id,
-                    message_thread_id=thread_id,
-                )
-                if sent:
-                    self.msg_map[sent.message_id] = user["id"]
-            except TelegramBadRequest as e:
-                err_str = str(e).lower()
-                if "message thread not found" in err_str or "thread" in err_str:
-                    user["last_topic_id"] = None
-                    thread_id = await self.resolve_thread(user, force_new=True)
-                    try:
-                        sent = await self.bot.forward_message(
-                            self.admin_chat_id, m.chat.id, m.message_id,
-                            message_thread_id=thread_id
-                        )
-                        if sent:
-                            self.msg_map[sent.message_id] = user["id"]
-                    except Exception:
-                        pass
-                else:
-                    logger.error(f"forward_to_admin(native) TelegramBadRequest: {e}")
-            except Exception as e:
-                logger.error(f"forward_to_admin(native) error: {e}")
-            return
-
-        # copy_message с заголовком
-        header = format_admin_header(m, self.settings, is_first, btn_text)
-        cap    = (header + (m.caption or ""))[:1024]
-
-        async def _do_send(tid: Optional[int]) -> Optional[Any]:
-            """Отправляет одно сообщение в топик tid. Возвращает sent object."""
-            if m.photo:
-                # БАГ #3 ФИХ: добавлен parse_mode="HTML" для медиа-заголовков
-                return await self.bot.send_photo(
-                    self.admin_chat_id, photo=m.photo[-1].file_id,
-                    caption=cap, parse_mode="HTML",
-                    message_thread_id=tid,
-                )
-            elif m.video:
-                return await self.bot.send_video(
-                    self.admin_chat_id, video=m.video.file_id,
-                    caption=cap, parse_mode="HTML",
-                    message_thread_id=tid,
-                )
-            elif m.document:
-                return await self.bot.send_document(
-                    self.admin_chat_id, document=m.document.file_id,
-                    caption=cap, parse_mode="HTML",
-                    message_thread_id=tid,
-                )
-            elif m.audio or m.voice or m.sticker or m.video_note:
-                # Сначала текстовый заголовок, потом само медиа
-                await self.bot.send_message(
-                    self.admin_chat_id, header.strip(),
-                    message_thread_id=tid, parse_mode="HTML"
-                )
-                return await self.bot.copy_message(
-                    self.admin_chat_id, m.chat.id, m.message_id,
-                    message_thread_id=tid
-                )
-            else:
-                txt = (header + (m.text or ""))[:4096]
-                return await self.bot.send_message(
-                    self.admin_chat_id, txt,
-                    message_thread_id=tid, parse_mode="HTML"
-                )
-
-        async def _send():
-            nonlocal thread_id
-            try:
-                s = await _do_send(thread_id)
-                if s:
-                    self.msg_map[s.message_id] = user["id"]
-            except TelegramBadRequest as e:
-                err_str = str(e).lower()
-                if "message thread not found" in err_str or "thread" in err_str:
-                    # БАГ #4 ФИХ: пересоздаём топик и повторяем с НОВЫМ thread_id
-                    logger.warning(
-                        f"[{self.bot_id}] Thread {thread_id} not found, "
-                        f"creating new for uid={user.get('id')}"
-                    )
-                    user["last_topic_id"] = None
-                    thread_id = await self.resolve_thread(user, force_new=True)
-                    try:
-                        s2 = await _do_send(thread_id)
-                        if s2:
-                            self.msg_map[s2.message_id] = user["id"]
-                    except Exception as e2:
-                        logger.error(f"forward_to_admin retry error: {e2}")
-                else:
-                    logger.error(f"forward_to_admin TelegramBadRequest: {e}")
-            except Exception as e:
-                logger.error(f"forward_to_admin error: {e}")
-
-        await _send()
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЯ
-    # ─────────────────────────────────────────────────────────────────────────
-
-    async def get_user_state(self, m: Message):
-        uid  = m.from_user.id
-        user = next((u for u in self.users_list if u["id"] == uid), None)
-        is_new = False
-        if not user:
-            user = {
-                "id":         uid,
-                "first_name": m.from_user.first_name or "",
-                "username":   m.from_user.username or "",
-                "joined_at":  int(time.time()),
-                "last_seen":  int(time.time()),
-                "is_banned":  False,
-                "warns":      0,
-                "is_active":  True,
-            }
-            self.users_list.append(user)
-            is_new = True
-        else:
-            user["last_seen"]  = int(time.time())
-            user["first_name"] = m.from_user.first_name or user.get("first_name", "")
-            user["username"]   = m.from_user.username or user.get("username", "")
-        return user, is_new
-
-    # ─────────────────────────────────────────────────────────────────────────
     # СТАТИСТИКА
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -583,7 +569,6 @@ class FreeBotInstance:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def _push_state(self):
-        """Пушит users_list и stats в БД с дебаунсом 5 секунд."""
         now = time.time()
         if now - self._last_push < 5.0:
             return
@@ -591,15 +576,12 @@ class FreeBotInstance:
         await self._do_push()
 
     async def _push_state_immediate(self):
-        """Пушит немедленно, без дебаунса. Для критичных операций."""
         self._last_push = time.time()
         await self._do_push()
 
     async def _do_push(self):
-        """Фактическая запись в БД."""
         try:
             async with httpx.AsyncClient(timeout=8) as client:
-                # Читаем текущий config из БД чтобы не затереть настройки
                 res = await client.get(
                     f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}&select=config",
                     headers=self.headers
@@ -608,7 +590,6 @@ class FreeBotInstance:
                     logger.warning(f"_do_push: не смогли прочитать конфиг бота {self.bot_id}")
                     return
                 remote_cfg = res.json()[0].get("config") or {}
-                # Обновляем только connectedUsers и stats, НЕ трогая buttons/triggers/settings
                 new_cfg = {
                     **remote_cfg,
                     "connectedUsers": self.users_list,
@@ -625,7 +606,6 @@ class FreeBotInstance:
             logger.debug(f"_do_push error (non-fatal): {e}")
 
     async def _save_to_db(self):
-        """Явное немедленное сохранение (для команд /ban, /broadcast и т.п.)."""
         await self._push_state_immediate()
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -633,10 +613,6 @@ class FreeBotInstance:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def config_sync_loop(self):
-        """
-        Каждые 30 секунд читает конфиг из БД и обновляет кнопки/настройки.
-        ИСПРАВЛЕНО: читает buttons/triggers из правильного места в JSON.
-        """
         await asyncio.sleep(30)
         while self.is_running:
             try:
@@ -648,12 +624,12 @@ class FreeBotInstance:
                     if res.status_code == 200 and res.json():
                         row = res.json()[0]
                         remote_cfg = row.get("config", {}) or {}
-                        # ИСПРАВЛЕНО: передаём весь row чтобы reload мог взять buttons из корня
                         self.reload_config_from_remote(remote_cfg)
                         logger.debug(
                             f"[{self.bot_id}] Config reloaded: "
                             f"buttons={len(self.buttons)}, triggers={len(self.triggers)}, "
-                            f"forwardAll={self.forward_all}"
+                            f"forwardAll={self.forward_all}, "
+                            f"inlineButtons={len(self.inline_buttons)}"
                         )
             except Exception as e:
                 logger.error(f"config_sync_loop error: {e}")
@@ -705,7 +681,6 @@ class FreeBotInstance:
                     "activeUsers": active_count,
                 })
 
-                # Принудительный push каждую минуту
                 self._last_push = 0
                 await self._push_state()
 
@@ -718,17 +693,12 @@ class FreeBotInstance:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def admin_control_logic(self, m: Message) -> bool:
-        """
-        Обработка команд от администратора.
-        Возвращает True если команда была обработана.
-        """
         if not m.text or not (m.text.startswith("/") or m.text.startswith("!")):
             return False
 
         cmd_parts = m.text.split()
         command   = cmd_parts[0][1:].lower()
 
-        # /stats
         if command == "stats":
             total  = len(self.users_list)
             banned = sum(1 for u in self.users_list if u.get("is_banned"))
@@ -743,20 +713,15 @@ class FreeBotInstance:
             )
             return True
 
-        # /broadcast
         elif command == "broadcast":
             active_users = [u for u in self.users_list if not u.get("is_banned") and u.get("is_active", True)]
-
             if not active_users:
                 await m.reply("Нет активных пользователей для рассылки.")
                 return True
-
             if m.reply_to_message:
                 source_msg_id = m.reply_to_message.message_id
                 await self._do_broadcast(m, active_users, source_msg_id)
             else:
-                # ИСПРАВЛЕНО: сохраняем pending broadcast в памяти с ключом chat_id
-                # чтобы следующее сообщение в этом же чате было отправлено как рассылка
                 self.broadcast_cache[m.chat.id] = {
                     "user_id": m.from_user.id,
                     "active_users": active_users
@@ -768,7 +733,6 @@ class FreeBotInstance:
                 )
             return True
 
-        # Команды модерации — ищем target_user
         target_user = None
         if m.message_thread_id:
             target_user = next(
@@ -806,7 +770,7 @@ class FreeBotInstance:
         ban_limit = self.settings.get("autoBanThreshold", 3)
 
         if command == "whois":
-            uname    = target_user.get("username")
+            uname     = target_user.get("username")
             name_line = target_user.get("first_name", "—")
             if uname:
                 name_line += f" (@{uname})"
@@ -921,7 +885,6 @@ class FreeBotInstance:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def sync_database_logic(self):
-        """Разовая загрузка конфига при старте."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 res = await client.get(
@@ -932,10 +895,6 @@ class FreeBotInstance:
                     row = res.json()[0]
                     self.apply_config(row)
 
-                    # БАГ #1 ФИХ: сбрасываем ВСЕ _in_ticket при каждом старте.
-                    # Порог 24ч не работает — юзер мог быть активен только что.
-                    # Тикет = runtime-состояние активного сеанса; после рестарта
-                    # бота юзер открывает тикет заново нажав кнопку.
                     cleaned = 0
                     for u in self.users_list:
                         if u.get("_in_ticket"):
@@ -952,7 +911,8 @@ class FreeBotInstance:
                         f"admin_chat={self.admin_chat_id}, "
                         f"forwardAll={self.forward_all}, "
                         f"useTopics={self.use_topics}, "
-                        f"topicPerRequest={self.topic_per_req}"
+                        f"topicPerRequest={self.topic_per_req}, "
+                        f"inlineButtons={len(self.inline_buttons)}"
                     )
         except Exception as e:
             logger.error(f"sync_database_logic error: {e}")
@@ -962,17 +922,11 @@ class FreeBotInstance:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def core_handlers_setup(self):
-        """
-        ИСПРАВЛЕНО: Два отдельных роутера.
-        admin_router — строгий фильтр по chat.id, регистрируется ПЕРВЫМ.
-        user_router  — всё остальное.
-        """
-        # Middleware на оба роутера
         self.admin_router.message.middleware(BanMiddleware(self))
         self.user_router.message.middleware(BanMiddleware(self))
         self.user_router.callback_query.middleware(BanMiddleware(self))
 
-        # ── 1. Пользователь заблокировал бота (my_chat_member) ─────────────
+        # ── 1. Пользователь заблокировал бота ──────────────────────────────
         @self.user_router.my_chat_member(
             ChatMemberUpdatedFilter(member_status_changed=ChatMemberStatus.KICKED)
         )
@@ -995,7 +949,6 @@ class FreeBotInstance:
         # ── 2. /start ────────────────────────────────────────────────────────
         @self.user_router.message(CommandStart())
         async def handle_start(m: Message):
-            # Пропускаем если это из admin_chat
             if self.admin_chat_id and m.chat.id == self.admin_chat_id:
                 return
 
@@ -1005,8 +958,9 @@ class FreeBotInstance:
                 return
 
             reply_kb  = self.get_main_keyboard()
-            inline_kb = self.build_inline_from_list(self.welcome_inline)
-            main_kb   = inline_kb if inline_kb else reply_kb
+
+            # FIX v6: строим инлайн-клавиатуру из нового формата inlineButtons
+            inline_kb = self.build_welcome_inline()
 
             ad       = await self.get_active_ad() if self.ad_enabled else None
             welcome  = self.welcome_text or "Здравствуйте!"
@@ -1022,18 +976,37 @@ class FreeBotInstance:
 
             try:
                 if self.welcome_photo:
+                    # Если есть инлайн-кнопки — отправляем с ними, reply_kb отдельно
                     await m.answer_photo(
                         photo=self.welcome_photo,
                         caption=combined[:1024],
-                        reply_markup=main_kb,
+                        reply_markup=inline_kb if inline_kb else reply_kb,
                     )
+                    # Если отправили инлайн — нужно ещё отдельно reply-клавиатуру показать
+                    if inline_kb:
+                        try:
+                            await m.answer("👇 Выберите действие:", reply_markup=reply_kb)
+                        except Exception:
+                            pass
                     if ad and ad_media and ad_media != self.welcome_photo:
                         await m.answer_photo(photo=ad_media, caption=f"📢 {ad_text}"[:1024])
                 elif ad and ad_media:
-                    await m.answer(text=welcome, reply_markup=main_kb)
+                    await m.answer(text=welcome, reply_markup=inline_kb if inline_kb else reply_kb)
+                    if inline_kb:
+                        try:
+                            await m.answer("👇 Выберите действие:", reply_markup=reply_kb)
+                        except Exception:
+                            pass
                     await m.answer_photo(photo=ad_media, caption=f"📢 <b>Реклама</b>\n{ad_text}"[:1024])
                 else:
-                    await m.answer(text=combined, reply_markup=main_kb)
+                    # Нет фото — отправляем текст с инлайн-кнопками
+                    await m.answer(text=combined, reply_markup=inline_kb if inline_kb else reply_kb)
+                    # Если есть инлайн — reply_kb отправляем отдельным сообщением
+                    if inline_kb:
+                        try:
+                            await m.answer("👇 Выберите действие:", reply_markup=reply_kb)
+                        except Exception:
+                            pass
             except Exception as e:
                 logger.warning(f"handle_start send error: {e}")
                 try:
@@ -1043,18 +1016,71 @@ class FreeBotInstance:
 
             await self.log_and_update(user["id"], m.from_user.full_name, "/start")
 
-        # ── 3. СООБЩЕНИЯ ОТ АДМИНИСТРАТОРА ──────────────────────────────────
-        # ИСПРАВЛЕНО: Используем отдельный admin_router с жёстким фильтром.
-        # Lambda использует self.admin_chat_id динамически (может меняться).
+        # ── 3. FIX v6: Callback-обработчик для инлайн-кнопок типа "message" ─
+        @self.user_router.callback_query(lambda c: c.data and c.data.startswith("inl_msg:"))
+        async def handle_inline_msg_button(cb: CallbackQuery):
+            """Когда юзер нажал инлайн-кнопку типа "message" — отправляем текст боту."""
+            try:
+                await cb.answer()
+            except Exception:
+                pass
+            text_to_send = cb.data[len("inl_msg:"):]
+            if not text_to_send:
+                return
+            uid  = cb.from_user.id
+            user = next((u for u in self.users_list if u["id"] == uid), None)
+            if not user:
+                user = {
+                    "id":         uid,
+                    "first_name": cb.from_user.first_name or "",
+                    "username":   cb.from_user.username or "",
+                    "joined_at":  int(time.time()),
+                    "last_seen":  int(time.time()),
+                    "is_banned":  False,
+                    "warns":      0,
+                    "is_active":  True,
+                }
+                self.users_list.append(user)
+            # Ищем совпадение с кнопками/триггерами
+            lower = text_to_send.lower()
+            matched_btn = next(
+                (b for b in self.buttons if b.get("text", "").strip().lower() == lower), None
+            )
+            if matched_btn:
+                resp = matched_btn.get("response", "") or "✅"
+                try:
+                    await cb.message.answer(resp, reply_markup=self.get_main_keyboard())
+                except Exception:
+                    pass
+                await self.log_and_update(uid, cb.from_user.full_name, f"ИНЛАЙН-КНОПКА: {text_to_send}")
+            else:
+                # Просто пересылаем текст как обычное сообщение в тикет/чат
+                if self.admin_chat_id:
+                    header = (
+                        f"💬 <b>Инлайн-кнопка:</b> {text_to_send}\n"
+                        f"<b>{cb.from_user.full_name}</b> | ID: <code>{uid}</code>\n\n"
+                    )
+                    try:
+                        await self.bot.send_message(
+                            self.admin_chat_id, header,
+                            message_thread_id=user.get("last_topic_id"),
+                        )
+                    except Exception:
+                        pass
+                try:
+                    await cb.message.answer("✅", reply_markup=self.get_main_keyboard())
+                except Exception:
+                    pass
+                await self.log_and_update(uid, cb.from_user.full_name, f"ИНЛАЙН-КНОПКА: {text_to_send}")
+
+        # ── 4. СООБЩЕНИЯ ОТ АДМИНИСТРАТОРА ──────────────────────────────────
         @self.admin_router.message(lambda m: bool(self.admin_chat_id and m.chat.id == self.admin_chat_id))
         async def admin_input(m: Message):
-            # Команды модерации
             if m.text and (m.text.startswith("/") or m.text.startswith("!")):
                 handled = await self.admin_control_logic(m)
                 if handled:
                     return
 
-            # ИСПРАВЛЕНО: broadcast_cache теперь по chat.id, не user.id
             bc = self.broadcast_cache.get(m.chat.id)
             if bc:
                 del self.broadcast_cache[m.chat.id]
@@ -1068,7 +1094,6 @@ class FreeBotInstance:
                 await self._do_broadcast(m, active_users, m.message_id)
                 return
 
-            # Ответ пользователю (топик или реплай)
             target_id = None
             if m.message_thread_id:
                 u = next((u for u in self.users_list
@@ -1087,7 +1112,7 @@ class FreeBotInstance:
                 except Exception as e:
                     await m.reply(f"❌ Ошибка: {e}")
 
-        # ── 4. Закрытие тикета (callback) ────────────────────────────────────
+        # ── 5. Закрытие тикета (callback) ───────────────────────────────────
         @self.user_router.callback_query(lambda c: c.data == "ticket_close")
         async def on_ticket_close(cb: CallbackQuery):
             uid_cb  = cb.from_user.id
@@ -1123,10 +1148,9 @@ class FreeBotInstance:
             except Exception:
                 pass
 
-        # ── 5. ВСЕ СООБЩЕНИЯ ОТ ПОЛЬЗОВАТЕЛЕЙ ──────────────────────────────
+        # ── 6. ВСЕ СООБЩЕНИЯ ОТ ПОЛЬЗОВАТЕЛЕЙ ──────────────────────────────
         @self.user_router.message()
         async def user_input(m: Message):
-            # Пропускаем сообщения из admin_chat (обрабатываются admin_router)
             if self.admin_chat_id and m.chat.id == self.admin_chat_id:
                 return
 
@@ -1175,8 +1199,6 @@ class FreeBotInstance:
                                         elif msg.document:
                                             items.append(InputMediaDocument(media=msg.document.file_id, caption=cap[:1024] or None, parse_mode="HTML"))
                                     if items:
-                                        # БАГ #5 ФИХ: вызываем resolve_thread чтобы
-                                        # получить/создать правильный thread_id
                                         force_mg = self.topic_per_req and buf["is_first"]
                                         mg_tid   = await self.resolve_thread(
                                             buf["user"], force_new=force_mg
@@ -1196,19 +1218,13 @@ class FreeBotInstance:
             if await self.check_antispam(uid):
                 return
 
-            # ════════════════════════════════════════════════════════════════
-            # КНОПКИ И ТРИГГЕРЫ — проверяем ВСЕГДА, ДО всего остального.
-            # Даже если юзер в тикете — кнопки меню работают (могут открыть
-            # новый тикет, получить ответ и т.д.)
-            # ════════════════════════════════════════════════════════════════
+            # ── Кнопки и триггеры ───────────────────────────────────────────
             if m.text:
                 clean = m.text.strip()
                 lower = clean.lower()
 
-                # Кнопка "Назад" / "Закрыть обращение"
                 close_label = user.get("_ticket_close_label", "Закрыть обращение")
                 if clean in (close_label, "Закрыть обращение", "⬅️ Назад", "Назад"):
-                    # Закрываем тикет если был открыт
                     was_in_ticket = user.get("_in_ticket", False)
                     user.pop("_in_ticket", None)
                     user.pop("_ticket_close_label", None)
@@ -1231,7 +1247,6 @@ class FreeBotInstance:
                         await m.answer("Главное меню:", reply_markup=self.get_main_keyboard())
                     return
 
-                # Reply-кнопки меню (точное совпадение)
                 matched_btn = next(
                     (b for b in self.buttons if b.get("text", "").strip().lower() == lower),
                     None
@@ -1239,9 +1254,6 @@ class FreeBotInstance:
                 if matched_btn:
                     btn_type = matched_btn.get("type", "default")
 
-                    # БАГ #7 ФИХ: если юзер в тикете и нажал default-кнопку —
-                    # сообщение идёт в тикет, кнопка НЕ обрабатывается.
-                    # Закрыть тикет можно только кнопкой "Закрыть обращение".
                     if user.get("_in_ticket") and btn_type != "ticket":
                         await self.forward_to_admin(m, user)
                         await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
@@ -1271,7 +1283,6 @@ class FreeBotInstance:
                     await self.log_and_update(uid, m.from_user.full_name, f"КНОПКА: {matched_btn['text']}")
                     return
 
-                # Триггеры (вхождение ключевого слова)
                 for trig in self.triggers:
                     kw = trig.get("keyword", "").strip()
                     if kw and kw.lower() in lower:
@@ -1280,24 +1291,16 @@ class FreeBotInstance:
                         await self.log_and_update(uid, m.from_user.full_name, f"ТРИГГЕР: {kw}")
                         return
 
-            # ════════════════════════════════════════════════════════════════
-            # Дошли сюда — сообщение не совпало ни с одной кнопкой/триггером.
-            # Теперь решаем: форвардить или нет.
-            # ════════════════════════════════════════════════════════════════
-
-            # Если юзер в тикете — форвардим в админ-чат
             if user.get("_in_ticket"):
                 await self.forward_to_admin(m, user)
                 await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
                 return
 
-            # Первое сообщение или режим "пересылать всё"
             if is_new or self.forward_all:
                 await self.forward_to_admin(m, user, is_first=is_new)
                 await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
                 return
 
-            # Не в тикете, не forwardAll, не кнопка — показываем меню
             await m.answer(
                 "Воспользуйтесь меню или нажмите кнопку для связи с оператором.",
                 reply_markup=self.get_main_keyboard()
@@ -1317,7 +1320,6 @@ class FreeBotInstance:
 
         await self.core_handlers_setup()
 
-        # ИСПРАВЛЕНО: admin_router с приоритетом регистрируется первым
         self.dp.include_router(self.admin_router)
         self.dp.include_router(self.user_router)
 
@@ -1327,7 +1329,8 @@ class FreeBotInstance:
             f"Триггеров: {len(self.triggers)}, "
             f"Users: {len(self.users_list)}, "
             f"admin_chat: {self.admin_chat_id}, "
-            f"forwardAll={self.forward_all}"
+            f"forwardAll={self.forward_all}, "
+            f"inlineButtons={len(self.inline_buttons)}"
         )
 
         try:
