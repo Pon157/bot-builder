@@ -1506,25 +1506,24 @@ const FreePlan: React.FC = () => {
         </div>
 
         {/* Features grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-6">
-          {platform === 'telegram' ? [
-            { icon: '✅', label: 'Аналитика' }, { icon: '✅', label: 'Тикеты' },
-            { icon: '✅', label: 'Модерация' }, { icon: '✅', label: 'Рассылки' },
-            { icon: '✅', label: 'Топики'    }, { icon: '✅', label: 'Кнопки'  },
-            { icon: '❌', label: 'ИИ-ассистент' }, { icon: '❌', label: 'Мини-приложения' },
-          ] : [
-            { icon: '✅', label: 'Аналитика' }, { icon: '✅', label: 'Тикеты' },
-            { icon: '✅', label: 'Модерация' }, { icon: '✅', label: 'Рассылки' },
-            { icon: '✅', label: 'Кнопки'   }, { icon: '✅', label: 'Триггеры'},
-            { icon: '❌', label: 'ИИ-ассистент' }, { icon: '❌', label: 'Топики TG' },
-          ]}
-          .map(f => (
-            <div key={f.label} className="bg-zinc-900/40 border border-zinc-800 rounded-xl p-2.5 text-center">
-              <div className="text-base mb-0.5">{f.icon}</div>
-              <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">{f.label}</div>
-            </div>
-          ))}
-        </div>
+<div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-6">
+  {(platform === 'telegram' ? [
+    { icon: '✅', label: 'Аналитика' }, { icon: '✅', label: 'Тикеты' },
+    { icon: '✅', label: 'Модерация' }, { icon: '✅', label: 'Рассылки' },
+    { icon: '✅', label: 'Топики'    }, { icon: '✅', label: 'Кнопки'  },
+    { icon: '❌', label: 'ИИ-ассистент' }, { icon: '❌', label: 'Мини-приложения' },
+  ] : [
+    { icon: '✅', label: 'Аналитика' }, { icon: '✅', label: 'Тикеты' },
+    { icon: '✅', label: 'Модерация' }, { icon: '✅', label: 'Рассылки' },
+    { icon: '✅', label: 'Кнопки'   }, { icon: '✅', label: 'Триггеры'},
+    { icon: '❌', label: 'ИИ-ассистент' }, { icon: '❌', label: 'Топики TG' },
+  ]).map(f => (
+    <div key={f.label} className="bg-zinc-900/40 border border-zinc-800 rounded-xl p-2.5 text-center">
+      <div className="text-base mb-0.5">{f.icon}</div>
+      <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">{f.label}</div>
+    </div>
+  ))}
+</div>
 
         {/* Error */}
         {loadError && (
