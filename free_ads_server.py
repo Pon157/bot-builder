@@ -239,9 +239,16 @@ async def free_update_bot_config(bot_id: str, d: dict):
         if key in inc:
             new_cfg[key] = inc[key]
 
+    # Конвертируем admin_chat_id в int для корневой колонки
+    try:
+        admin_chat_id_int = int(admin_chat_id) if admin_chat_id else None
+    except (ValueError, TypeError):
+        admin_chat_id_int = None
+
     patch_payload = {
-        "config": new_cfg,
-        "name":   d.get("name") or existing_bot.get("name") or "Bot",
+        "config":        new_cfg,
+        "name":          d.get("name") or existing_bot.get("name") or "Bot",
+        "admin_chat_id": admin_chat_id_int,  # сохраняем и в корневую колонку
     }
 
     # Токен — обновляем если пришёл новый
@@ -387,7 +394,7 @@ async def free_vk_create_bot(d: dict):
         "platform":          "vk",
         "is_free_plan":      True,
         "memory_limit_mb":   0,
-        "ad_enabled":        False,   # реклама в VK пока не поддерживается на free
+        "ad_enabled":        True,    # реклама включена для free-плана VK
         "license_expires_at": now_ms + 9999 * 24 * 3600 * 1000,
         "created_at":        now_ms,
         "config": {
@@ -477,13 +484,23 @@ async def free_vk_update_bot_config(bot_id: str, d: dict):
     merged_stg.pop("useTopics", None)
     merged_stg.pop("topicPerRequest", None)
 
-    # admin_chat_id / vk_group_id
+    # admin_chat_id / vk_group_id — ищем во всех возможных местах
     if "adminChatId" in inc:
         admin_chat_id = inc["adminChatId"] or ""
+    elif "vk_group_id" in inc:
+        admin_chat_id = inc["vk_group_id"] or ""
     elif "adminChatId" in d:
         admin_chat_id = d["adminChatId"] or ""
+    elif "vk_group_id" in d:
+        admin_chat_id = d["vk_group_id"] or ""
     else:
-        admin_chat_id = existing_cfg.get("adminChatId") or existing_cfg.get("vk_group_id") or ""
+        admin_chat_id = existing_cfg.get("adminChatId") or existing_cfg.get("vk_group_id") or existing_bot.get("vk_group_id") or ""
+
+    # Конвертируем в int если возможно (peer_id должен быть числом)
+    try:
+        admin_chat_id_int = int(admin_chat_id) if admin_chat_id else None
+    except (ValueError, TypeError):
+        admin_chat_id_int = None
 
     connected_users = existing_cfg.get("connectedUsers", [])
     stats           = existing_cfg.get("stats", {})
@@ -506,8 +523,11 @@ async def free_vk_update_bot_config(bot_id: str, d: dict):
             new_cfg[key] = inc[key]
 
     patch_payload = {
-        "config": new_cfg,
-        "name":   d.get("name") or existing_bot.get("name") or "VK Bot",
+        "config":    new_cfg,
+        "name":      d.get("name") or existing_bot.get("name") or "VK Bot",
+        # Сохраняем в корневые колонки БД для надёжного чтения при запуске
+        "vk_group_id":    admin_chat_id_int,
+        "admin_chat_id":  admin_chat_id_int,
     }
 
     new_token = d.get("token") or inc.get("token")
