@@ -403,14 +403,14 @@ const FreeBotEditor: React.FC<{
       ticketMessageHeader: '🆘 <b>ЗАЯВКА [{btn}]:</b>',
       commonMessageHeader: '📩 <b>СООБЩЕНИЕ:</b>',
     };
+    // Читаем из config (вложенный) и из корня бота (корневые колонки БД)
+    const bAny = b as any;
     return {
       name:         b.name,
       token:        b.token || cfg.token || '',
-      welcome:      cfg.welcomeMessage || (b as any).welcomeMessage || '',
-      // Читаем welcomePhoto из config или из корня объекта бота
-      welcomePhoto: cfg.welcomePhoto || (b as any).welcomePhoto || '',
-      // adminChatId может быть в config или в корне
-      adminId:      cfg.adminChatId || (b as any).adminChatId || (b as any).admin_chat_id || '',
+      welcome:      cfg.welcomeMessage || bAny.welcomeMessage || '',
+      welcomePhoto: cfg.welcomePhoto   || bAny.welcomePhoto   || '',
+      adminId:      cfg.adminChatId    || String(bAny.admin_chat_id || bAny.adminChatId || ''),
       buttons:      (cfg.buttons  || []) as any[],
       triggers:     (cfg.triggers || []) as any[],
       inlineButtons:(cfg.inlineButtons || []) as InlineButton[],
@@ -603,7 +603,7 @@ const FreeBotEditor: React.FC<{
             {welcomePhoto && (
               <div className="mt-3 relative inline-block">
                 <img src={welcomePhoto} alt="preview" className="h-28 rounded-xl object-cover border border-zinc-800"
-                  onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+                  onError={e => { (e.currentTarget as HTMLImageElement).style.opacity = '0.3'; }} />
                 <button type="button" onClick={() => setWelcomePhoto('')}
                   className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 rounded-full text-white text-xs flex items-center justify-center hover:bg-red-400 transition-colors">✕</button>
               </div>
@@ -823,15 +823,14 @@ const FreeVKBotEditor: React.FC<{
       ticketMessageHeader: '🆘 ЗАЯВКА [{btn}]:',
       commonMessageHeader: '📩 СООБЩЕНИЕ:',
     };
-    // peer_id может быть в config или в корне бота (колонки БД)
-    const peerRaw =
-      cfg.adminChatId || cfg.vk_group_id || cfg.vkGroupId ||
-      (b as any).vk_group_id || (b as any).admin_chat_id || '';
+    const bAny = b as any;
+    const peerRaw = cfg.adminChatId || cfg.vk_group_id || cfg.vkGroupId
+      || bAny.vk_group_id || bAny.admin_chat_id || '';
     return {
       name:         b.name,
       token:        b.token || cfg.token || '',
-      welcome:      cfg.welcomeMessage || (b as any).welcomeMessage || '',
-      welcomePhoto: cfg.welcomePhoto   || (b as any).welcomePhoto   || '',
+      welcome:      cfg.welcomeMessage || bAny.welcomeMessage || '',
+      welcomePhoto: cfg.welcomePhoto   || bAny.welcomePhoto   || '',
       adminId:      peerRaw ? String(peerRaw) : '',
       buttons:      (cfg.buttons  || []) as any[],
       triggers:     (cfg.triggers || []) as any[],
@@ -987,8 +986,7 @@ const FreeVKBotEditor: React.FC<{
               placeholder="https://..." />
             {welcomePhoto && (
               <div className="mt-3 relative inline-block">
-                <img src={welcomePhoto} alt="preview" className="h-28 rounded-xl object-cover border border-zinc-800"
-                  onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+                <img src={welcomePhoto} alt="Превью" className="h-28 rounded-xl object-cover border border-zinc-800" />
                 <button type="button" onClick={() => setWelcomePhoto('')}
                   className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 rounded-full text-white text-xs flex items-center justify-center hover:bg-red-400 transition-colors">✕</button>
               </div>
@@ -1398,23 +1396,25 @@ const FreePlan: React.FC = () => {
     const status    = statusMap[bot.id] || bot.status;
     if (status === 'LOADING') return;
     const isRunning = status === 'RUNNING';
-    const isVKBot   = bot.platform === 'vk' || bot.id?.startsWith('fvk_');
+    const isVKBot   = bot.platform === 'vk' || String(bot.id).startsWith('fvk_');
     setStatusMap(prev => ({ ...prev, [bot.id]: 'LOADING' }));
     try {
       if (isRunning) {
+        // Free-план: используем /api/free/bots/{id}/stop или /api/free/vk/bots/{id}/stop
         const stopUrl = isVKBot
           ? FREE_API(`/vk/bots/${bot.id}/stop`)
-          : BOTS_API(`/bots/stop/${bot.id}`);
-        const r = await fetch(stopUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: userId }) });
+          : FREE_API(`/bots/${bot.id}/stop`);
+        const r = await fetch(stopUrl, { method: 'POST' });
         if (!r.ok) throw new Error(`Ошибка остановки (${r.status})`);
         setStatusMap(prev => ({ ...prev, [bot.id]: 'IDLE' }));
       } else {
+        // Free-план: используем /api/free/bots/{id}/start или /api/free/vk/bots/{id}/start
         const startUrl = isVKBot
           ? FREE_API(`/vk/bots/${bot.id}/start`)
           : FREE_API(`/bots/${bot.id}/start`);
         const r = await fetch(startUrl, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bot_id: bot.id, user_id: userId }),
+          body: JSON.stringify({ bot_id: bot.id }),
         });
         if (!r.ok) {
           const e = await r.json().catch(() => ({}));
