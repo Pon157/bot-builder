@@ -239,16 +239,16 @@ async def free_update_bot_config(bot_id: str, d: dict):
         if key in inc:
             new_cfg[key] = inc[key]
 
-    # Конвертируем admin_chat_id в int для корневой колонки
+    # Числовое значение admin_chat_id для корневой колонки БД
     try:
-        admin_chat_id_int = int(admin_chat_id) if admin_chat_id else None
+        admin_chat_id_int = int(str(admin_chat_id).strip()) if admin_chat_id else None
     except (ValueError, TypeError):
         admin_chat_id_int = None
 
     patch_payload = {
         "config":        new_cfg,
         "name":          d.get("name") or existing_bot.get("name") or "Bot",
-        "admin_chat_id": admin_chat_id_int,  # сохраняем и в корневую колонку
+        "admin_chat_id": admin_chat_id_int,  # сохраняем в корневую колонку БД
     }
 
     # Токен — обновляем если пришёл новый
@@ -276,8 +276,10 @@ async def free_update_bot_config(bot_id: str, d: dict):
 @router.get("/api/free/bots/{user_id}")
 async def free_get_user_bots(user_id: str):
     db = _db()
-    r = await db.get("bots", params={"owner_id": f"eq.{user_id}", "is_free_plan": "eq.true"})
-    return r.json() or []
+    # Фильтруем только TG-ботов (исключаем platform=vk)
+    all_free = await db.get("bots", params={"owner_id": f"eq.{user_id}", "is_free_plan": "eq.true"})
+    bots = [b for b in (all_free.json() or []) if b.get("platform") != "vk"]
+    return bots
 
 
 @router.get("/api/free/bots/{bot_id}/stats")
@@ -484,23 +486,20 @@ async def free_vk_update_bot_config(bot_id: str, d: dict):
     merged_stg.pop("useTopics", None)
     merged_stg.pop("topicPerRequest", None)
 
-    # admin_chat_id / vk_group_id — ищем во всех возможных местах
-    if "adminChatId" in inc:
-        admin_chat_id = inc["adminChatId"] or ""
-    elif "vk_group_id" in inc:
-        admin_chat_id = inc["vk_group_id"] or ""
-    elif "adminChatId" in d:
-        admin_chat_id = d["adminChatId"] or ""
-    elif "vk_group_id" in d:
-        admin_chat_id = d["vk_group_id"] or ""
+    # admin_chat_id / vk_group_id — ищем во всех источниках
+    if "adminChatId" in inc and inc["adminChatId"]:
+        admin_chat_id = str(inc["adminChatId"]).strip()
+    elif "vk_group_id" in inc and inc["vk_group_id"]:
+        admin_chat_id = str(inc["vk_group_id"]).strip()
+    elif "adminChatId" in d and d["adminChatId"]:
+        admin_chat_id = str(d["adminChatId"]).strip()
+    elif "vk_group_id" in d and d["vk_group_id"]:
+        admin_chat_id = str(d["vk_group_id"]).strip()
     else:
-        admin_chat_id = existing_cfg.get("adminChatId") or existing_cfg.get("vk_group_id") or existing_bot.get("vk_group_id") or ""
-
-    # Конвертируем в int если возможно (peer_id должен быть числом)
-    try:
-        admin_chat_id_int = int(admin_chat_id) if admin_chat_id else None
-    except (ValueError, TypeError):
-        admin_chat_id_int = None
+        admin_chat_id = str(
+            existing_cfg.get("adminChatId") or existing_cfg.get("vk_group_id") or
+            existing_bot.get("vk_group_id") or existing_bot.get("admin_chat_id") or ""
+        ).strip()
 
     connected_users = existing_cfg.get("connectedUsers", [])
     stats           = existing_cfg.get("stats", {})
@@ -522,12 +521,17 @@ async def free_vk_update_bot_config(bot_id: str, d: dict):
         if key in inc:
             new_cfg[key] = inc[key]
 
+    # Числовое значение для корневых колонок БД
+    try:
+        admin_chat_id_int = int(admin_chat_id) if admin_chat_id else None
+    except (ValueError, TypeError):
+        admin_chat_id_int = None
+
     patch_payload = {
-        "config":    new_cfg,
-        "name":      d.get("name") or existing_bot.get("name") or "VK Bot",
-        # Сохраняем в корневые колонки БД для надёжного чтения при запуске
-        "vk_group_id":    admin_chat_id_int,
-        "admin_chat_id":  admin_chat_id_int,
+        "config":        new_cfg,
+        "name":          d.get("name") or existing_bot.get("name") or "VK Bot",
+        "admin_chat_id": admin_chat_id_int,  # корневая колонка БД
+        "vk_group_id":   admin_chat_id_int,  # корневая колонка БД
     }
 
     new_token = d.get("token") or inc.get("token")
