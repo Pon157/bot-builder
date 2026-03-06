@@ -906,22 +906,33 @@ class FreeVKBotInstance:
         self.bot.labeler.message_view.register_middleware(BanMiddleware)
 
         # ── 1. Бот приглашён в беседу → автопривязка ─────────────────────────
+        # Ловим все service actions в беседе (invite, chat_invite_user, join)
         @self.bot.on.message(func=lambda m: (
             m.action is not None and
-            m.action.type is not None and
-            "invite" in str(m.action.type).lower()
+            m.peer_id is not None and
+            m.peer_id > 2_000_000_000
         ))
         async def handle_chat_invite(m: Message):
-            if m.peer_id and m.peer_id > 2_000_000_000:
+            action_str = str(m.action.type).lower() if m.action and m.action.type else ""
+            # Любое событие приглашения/вступления бота
+            if any(k in action_str for k in ("invite", "join", "add")):
                 await self.bind_peer_id(m.peer_id, invited_by=m.from_id)
                 try:
                     await self.bot.api.messages.send(
                         peer_id=m.peer_id,
-                        message=f"✅ Free VK-бот подключён! Сообщения пользователей будут пересылаться сюда.\nID беседы: {m.peer_id}",
+                        message=(
+                            f"✅ Free VK-бот подключён!\n"
+                            f"Сообщения пользователей будут пересылаться сюда.\n"
+                            f"ID беседы: {m.peer_id}\n\n"
+                            f"💡 Чтобы убедиться в настройке, напишите /getid"
+                        ),
                         random_id=0
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"handle_chat_invite send error: {e}")
+            # /getid в любой беседе (даже без action)
+            elif m.text and m.text.strip().lower() in ("/getid", "!getid", "getid"):
+                await self.admin_control_logic(m)
 
         # ── 2. Сообщения из беседы-администратора ───────────────────────────
         @self.bot.on.message(func=lambda m: (
@@ -1004,7 +1015,16 @@ class FreeVKBotInstance:
         # ── 3. Все сообщения от пользователей ────────────────────────────────
         @self.bot.on.message()
         async def handle_user_message(m: Message):
-            # Пропускаем сообщения из admin_chat
+            # Пропускаем service-actions (они уже обработаны в handle_chat_invite)
+            if m.action is not None:
+                return
+
+            # /getid в любой беседе (не обязательно admin_chat)
+            if m.text and m.text.strip().lower() in ("/getid", "!getid", "getid"):
+                await self.admin_control_logic(m)
+                return
+
+            # Пропускаем сообщения из admin_chat (уже обработаны handle_admin_message)
             if self.admin_chat_id and m.peer_id == self.admin_chat_id:
                 return
 
