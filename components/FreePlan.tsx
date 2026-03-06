@@ -403,7 +403,6 @@ const FreeBotEditor: React.FC<{
       ticketMessageHeader: '🆘 <b>ЗАЯВКА [{btn}]:</b>',
       commonMessageHeader: '📩 <b>СООБЩЕНИЕ:</b>',
     };
-    // Читаем из config (вложенный) и из корня бота (корневые колонки БД)
     const bAny = b as any;
     return {
       name:         b.name,
@@ -603,7 +602,7 @@ const FreeBotEditor: React.FC<{
             {welcomePhoto && (
               <div className="mt-3 relative inline-block">
                 <img src={welcomePhoto} alt="preview" className="h-28 rounded-xl object-cover border border-zinc-800"
-                  onError={e => { (e.currentTarget as HTMLImageElement).style.opacity = '0.3'; }} />
+                  onError={e => { (e.currentTarget as HTMLImageElement).style.opacity = '0.4'; }} />
                 <button type="button" onClick={() => setWelcomePhoto('')}
                   className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 rounded-full text-white text-xs flex items-center justify-center hover:bg-red-400 transition-colors">✕</button>
               </div>
@@ -1400,7 +1399,7 @@ const FreePlan: React.FC = () => {
     setStatusMap(prev => ({ ...prev, [bot.id]: 'LOADING' }));
     try {
       if (isRunning) {
-        // Free-план: используем /api/free/bots/{id}/stop или /api/free/vk/bots/{id}/stop
+        // Free-план: /api/free/bots/{id}/stop или /api/free/vk/bots/{id}/stop
         const stopUrl = isVKBot
           ? FREE_API(`/vk/bots/${bot.id}/stop`)
           : FREE_API(`/bots/${bot.id}/stop`);
@@ -1408,7 +1407,7 @@ const FreePlan: React.FC = () => {
         if (!r.ok) throw new Error(`Ошибка остановки (${r.status})`);
         setStatusMap(prev => ({ ...prev, [bot.id]: 'IDLE' }));
       } else {
-        // Free-план: используем /api/free/bots/{id}/start или /api/free/vk/bots/{id}/start
+        // Free-план: /api/free/bots/{id}/start или /api/free/vk/bots/{id}/start
         const startUrl = isVKBot
           ? FREE_API(`/vk/bots/${bot.id}/start`)
           : FREE_API(`/bots/${bot.id}/start`);
