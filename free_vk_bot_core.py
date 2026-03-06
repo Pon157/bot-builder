@@ -186,7 +186,6 @@ class FreeVKBotInstance:
         self.rate_limit      = float(self.settings.get("rateLimit", 1.0))
         self.auto_ban_limit  = int(self.settings.get("autoBanThreshold", 3))
         self.forward_all     = bool(self.settings.get("forwardAll", False))
-        # ad_enabled из корня данных бота (не из config)
         self.ad_enabled      = bool(data.get("ad_enabled", True))
 
         raw_admin_ids = full_cfg.get("adminIds") or full_cfg.get("admin_ids") or []
@@ -380,7 +379,6 @@ class FreeVKBotInstance:
                 keyboard=reply_kb_json,
                 random_id=0
             )
-
         # Реклама после приветствия (free-план)
         await self.send_ad_to_user(uid)
 
@@ -389,21 +387,18 @@ class FreeVKBotInstance:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def fetch_ad(self) -> Optional[dict]:
-        """Получить актуальное рекламное объявление через API."""
         try:
-            import httpx as _httpx
-            import os as _os
+            import httpx as _httpx, os as _os
             base_url = _os.getenv("SERVER_BASE_URL", "http://localhost:8000")
             async with _httpx.AsyncClient(timeout=5.0) as client:
                 r = await client.get(f"{base_url}/api/ads/active", params={"bot_id": self.bot_id})
                 if r.status_code == 200:
                     return r.json().get("ad")
         except Exception as e:
-            logger.warning(f"[FREE VK] fetch_ad error: {e}")
+            logger.warning(f"[FREE VK] fetch_ad: {e}")
         return None
 
     async def send_ad_to_user(self, uid: int):
-        """Отправить рекламное сообщение пользователю."""
         if not self.ad_enabled:
             return
         try:
@@ -411,12 +406,10 @@ class FreeVKBotInstance:
             if not ad or not ad.get("text"):
                 return
             await self.bot.api.messages.send(
-                peer_id=uid,
-                message=f"📢 Реклама:\n{ad['text']}",
-                random_id=0
+                peer_id=uid, message=f"📢 Реклама:\n{ad['text']}", random_id=0
             )
         except Exception as e:
-            logger.warning(f"[FREE VK] send_ad_to_user error: {e}")
+            logger.warning(f"[FREE VK] send_ad_to_user: {e}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЯ
@@ -1097,10 +1090,8 @@ class FreeVKBotInstance:
                 try:
                     close_kb = self.build_keyboard_from_buttons([{"text": "Закрыть обращение"}])
                     await self.bot.api.messages.send(
-                        peer_id=user["id"],
-                        message="✅ Оператор получил ваше сообщение.",
-                        keyboard=close_kb,
-                        random_id=0
+                        peer_id=user["id"], message="✅ Оператор получил сообщение.",
+                        keyboard=close_kb, random_id=0
                     )
                 except Exception:
                     pass
@@ -1226,26 +1217,21 @@ class FreeVKBotInstance:
             if is_new or self.forward_all:
                 await self.forward_to_admin(m, user, is_first=is_new)
                 await self.log_and_update(user["id"], user["first_name"], m.text or "[Медиа]")
-                # При forwardAll — подтверждаем получение (не для первого сообщения)
                 if self.forward_all and not is_new:
                     try:
                         await self.bot.api.messages.send(
-                            peer_id=user["id"],
-                            message="✅ Сообщение передано оператору.",
-                            keyboard=self.get_main_keyboard(),
-                            random_id=0
+                            peer_id=user["id"], message="✅ Сообщение передано оператору.",
+                            keyboard=self.get_main_keyboard(), random_id=0
                         )
                     except Exception:
                         pass
             else:
-                # forwardAll выключен и ничего не совпало — сообщаем пользователю
                 await self.log_and_update(user["id"], user["first_name"], m.text or "[Медиа]")
                 try:
                     await self.bot.api.messages.send(
                         peer_id=user["id"],
                         message="🤖 Команда не распознана. Воспользуйтесь кнопками меню.",
-                        keyboard=self.get_main_keyboard(),
-                        random_id=0
+                        keyboard=self.get_main_keyboard(), random_id=0
                     )
                 except Exception:
                     pass
