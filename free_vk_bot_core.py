@@ -164,10 +164,11 @@ class FreeVKBotInstance:
         raw_cfg  = data.get("config", {}) if isinstance(data.get("config"), dict) else {}
         full_cfg = {**data, **raw_cfg}
 
-        # admin_chat_id / vk_group_id — читаем из всех источников
+        # admin_chat_id / vk_group_id
         peer_raw = (
             full_cfg.get("adminChatId") or full_cfg.get("vk_group_id") or
-            full_cfg.get("vkGroupId") or full_cfg.get("admin_chat_id")
+            full_cfg.get("vkGroupId")   or full_cfg.get("admin_chat_id") or
+            data.get("vk_group_id")     or data.get("admin_chat_id")
         )
         try:
             self.admin_chat_id = int(str(peer_raw).strip()) if peer_raw else None
@@ -185,9 +186,8 @@ class FreeVKBotInstance:
         self.rate_limit      = float(self.settings.get("rateLimit", 1.0))
         self.auto_ban_limit  = int(self.settings.get("autoBanThreshold", 3))
         self.forward_all     = bool(self.settings.get("forwardAll", False))
-        self.forward_messages = bool(self.settings.get("forwardMessages", self.forward_all))
-        # ad_enabled: читаем из корня данных бота (колонка БД), не из config
-        self.ad_enabled      = bool(data.get("ad_enabled", full_cfg.get("ad_enabled", True)))
+        # ad_enabled из корня данных бота (не из config)
+        self.ad_enabled      = bool(data.get("ad_enabled", True))
 
         raw_admin_ids = full_cfg.get("adminIds") or full_cfg.get("admin_ids") or []
         try:
@@ -381,61 +381,38 @@ class FreeVKBotInstance:
                 random_id=0
             )
 
-        # Реклама для free-плана (после приветствия, как в TG)
-        if self.ad_enabled:
-            await self.send_ad_to_user(uid)
+        # Реклама после приветствия (free-план)
+        await self.send_ad_to_user(uid)
 
     # ─────────────────────────────────────────────────────────────────────────
     # РЕКЛАМА (FREE PLAN)
     # ─────────────────────────────────────────────────────────────────────────
 
     async def fetch_ad(self) -> Optional[dict]:
-        """Получить текущее рекламное объявление через API."""
+        """Получить актуальное рекламное объявление через API."""
         try:
-            base_url = os.getenv("SERVER_BASE_URL", "http://localhost:8000")
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                r = await client.get(
-                    f"{base_url}/api/ads/active",
-                    params={"bot_id": self.bot_id}
-                )
+            import httpx as _httpx
+            import os as _os
+            base_url = _os.getenv("SERVER_BASE_URL", "http://localhost:8000")
+            async with _httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(f"{base_url}/api/ads/active", params={"bot_id": self.bot_id})
                 if r.status_code == 200:
-                    data = r.json()
-                    return data.get("ad")  # {"text": ..., "media_url": ...} или None
+                    return r.json().get("ad")
         except Exception as e:
             logger.warning(f"[FREE VK] fetch_ad error: {e}")
         return None
 
     async def send_ad_to_user(self, uid: int):
         """Отправить рекламное сообщение пользователю."""
+        if not self.ad_enabled:
+            return
         try:
             ad = await self.fetch_ad()
             if not ad or not ad.get("text"):
                 return
-            ad_text = f"📢 Реклама:\n{ad['text']}"
-            attachment_str = None
-            media_url = ad.get("media_url")
-            if media_url:
-                try:
-                    upload_server = await self.bot.api.photos.get_messages_upload_server(peer_id=uid)
-                    async with httpx.AsyncClient(timeout=15) as hclient:
-                        img_resp    = await hclient.get(media_url)
-                        upload_resp = await hclient.post(
-                            upload_server.upload_url,
-                            files={"photo": ("photo.jpg", img_resp.content, "image/jpeg")}
-                        )
-                        uploaded = upload_resp.json()
-                    saved = await self.bot.api.photos.save_messages_photo(
-                        photo=uploaded["photo"], server=uploaded["server"], hash=uploaded["hash"]
-                    )
-                    if saved:
-                        p = saved[0]
-                        attachment_str = f"photo{p.owner_id}_{p.id}"
-                except Exception:
-                    pass
             await self.bot.api.messages.send(
                 peer_id=uid,
-                message=ad_text,
-                attachment=attachment_str,
+                message=f"📢 Реклама:\n{ad['text']}",
                 random_id=0
             )
         except Exception as e:
@@ -1114,15 +1091,14 @@ class FreeVKBotInstance:
                     )
                     return
 
-                # В активном тикете — пересылаем и ВСЕГДА показываем кнопку закрытия
                 await self.forward_to_admin(m, user)
                 await self.log_and_update(user["id"], user["first_name"], m.text or "[Медиа]")
-                # Снова показываем кнопку "Закрыть обращение" после каждого сообщения
+                # Снова показываем кнопку "Закрыть обращение" — она пропадает после каждого ответа
                 try:
                     close_kb = self.build_keyboard_from_buttons([{"text": "Закрыть обращение"}])
                     await self.bot.api.messages.send(
                         peer_id=user["id"],
-                        message="✅ Сообщение доставлено оператору.",
+                        message="✅ Оператор получил ваше сообщение.",
                         keyboard=close_kb,
                         random_id=0
                     )
@@ -1250,29 +1226,29 @@ class FreeVKBotInstance:
             if is_new or self.forward_all:
                 await self.forward_to_admin(m, user, is_first=is_new)
                 await self.log_and_update(user["id"], user["first_name"], m.text or "[Медиа]")
-                # Уведомляем пользователя что сообщение получено (при forwardAll)
+                # При forwardAll — подтверждаем получение (не для первого сообщения)
                 if self.forward_all and not is_new:
                     try:
                         await self.bot.api.messages.send(
                             peer_id=user["id"],
-                            message="✅ Сообщение доставлено оператору.",
+                            message="✅ Сообщение передано оператору.",
                             keyboard=self.get_main_keyboard(),
                             random_id=0
                         )
                     except Exception:
                         pass
             else:
-                # forwardAll выключен и ничего не совпало — уведомляем пользователя
-                if not is_new:
-                    try:
-                        await self.bot.api.messages.send(
-                            peer_id=user["id"],
-                            message="🤖 Команда не распознана. Воспользуйтесь кнопками меню.",
-                            keyboard=self.get_main_keyboard(),
-                            random_id=0
-                        )
-                    except Exception:
-                        pass
+                # forwardAll выключен и ничего не совпало — сообщаем пользователю
+                await self.log_and_update(user["id"], user["first_name"], m.text or "[Медиа]")
+                try:
+                    await self.bot.api.messages.send(
+                        peer_id=user["id"],
+                        message="🤖 Команда не распознана. Воспользуйтесь кнопками меню.",
+                        keyboard=self.get_main_keyboard(),
+                        random_id=0
+                    )
+                except Exception:
+                    pass
 
     # ─────────────────────────────────────────────────────────────────────────
     # ЗАПУСК
