@@ -239,16 +239,14 @@ async def free_update_bot_config(bot_id: str, d: dict):
         if key in inc:
             new_cfg[key] = inc[key]
 
-    # Числовое значение admin_chat_id для корневой колонки БД
     try:
         admin_chat_id_int = int(str(admin_chat_id).strip()) if admin_chat_id else None
     except (ValueError, TypeError):
         admin_chat_id_int = None
-
     patch_payload = {
         "config":        new_cfg,
         "name":          d.get("name") or existing_bot.get("name") or "Bot",
-        "admin_chat_id": admin_chat_id_int,  # сохраняем в корневую колонку БД
+        "admin_chat_id": admin_chat_id_int,
     }
 
     # Токен — обновляем если пришёл новый
@@ -276,9 +274,9 @@ async def free_update_bot_config(bot_id: str, d: dict):
 @router.get("/api/free/bots/{user_id}")
 async def free_get_user_bots(user_id: str):
     db = _db()
-    # Фильтруем только TG-ботов (исключаем platform=vk)
-    all_free = await db.get("bots", params={"owner_id": f"eq.{user_id}", "is_free_plan": "eq.true"})
-    bots = [b for b in (all_free.json() or []) if b.get("platform") != "vk"]
+    # Возвращаем только TG-ботов (VK обслуживаются через /api/free/vk/bots/{user_id})
+    all_bots = await db.get("bots", params={"owner_id": f"eq.{user_id}", "is_free_plan": "eq.true"})
+    bots = [b for b in (all_bots.json() or []) if b.get("platform") != "vk"]
     return bots
 
 
@@ -521,17 +519,15 @@ async def free_vk_update_bot_config(bot_id: str, d: dict):
         if key in inc:
             new_cfg[key] = inc[key]
 
-    # Числовое значение для корневых колонок БД
     try:
         admin_chat_id_int = int(admin_chat_id) if admin_chat_id else None
     except (ValueError, TypeError):
         admin_chat_id_int = None
-
     patch_payload = {
         "config":        new_cfg,
         "name":          d.get("name") or existing_bot.get("name") or "VK Bot",
-        "admin_chat_id": admin_chat_id_int,  # корневая колонка БД
-        "vk_group_id":   admin_chat_id_int,  # корневая колонка БД
+        "admin_chat_id": admin_chat_id_int,
+        "vk_group_id":   admin_chat_id_int,
     }
 
     new_token = d.get("token") or inc.get("token")
@@ -629,8 +625,14 @@ async def free_vk_start_bot(bot_id: str):
     if not pm:
         raise HTTPException(500, "BotManager не инициализирован")
 
-    db = server.db
-    r  = await db.get("bots", params={"id": f"eq.{bot_id}"})
+    # Используем _db() — не server.db напрямую, чтобы избежать ConnectTimeout
+    # на долгоживущем httpx.AsyncClient
+    db = _db()
+    try:
+        r = await db.get("bots", params={"id": f"eq.{bot_id}"})
+    except Exception as e:
+        _logger().error(f"DB timeout при запуске VK бота {bot_id}: {e}")
+        raise HTTPException(503, "Ошибка соединения с БД, попробуйте снова")
     if not r.json():
         raise HTTPException(404, "Бот не найден")
 
@@ -638,9 +640,14 @@ async def free_vk_start_bot(bot_id: str):
 
     owner_id = bot_data.get("owner_id")
     if owner_id:
-        u_r = await db.get("users", params={"id": f"eq.{owner_id}"})
-        if u_r.json() and u_r.json()[0].get("is_banned"):
-            raise HTTPException(403, "Ваш аккаунт заблокирован")
+        try:
+            u_r = await db.get("users", params={"id": f"eq.{owner_id}"})
+            if u_r.json() and u_r.json()[0].get("is_banned"):
+                raise HTTPException(403, "Ваш аккаунт заблокирован")
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # не блокируем запуск если проверка бана упала
 
     inner_cfg = bot_data.get("config") or {}
     if isinstance(inner_cfg, str):
@@ -658,7 +665,10 @@ async def free_vk_start_bot(bot_id: str):
 
     success = await pm.start_bot(bot_id, merged)
     if success is True:
-        await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "RUNNING"})
+        try:
+            await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "RUNNING"})
+        except Exception as e:
+            _logger().warning(f"Не удалось обновить статус бота {bot_id}: {e}")
         return {"status": "ok", "message": "VK-бот запущен"}
     else:
         raise HTTPException(500, f"Не удалось запустить бота: {success}")
@@ -674,10 +684,10 @@ async def free_vk_stop_bot(bot_id: str):
 
     await pm.stop_bot(bot_id)
     try:
-        db = server.db
+        db = _db()
         await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "IDLE"})
-    except Exception:
-        pass
+    except Exception as e:
+        _logger().warning(f"Не удалось обновить статус при остановке {bot_id}: {e}")
     return {"status": "ok", "message": "VK-бот остановлен"}
 
 
@@ -1373,14 +1383,20 @@ async def free_user_info(user_id: str):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.post("/api/bots/{bot_id}/start")
+@router.post("/api/free/bots/{bot_id}/start")  # алиас для FreePlan.tsx
 async def start_free_bot(bot_id: str):
     server = _get_server()
     pm = getattr(server, 'pm', None)
     if not pm:
         raise HTTPException(500, "BotManager не инициализирован")
 
-    db = server.db
-    r = await db.get("bots", params={"id": f"eq.{bot_id}"})
+    # Используем _db() чтобы не зависеть от server.db (может упасть с ConnectTimeout)
+    db = _db()
+    try:
+        r = await db.get("bots", params={"id": f"eq.{bot_id}"})
+    except Exception as e:
+        _logger().error(f"DB timeout при старте бота {bot_id}: {e}")
+        raise HTTPException(503, "Ошибка соединения с БД, попробуйте снова")
     if not r.json():
         raise HTTPException(404, "Бот не найден")
 
@@ -1388,11 +1404,15 @@ async def start_free_bot(bot_id: str):
 
     owner_id = bot_data.get("owner_id")
     if owner_id:
-        u_r = await db.get("users", params={"id": f"eq.{owner_id}"})
-        if u_r.json() and u_r.json()[0].get("is_banned"):
-            raise HTTPException(403, "Ваш аккаунт заблокирован")
+        try:
+            u_r = await db.get("users", params={"id": f"eq.{owner_id}"})
+            if u_r.json() and u_r.json()[0].get("is_banned"):
+                raise HTTPException(403, "Ваш аккаунт заблокирован")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
 
-    # ИСПРАВЛЕНО: передаём полный объект row + config развёрнутый
     inner_cfg = bot_data.get("config") or {}
     if isinstance(inner_cfg, str):
         try:
@@ -1400,22 +1420,25 @@ async def start_free_bot(bot_id: str):
         except Exception:
             inner_cfg = {}
 
-    # Передаём так, чтобы FreeBotInstance.apply_config нашёл buttons/triggers
     merged = {
-        **bot_data,      # корень: id, token, owner_id, name, ...
-        "config": inner_cfg,  # вложенный config: buttons, triggers, settings, ...
+        **bot_data,
+        "config": inner_cfg,
         "is_free_plan": True,
     }
 
     success = await pm.start_bot(bot_id, merged)
     if success is True:
-        await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "RUNNING"})
+        try:
+            await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "RUNNING"})
+        except Exception as e:
+            _logger().warning(f"Статус не обновлён для {bot_id}: {e}")
         return {"status": "ok", "message": "Бот запущен"}
     else:
         raise HTTPException(500, f"Не удалось запустить бота: {success}")
 
 
 @router.post("/api/bots/{bot_id}/stop")
+@router.post("/api/free/bots/{bot_id}/stop")  # алиас для FreePlan.tsx
 async def stop_free_bot(bot_id: str):
     server = _get_server()
     pm = getattr(server, 'pm', None)
