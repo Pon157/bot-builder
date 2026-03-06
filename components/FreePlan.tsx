@@ -406,9 +406,11 @@ const FreeBotEditor: React.FC<{
     return {
       name:         b.name,
       token:        b.token || cfg.token || '',
-      welcome:      cfg.welcomeMessage || '',
-      welcomePhoto: cfg.welcomePhoto   || '',
-      adminId:      cfg.adminChatId    || '',
+      welcome:      cfg.welcomeMessage || (b as any).welcomeMessage || '',
+      // Читаем welcomePhoto из config или из корня объекта бота
+      welcomePhoto: cfg.welcomePhoto || (b as any).welcomePhoto || '',
+      // adminChatId может быть в config или в корне
+      adminId:      cfg.adminChatId || (b as any).adminChatId || (b as any).admin_chat_id || '',
       buttons:      (cfg.buttons  || []) as any[],
       triggers:     (cfg.triggers || []) as any[],
       inlineButtons:(cfg.inlineButtons || []) as InlineButton[],
@@ -570,31 +572,9 @@ const FreeBotEditor: React.FC<{
             <span className="text-[10px] text-zinc-500 uppercase tracking-widest block mb-1.5 flex items-center gap-1.5">
               <Users size={10} className="text-amber-400" />ID группы / форума администраторов
             </span>
-            <div className="flex gap-2">
-              <input value={adminId} onChange={e => setAdminId(e.target.value)}
-                className="flex-1 bg-black border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500 transition-colors"
-                placeholder="-100123456789" />
-              <button type="button" title="Получить ID автоматически (отправьте /getid в группу сначала)"
-                onClick={async () => {
-                  if (!token) { setError('Сначала укажи токен бота'); return; }
-                  try {
-                    const r = await fetch('/api/bots/tg-get-chat-id', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ token, bot_id: bot.id })
-                    });
-                    const j = await r.json();
-                    if (j.ok && j.chat_id) {
-                      setAdminId(String(j.chat_id));
-                    } else {
-                      setError(j.error || 'Не найдено. Добавьте бота в группу и отправьте /getid');
-                    }
-                  } catch { setError('Ошибка запроса'); }
-                }}
-                className="px-3 py-2 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-xl text-amber-400 text-[11px] font-bold transition-all whitespace-nowrap">
-                🔍 Получить ID
-              </button>
-            </div>
+            <input value={adminId} onChange={e => setAdminId(e.target.value)}
+              className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500 transition-colors"
+              placeholder="-100123456789" />
           </label>
         </Section>
 
@@ -843,12 +823,15 @@ const FreeVKBotEditor: React.FC<{
       ticketMessageHeader: '🆘 ЗАЯВКА [{btn}]:',
       commonMessageHeader: '📩 СООБЩЕНИЕ:',
     };
-    const peerRaw = cfg.vk_group_id || cfg.vkGroupId || cfg.adminChatId || '';
+    // peer_id может быть в config или в корне бота (колонки БД)
+    const peerRaw =
+      cfg.adminChatId || cfg.vk_group_id || cfg.vkGroupId ||
+      (b as any).vk_group_id || (b as any).admin_chat_id || '';
     return {
       name:         b.name,
       token:        b.token || cfg.token || '',
-      welcome:      cfg.welcomeMessage || '',
-      welcomePhoto: cfg.welcomePhoto   || '',
+      welcome:      cfg.welcomeMessage || (b as any).welcomeMessage || '',
+      welcomePhoto: cfg.welcomePhoto   || (b as any).welcomePhoto   || '',
       adminId:      peerRaw ? String(peerRaw) : '',
       buttons:      (cfg.buttons  || []) as any[],
       triggers:     (cfg.triggers || []) as any[],
@@ -1415,16 +1398,23 @@ const FreePlan: React.FC = () => {
     const status    = statusMap[bot.id] || bot.status;
     if (status === 'LOADING') return;
     const isRunning = status === 'RUNNING';
+    const isVKBot   = bot.platform === 'vk' || bot.id?.startsWith('fvk_');
     setStatusMap(prev => ({ ...prev, [bot.id]: 'LOADING' }));
     try {
       if (isRunning) {
-        const r = await fetch(BOTS_API(`/bots/stop/${bot.id}`), { method: 'POST' });
+        const stopUrl = isVKBot
+          ? FREE_API(`/vk/bots/${bot.id}/stop`)
+          : BOTS_API(`/bots/stop/${bot.id}`);
+        const r = await fetch(stopUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: userId }) });
         if (!r.ok) throw new Error(`Ошибка остановки (${r.status})`);
         setStatusMap(prev => ({ ...prev, [bot.id]: 'IDLE' }));
       } else {
-        const r = await fetch(BOTS_API('/bots/start'), {
+        const startUrl = isVKBot
+          ? FREE_API(`/vk/bots/${bot.id}/start`)
+          : FREE_API(`/bots/${bot.id}/start`);
+        const r = await fetch(startUrl, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: bot.id }),
+          body: JSON.stringify({ bot_id: bot.id, user_id: userId }),
         });
         if (!r.ok) {
           const e = await r.json().catch(() => ({}));
