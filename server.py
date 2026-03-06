@@ -165,7 +165,7 @@ class BotManager:
         platform = config.get('platform', 'telegram').lower()
         _CORE = {'vk': 'vkbot_core.py', 'poster': 'poster_core.py', 'randomizer': 'randomizer_core.py'}
         _FREE_CORE = {'vk': 'free_vk_bot_core.py'}
-        # Бесплатные TG-боты -> free_bot_core.py, VK -> free_vk_bot_core.py
+        # TG free -> free_bot_core.py, VK free -> free_vk_bot_core.py
         if config.get('is_free_plan', False):
             bot_file = _FREE_CORE.get(platform, 'free_bot_core.py')
         else:
@@ -319,14 +319,25 @@ app.add_middleware(
 )
 
 # 4. Инициализируем глобальный клиент БД
+# Увеличиваем timeout и limits для стабильной работы
 db = httpx.AsyncClient(
     base_url=f"{S_URL}/rest/v1/", 
     headers={
         "apikey": S_KEY, 
         "Authorization": f"Bearer {S_KEY}", 
         "Content-Type": "application/json"
-    }
+    },
+    timeout=httpx.Timeout(30.0, connect=10.0),
+    limits=httpx.Limits(max_keepalive_connections=5, max_connections=20, keepalive_expiry=30),
 )
+
+def _make_db_client():
+    """Создать свежий httpx клиент к Supabase (для случаев когда global db упал)."""
+    return httpx.AsyncClient(
+        base_url=f"{S_URL}/rest/v1/",
+        headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}", "Content-Type": "application/json"},
+        timeout=httpx.Timeout(30.0, connect=10.0),
+    )
 
 # Загрузка файлов
 UPLOADS_DIR = os.getenv("UPLOADS_DIR", "/var/www/botengine/uploads")
@@ -564,7 +575,7 @@ async def get_user_bots(user_id: str):
             return []
         
         bots = res.json()
-        # Исключаем VK free-plan ботов — они отображаются через /api/free/vk/bots/{user_id}
+        # VK free-plan боты не попадают в Pro-панель — у них своя /api/free/vk/bots/{user_id}
         bots = [b for b in bots if not (b.get('platform') == 'vk' and b.get('is_free_plan') is True)]
         
         for bot in bots:
@@ -863,7 +874,11 @@ async def start_handler(req: dict):
     
     # 1. Получаем данные бота и сразу данные владельца через join (если позволяет БД)
     # Или делаем два запроса для надежности
-    r = await db.get("bots", params={"id": f"eq.{bid}"})
+    try:
+        r = await db.get("bots", params={"id": f"eq.{bid}"})
+    except Exception as e:
+        logger.error(f"DB timeout при старте бота {bid}: {e}")
+        raise HTTPException(503, "Ошибка соединения с БД, попробуйте снова")
     if not r.json(): 
         raise HTTPException(404, "Бот не найден")
     
