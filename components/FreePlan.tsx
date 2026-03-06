@@ -570,9 +570,31 @@ const FreeBotEditor: React.FC<{
             <span className="text-[10px] text-zinc-500 uppercase tracking-widest block mb-1.5 flex items-center gap-1.5">
               <Users size={10} className="text-amber-400" />ID группы / форума администраторов
             </span>
-            <input value={adminId} onChange={e => setAdminId(e.target.value)}
-              className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500 transition-colors"
-              placeholder="-100123456789" />
+            <div className="flex gap-2">
+              <input value={adminId} onChange={e => setAdminId(e.target.value)}
+                className="flex-1 bg-black border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500 transition-colors"
+                placeholder="-100123456789" />
+              <button type="button" title="Получить ID автоматически (отправьте /getid в группу сначала)"
+                onClick={async () => {
+                  if (!token) { setError('Сначала укажи токен бота'); return; }
+                  try {
+                    const r = await fetch('/api/bots/tg-get-chat-id', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ token, bot_id: bot.id })
+                    });
+                    const j = await r.json();
+                    if (j.ok && j.chat_id) {
+                      setAdminId(String(j.chat_id));
+                    } else {
+                      setError(j.error || 'Не найдено. Добавьте бота в группу и отправьте /getid');
+                    }
+                  } catch { setError('Ошибка запроса'); }
+                }}
+                className="px-3 py-2 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-xl text-amber-400 text-[11px] font-bold transition-all whitespace-nowrap">
+                🔍 Получить ID
+              </button>
+            </div>
           </label>
         </Section>
 
@@ -980,6 +1002,14 @@ const FreeVKBotEditor: React.FC<{
             <input value={welcomePhoto} onChange={e => setWelcomePhoto(e.target.value)}
               className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500 transition-colors"
               placeholder="https://..." />
+            {welcomePhoto && (
+              <div className="mt-3 relative inline-block">
+                <img src={welcomePhoto} alt="preview" className="h-28 rounded-xl object-cover border border-zinc-800"
+                  onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+                <button type="button" onClick={() => setWelcomePhoto('')}
+                  className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 rounded-full text-white text-xs flex items-center justify-center hover:bg-red-400 transition-colors">✕</button>
+              </div>
+            )}
           </label>
 
           {/* VK Inline — только URL */}
