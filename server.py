@@ -1774,6 +1774,85 @@ async def vk_get_peer_info(peer_id: int):
             "description": f"Личный диалог с пользователем VK ID={peer_id}"
         }
 
+
+@app.post("/api/bots/tg-get-chat-id")
+async def tg_get_chat_id(d: dict):
+    """
+    Получает chat_id группы через Telegram Bot API.
+    Бот должен быть уже добавлен в группу, там должна быть написана хоть одна команда /getid.
+    Эндпоинт опрашивает последние updates и ищет /getid в групповых сообщениях.
+    """
+    token = d.get("token", "").strip()
+    bot_id = d.get("bot_id", "").strip()
+    if not token:
+        raise HTTPException(400, "token обязателен")
+    try:
+        token = decrypt_val(token)
+    except Exception:
+        pass
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            # Получаем последние обновления
+            r = await client.get(
+                f"https://api.telegram.org/bot{token}/getUpdates",
+                params={"limit": 50, "allowed_updates": ["message"]}
+            )
+            if r.status_code != 200:
+                raise HTTPException(502, f"TG API error: {r.text}")
+            updates = r.json().get("result", [])
+            
+            # Ищем /getid в групповых сообщениях (chat.type group/supergroup)
+            found_chats = []
+            for upd in reversed(updates):
+                msg = upd.get("message") or {}
+                chat = msg.get("chat", {})
+                text = (msg.get("text") or "").strip().lower()
+                chat_type = chat.get("type", "")
+                if chat_type in ("group", "supergroup") and "/getid" in text:
+                    found_chats.append({
+                        "chat_id": chat.get("id"),
+                        "title": chat.get("title", "Без названия"),
+                        "type": chat_type,
+                    })
+            
+            if found_chats:
+                best = found_chats[0]
+                chat_id = best["chat_id"]
+                # Если передан bot_id — сохраняем в БД
+                if bot_id and chat_id:
+                    try:
+                        res = await db.get("bots", params={"id": f"eq.{bot_id}"})
+                        if res.json():
+                            cfg = res.json()[0].get("config") or {}
+                            cfg["adminChatId"] = chat_id
+                            cfg["admin_chat_id"] = chat_id
+                            await db.patch("bots", params={"id": f"eq.{bot_id}"},
+                                          json={"admin_chat_id": chat_id, "config": cfg})
+                    except Exception as e:
+                        logger.warning(f"tg-get-chat-id save error: {e}")
+                return {"ok": True, "chat_id": chat_id, "title": best["title"], "type": best["type"]}
+            
+            # Fallback: ищем любое групповое сообщение
+            for upd in reversed(updates):
+                msg = upd.get("message") or {}
+                chat = msg.get("chat", {})
+                if chat.get("type") in ("group", "supergroup"):
+                    return {
+                        "ok": True,
+                        "chat_id": chat["id"],
+                        "title": chat.get("title", ""),
+                        "type": chat["type"],
+                        "hint": "Найдено последнее сообщение в группе (без /getid)"
+                    }
+            
+            return {"ok": False, "error": "Не найдено групповых сообщений. Отправьте /getid в группу."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"tg-get-chat-id error: {e}")
+        raise HTTPException(500, str(e))
+
+
 # --- ДОБАВИТЬ В КОНЕЦ ФАЙЛА server.py ---
 
 @app.post("/api/reviews/submit")
