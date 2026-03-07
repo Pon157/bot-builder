@@ -763,9 +763,16 @@ class BotInstance:
                 code = action.get('code', '').strip()
                 if code:
                     await self._execute_flow_code(code, m, user)
+                # Если после кода пользователь оказался в тикете — сохраняем флаг
+                if user.get('_in_ticket'):
+                    showed_sub_keyboard = True
 
             elif atype == 'create_ticket':
                 await self._flow_create_ticket(action, m, user)
+                # После открытия тикета прерываем цепочку действий —
+                # клавиатура закрытия уже показана, дальнейшие action её перебьют
+                showed_sub_keyboard = True
+                break
 
             elif atype == 'buttons':
                 sub_nodes = action.get('buttons', [])
@@ -966,7 +973,17 @@ class BotInstance:
                 if reply:
                     if len(reply) > _MAX_REPLY_LEN:
                         reply = reply[:_MAX_REPLY_LEN] + "…"
-                    await m.answer(reply, parse_mode="HTML")
+                    # Если пользователь в тикете — сохраняем кнопку закрытия
+                    if user.get('_in_ticket'):
+                        from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+                        _close_label = user.get('_ticket_close_label', 'Закрыть обращение')
+                        _close_kb = ReplyKeyboardMarkup(
+                            keyboard=[[KeyboardButton(text=_close_label)]],
+                            resize_keyboard=True
+                        )
+                        await m.answer(reply, parse_mode="HTML", reply_markup=_close_kb)
+                    else:
+                        await m.answer(reply, parse_mode="HTML")
             else:
                 err = result.get("error", "Неизвестная ошибка")
                 logger.warning(f"Flow code error (bot {self.bot_id}): {err}")
