@@ -147,6 +147,7 @@ class FreeVKBotInstance:
 
         self.msg_map:     Dict[int, int]   = {}
         self.flood_cache: Dict[int, float] = {}
+        self.media_group_buffer: Dict[int, dict] = {}  # uid -> {msgs, timer_task}
         self.sync_queue:  asyncio.Queue    = asyncio.Queue()
         self.is_running   = True
         self._last_push:  float = 0.0
@@ -458,6 +459,7 @@ class FreeVKBotInstance:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = ""):
+        """Пересылает одно сообщение (с вложениями) в беседу-администратора."""
         if not self.admin_chat_id:
             return
 
@@ -479,7 +481,6 @@ class FreeVKBotInstance:
                             if owner and aid:
                                 file_id = f"{att_type}{owner}_{aid}"
                                 parts.append(file_id)
-                                # Сохраняем медиа в БД
                                 asyncio.create_task(
                                     self._save_media_to_db(user["id"], att_type, file_id)
                                 )
@@ -497,6 +498,59 @@ class FreeVKBotInstance:
             self.msg_map[sent_msg_id] = user["id"]
         except Exception as e:
             logger.error(f"forward_to_admin error: {e}", exc_info=True)
+
+    async def forward_multi_to_admin(self, messages: list, user: dict, is_first: bool = False):
+        """
+        Пересылает несколько сообщений подряд (VK-альбом) как одно:
+        собирает все attachment-строки и отправляет одним вызовом.
+        VK поддерживает до 10 вложений в одном messages.send.
+        """
+        if not self.admin_chat_id:
+            return
+
+        all_parts = []
+        text_parts = []
+        for msg in messages:
+            if msg.text:
+                text_parts.append(msg.text)
+            if msg.attachments:
+                for att in msg.attachments:
+                    try:
+                        att_type = str(att.type.value) if hasattr(att.type, "value") else str(att.type)
+                        att_obj  = getattr(att, att_type, None)
+                        if att_obj:
+                            owner = getattr(att_obj, "owner_id", None)
+                            aid   = getattr(att_obj, "id", None)
+                            if owner and aid:
+                                file_id = f"{att_type}{owner}_{aid}"
+                                all_parts.append(file_id)
+                                asyncio.create_task(
+                                    self._save_media_to_db(user["id"], att_type, file_id)
+                                )
+                    except Exception:
+                        pass
+
+        header    = format_admin_header(user, self.settings, is_first)
+        user_text = " ".join(text_parts) if text_parts else ""
+        full_text = (f"{header}\n{user_text}".strip()) if user_text else header
+
+        # VK ограничение — 10 вложений на сообщение
+        chunk_size = 10
+        for i in range(0, max(1, len(all_parts)), chunk_size):
+            chunk = all_parts[i:i + chunk_size]
+            attachment_str = ",".join(chunk) if chunk else None
+            msg_text = full_text if i == 0 else ""
+            try:
+                sent_msg_id = await self.bot.api.messages.send(
+                    peer_id=self.admin_chat_id,
+                    message=msg_text,
+                    attachment=attachment_str,
+                    random_id=0
+                )
+                if i == 0:
+                    self.msg_map[sent_msg_id] = user["id"]
+            except Exception as e:
+                logger.error(f"forward_multi_to_admin chunk {i} error: {e}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # СТАТИСТИКА
@@ -1056,6 +1110,55 @@ class FreeVKBotInstance:
                     return
                 self.flood_cache[media_key] = now
 
+            # ── Буфер медиагруппы (альбом = несколько сообщений подряд) ─────
+            # VK присылает фото альбома как отдельные события без общего ID.
+            # Буферизуем сообщения с вложениями 0.8 сек и отправляем разом.
+            if has_media and not m.text:
+                uid_key = user["id"]
+                now = time.time()
+                buf = self.media_group_buffer.get(uid_key)
+                if buf and now - buf["started"] < 0.8:
+                    # Добавляем в существующий буфер
+                    buf["messages"].append(m)
+                    return
+                else:
+                    # Новый буфер
+                    self.media_group_buffer[uid_key] = {
+                        "messages": [m], "user": user,
+                        "is_first": is_new, "in_ticket": user.get("_in_ticket", False),
+                        "started": now,
+                    }
+                    async def _flush_vk(uid=uid_key):
+                        await asyncio.sleep(0.8)
+                        buf = self.media_group_buffer.pop(uid, None)
+                        if not buf:
+                            return
+                        should_fwd = buf["in_ticket"] or self.forward_all or buf["is_first"]
+                        if should_fwd:
+                            await self.forward_multi_to_admin(
+                                buf["messages"], buf["user"], buf["is_first"]
+                            )
+                        await self.log_and_update(
+                            buf["user"]["id"], buf["user"]["first_name"],
+                            f"[Медиа: {len(buf['messages'])} файл(ов)]"
+                        )
+                        if not should_fwd:
+                            ticket_buttons = [b for b in self.buttons if b.get("type") == "ticket"]
+                            if ticket_buttons:
+                                hint_key = f"hint_{buf['user']['id']}"
+                                if time.time() - self.flood_cache.get(hint_key, 0) > 60:
+                                    self.flood_cache[hint_key] = time.time()
+                                    hint = f"Нажмите «{ticket_buttons[0]['text']}» чтобы отправить файлы оператору."
+                                    try:
+                                        await self.bot.api.messages.send(
+                                            peer_id=buf["user"]["id"], message=hint,
+                                            keyboard=self.get_main_keyboard(), random_id=0
+                                        )
+                                    except Exception:
+                                        pass
+                    asyncio.create_task(_flush_vk())
+                    return
+
             # ── Активный тикет ───────────────────────────────────────────────
             if user.get("_in_ticket"):
                 close_label = user.get("_ticket_close_label", "Закрыть обращение")
@@ -1087,8 +1190,7 @@ class FreeVKBotInstance:
 
                 await self.forward_to_admin(m, user)
                 await self.log_and_update(user["id"], user["first_name"], m.text or "[Медиа]")
-                # НЕ подтверждаем каждое сообщение — только повторно показываем кнопку закрытия
-                # чтобы она не пропадала после ответа VK (VK скрывает клавиатуру после каждого сообщения)
+                # Внутри тикета — молчим, не спамим подтверждениями
                 return
 
             if m.text:
@@ -1185,27 +1287,26 @@ class FreeVKBotInstance:
             if is_new or self.forward_all:
                 await self.forward_to_admin(m, user, is_first=is_new)
                 await self.log_and_update(user["id"], user["first_name"], m.text or "[Медиа]")
-                if self.forward_all and not is_new:
-                    try:
-                        await self.bot.api.messages.send(
-                            peer_id=user["id"], message="✅ Сообщение передано оператору.",
-                            keyboard=self.get_main_keyboard(), random_id=0
-                        )
-                    except Exception:
-                        pass
+                # forwardAll — без подтверждения, просто логируем
             else:
                 # Режим без forwardAll — подсказываем как открыть обращение
+                # Но только один раз, пока пользователь не выполнит действие
                 await self.log_and_update(user["id"], user["first_name"], m.text or "[Медиа]")
                 ticket_buttons = [b for b in self.buttons if b.get("type") == "ticket"]
                 if ticket_buttons:
-                    hint = f"Нажмите «{ticket_buttons[0]['text']}» чтобы связаться с нами."
-                    try:
-                        await self.bot.api.messages.send(
-                            peer_id=user["id"], message=hint,
-                            keyboard=self.get_main_keyboard(), random_id=0
-                        )
-                    except Exception:
-                        pass
+                    # Показываем подсказку не чаще раза в 60 сек
+                    now = time.time()
+                    hint_key = f"hint_{user['id']}"
+                    if now - self.flood_cache.get(hint_key, 0) > 60:
+                        self.flood_cache[hint_key] = now
+                        hint = f"Нажмите «{ticket_buttons[0]['text']}» чтобы связаться с нами."
+                        try:
+                            await self.bot.api.messages.send(
+                                peer_id=user["id"], message=hint,
+                                keyboard=self.get_main_keyboard(), random_id=0
+                            )
+                        except Exception:
+                            pass
                 # Если нет тикетных кнопок — молча логируем
 
     # ─────────────────────────────────────────────────────────────────────────
