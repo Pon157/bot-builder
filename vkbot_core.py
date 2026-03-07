@@ -1761,6 +1761,11 @@ class BotInstance:
 
                 # ── START ──
                 if clean_lower in ["start", "/start", "начать"]:
+                    # Сбрасываем состояние flow и тикетов при /start
+                    user.pop('_flow_nodes', None)
+                    user.pop('_in_ticket', None)
+                    user.pop('_ticket_close_label', None)
+                    user.pop('_ai_session', None)
                     attachment_str = None
                     if self.welcome_photo:
                         try:
