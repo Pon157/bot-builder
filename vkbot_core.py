@@ -871,9 +871,13 @@ class BotInstance:
                 code = action.get('code', '').strip()
                 if code:
                     await self._execute_flow_code(code, m, user)
+                if user.get('_in_ticket'):
+                    showed_sub_keyboard = True
 
             elif atype == 'create_ticket':
                 await self._flow_create_ticket(action, m, user)
+                showed_sub_keyboard = True
+                break
 
             elif atype == 'buttons':
                 sub_nodes = action.get('buttons', [])
