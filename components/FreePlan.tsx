@@ -410,6 +410,7 @@ const FreeBotEditor: React.FC<{
       welcome:      cfg.welcomeMessage || bAny.welcomeMessage || '',
       welcomePhoto: cfg.welcomePhoto   || bAny.welcomePhoto   || '',
       adminId:      cfg.adminChatId    || String(bAny.admin_chat_id || bAny.adminChatId || ''),
+      adminIds:     (cfg.adminIds || cfg.admin_ids || []) as string[],
       buttons:      (cfg.buttons  || []) as any[],
       triggers:     (cfg.triggers || []) as any[],
       inlineButtons:(cfg.inlineButtons || []) as InlineButton[],
@@ -422,6 +423,7 @@ const FreeBotEditor: React.FC<{
   const [welcome,       setWelcome]       = useState(() => initState(bot).welcome);
   const [welcomePhoto,  setWelcomePhoto]  = useState(() => initState(bot).welcomePhoto);
   const [adminId,       setAdminId]       = useState(() => initState(bot).adminId);
+  const [adminIds,      setAdminIds]      = useState<string[]>(() => initState(bot).adminIds);
   const [buttons,       setButtons]       = useState<any[]>(() => initState(bot).buttons);
   const [triggers,      setTriggers]      = useState<any[]>(() => initState(bot).triggers);
   const [inlineButtons, setInlineButtons] = useState<InlineButton[]>(() => initState(bot).inlineButtons);
@@ -438,7 +440,7 @@ const FreeBotEditor: React.FC<{
       prevBotIdRef.current = bot.id;
       const s = initState(bot);
       setName(s.name); setToken(s.token); setWelcome(s.welcome);
-      setWelcomePhoto(s.welcomePhoto); setAdminId(s.adminId);
+      setWelcomePhoto(s.welcomePhoto); setAdminId(s.adminId); setAdminIds(s.adminIds);
       setButtons(s.buttons); setTriggers(s.triggers);
       setInlineButtons(s.inlineButtons); setStg(s.stg);
       setError(''); setSaveSuccess(false);
@@ -482,7 +484,7 @@ const FreeBotEditor: React.FC<{
         buttons, triggers,
         config: {
           welcomeMessage: welcome, welcomePhoto: welcomePhoto,
-          adminChatId: adminId, inlineButtons, settings: stg,
+          adminChatId: adminId, adminIds, inlineButtons, settings: stg,
         },
       };
       const res = await fetch(FREE_API(`/bots/${bot.id}/config`), {
@@ -498,7 +500,7 @@ const FreeBotEditor: React.FC<{
       const updatedBot: FreeBot = {
         ...bot, name,
         token: serverBot?.token || token.trim() || bot.token,
-        config: { ...(bot.config || {}), welcomeMessage: welcome, welcomePhoto, adminChatId: adminId, inlineButtons, settings: stg, buttons, triggers },
+        config: { ...(bot.config || {}), welcomeMessage: welcome, welcomePhoto, adminChatId: adminId, adminIds, inlineButtons, settings: stg, buttons, triggers },
       };
       onSave(updatedBot);
       setSaveSuccess(true);
@@ -575,6 +577,22 @@ const FreeBotEditor: React.FC<{
               className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500 transition-colors"
               placeholder="-100123456789" />
           </label>
+          <label className="block">
+            <span className="text-[10px] text-zinc-500 uppercase tracking-widest block mb-1.5 flex items-center gap-1.5">
+              <ShieldCheck size={10} className="text-purple-400" />Admin ID для рассылок
+              <span className="text-zinc-600">(через запятую; пусто = все могут рассылать)</span>
+            </span>
+            <input
+              value={adminIds.join(', ')}
+              onChange={e => {
+                const raw = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
+                setAdminIds(raw);
+              }}
+              className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-purple-500 transition-colors"
+              placeholder="123456789, 987654321"
+            />
+            <p className="text-[10px] text-zinc-600 mt-1">Telegram ID пользователей, которые могут запускать /broadcast</p>
+          </label>
         </Section>
 
         <Section title="Приветствие (/start)" icon={<MessageSquare size={13} className="text-emerald-400" />}>
@@ -602,7 +620,7 @@ const FreeBotEditor: React.FC<{
             {welcomePhoto && (
               <div className="mt-3 relative inline-block">
                 <img src={welcomePhoto} alt="preview" className="h-28 rounded-xl object-cover border border-zinc-800"
-                  onError={e => { (e.currentTarget as HTMLImageElement).style.opacity = '0.4'; }} />
+                  onError={e => { (e.currentTarget as HTMLImageElement).style.opacity = '0.4'; (e.currentTarget as HTMLImageElement).title = 'Не удалось загрузить превью'; }} />
                 <button type="button" onClick={() => setWelcomePhoto('')}
                   className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 rounded-full text-white text-xs flex items-center justify-center hover:bg-red-400 transition-colors">✕</button>
               </div>
@@ -831,6 +849,7 @@ const FreeVKBotEditor: React.FC<{
       welcome:      cfg.welcomeMessage || bAny.welcomeMessage || '',
       welcomePhoto: cfg.welcomePhoto   || bAny.welcomePhoto   || '',
       adminId:      peerRaw ? String(peerRaw) : '',
+      adminIds:     (cfg.adminIds || cfg.admin_ids || []) as string[],
       buttons:      (cfg.buttons  || []) as any[],
       triggers:     (cfg.triggers || []) as any[],
       inlineButtons:(cfg.inlineButtons || []) as InlineButton[],
@@ -843,6 +862,7 @@ const FreeVKBotEditor: React.FC<{
   const [welcome,       setWelcome]       = useState(() => initState(bot).welcome);
   const [welcomePhoto,  setWelcomePhoto]  = useState(() => initState(bot).welcomePhoto);
   const [adminId,       setAdminId]       = useState(() => initState(bot).adminId);
+  const [adminIds,      setAdminIds]      = useState<string[]>(() => initState(bot).adminIds);
   const [buttons,       setButtons]       = useState<any[]>(() => initState(bot).buttons);
   const [triggers,      setTriggers]      = useState<any[]>(() => initState(bot).triggers);
   const [inlineButtons, setInlineButtons] = useState<InlineButton[]>(() => initState(bot).inlineButtons);
@@ -851,14 +871,14 @@ const FreeVKBotEditor: React.FC<{
   const [saving,        setSaving]        = useState(false);
   const [saveSuccess,   setSaveSuccess]   = useState(false);
   const [error,         setError]         = useState('');
-
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const prevBotIdRef = useRef(bot.id);
   useEffect(() => {
     if (prevBotIdRef.current !== bot.id) {
       prevBotIdRef.current = bot.id;
       const s = initState(bot);
       setName(s.name); setToken(s.token); setWelcome(s.welcome);
-      setWelcomePhoto(s.welcomePhoto); setAdminId(s.adminId);
+      setWelcomePhoto(s.welcomePhoto); setAdminId(s.adminId); setAdminIds(s.adminIds);
       setButtons(s.buttons); setTriggers(s.triggers);
       setInlineButtons(s.inlineButtons); setStg(s.stg);
       setError(''); setSaveSuccess(false);
@@ -866,6 +886,30 @@ const FreeVKBotEditor: React.FC<{
   }, [bot.id, initState]);
 
   const updateStg = useCallback((key: string, val: any) => setStg(prev => ({ ...prev, [key]: val })), []);
+
+  const handlePhotoFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setUploadingPhoto(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const r = await fetch('/api/upload', { method: 'POST', body: fd });
+      if (!r.ok) {
+        const errData = await r.json().catch(() => ({}));
+        throw new Error(errData.detail || `Ошибка загрузки (${r.status})`);
+      }
+      const d = await r.json();
+      const url = d.url || d.path || '';
+      if (!url) throw new Error('Сервер не вернул URL файла');
+      setWelcomePhoto(url);
+    } catch (err: any) {
+      setError(err.message || 'Ошибка загрузки фото');
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
 
   const handleSave = async () => {
     if (saving) return;
@@ -877,7 +921,7 @@ const FreeVKBotEditor: React.FC<{
         config: {
           welcomeMessage: welcome, welcomePhoto,
           adminChatId: adminId, vk_group_id: adminId, vkGroupId: adminId,
-          inlineButtons, settings: stg,
+          adminIds, inlineButtons, settings: stg,
         },
       };
       const res = await fetch(FREE_API(`/vk/bots/${bot.id}/config`), {
@@ -891,7 +935,7 @@ const FreeVKBotEditor: React.FC<{
       const updatedBot: FreeBot = {
         ...bot, name, platform: 'vk',
         token: token.trim() || bot.token,
-        config: { ...(bot.config || {}), welcomeMessage: welcome, welcomePhoto, adminChatId: adminId, vk_group_id: adminId, inlineButtons, settings: stg, buttons, triggers },
+        config: { ...(bot.config || {}), welcomeMessage: welcome, welcomePhoto, adminChatId: adminId, vk_group_id: adminId, adminIds, inlineButtons, settings: stg, buttons, triggers },
       };
       onSave(updatedBot);
       setSaveSuccess(true);
@@ -978,18 +1022,45 @@ const FreeVKBotEditor: React.FC<{
           </label>
           <label className="block">
             <span className="text-[10px] text-zinc-500 uppercase tracking-widest block mb-1.5 flex items-center gap-1.5">
-              <Image size={10} className="text-blue-400" />Фото к приветствию (URL)
+              <Image size={10} className="text-blue-400" />Фото к приветствию (опционально)
             </span>
-            <input value={welcomePhoto} onChange={e => setWelcomePhoto(e.target.value)}
-              className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500 transition-colors"
-              placeholder="https://..." />
+            <div className="flex gap-2">
+              <input value={welcomePhoto} onChange={e => setWelcomePhoto(e.target.value)}
+                className="flex-1 bg-black border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500 transition-colors"
+                placeholder="https://... или загрузите файл" />
+              <label className={`px-3 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-xl text-zinc-400 hover:text-white transition-all cursor-pointer flex items-center justify-center ${uploadingPhoto ? 'opacity-50 pointer-events-none' : ''}`}>
+                {uploadingPhoto ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                <input type="file" accept="image/*" className="hidden" onChange={handlePhotoFile} disabled={uploadingPhoto} />
+              </label>
+            </div>
             {welcomePhoto && (
               <div className="mt-3 relative inline-block">
-                <img src={welcomePhoto} alt="Превью" className="h-28 rounded-xl object-cover border border-zinc-800" />
+                <img
+                  src={welcomePhoto}
+                  alt="Превью"
+                  className="h-28 rounded-xl object-cover border border-zinc-800"
+                  onError={e => { (e.currentTarget as HTMLImageElement).style.opacity = '0.4'; (e.currentTarget as HTMLImageElement).title = 'Не удалось загрузить превью'; }}
+                />
                 <button type="button" onClick={() => setWelcomePhoto('')}
                   className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 rounded-full text-white text-xs flex items-center justify-center hover:bg-red-400 transition-colors">✕</button>
               </div>
             )}
+          </label>
+          <label className="block">
+            <span className="text-[10px] text-zinc-500 uppercase tracking-widest block mb-1.5 flex items-center gap-1.5">
+              <ShieldCheck size={10} className="text-purple-400" />Admin VK ID для рассылок
+              <span className="text-zinc-600">(через запятую; пусто = все)</span>
+            </span>
+            <input
+              value={adminIds.join(', ')}
+              onChange={e => {
+                const raw = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
+                setAdminIds(raw);
+              }}
+              className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-purple-500 transition-colors"
+              placeholder="123456789, 987654321"
+            />
+            <p className="text-[10px] text-zinc-600 mt-1">VK ID пользователей, которые могут запускать /broadcast в беседе</p>
           </label>
 
           {/* VK Inline — только URL */}
@@ -999,7 +1070,7 @@ const FreeVKBotEditor: React.FC<{
             </span>
             <div className="bg-amber-500/5 border border-amber-500/15 rounded-xl p-2.5 mb-3">
               <p className="text-[10px] text-amber-400/80 leading-relaxed">
-                ⚠️ ВКонтакте поддерживает только URL-кнопки. Кнопки типа «Сообщение» будут показаны как обычные reply-кнопки внизу.
+                ⚠️ ВКонтакте поддерживает только URL-кнопки (открытие ссылок). Кнопки типа «Сообщение» не поддерживаются VK API.
               </p>
             </div>
             {inlineButtons.length === 0 && <p className="text-center text-zinc-600 text-xs py-2">Нет инлайн-кнопок</p>}
@@ -1010,18 +1081,14 @@ const FreeVKBotEditor: React.FC<{
                     <input value={btn.text} onChange={e => updateInlineButton(i, 'text', e.target.value)}
                       className="flex-1 bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none"
                       placeholder="Текст кнопки" />
-                    <select value={btn.type} onChange={e => updateInlineButton(i, 'type', e.target.value as 'url' | 'message')}
-                      className="bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-2 text-xs text-white focus:outline-none">
-                      <option value="url">🔗 Ссылка</option>
-                      <option value="message">💬 Сообщение</option>
-                    </select>
+                    <span className="px-2 py-2 bg-zinc-900 border border-zinc-700 rounded-lg text-xs text-zinc-500">🔗 Ссылка</span>
                     <button type="button" onClick={() => removeInlineButton(i)} className="p-1.5 text-zinc-600 hover:text-red-400 transition-colors">
                       <Trash2 size={13} />
                     </button>
                   </div>
                   <input value={btn.value} onChange={e => updateInlineButton(i, 'value', e.target.value)}
                     className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none"
-                    placeholder={btn.type === 'url' ? 'https://example.com' : 'Текст сообщения...'} />
+                    placeholder="https://example.com" />
                 </div>
               ))}
             </div>
