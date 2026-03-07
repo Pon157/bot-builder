@@ -235,6 +235,14 @@ async def free_update_bot_config(bot_id: str, d: dict):
     elif "inlineButtons" in existing_cfg:
         new_cfg["inlineButtons"] = existing_cfg["inlineButtons"]
 
+    # adminIds — список ID кто может делать рассылки
+    raw_ai = d.get("adminIds") or inc.get("adminIds") or existing_cfg.get("adminIds") or []
+    try:
+        admin_ids_list = [int(str(x).strip()) for x in raw_ai if str(x).strip().lstrip("-").isdigit()]
+    except Exception:
+        admin_ids_list = []
+    new_cfg["adminIds"] = admin_ids_list
+
     for key in ["welcomeMessage", "welcomePhoto", "welcomeInline", "description"]:
         if key in inc:
             new_cfg[key] = inc[key]
@@ -518,6 +526,14 @@ async def free_vk_update_bot_config(bot_id: str, d: dict):
     for key in ["welcomeMessage", "welcomePhoto", "description"]:
         if key in inc:
             new_cfg[key] = inc[key]
+
+    # adminIds — список ID кто может делать рассылки
+    raw_ai = d.get("adminIds") or inc.get("adminIds") or existing_cfg.get("adminIds") or []
+    try:
+        admin_ids_list = [int(str(x).strip()) for x in raw_ai if str(x).strip().lstrip("-").isdigit()]
+    except Exception:
+        admin_ids_list = []
+    new_cfg["adminIds"] = admin_ids_list
 
     try:
         admin_chat_id_int = int(admin_chat_id) if admin_chat_id else None
