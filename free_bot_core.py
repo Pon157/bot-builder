@@ -364,8 +364,10 @@ class FreeBotInstance:
         if not self.admin_chat_id:
             return
 
-        force_new  = self.topic_per_req
-        thread_id  = await self.resolve_thread(user, force_new=force_new)
+        # topicPerRequest: создаём новый топик только при открытии тикета (btn_text)
+        # НЕ на каждое сообщение — иначе спам топиками
+        force_new = self.topic_per_req and bool(btn_text)
+        thread_id = await self.resolve_thread(user, force_new=force_new)
 
         if self.forward_native and not btn_text and not is_first:
             try:
@@ -1273,7 +1275,7 @@ class FreeBotInstance:
                                     elif msg.document:
                                         items.append(InputMediaDocument(media=msg.document.file_id, caption=cap[:1024] or None, parse_mode="HTML"))
                                 if items:
-                                    force_mg = self.topic_per_req and buf["is_first"]
+                                    force_mg = self.topic_per_req and buf["in_ticket"]
                                     mg_tid   = await self.resolve_thread(buf["user"], force_new=force_mg)
                                     await self.bot.send_media_group(
                                         self.admin_chat_id, items,
