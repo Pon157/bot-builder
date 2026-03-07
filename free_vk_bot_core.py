@@ -1100,29 +1100,19 @@ class FreeVKBotInstance:
             if await self.check_antispam(user["id"]):
                 return
 
-            # ── Защита от медиа-спама вне тикета ────────────────────────────
             has_media = bool(m.attachments)
-            if has_media and not user.get("_in_ticket") and not self.forward_all:
-                now = time.time()
-                media_key = f"media_{user['id']}"
-                media_rate = max(self.rate_limit, 3.0)
-                if now - self.flood_cache.get(media_key, 0) < media_rate:
-                    return
-                self.flood_cache[media_key] = now
 
-            # ── Буфер медиагруппы (альбом = несколько сообщений подряд) ─────
-            # VK присылает фото альбома как отдельные события без общего ID.
-            # Буферизуем сообщения с вложениями 0.8 сек и отправляем разом.
+            # ── Буфер медиагруппы (альбом) — ПЕРЕД спам-защитой ─────────────
+            # VK присылает фото альбома как отдельные события.
+            # Буферизуем все медиа без текста 0.8 сек и отправляем разом.
             if has_media and not m.text:
                 uid_key = user["id"]
                 now = time.time()
                 buf = self.media_group_buffer.get(uid_key)
                 if buf and now - buf["started"] < 0.8:
-                    # Добавляем в существующий буфер
                     buf["messages"].append(m)
                     return
                 else:
-                    # Новый буфер
                     self.media_group_buffer[uid_key] = {
                         "messages": [m], "user": user,
                         "is_first": is_new, "in_ticket": user.get("_in_ticket", False),
@@ -1144,20 +1134,31 @@ class FreeVKBotInstance:
                         )
                         if not should_fwd:
                             ticket_buttons = [b for b in self.buttons if b.get("type") == "ticket"]
-                            if ticket_buttons:
-                                hint_key = f"hint_{buf['user']['id']}"
-                                if time.time() - self.flood_cache.get(hint_key, 0) > 60:
-                                    self.flood_cache[hint_key] = time.time()
+                            hint_key = f"hint_{buf['user']['id']}"
+                            if time.time() - self.flood_cache.get(hint_key, 0) > 60:
+                                self.flood_cache[hint_key] = time.time()
+                                if ticket_buttons:
                                     hint = f"Нажмите «{ticket_buttons[0]['text']}» чтобы отправить файлы оператору."
-                                    try:
-                                        await self.bot.api.messages.send(
-                                            peer_id=buf["user"]["id"], message=hint,
-                                            keyboard=self.get_main_keyboard(), random_id=0
-                                        )
-                                    except Exception:
-                                        pass
+                                else:
+                                    hint = "Чтобы отправить файлы оператору, сначала откройте обращение."
+                                try:
+                                    await self.bot.api.messages.send(
+                                        peer_id=buf["user"]["id"], message=hint,
+                                        keyboard=self.get_main_keyboard(), random_id=0
+                                    )
+                                except Exception:
+                                    pass
                     asyncio.create_task(_flush_vk())
                     return
+
+            # ── Защита от медиа-спама вне тикета (одиночные медиа) ──────────
+            if has_media and not user.get("_in_ticket") and not self.forward_all:
+                now = time.time()
+                media_key = f"media_{user['id']}"
+                media_rate = max(self.rate_limit, 3.0)
+                if now - self.flood_cache.get(media_key, 0) < media_rate:
+                    return
+                self.flood_cache[media_key] = now
 
             # ── Активный тикет ───────────────────────────────────────────────
             if user.get("_in_ticket"):
@@ -1287,27 +1288,24 @@ class FreeVKBotInstance:
             if is_new or self.forward_all:
                 await self.forward_to_admin(m, user, is_first=is_new)
                 await self.log_and_update(user["id"], user["first_name"], m.text or "[Медиа]")
-                # forwardAll — без подтверждения, просто логируем
             else:
-                # Режим без forwardAll — подсказываем как открыть обращение
-                # Но только один раз, пока пользователь не выполнит действие
                 await self.log_and_update(user["id"], user["first_name"], m.text or "[Медиа]")
-                ticket_buttons = [b for b in self.buttons if b.get("type") == "ticket"]
-                if ticket_buttons:
-                    # Показываем подсказку не чаще раза в 60 сек
-                    now = time.time()
-                    hint_key = f"hint_{user['id']}"
-                    if now - self.flood_cache.get(hint_key, 0) > 60:
-                        self.flood_cache[hint_key] = now
+                # Показываем подсказку не чаще 1 раза в 60 сек
+                hint_key = f"hint_{user['id']}"
+                if time.time() - self.flood_cache.get(hint_key, 0) > 60:
+                    self.flood_cache[hint_key] = time.time()
+                    ticket_buttons = [b for b in self.buttons if b.get("type") == "ticket"]
+                    if ticket_buttons:
                         hint = f"Нажмите «{ticket_buttons[0]['text']}» чтобы связаться с нами."
-                        try:
-                            await self.bot.api.messages.send(
-                                peer_id=user["id"], message=hint,
-                                keyboard=self.get_main_keyboard(), random_id=0
-                            )
-                        except Exception:
-                            pass
-                # Если нет тикетных кнопок — молча логируем
+                    else:
+                        hint = "Чтобы связаться с оператором, сначала откройте обращение."
+                    try:
+                        await self.bot.api.messages.send(
+                            peer_id=user["id"], message=hint,
+                            keyboard=self.get_main_keyboard(), random_id=0
+                        )
+                    except Exception:
+                        pass
 
     # ─────────────────────────────────────────────────────────────────────────
     # ЗАПУСК
