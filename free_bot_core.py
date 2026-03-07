@@ -196,6 +196,13 @@ class FreeBotInstance:
         self.ad_enabled      = data.get("ad_enabled", True)
         self.server_base_url = os.getenv("SERVER_BASE_URL", "http://localhost:8000")
 
+        # adminIds: список ID кто может делать рассылки (пусто = все)
+        raw_admin_ids = raw_cfg.get("adminIds") or raw_cfg.get("admin_ids") or []
+        try:
+            self.admin_ids: List[int] = [int(x) for x in raw_admin_ids if str(x).strip().isdigit()]
+        except Exception:
+            self.admin_ids = []
+
         if not self.stats_data:
             st = raw_cfg.get("stats") or {}
             self.stats_data = {
@@ -246,6 +253,14 @@ class FreeBotInstance:
             self.inline_buttons = remote_cfg["inlineButtons"] or []
         elif "welcomeInline" in remote_cfg:
             self.inline_buttons = remote_cfg["welcomeInline"] or []
+
+        # adminIds
+        if "adminIds" in remote_cfg or "admin_ids" in remote_cfg:
+            raw = remote_cfg.get("adminIds") or remote_cfg.get("admin_ids") or []
+            try:
+                self.admin_ids = [int(x) for x in raw if str(x).strip().isdigit()]
+            except Exception:
+                pass
 
         logger.debug(
             f"[{self.bot_id}] reload: buttons={len(self.buttons)}, "
@@ -387,18 +402,21 @@ class FreeBotInstance:
 
         async def _do_send(tid: Optional[int]) -> Optional[Any]:
             if m.photo:
+                asyncio.create_task(self._save_media_to_db(user["id"], "photo", m.photo[-1].file_id))
                 return await self.bot.send_photo(
                     self.admin_chat_id, photo=m.photo[-1].file_id,
                     caption=cap, parse_mode="HTML",
                     message_thread_id=tid,
                 )
             elif m.video:
+                asyncio.create_task(self._save_media_to_db(user["id"], "video", m.video.file_id))
                 return await self.bot.send_video(
                     self.admin_chat_id, video=m.video.file_id,
                     caption=cap, parse_mode="HTML",
                     message_thread_id=tid,
                 )
             elif m.document:
+                asyncio.create_task(self._save_media_to_db(user["id"], "document", m.document.file_id))
                 return await self.bot.send_document(
                     self.admin_chat_id, document=m.document.file_id,
                     caption=cap, parse_mode="HTML",
@@ -409,6 +427,8 @@ class FreeBotInstance:
                     self.admin_chat_id, header.strip(),
                     message_thread_id=tid, parse_mode="HTML"
                 )
+                if m.voice:
+                    asyncio.create_task(self._save_media_to_db(user["id"], "voice", m.voice.file_id))
                 return await self.bot.copy_message(
                     self.admin_chat_id, m.chat.id, m.message_id,
                     message_thread_id=tid
@@ -516,6 +536,16 @@ class FreeBotInstance:
             history[-1]["broadcasts"] = history[-1].get("broadcasts", 0) + 1
 
     # ─────────────────────────────────────────────────────────────────────────
+    # ПРОВЕРКА ПРАВ АДМИНИСТРАТОРА
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def is_admin(self, user_id: int) -> bool:
+        """Может ли пользователь делать рассылки? По умолчанию — все, если adminIds не задан."""
+        if not self.admin_ids:
+            return True
+        return user_id in self.admin_ids
+
+    # ─────────────────────────────────────────────────────────────────────────
     # АНТИСПАМ
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -558,6 +588,23 @@ class FreeBotInstance:
                         "first_name":    name,
                         "message_text":  text[:950] if text else "[Медиа]",
                         "is_from_admin": is_admin,
+                    },
+                    headers={**self.headers, "Prefer": "return=minimal"}
+                )
+        except Exception:
+            pass
+
+    async def _save_media_to_db(self, user_id: int, media_type: str, file_id: str):
+        """Сохраняет file_id медиа от пользователя в таблицу bot_media."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.post(
+                    f"{self.sb_url}/rest/v1/bot_media",
+                    json={
+                        "bot_id":     self.bot_id,
+                        "user_id":    user_id,
+                        "media_type": media_type,
+                        "file_id":    file_id,
                     },
                     headers={**self.headers, "Prefer": "return=minimal"}
                 )
@@ -714,6 +761,9 @@ class FreeBotInstance:
             return True
 
         elif command == "broadcast":
+            if not self.is_admin(m.from_user.id):
+                await m.reply("🚫 У вас нет прав для рассылки.")
+                return True
             active_users = [u for u in self.users_list if not u.get("is_banned") and u.get("is_active", True)]
             if not active_users:
                 await m.reply("Нет активных пользователей для рассылки.")
@@ -958,53 +1008,54 @@ class FreeBotInstance:
                 return
 
             reply_kb  = self.get_main_keyboard()
-
-            # FIX v6: строим инлайн-клавиатуру из нового формата inlineButtons
             inline_kb = self.build_welcome_inline()
 
             ad       = await self.get_active_ad() if self.ad_enabled else None
             welcome  = self.welcome_text or "Здравствуйте!"
-            ad_text  = ""
-            ad_media = ""
 
-            if ad:
-                ad_text  = ad.get("text", "")
-                ad_media = ad.get("media_url", "") or ""
-                combined = f"{welcome}\n\n─────────────────\n📢 <b>Реклама</b>\n{ad_text}"
+            # Встраиваем рекламу прямо в приветственное сообщение
+            if ad and ad.get("text"):
+                combined = f"{welcome}\n\n─────────────────\n📢 <b>Реклама</b>\n{ad['text']}"
             else:
                 combined = welcome
 
+            # Если есть инлайн-кнопки — отправляем с ними, reply_kb отдельно без текста
             try:
                 if self.welcome_photo:
-                    # Если есть инлайн-кнопки — отправляем с ними, reply_kb отдельно
                     await m.answer_photo(
                         photo=self.welcome_photo,
                         caption=combined[:1024],
                         reply_markup=inline_kb if inline_kb else reply_kb,
                     )
-                    # Если отправили инлайн — нужно ещё отдельно reply-клавиатуру показать
-                    if inline_kb:
+                    if inline_kb and self.buttons:
+                        # Показываем reply-клавиатуру без лишнего текста
                         try:
-                            await m.answer("👇 Выберите действие:", reply_markup=reply_kb)
+                            await m.answer("\u200b", reply_markup=reply_kb)
                         except Exception:
                             pass
-                    if ad and ad_media and ad_media != self.welcome_photo:
-                        await m.answer_photo(photo=ad_media, caption=f"📢 {ad_text}"[:1024])
-                elif ad and ad_media:
-                    await m.answer(text=welcome, reply_markup=inline_kb if inline_kb else reply_kb)
-                    if inline_kb:
+                    # Если реклама содержит медиа отдельное
+                    if ad and ad.get("media_url") and ad["media_url"] != self.welcome_photo:
                         try:
-                            await m.answer("👇 Выберите действие:", reply_markup=reply_kb)
+                            await m.answer_photo(
+                                photo=ad["media_url"],
+                                caption=f"📢 {ad['text']}"[:1024]
+                            )
                         except Exception:
                             pass
-                    await m.answer_photo(photo=ad_media, caption=f"📢 <b>Реклама</b>\n{ad_text}"[:1024])
                 else:
-                    # Нет фото — отправляем текст с инлайн-кнопками
                     await m.answer(text=combined, reply_markup=inline_kb if inline_kb else reply_kb)
-                    # Если есть инлайн — reply_kb отправляем отдельным сообщением
-                    if inline_kb:
+                    if inline_kb and self.buttons:
                         try:
-                            await m.answer("👇 Выберите действие:", reply_markup=reply_kb)
+                            await m.answer("\u200b", reply_markup=reply_kb)
+                        except Exception:
+                            pass
+                    # Если реклама содержит медиа — показываем отдельно
+                    if ad and ad.get("media_url"):
+                        try:
+                            await m.answer_photo(
+                                photo=ad["media_url"],
+                                caption=f"📢 {ad['text']}"[:1024]
+                            )
                         except Exception:
                             pass
             except Exception as e:
@@ -1164,6 +1215,18 @@ class FreeBotInstance:
 
             uid = user["id"]
 
+            # ── Защита от медиа-спама (аудио/файлы без текста) ──────────────
+            # Используем отдельный rate-limit для медиа-сообщений
+            is_media = bool(m.audio or m.voice or m.document or m.sticker or m.video_note)
+            if is_media and not user.get("_in_ticket") and not self.forward_all:
+                now = time.time()
+                media_key = f"media_{uid}"
+                last_media = self.flood_cache.get(media_key, 0)
+                media_rate = max(self.rate_limit, 3.0)  # минимум 3 сек между медиа вне тикета
+                if now - last_media < media_rate:
+                    return  # молча игнорируем — не отвечаем чтобы не провоцировать
+                self.flood_cache[media_key] = now
+
             logger.info(
                 f"[MSG] uid={uid} text={repr(m.text or '[media]')} | "
                 f"buttons={len(self.buttons)} triggers={len(self.triggers)} "
@@ -1301,10 +1364,19 @@ class FreeBotInstance:
                 await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
                 return
 
-            await m.answer(
-                "Воспользуйтесь меню или нажмите кнопку для связи с оператором.",
-                reply_markup=self.get_main_keyboard()
-            )
+            # Режим без forwardAll — сообщение только через тикет
+            ticket_buttons = [b for b in self.buttons if b.get("type") == "ticket"]
+            if ticket_buttons:
+                hint = f'Чтобы связаться с нами, воспользуйтесь кнопкой «{ticket_buttons[0]["text"]}».'
+            elif self.buttons:
+                hint = "Воспользуйтесь кнопками меню."
+            else:
+                hint = "Чтобы связаться с оператором, сначала откройте обращение."
+            try:
+                await m.answer(hint, reply_markup=self.get_main_keyboard())
+            except Exception:
+                pass
+            await self.log_and_update(uid, m.from_user.full_name, m.text or "[Медиа]")
 
     # ─────────────────────────────────────────────────────────────────────────
     # ЗАПУСК
