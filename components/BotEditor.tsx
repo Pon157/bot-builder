@@ -2534,6 +2534,14 @@ const FlowActionEditor: React.FC<{
     onChange({ ...action, buttons: (action.buttons || []).filter((_, i) => i !== idx) });
   };
 
+  // Нормализуем существующие под-ноды — добавляем id если отсутствует
+  const normalizedButtons: FlowNode[] = (action.buttons || []).map((n: any) => ({
+    ...n,
+    id: n.id || mkFlowId(),
+    label: n.label || '',
+    actions: n.actions || [],
+  }));
+
   return (
     <div className={`rounded-2xl border overflow-hidden ${depth % 2 === 0 ? 'bg-zinc-900/50 border-zinc-800' : 'bg-black/40 border-zinc-800/60'}`}>
       <div className="flex items-center gap-3 px-4 py-3">
@@ -2615,7 +2623,7 @@ const FlowActionEditor: React.FC<{
               <p className="text-[8px] font-black text-zinc-600 uppercase tracking-widest">
                 Под-кнопки — пользователь увидит их как меню
               </p>
-              {(action.buttons || []).map((node, idx) => (
+              {normalizedButtons.map((node, idx) => (
                 <FlowNodeEditor
                   key={node.id}
                   node={node}
@@ -2832,6 +2840,11 @@ const ButtonFlowEditor: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => v
   const [selectedBtnIdx, setSelectedBtnIdx] = React.useState<number | null>(null);
   const [tab, setTab] = React.useState<'direct' | 'nodes'>('direct');
   const isVKBot = bot.platform === 'vk';
+
+  // Сбрасываем вкладку при смене выбранной кнопки
+  React.useEffect(() => {
+    setTab('direct');
+  }, [selectedBtnIdx]);
 
   const buttons = bot.buttons || [];
 
