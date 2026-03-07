@@ -1246,33 +1246,54 @@ class FreeBotInstance:
                         buf = self.media_group_buffer.pop(group_id, None)
                         if not buf or not buf["messages"]:
                             return
-                        if buf["in_ticket"] or self.forward_all or buf["is_first"]:
+
+                        # Сохраняем все медиа в БД
+                        for msg in buf["messages"]:
+                            if msg.photo:
+                                asyncio.create_task(self._save_media_to_db(buf["user"]["id"], "photo", msg.photo[-1].file_id))
+                            elif msg.video:
+                                asyncio.create_task(self._save_media_to_db(buf["user"]["id"], "video", msg.video.file_id))
+                            elif msg.document:
+                                asyncio.create_task(self._save_media_to_db(buf["user"]["id"], "document", msg.document.file_id))
+
+                        should_forward = buf["in_ticket"] or self.forward_all or buf["is_first"]
+
+                        if should_forward and self.admin_chat_id:
                             first_m = buf["messages"][0]
                             header  = format_admin_header(first_m, self.settings, buf["is_first"])
-                            if self.admin_chat_id:
+                            try:
+                                from aiogram.types import InputMediaPhoto, InputMediaVideo, InputMediaDocument
+                                items = []
+                                for i, msg in enumerate(buf["messages"]):
+                                    cap = (header if i == 0 else "") + (msg.caption or "")
+                                    if msg.photo:
+                                        items.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=cap[:1024] or None, parse_mode="HTML"))
+                                    elif msg.video:
+                                        items.append(InputMediaVideo(media=msg.video.file_id, caption=cap[:1024] or None, parse_mode="HTML"))
+                                    elif msg.document:
+                                        items.append(InputMediaDocument(media=msg.document.file_id, caption=cap[:1024] or None, parse_mode="HTML"))
+                                if items:
+                                    force_mg = self.topic_per_req and buf["is_first"]
+                                    mg_tid   = await self.resolve_thread(buf["user"], force_new=force_mg)
+                                    await self.bot.send_media_group(
+                                        self.admin_chat_id, items,
+                                        message_thread_id=mg_tid
+                                    )
+                            except Exception as e:
+                                logger.error(f"MediaGroup flush error: {e}")
+
+                        await self.log_and_update(buf["user"]["id"], buf["messages"][0].from_user.full_name, f"[МедиаГруппа: {len(buf['messages'])} файл(ов)]")
+
+                        # Если не в тикете и не forwardAll — подсказать про тикет
+                        if not should_forward:
+                            ticket_buttons = [b for b in self.buttons if b.get("type") == "ticket"]
+                            if ticket_buttons:
+                                hint = f'Чтобы отправить файлы оператору, воспользуйтесь кнопкой «{ticket_buttons[0]["text"]}».'
                                 try:
-                                    from aiogram.types import InputMediaPhoto, InputMediaVideo, InputMediaDocument
-                                    items = []
-                                    for i, msg in enumerate(buf["messages"]):
-                                        cap = (header if i == 0 else "") + (msg.caption or "")
-                                        if msg.photo:
-                                            items.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=cap[:1024] or None, parse_mode="HTML"))
-                                        elif msg.video:
-                                            items.append(InputMediaVideo(media=msg.video.file_id, caption=cap[:1024] or None, parse_mode="HTML"))
-                                        elif msg.document:
-                                            items.append(InputMediaDocument(media=msg.document.file_id, caption=cap[:1024] or None, parse_mode="HTML"))
-                                    if items:
-                                        force_mg = self.topic_per_req and buf["is_first"]
-                                        mg_tid   = await self.resolve_thread(
-                                            buf["user"], force_new=force_mg
-                                        )
-                                        await self.bot.send_media_group(
-                                            self.admin_chat_id, items,
-                                            message_thread_id=mg_tid
-                                        )
-                                except Exception as e:
-                                    logger.error(f"MediaGroup flush error: {e}")
-                            await self.log_and_update(buf["user"]["id"], first_m.from_user.full_name, "[МедиаГруппа]")
+                                    await self.bot.send_message(buf["user"]["id"], hint, reply_markup=self.get_main_keyboard())
+                                except Exception:
+                                    pass
+
                     asyncio.create_task(_flush())
                 self.media_group_buffer[gid]["messages"].append(m)
                 return
