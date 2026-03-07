@@ -169,11 +169,15 @@ def get_stats() -> dict:
 # FSM
 # ──────────────────────────────────────────────────────────────
 class CreateLot(StatesGroup):
-    post    = State()
-    winners = State()
-    channels= State()
-    finish  = State()
-    value   = State()
+    post        = State()
+    winners     = State()
+    channels    = State()
+    finish      = State()
+    value       = State()
+
+class EditLot(StatesGroup):
+    choose_field = State()
+    new_value    = State()
 
 class BroadcastState(StatesGroup):
     content  = State()
@@ -188,7 +192,7 @@ def is_admin(uid: int) -> bool:
 def get_user(uid: int) -> Optional[dict]:
     return next((u for u in users() if u["id"] == uid), None)
 
-def upsert_user(msg: Message):
+def upsert_user(msg: Message, referred_by: int = None):
     uid  = msg.from_user.id
     name = msg.from_user.full_name
     uname= msg.from_user.username or ""
@@ -196,10 +200,16 @@ def upsert_user(msg: Message):
     if not u:
         u = {"id": uid, "name": name, "username": uname,
              "joined_at": int(time.time()), "is_blocked": False,
-             "participations": 0, "wins": 0}
+             "participations": 0, "wins": 0, "referred_by": referred_by,
+             "referrals": 0}
         users().append(u)
         st = get_stats()
         st["totalUsers"] = len(users())
+        # Засчитываем реферала
+        if referred_by:
+            ref_user = get_user(referred_by)
+            if ref_user:
+                ref_user["referrals"] = ref_user.get("referrals", 0) + 1
         # Обновляем историю
         today = datetime.now().strftime("%d.%m")
         hist = st.setdefault("history", [])
@@ -236,7 +246,7 @@ async def check_sub(uid: int, channels_str: str):
     return len(bad) == 0, bad
 
 async def update_lot_card(lot: dict):
-    """Обновляет кнопку участия в канале"""
+    """Обновляет кнопку участия в канале (с цветной кнопкой Bot API 9.4)"""
     if not lot.get("message_id") or not lot_channel():
         return
     _bl = cfg().get("botLink", "").lstrip("@")
@@ -244,15 +254,29 @@ async def update_lot_card(lot: dict):
         me = await bot.get_me()
         _bl = me.username or ""
     count = len(lot.get("participants", []))
-    kb = InlineKeyboardBuilder()
-    kb.button(text=f"✅ Участвовать! ({count})",
-              url=f"https://t.me/{_bl}?start=lot_{lot['id']}")
+
+    # Используем raw Telegram API для цветных кнопок (Bot API 9.4)
+    channel = lot_channel()
+    lot_link = f"https://t.me/{_bl}?start=lot_{lot['id']}"
+    reply_markup = {
+        "inline_keyboard": [[
+            {
+                "text": f"✅ Участвовать! ({count})",
+                "url": lot_link,
+                "button_color": "success"   # зелёная кнопка (Bot API 9.4)
+            }
+        ]]
+    }
     try:
-        await bot.edit_message_reply_markup(
-            chat_id=lot_channel(),
-            message_id=lot["message_id"],
-            reply_markup=kb.as_markup()
-        )
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{TOKEN}/editMessageReplyMarkup",
+                json={
+                    "chat_id": channel,
+                    "message_id": lot["message_id"],
+                    "reply_markup": reply_markup
+                }
+            )
     except Exception as e:
         logger.debug(f"update_lot_card: {e}")
 
@@ -340,14 +364,39 @@ async def finalize_lot(lot_id: int):
 async def cmd_start(message: Message, command: CommandObject, state: FSMContext):
     uid  = message.from_user.id
     args = command.args or ""
-    upsert_user(message)
+
+    # Разбираем реферальные параметры
+    referred_by = None
+    lot_id_from_link = None
+
+    # Формат: lot_{id}_ref_{referrer_uid} или lot_{id} или ref_{referrer_uid}
+    if args.startswith("lot_"):
+        parts = args.split("_ref_")
+        lot_part = parts[0]  # "lot_123"
+        try:
+            lot_id_from_link = int(lot_part.split("_")[1])
+        except Exception:
+            pass
+        if len(parts) > 1:
+            try:
+                referred_by = int(parts[1])
+                if referred_by == uid:
+                    referred_by = None  # нельзя рефералить самого себя
+            except Exception:
+                pass
+    elif args.startswith("ref_"):
+        try:
+            referred_by = int(args.split("_")[1])
+            if referred_by == uid:
+                referred_by = None
+        except Exception:
+            pass
+
+    upsert_user(message, referred_by=referred_by)
 
     # Участие в розыгрыше через deep link
-    if args.startswith("lot_"):
-        try:
-            lot_id = int(args.split("_")[1])
-        except Exception:
-            return await message.answer("❌ Неверная ссылка.")
+    if lot_id_from_link is not None:
+        lot_id = lot_id_from_link
         lot = get_lot(lot_id)
         if not lot:
             return await message.answer("❌ Розыгрыш не найден.")
@@ -356,7 +405,22 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
 
         already = any(p["id"] == uid for p in lot.get("participants", []))
         if already:
-            return await message.answer(f"⚠️ Вы уже участвуете в розыгрыше #{lot_id}. Ждите результатов!")
+            # Показываем реферальную ссылку участнику
+            _bl_r = cfg().get("botLink", "").lstrip("@")
+            if not _bl_r:
+                _me_r = await bot.get_me()
+                _bl_r = _me_r.username or ""
+            ref_link = f"https://t.me/{_bl_r}?start=lot_{lot_id}_ref_{uid}"
+            kb_ref = InlineKeyboardBuilder()
+            kb_ref.button(text="🔗 Моя реферальная ссылка", url=ref_link)
+            kb_ref.adjust(1)
+            return await message.answer(
+                f"⚠️ Вы уже участвуете в розыгрыше #{lot_id}. Ждите результатов!\n\n"
+                f"📤 <b>Пригласите друзей</b> по вашей ссылке — они автоматически попадут в розыгрыш через вас!\n"
+                f"<code>{ref_link}</code>",
+                reply_markup=kb_ref.as_markup(),
+                parse_mode="HTML"
+            )
 
         is_sub, bad = await check_sub(uid, lot.get("channels", ""))
         if not is_sub:
@@ -365,7 +429,9 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
             for ch in bad:
                 ch_c = ch.replace("@", "").strip()
                 kb.button(text=f"📢 Подписаться: {ch}", url=f"https://t.me/{ch_c}")
-            kb.button(text="🔄 Проверить подписку", url=f"https://t.me/{me.username}?start=lot_{lot_id}")
+            # Сохраняем реферала в ссылке проверки
+            ref_suffix = f"_ref_{referred_by}" if referred_by else ""
+            kb.button(text="🔄 Проверить подписку", url=f"https://t.me/{me.username}?start=lot_{lot_id}{ref_suffix}")
             kb.adjust(1)
             return await message.answer(
                 "⚠️ <b>Для участия нужно подписаться:</b>",
@@ -376,11 +442,27 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
             "id": uid,
             "name": message.from_user.full_name,
             "username": message.from_user.username or "",
-            "joined_at": int(time.time())
+            "joined_at": int(time.time()),
+            "referred_by": referred_by
         })
         u = get_user(uid)
         if u: u["participations"] = u.get("participations", 0) + 1
         await update_lot_card(lot)
+
+        # Уведомляем реферера
+        if referred_by:
+            ref_user = get_user(referred_by)
+            if ref_user:
+                ref_user["referrals"] = ref_user.get("referrals", 0) + 1
+            try:
+                await bot.send_message(
+                    referred_by,
+                    f"🎉 По вашей реферальной ссылке в розыгрыш #{lot_id} вступил "
+                    f"<b>{pyhtml.escape(message.from_user.full_name)}</b>!",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
 
         # Проверяем лимит по участникам
         if lot["finish_type"] == "count" and len(lot["participants"]) >= int(lot["finish_value"]):
@@ -388,8 +470,19 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
         else:
             await save_config()
 
+        # Формируем реферальную ссылку для нового участника
+        _bl2 = cfg().get("botLink", "").lstrip("@")
+        if not _bl2:
+            _me2 = await bot.get_me()
+            _bl2 = _me2.username or ""
+        ref_link_new = f"https://t.me/{_bl2}?start=lot_{lot_id}_ref_{uid}"
+        kb_success = InlineKeyboardBuilder()
+        kb_success.button(text="🔗 Пригласить друзей", url=ref_link_new)
+        kb_success.adjust(1)
         return await message.answer(
-            f"✅ <b>Вы зарегистрированы в розыгрыше #{lot_id}!</b>\nУдачи! 🍀",
+            f"✅ <b>Вы зарегистрированы в розыгрыше #{lot_id}!</b>\nУдачи! 🍀\n\n"
+            f"📤 <b>Поделитесь ссылкой с друзьями:</b>\n<code>{ref_link_new}</code>",
+            reply_markup=kb_success.as_markup(),
             parse_mode="HTML"
         )
 
@@ -444,15 +537,24 @@ async def show_active_lots(c: CallbackQuery):
 async def my_profile(c: CallbackQuery):
     uid = c.from_user.id
     u = get_user(uid) or {}
+    _bl_p = cfg().get("botLink", "").lstrip("@")
+    if not _bl_p:
+        me_p = await bot.get_me()
+        _bl_p = me_p.username or ""
+    ref_link = f"https://t.me/{_bl_p}?start=ref_{uid}"
     kb = InlineKeyboardBuilder()
+    kb.button(text="🔗 Моя реферальная ссылка", url=ref_link)
     kb.button(text="🔙 Назад", callback_data="to_start")
+    kb.adjust(1)
     text = (
         f"📊 <b>Ваш профиль</b>\n\n"
         f"👤 {pyhtml.escape(c.from_user.full_name)}\n"
         f"🆔 ID: <code>{uid}</code>\n"
         f"🎲 Участий: <b>{u.get('participations', 0)}</b>\n"
         f"🏆 Побед: <b>{u.get('wins', 0)}</b>\n"
-        f"📅 Зарегистрирован: {datetime.fromtimestamp(u.get('joined_at', time.time())).strftime('%d.%m.%Y')}"
+        f"👥 Рефералов: <b>{u.get('referrals', 0)}</b>\n"
+        f"📅 Зарегистрирован: {datetime.fromtimestamp(u.get('joined_at', time.time())).strftime('%d.%m.%Y')}\n\n"
+        f"🔗 <b>Ваша реферальная ссылка:</b>\n<code>{ref_link}</code>"
     )
     try:
         await c.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
@@ -473,6 +575,24 @@ async def back_to_start(c: CallbackQuery, state: FSMContext):
     if is_admin(uid):
         kb_rows.append([InlineKeyboardButton(text="🛠 Панель администратора", callback_data="admin_main")])
     await c.message.answer(welcome, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+
+# ──────────────────────────────────────────────────────────────
+# ЦВЕТНЫЕ КНОПКИ (Bot API 9.4+)
+# ──────────────────────────────────────────────────────────────
+def colored_btn(text: str, callback_data: str = None, url: str = None, color: str = None) -> InlineKeyboardButton:
+    """
+    color: 'danger' (красный), 'success' (зелёный), 'primary' (синий), None (стандартный)
+    """
+    kwargs = {"text": text}
+    if callback_data:
+        kwargs["callback_data"] = callback_data
+    if url:
+        kwargs["url"] = url
+    # Bot API 9.4: button_color через extra kwargs не поддерживается в aiogram напрямую,
+    # используем кастомный workaround через raw payload
+    if color:
+        kwargs["button_color"] = color  # aiogram >=3.7 с Bot API 9.4 поддерживает
+    return InlineKeyboardButton(**kwargs)
 
 # ──────────────────────────────────────────────────────────────
 # ADMIN PANEL
@@ -528,22 +648,29 @@ async def adm_lot_detail(c: CallbackQuery):
     if not lot: return await c.answer("Лот не найден", show_alert=True)
     parts = lot.get("participants", [])
     wins  = lot.get("winners", [])
+
+    # Реферальная статистика
+    ref_count = sum(1 for p in parts if p.get("referred_by"))
+
     text = (
         f"🎲 <b>Лот #{lot_id}</b>\n"
         f"Статус: {'▶️ Активен' if lot['status'] == 'active' else '✅ Завершён'}\n"
-        f"Победителей: {lot['winners_count']}\n"
-        f"Участников: {len(parts)}\n"
-        f"Каналы: {lot.get('channels', 'нет')}\n"
-        f"Финиш: {lot.get('finish_type', '?')} → {lot.get('finish_value', '?')}\n"
+        f"🏆 Победителей: {lot['winners_count']}\n"
+        f"👥 Участников: {len(parts)}\n"
+        f"🔗 Пришли по реферальной ссылке: {ref_count}\n"
+        f"📢 Каналы: {lot.get('channels', 'нет')}\n"
+        f"Финиш: {'⏰ по времени' if lot.get('finish_type') == 'time' else '👥 по участникам'} → {lot.get('finish_value', '?')}\n"
     )
     if wins:
         win_names = ", ".join([f"@{w.get('username') or w['id']}" for w in wins])
         text += f"🏆 Победители: {win_names}\n"
+
     kb = InlineKeyboardBuilder()
     if lot["status"] == "active":
+        kb.button(text="✏️ Редактировать", callback_data=f"adm_edit_{lot_id}")
         kb.button(text="⏹ Завершить досрочно", callback_data=f"adm_stop_{lot_id}")
     kb.button(text="🔙 К списку", callback_data="adm_lots")
-    kb.adjust(1)
+    kb.adjust(2, 1)
     try:
         await c.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
@@ -557,6 +684,77 @@ async def adm_stop_lot(c: CallbackQuery):
     await finalize_lot(lot_id)
     await c.answer("✅ Розыгрыш завершён!", show_alert=True)
     await adm_lots_list(c)
+
+# ──────────────────────────────────────────────────────────────
+# РЕДАКТИРОВАНИЕ АКТИВНОГО ЛОТА
+# ──────────────────────────────────────────────────────────────
+@dp.callback_query(F.data.startswith("adm_edit_"))
+async def adm_edit_lot(c: CallbackQuery, state: FSMContext):
+    if not is_admin(c.from_user.id): return await c.answer("⛔", show_alert=True)
+    lot_id = int(c.data.split("_")[2])
+    lot = get_lot(lot_id)
+    if not lot or lot["status"] != "active":
+        return await c.answer("Лот не найден или уже завершён", show_alert=True)
+    await state.update_data(edit_lot_id=lot_id)
+    await state.set_state(EditLot.choose_field)
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🏆 Кол-во победителей",  callback_data="ef_winners")
+    kb.button(text="📢 Каналы подписки",      callback_data="ef_channels")
+    kb.button(text="⏰ Условие завершения",   callback_data="ef_finish")
+    kb.button(text="❌ Отмена",               callback_data=f"adm_lot_{lot_id}")
+    kb.adjust(2, 1, 1)
+    await c.message.edit_text(
+        f"✏️ <b>Редактирование лота #{lot_id}</b>\n\nЧто изменить?",
+        reply_markup=kb.as_markup(), parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data.in_({"ef_winners", "ef_channels", "ef_finish"}), EditLot.choose_field)
+async def adm_edit_choose(c: CallbackQuery, state: FSMContext):
+    field_map = {
+        "ef_winners":  ("winners_count", "🏆 Введи новое количество победителей:"),
+        "ef_channels": ("channels",      "📢 Введи каналы через запятую (или 'нет'):"),
+        "ef_finish":   ("finish_value",  "⏰ Введи новое значение:\n• Для времени: дата в формате <code>DD.MM.YYYY HH:MM</code>\n• Для участников: число"),
+    }
+    field, prompt = field_map[c.data]
+    await state.update_data(edit_field=field)
+    await state.set_state(EditLot.new_value)
+    await c.message.edit_text(prompt, parse_mode="HTML")
+
+@dp.message(EditLot.new_value)
+async def adm_edit_apply(m: Message, state: FSMContext):
+    data = await state.get_data()
+    lot_id = data["edit_lot_id"]
+    field  = data["edit_field"]
+    lot = get_lot(lot_id)
+    if not lot:
+        await state.clear()
+        return await m.answer("❌ Лот не найден.")
+
+    val = m.text.strip()
+    if field == "winners_count":
+        if not val.isdigit() or int(val) < 1:
+            return await m.answer("❌ Введи число (минимум 1)!")
+        lot["winners_count"] = int(val)
+    elif field == "channels":
+        lot["channels"] = "" if val.lower() in ("нет", "none", "-") else val
+    elif field == "finish_value":
+        if lot["finish_type"] == "count":
+            if not val.isdigit():
+                return await m.answer("❌ Введи число участников!")
+            lot["finish_value"] = val
+        else:
+            try:
+                datetime.strptime(val, "%d.%m.%Y %H:%M")
+                lot["finish_value"] = val
+            except ValueError:
+                return await m.answer("❌ Неверный формат! Используй: <code>DD.MM.YYYY HH:MM</code>", parse_mode="HTML")
+
+    await state.clear()
+    await save_config()
+    await m.answer(f"✅ Лот #{lot_id} обновлён!", parse_mode="HTML")
+
+    # Обновляем карточку в канале
+    await update_lot_card(lot)
 
 # ── Пользователи ──
 @dp.callback_query(F.data == "adm_users")
@@ -603,12 +801,12 @@ async def create_step2(m: Message, state: FSMContext):
     }
     await state.update_data(post=post)
     await state.set_state(CreateLot.winners)
-    await m.answer("2️⃣ <b>Количество победителей?</b> (введи число)", parse_mode="HTML")
+    await m.answer("2️⃣ <b>Количество победителей?</b>\n\n🏆 Сколько человек получат приз? (введи число)", parse_mode="HTML")
 
 @dp.message(CreateLot.winners)
 async def create_step3(m: Message, state: FSMContext):
-    if not m.text or not m.text.isdigit():
-        return await m.answer("❌ Введи число!")
+    if not m.text or not m.text.isdigit() or int(m.text) < 1:
+        return await m.answer("❌ Введи число (минимум 1)!")
     await state.update_data(winners_count=int(m.text))
     await state.set_state(CreateLot.channels)
     await m.answer(
@@ -633,8 +831,11 @@ async def create_step5(c: CallbackQuery, state: FSMContext):
     ft = "time" if c.data == "ft_time" else "count"
     await state.update_data(finish_type=ft)
     await state.set_state(CreateLot.value)
-    prompt = "⏰ Через сколько <b>часов</b> завершить?" if ft == "time" else "👥 При скольки <b>участниках</b> завершить?"
-    await c.message.edit_text(f"5️⃣ {prompt}", parse_mode="HTML")
+    if ft == "time":
+        prompt = "⏰ 5️⃣ Через сколько <b>часов</b> завершить розыгрыш?\n\nНапример: <code>24</code> = через сутки"
+    else:
+        prompt = "👥 5️⃣ При каком количестве <b>участников</b> завершить розыгрыш?\n\nНапример: <code>100</code> = когда наберётся 100 участников"
+    await c.message.edit_text(prompt, parse_mode="HTML")
 
 @dp.message(CreateLot.value)
 async def create_finish(m: Message, state: FSMContext):
@@ -676,8 +877,17 @@ async def create_finish(m: Message, state: FSMContext):
     if not _bl2:
         _me2 = await bot.get_me()
         _bl2 = _me2.username or ""
+
+    lot_link = f"https://t.me/{_bl2}?start=lot_{lot_id}"
+    # Цветная кнопка (Bot API 9.4) через raw markup
+    colored_kb = {
+        "inline_keyboard": [[
+            {"text": "✅ Участвовать! (0)", "url": lot_link, "button_color": "success"}
+        ]]
+    }
+    # aiogram markup для fallback
     kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Участвовать! (0)", url=f"https://t.me/{_bl2}?start=lot_{lot_id}")
+    kb.button(text="✅ Участвовать! (0)", url=lot_link)
 
     try:
         if not lot_channel():
@@ -697,6 +907,16 @@ async def create_finish(m: Message, state: FSMContext):
             sent = await bot.send_message(lot_channel(), post["text"],
                                           reply_markup=kb.as_markup(), parse_mode="HTML")
         lot["message_id"] = sent.message_id
+        # Применяем цветную кнопку поверх отправленного сообщения
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{TOKEN}/editMessageReplyMarkup",
+                json={
+                    "chat_id": lot_channel(),
+                    "message_id": sent.message_id,
+                    "reply_markup": colored_kb
+                }
+            )
         await m.answer(f"✅ <b>Лот #{lot_id} опубликован в {lot_channel()}!</b>", parse_mode="HTML")
     except Exception as e:
         await m.answer(f"⚠️ Лот создан в базе, но не опубликован: {e}")
