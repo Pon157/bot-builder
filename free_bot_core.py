@@ -364,9 +364,16 @@ class FreeBotInstance:
         if not self.admin_chat_id:
             return
 
-        # topicPerRequest: создаём новый топик только при открытии тикета (btn_text)
-        # НЕ на каждое сообщение — иначе спам топиками
-        force_new = self.topic_per_req and bool(btn_text)
+        # topicPerRequest: новый топик только при явном открытии тикета (btn_text заполнен)
+        # При forward_all — один топик на юзера, переиспользуем существующий
+        # is_first — создаём топик только если у юзера его ещё нет вообще
+        existing_tid = user.get("last_topic_id")
+        if self.topic_per_req and btn_text:
+            force_new = True   # явное открытие тикета → новый топик
+        elif not existing_tid:
+            force_new = False  # нет топика → resolve_thread создаст первый
+        else:
+            force_new = False  # топик уже есть → используем
         thread_id = await self.resolve_thread(user, force_new=force_new)
 
         if self.forward_native and not btn_text and not is_first:
@@ -1275,7 +1282,9 @@ class FreeBotInstance:
                                     elif msg.document:
                                         items.append(InputMediaDocument(media=msg.document.file_id, caption=cap[:1024] or None, parse_mode="HTML"))
                                 if items:
-                                    force_mg = self.topic_per_req and buf["in_ticket"]
+                                    # Топик: только если нет существующего
+                                    existing_mg_tid = buf["user"].get("last_topic_id")
+                                    force_mg = self.topic_per_req and buf["in_ticket"] and not existing_mg_tid
                                     mg_tid   = await self.resolve_thread(buf["user"], force_new=force_mg)
                                     await self.bot.send_media_group(
                                         self.admin_chat_id, items,
