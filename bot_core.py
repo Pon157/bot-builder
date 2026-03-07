@@ -781,6 +781,32 @@ class BotInstance:
 
         return showed_sub_keyboard
 
+    async def _flow_create_ticket(self, action: dict, m: Message, user: dict):
+        """Создаёт тикет из flow-действия (переводит пользователя в режим обращения).
+        Поля action совпадают с BotEditor: ticketBtnLabel, ticketUserText, ticketAdminText.
+        """
+        btn_text  = action.get('ticketAdminText', '') or action.get('btnText', '')
+        resp_text = action.get('ticketUserText', '') or action.get('response', 'Ваше обращение принято. Ожидайте ответа оператора.')
+        label     = action.get('ticketBtnLabel', '') or 'Закрыть обращение'
+
+        user['_in_ticket'] = True
+        user['_ticket_close_label'] = label
+
+        # Пересылаем сообщение в чат администраторов
+        await self.forward_to_admin(m, user, btn_text=btn_text)
+
+        # Показываем пользователю кнопку закрытия тикета
+        from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+        close_kb = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=label)]],
+            resize_keyboard=True
+        )
+        await m.answer(
+            f"{resp_text}\n\nВы можете продолжать писать — сообщения будут доставлены оператору.",
+            reply_markup=close_kb
+        )
+        await self.sync_queue.put(("sync_state", None))
+
     async def _execute_flow_code(self, code: str, m: Message, user: dict):
         """
         Выполняет код через дочерний процесс (asyncio subprocess).
@@ -1716,6 +1742,12 @@ class BotInstance:
             if user.get("is_banned"):
                 await m.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
                 return
+
+            # Сбрасываем состояние flow и тикетов при /start
+            user.pop('_flow_nodes', None)
+            user.pop('_in_ticket', None)
+            user.pop('_ticket_close_label', None)
+            user.pop('_ai_session', None)
 
             reply_kb  = self.get_main_keyboard()
             inline_kb = self.build_inline_from_list(self.welcome_inline)
