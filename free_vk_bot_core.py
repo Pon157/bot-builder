@@ -268,9 +268,17 @@ class FreeVKBotInstance:
     async def send_welcome_message(self, user: dict):
         """
         Отправляет приветственное сообщение пользователю.
-        Поддерживает: текст, фото, inlineButtons (url → OpenLink, message → reply-кнопки).
+        Реклама встраивается прямо в текст приветствия (не отдельным сообщением).
         """
         uid = user["id"]
+
+        # Загружаем рекламу
+        ad = await self.fetch_ad() if self.ad_enabled else None
+        welcome_text = self.welcome_text or "Здравствуйте!"
+        if ad and ad.get("text"):
+            combined_text = f"{welcome_text}\n\n─────────────────\n📢 Реклама\n{ad['text']}"
+        else:
+            combined_text = welcome_text
 
         # Загружаем фото если есть
         attachment_str = None
@@ -290,22 +298,19 @@ class FreeVKBotInstance:
                 if saved:
                     p = saved[0]
                     attachment_str = f"photo{p.owner_id}_{p.id}"
+                    # Сохраняем в БД file_id для предпросмотра
+                    await self._save_media_to_db(uid, "photo", f"photo{p.owner_id}_{p.id}", self.welcome_photo)
             except Exception as e:
                 logger.warning(f"VK free welcome photo upload error: {e}")
 
-        # Разбираем inlineButtons на url-кнопки и message-кнопки
-        url_buttons     = []
-        message_buttons = []
+        # Разбираем inlineButtons — только URL тип (VK не поддерживает callback)
+        url_buttons = []
         for btn in (self.inline_buttons or []):
             text  = btn.get("text", "").strip()
             btype = btn.get("type", "url")
             value = btn.get("value", "") or btn.get("url", "")
-            if not text:
-                continue
-            if btype == "url" and value:
+            if text and btype == "url" and value:
                 url_buttons.append({"text": text, "url": value})
-            elif btype == "message" and value:
-                message_buttons.append({"text": value})  # при нажатии отправят этот текст
 
         # Строим инлайн-клавиатуру из url-кнопок (VKLink)
         inline_kb_json = None
@@ -323,67 +328,61 @@ class FreeVKBotInstance:
             except Exception as e:
                 logger.warning(f"VK welcome inline keyboard error: {e}")
 
-        # Если нет VKLink — добавим url-кнопки к message-кнопкам как текстовые
-        if url_buttons and VKLink is None:
-            for btn in url_buttons:
-                message_buttons.append({"text": f"🔗 {btn['text']}: {btn['url']}"})
+        # Строим reply-клавиатуру из обычных кнопок бота
+        reply_kb_json = self.get_main_keyboard()
 
-        # Клавиатура для первого сообщения
-        # Если есть url-инлайн → отправляем с инлайн-кб, потом reply-кб отдельно
-        # Если только message-кнопки → они добавятся в reply-кб вместе с основными
-        reply_kb_buttons = list(self.buttons)  # основные кнопки
-        if message_buttons:
-            reply_kb_buttons = list(message_buttons) + reply_kb_buttons
-
-        if reply_kb_buttons:
-            # Строим reply-клавиатуру
-            all_active = [b for b in reply_kb_buttons if b.get("text")]
-            if all_active:
-                kb_reply = Keyboard(one_time=False, inline=False)
-                for i, btn in enumerate(all_active):
-                    if i % 2 == 0 and i != 0:
-                        kb_reply.row()
-                    kb_reply.add(Text(btn["text"]), color=KeyboardButtonColor.PRIMARY)
-                reply_kb_json = kb_reply.get_json()
-            else:
-                reply_kb_json = self.get_main_keyboard()
-        else:
-            reply_kb_json = self.get_main_keyboard()
-
-        # Отправляем сообщение
+        # Отправляем
         if inline_kb_json:
-            # Сначала стартовое сообщение с инлайн URL-кнопками
             await self.bot.api.messages.send(
                 peer_id=uid,
-                message=self.welcome_text,
+                message=combined_text,
                 attachment=attachment_str,
                 keyboard=inline_kb_json,
                 random_id=0
             )
-            # Затем reply-клавиатура (обычные кнопки)
-            try:
-                await self.bot.api.messages.send(
-                    peer_id=uid,
-                    message="👇 Выберите действие:",
-                    keyboard=reply_kb_json,
-                    random_id=0
-                )
-            except Exception:
-                pass
+            if self.buttons or message_buttons:
+                try:
+                    await self.bot.api.messages.send(
+                        peer_id=uid,
+                        message="\u200b",
+                        keyboard=reply_kb_json,
+                        random_id=0
+                    )
+                except Exception:
+                    pass
         else:
-            # Всё в одном сообщении
             await self.bot.api.messages.send(
                 peer_id=uid,
-                message=self.welcome_text,
+                message=combined_text,
                 attachment=attachment_str,
                 keyboard=reply_kb_json,
                 random_id=0
             )
-        # Реклама после приветствия (free-план)
-        await self.send_ad_to_user(uid)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # РЕКЛАМА (FREE PLAN)
+    # МЕДИА: СОХРАНЕНИЕ В БД
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _save_media_to_db(self, user_id: int, media_type: str, file_id: str, source_url: str = ""):
+        """Сохраняет загруженное медиа в таблицу bot_media."""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(
+                    f"{self.sb_url}/rest/v1/bot_media",
+                    json={
+                        "bot_id":     self.bot_id,
+                        "user_id":    user_id,
+                        "media_type": media_type,
+                        "file_id":    file_id,
+                        "source_url": source_url,
+                    },
+                    headers={**self.headers, "Prefer": "return=minimal"}
+                )
+        except Exception as e:
+            logger.debug(f"_save_media_to_db: {e}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # РЕКЛАМА (FREE PLAN) — только fetch, отправка встроена в send_welcome_message
     # ─────────────────────────────────────────────────────────────────────────
 
     async def fetch_ad(self) -> Optional[dict]:
@@ -397,19 +396,6 @@ class FreeVKBotInstance:
         except Exception as e:
             logger.warning(f"[FREE VK] fetch_ad: {e}")
         return None
-
-    async def send_ad_to_user(self, uid: int):
-        if not self.ad_enabled:
-            return
-        try:
-            ad = await self.fetch_ad()
-            if not ad or not ad.get("text"):
-                return
-            await self.bot.api.messages.send(
-                peer_id=uid, message=f"📢 Реклама:\n{ad['text']}", random_id=0
-            )
-        except Exception as e:
-            logger.warning(f"[FREE VK] send_ad_to_user: {e}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЯ
@@ -491,7 +477,12 @@ class FreeVKBotInstance:
                             owner = getattr(att_obj, "owner_id", None)
                             aid   = getattr(att_obj, "id", None)
                             if owner and aid:
-                                parts.append(f"{att_type}{owner}_{aid}")
+                                file_id = f"{att_type}{owner}_{aid}"
+                                parts.append(file_id)
+                                # Сохраняем медиа в БД
+                                asyncio.create_task(
+                                    self._save_media_to_db(user["id"], att_type, file_id)
+                                )
                     except Exception:
                         pass
                 if parts:
@@ -1055,6 +1046,16 @@ class FreeVKBotInstance:
             if await self.check_antispam(user["id"]):
                 return
 
+            # ── Защита от медиа-спама вне тикета ────────────────────────────
+            has_media = bool(m.attachments)
+            if has_media and not user.get("_in_ticket") and not self.forward_all:
+                now = time.time()
+                media_key = f"media_{user['id']}"
+                media_rate = max(self.rate_limit, 3.0)
+                if now - self.flood_cache.get(media_key, 0) < media_rate:
+                    return
+                self.flood_cache[media_key] = now
+
             # ── Активный тикет ───────────────────────────────────────────────
             if user.get("_in_ticket"):
                 close_label = user.get("_ticket_close_label", "Закрыть обращение")
@@ -1086,15 +1087,8 @@ class FreeVKBotInstance:
 
                 await self.forward_to_admin(m, user)
                 await self.log_and_update(user["id"], user["first_name"], m.text or "[Медиа]")
-                # Снова показываем кнопку "Закрыть обращение" — она пропадает после каждого ответа
-                try:
-                    close_kb = self.build_keyboard_from_buttons([{"text": "Закрыть обращение"}])
-                    await self.bot.api.messages.send(
-                        peer_id=user["id"], message="✅ Оператор получил сообщение.",
-                        keyboard=close_kb, random_id=0
-                    )
-                except Exception:
-                    pass
+                # НЕ подтверждаем каждое сообщение — только повторно показываем кнопку закрытия
+                # чтобы она не пропадала после ответа VK (VK скрывает клавиатуру после каждого сообщения)
                 return
 
             if m.text:
@@ -1105,7 +1099,7 @@ class FreeVKBotInstance:
                 if clean in ("⬅️ Назад", "Назад"):
                     await self.bot.api.messages.send(
                         peer_id=user["id"],
-                        message="Главное меню:",
+                        message="\u200b",
                         keyboard=self.get_main_keyboard(),
                         random_id=0
                     )
@@ -1117,34 +1111,8 @@ class FreeVKBotInstance:
                     await self.log_and_update(user["id"], user["first_name"], "/start")
                     return
 
-                # ── message-кнопки инлайна — текст который пользователь прислал
-                # при нажатии на кнопку типа "message" (текст кнопки = value)
-                inline_msg_btn = next(
-                    (b for b in self.inline_buttons
-                     if b.get("type") == "message" and b.get("value", "").strip().lower() == lower),
-                    None
-                )
-                if inline_msg_btn:
-                    # Ищем совпадение с обычными кнопками по тексту value
-                    value = inline_msg_btn.get("value", "")
-                    matched_btn = next(
-                        (b for b in self.buttons if b.get("text", "").strip().lower() == value.lower()),
-                        None
-                    )
-                    if matched_btn:
-                        resp = matched_btn.get("response", "") or "✅"
-                        await self.bot.api.messages.send(
-                            peer_id=user["id"], message=resp,
-                            keyboard=self.get_main_keyboard(), random_id=0
-                        )
-                    else:
-                        await self.forward_to_admin(m, user)
-                        if not self.forward_all and not is_new:
-                            await self.bot.api.messages.send(
-                                peer_id=user["id"], message="✅", random_id=0
-                            )
-                    await self.log_and_update(user["id"], user["first_name"], f"ИНЛАЙН: {value}")
-                    return
+                # ── message-кнопки инлайна не поддерживаются VK API ─────────
+                # (тип "message" убран из UI, но на случай старых данных — пропускаем)
 
                 # ── Reply-кнопки ─────────────────────────────────────────────
                 matched_btn = next(
@@ -1226,15 +1194,19 @@ class FreeVKBotInstance:
                     except Exception:
                         pass
             else:
+                # Режим без forwardAll — подсказываем как открыть обращение
                 await self.log_and_update(user["id"], user["first_name"], m.text or "[Медиа]")
-                try:
-                    await self.bot.api.messages.send(
-                        peer_id=user["id"],
-                        message="🤖 Команда не распознана. Воспользуйтесь кнопками меню.",
-                        keyboard=self.get_main_keyboard(), random_id=0
-                    )
-                except Exception:
-                    pass
+                ticket_buttons = [b for b in self.buttons if b.get("type") == "ticket"]
+                if ticket_buttons:
+                    hint = f"Нажмите «{ticket_buttons[0]['text']}» чтобы связаться с нами."
+                    try:
+                        await self.bot.api.messages.send(
+                            peer_id=user["id"], message=hint,
+                            keyboard=self.get_main_keyboard(), random_id=0
+                        )
+                    except Exception:
+                        pass
+                # Если нет тикетных кнопок — молча логируем
 
     # ─────────────────────────────────────────────────────────────────────────
     # ЗАПУСК
