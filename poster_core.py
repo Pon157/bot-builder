@@ -151,19 +151,120 @@ def get_stats() -> dict:
     return cfg().setdefault("stats", {"totalPosts": 0, "history": []})
 
 # ──────────────────────────────────────────────────────────────
-# FSM
+# ШАБЛОНЫ
 # ──────────────────────────────────────────────────────────────
+"""
+Шаблон — это готовый текст поста с плейсхолдерами:
+  {текст}  — сюда вставляется произвольный текст пользователя
+  {фото}   — сюда прикрепляется фото (если нет — пост без фото)
+
+Пример шаблона:
+  🔥 АКЦИЯ ДНЯ
+
+  {текст}
+
+  👉 Успей до конца дня!
+  📞 @manager
+
+Структура в БД:
+  {
+    "id": int,
+    "name": str,           # короткое название: «Акция», «Новость»
+    "body": str,           # тело шаблона с {текст} и/или {фото}
+    "buttons_raw": str,    # кнопки по умолчанию (можно оставить пустым)
+    "btn_layout": str,     # rows / columns / auto
+    "created_at": str,
+  }
+"""
+
+def templates() -> list:
+    return cfg().setdefault("templates", [])
+
+def get_template(tid: int) -> Optional[dict]:
+    return next((t for t in templates() if t["id"] == tid), None)
+
+def next_template_id() -> int:
+    ids = [t["id"] for t in templates()]
+    return max(ids, default=0) + 1
+
+def apply_template(tpl: dict, user_text: str, photo_id: Optional[str] = None) -> dict:
+    """
+    Подставляет пользовательские данные в шаблон.
+    Возвращает content-dict готовый для отправки.
+    """
+    body = tpl.get("body", "")
+    has_foto_placeholder = "{фото}" in body
+
+    # Подставляем текст
+    filled = body.replace("{текст}", user_text or "")
+
+    # Убираем плейсхолдер {фото} из текста (фото идёт как медиа)
+    filled = filled.replace("{фото}", "").strip()
+
+    if photo_id and has_foto_placeholder:
+        return {"type": "photo", "file_id": photo_id, "text": filled}
+    else:
+        return {"type": "text", "file_id": None, "text": filled}
+
+def tpl_body_preview(body: str, max_len: int = 200) -> str:
+    """Показывает тело шаблона с подсвеченными плейсхолдерами."""
+    preview = body[:max_len]
+    if len(body) > max_len:
+        preview += "..."
+    # Экранируем HTML, потом обратно подсвечиваем плейсхолдеры
+    escaped = pyhtml.escape(preview)
+    escaped = escaped.replace("{текст}", "<b>{текст}</b>")
+    escaped = escaped.replace("{фото}",  "<b>{фото}</b>")
+    return escaped
+
+def templates_list_kb(show_none: bool = True):
+    rows = []
+    if show_none:
+        rows.append([InlineKeyboardButton(text="🚫 Без шаблона", callback_data="tpl_none")])
+    for t in templates():
+        rows.append([InlineKeyboardButton(
+            text=f"📄 {t['name']}", callback_data=f"tpl_pick_{t['id']}"
+        )])
+    rows.append([InlineKeyboardButton(text="➕ Создать шаблон", callback_data="tpl_create")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def templates_manage_kb():
+    rows = []
+    for t in templates():
+        rows.append([InlineKeyboardButton(
+            text=f"📄 {t['name']}", callback_data=f"tpl_view_{t['id']}"
+        )])
+    rows.append([InlineKeyboardButton(text="➕ Создать шаблон", callback_data="tpl_create")])
+    rows.append([InlineKeyboardButton(text="🔙 Назад",           callback_data="to_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 class CreatePost(StatesGroup):
+    template_pick = State()   # выбор шаблона перед созданием поста
+    fill_text     = State()   # ввод {текст} для шаблона
+    fill_photo    = State()   # прикрепление {фото} для шаблона
     content      = State()
     buttons      = State()
-    btn_layout   = State()   # ← НОВЫЙ: выбор раскладки кнопок
-    channel_pick = State()   # ← НОВЫЙ: выбор канала(ов)
+    btn_layout   = State()
+    channel_pick = State()
     schedule     = State()
     schedule_val = State()
     preview      = State()
 
 class ManageChannels(StatesGroup):
     add = State()
+
+class TemplateStates(StatesGroup):
+    name        = State()   # название шаблона
+    body        = State()   # тело с {текст}/{фото}
+    buttons_raw = State()   # кнопки по умолчанию
+    btn_layout  = State()   # раскладка кнопок
+
+class EditTemplateField(StatesGroup):
+    value = State()
+
+# Состояния для заполнения шаблона при публикации
+class FillTemplate(StatesGroup):
+    text  = State()   # вводит {текст}
+    photo = State()   # прикрепляет {фото}
 
 # Хранилище отложенных задач
 _scheduled: dict = {}   # job_id -> asyncio.Task
@@ -409,6 +510,7 @@ async def preview_post(chat_id: int, content: dict,
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Создать пост",       callback_data="new_post")],
+        [InlineKeyboardButton(text="📄 Шаблоны",            callback_data="manage_templates")],
         [InlineKeyboardButton(text="📋 Запланированные",    callback_data="list_scheduled")],
         [InlineKeyboardButton(text="📡 Каналы",             callback_data="manage_channels")],
         [InlineKeyboardButton(text="📊 Статистика",          callback_data="show_stats")],
@@ -565,22 +667,212 @@ async def del_channel(c: CallbackQuery, state: FSMContext):
     await manage_channels(c, state)
 
 # ──────────────────────────────────────────────────────────────
-# WIZARD: ШАГ 1 — КОНТЕНТ
+# WIZARD: ШАГ 0 — ВЫБОР ШАБЛОНА
 # ──────────────────────────────────────────────────────────────
-@dp.callback_query(F.data == "new_post")
+@dp.callback_query(F.data == "tpl_none")
+async def tpl_none_chosen(c: CallbackQuery, state: FSMContext):
+    await state.update_data(active_template=None)
+    await c.answer()
+    await _go_to_content(c.message, state)
+
+@dp.callback_query(F.data.startswith("tpl_pick_"))
+async def tpl_pick_chosen(c: CallbackQuery, state: FSMContext):
+    try:
+        tid = int(c.data.split("_")[2])
+    except Exception:
+        return await c.answer("Ошибка", show_alert=True)
+    tpl = get_template(tid)
+    if not tpl:
+        return await c.answer("Шаблон не найден", show_alert=True)
+    await state.update_data(active_template=tid)
+    await c.answer()
+
+    body_has_foto = "{фото}" in tpl.get("body", "")
+    body_has_text = "{текст}" in tpl.get("body", "")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Использовать", callback_data="tpl_confirm"),
+        InlineKeyboardButton(text="🔙 Другой",       callback_data="tpl_back"),
+    ]])
+    placeholders = []
+    if body_has_text: placeholders.append("<b>{текст}</b>")
+    if body_has_foto: placeholders.append("<b>{фото}</b>")
+    ph_str = " и ".join(placeholders) if placeholders else "—"
+
+    try:
+        await c.message.edit_text(
+            f"📄 <b>{pyhtml.escape(tpl['name'])}</b>\n\n"
+            f"<b>Шаблон:</b>\n<code>{tpl_body_preview(tpl['body'])}</code>\n\n"
+            f"Плейсхолдеры: {ph_str}\n\n"
+            f"При публикации ты заполнишь их своим контентом.",
+            reply_markup=kb, parse_mode="HTML"
+        )
+    except Exception:
+        await c.message.answer(
+            f"📄 <b>{pyhtml.escape(tpl['name'])}</b> выбран.",
+            reply_markup=kb, parse_mode="HTML"
+        )
+
+@dp.callback_query(F.data == "tpl_confirm")
+async def tpl_confirm(c: CallbackQuery, state: FSMContext):
+    await c.answer()
+    data = await state.get_data()
+    tid = data.get("active_template")
+    tpl = get_template(tid) if tid is not None else None
+    if not tpl:
+        await _go_to_content(c.message, state)
+        return
+    # Начинаем заполнение шаблона
+    await _start_fill_template(c.message, state, tpl)
+
+@dp.callback_query(F.data == "tpl_back")
+async def tpl_back(c: CallbackQuery, state: FSMContext):
+    await state.update_data(active_template=None)
+    await state.set_state(CreatePost.template_pick)
+    kb = templates_list_kb(show_none=True)
+    try:
+        await c.message.edit_text("📄 <b>Выбери шаблон</b>", reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await c.message.answer("📄 <b>Выбери шаблон</b>", reply_markup=kb, parse_mode="HTML")
+
+async def _start_fill_template(msg, state: FSMContext, tpl: dict):
+    """Запускает процесс заполнения плейсхолдеров шаблона."""
+    body = tpl.get("body", "")
+    needs_text  = "{текст}" in body
+    needs_photo = "{фото}" in body
+
+    await state.update_data(tpl_fill_needs_text=needs_text, tpl_fill_needs_photo=needs_photo,
+                            tpl_fill_text="", tpl_fill_photo=None)
+
+    if needs_text:
+        await state.set_state(CreatePost.fill_text)
+        await msg.answer(
+            f"✏️ <b>Заполни шаблон «{pyhtml.escape(tpl['name'])}»</b>\n\n"
+            f"Введи текст для <b>{{текст}}</b>:\n\n"
+            f"<i>Форматирование Telegram поддерживается</i>\n"
+            f"<i>/cancel — отмена</i>",
+            parse_mode="HTML"
+        )
+    elif needs_photo:
+        await state.set_state(CreatePost.fill_photo)
+        await msg.answer(
+            f"🖼 <b>Заполни шаблон «{pyhtml.escape(tpl['name'])}»</b>\n\n"
+            f"Прикрепи фото для <b>{{фото}}</b>:\n\n"
+            f"<i>/cancel — отмена</i>",
+            parse_mode="HTML"
+        )
+    else:
+        # Шаблон без плейсхолдеров — сразу в кнопки
+        await _apply_template_and_go(msg, state)
+
+@dp.message(CreatePost.fill_text)
+async def fill_template_text(m: Message, state: FSMContext):
+    data = await state.get_data()
+    # Сохраняем текст уже в HTML
+    filled_text = entities_to_html(m.text or "", m.entities)
+    await state.update_data(tpl_fill_text=filled_text)
+
+    if data.get("tpl_fill_needs_photo"):
+        await state.set_state(CreatePost.fill_photo)
+        await m.answer(
+            "🖼 Теперь прикрепи фото для <b>{фото}</b>:\n\n"
+            "Или напиши <b>нет</b> — пост без фото.",
+            parse_mode="HTML"
+        )
+    else:
+        await _apply_template_and_go(m, state)
+
+@dp.message(CreatePost.fill_photo)
+async def fill_template_photo(m: Message, state: FSMContext):
+    photo_id = None
+    if m.photo:
+        photo_id = m.photo[-1].file_id
+    elif m.text and m.text.strip().lower() in ("нет", "no", "-"):
+        photo_id = None
+    else:
+        return await m.answer("❌ Отправь фото или напиши <b>нет</b>.", parse_mode="HTML")
+
+    await state.update_data(tpl_fill_photo=photo_id)
+    await _apply_template_and_go(m, state)
+
+async def _apply_template_and_go(msg, state: FSMContext):
+    """Собирает контент из шаблона + введённых данных и переходит к кнопкам."""
+    data = await state.get_data()
+    tid       = data.get("active_template")
+    tpl       = get_template(tid) if tid is not None else None
+    user_text = data.get("tpl_fill_text", "")
+    photo_id  = data.get("tpl_fill_photo")
+
+    if tpl:
+        content = apply_template(tpl, user_text, photo_id)
+    else:
+        content = {"type": "text", "file_id": None, "text": user_text}
+
+    await state.update_data(content=content)
+
+    # Подсказываем кнопки из шаблона
+    tpl_btns_hint = ""
+    if tpl and tpl.get("buttons_raw"):
+        tpl_btns_hint = (
+            f"\n\n💡 <b>Кнопки из шаблона:</b>\n"
+            f"<code>{pyhtml.escape(tpl['buttons_raw'])}</code>\n"
+            f"Напиши <b>шаблон</b> — использовать их."
+        )
+
+    await state.set_state(CreatePost.buttons)
+    await msg.answer(
+        "🔘 <b>Инлайн кнопки</b>\n\n"
+        "Формат:\n"
+        "<code>Текст кнопки | https://ссылка.com</code>\n\n"
+        "Напиши <b>нет</b> — без кнопок."
+        + tpl_btns_hint +
+        "\n\n<i>/cancel — отмена</i>",
+        parse_mode="HTML"
+    )
+
+async def _go_to_content(msg, state: FSMContext):
+    """Обычный путь без шаблона — к вводу контента."""
+    await state.set_state(CreatePost.content)
+    await msg.answer(
+        "📝 <b>Шаг 1 — Контент поста</b>\n\n"
+        "Отправь что хочешь опубликовать:\n"
+        "• Текст — <b>форматируй прямо в Telegram</b>\n"
+        "• Фото / Видео / GIF / Аудио / Документ\n"
+        "• Медиа + подпись\n\n"
+        "<i>/cancel — отмена</i>",
+        parse_mode="HTML"
+    )
+
+# ──────────────────────────────────────────────────────────────
+# WIZARD: ШАГ 1 — КОНТЕНТ (без шаблона)
+# ──────────────────────────────────────────────────────────────
 async def step1_start(c: CallbackQuery, state: FSMContext):
     if not is_admin(c.from_user.id): return await c.answer("⛔", show_alert=True)
     if not channels():
         return await c.answer("❌ Сначала добавь хотя бы один канал!", show_alert=True)
-    await state.set_state(CreatePost.content)
+
+    # Если шаблонов нет — сразу к контенту
+    if not templates():
+        await state.set_state(CreatePost.content)
+        await c.message.answer(
+            "📝 <b>Шаг 1 — Контент поста</b>\n\n"
+            "Отправь что хочешь опубликовать:\n"
+            "• Текст — <b>форматируй прямо в Telegram</b> (жирный, курсив, ссылки и т.д.)\n"
+            "• Фото / Видео / GIF / Аудио / Документ / Стикер\n"
+            "• Медиа + подпись с форматированием\n\n"
+            "<i>/cancel — отмена</i>",
+            parse_mode="HTML"
+        )
+        return
+
+    await state.set_state(CreatePost.template_pick)
+    kb = templates_list_kb(show_none=True)
     await c.message.answer(
-        "📝 <b>Шаг 1 — Контент поста</b>\n\n"
-        "Отправь что хочешь опубликовать:\n"
-        "• Текст — <b>форматируй прямо в Telegram</b> (жирный, курсив, ссылки и т.д.)\n"
-        "• Фото / Видео / GIF / Аудио / Документ / Стикер\n"
-        "• Медиа + подпись с форматированием\n\n"
+        "📄 <b>Шаг 0 — Выбери шаблон</b>\n\n"
+        "Шаблон добавит шапку/подвал к твоему посту.\n"
+        "Можно создать новый или выбрать существующий.\n\n"
         "<i>/cancel — отмена</i>",
-        parse_mode="HTML"
+        reply_markup=kb, parse_mode="HTML"
     )
 
 # ──────────────────────────────────────────────────────────────
@@ -607,12 +899,20 @@ async def step2_buttons(m: Message, state: FSMContext):
 @dp.message(CreatePost.buttons)
 async def step_btn_layout(m: Message, state: FSMContext):
     raw_text = m.text or "нет"
-    # Быстрая проверка — есть ли вообще кнопки
+    data = await state.get_data()
+
+    # "шаблон" — использовать кнопки из шаблона
+    if raw_text.strip().lower() in ("шаблон", "template"):
+        tid = data.get("active_template")
+        if tid is not None:
+            tpl = get_template(tid)
+            if tpl and tpl.get("buttons_raw"):
+                raw_text = tpl["buttons_raw"]
+
     has_buttons = raw_text.strip().lower() not in ("нет", "no", "-", "skip", "н") and "|" in raw_text
     await state.update_data(buttons_raw=raw_text)
 
     if not has_buttons:
-        # Кнопок нет — пропускаем выбор раскладки
         await state.update_data(btn_data=[], layout="rows")
         await _step_channel_pick(m, state)
         return
@@ -624,8 +924,7 @@ async def step_btn_layout(m: Message, state: FSMContext):
         InlineKeyboardButton(text="🔀 Вручную",    callback_data="layout_auto"),
     ]])
     await m.answer(
-        "📐 <b>Шаг 2.5 — Раскладка кнопок</b>\n\n"
-        "Как расположить кнопки?\n\n"
+        "📐 <b>Раскладка кнопок</b>\n\n"
         "• <b>Столбцом</b> — каждая кнопка в своей строке\n"
         "• <b>Строчкой</b> — все кнопки в одну строку\n"
         "• <b>Вручную</b> — пустая строка в твоём тексте = новый ряд",
@@ -986,6 +1285,290 @@ async def cmd_stats(m: Message):
     for day in history[-14:]:
         text += f"  {day.get('date','?')}: {day.get('posts',0)} постов\n"
     await m.answer(text, parse_mode="HTML")
+
+# ──────────────────────────────────────────────────────────────
+# УПРАВЛЕНИЕ ШАБЛОНАМИ
+# ──────────────────────────────────────────────────────────────
+@dp.callback_query(F.data == "manage_templates")
+async def manage_templates(c: CallbackQuery, state: FSMContext):
+    if not is_admin(c.from_user.id): return await c.answer("⛔", show_alert=True)
+    await state.clear()
+    tpls = templates()
+    if tpls:
+        text = f"📄 <b>Шаблоны постов</b> ({len(tpls)} шт.)\n\nВыбери шаблон или создай новый:"
+    else:
+        text = (
+            "📄 <b>Шаблоны постов</b>\n\n"
+            "<i>Шаблонов пока нет.</i>\n\n"
+            "Создай шаблон — напиши текст поста с плейсхолдерами:\n"
+            "• <b>{текст}</b> — сюда вставляется произвольный текст\n"
+            "• <b>{фото}</b> — сюда прикрепляется фото\n\n"
+            "Пример: <code>🔥 Акция!\n\n{текст}\n\n👉 @channel</code>"
+        )
+    try:
+        await c.message.edit_text(text, reply_markup=templates_manage_kb(), parse_mode="HTML")
+    except Exception:
+        await c.message.answer(text, reply_markup=templates_manage_kb(), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("tpl_view_"))
+async def tpl_view(c: CallbackQuery, state: FSMContext):
+    if not is_admin(c.from_user.id): return await c.answer("⛔", show_alert=True)
+    try:
+        tid = int(c.data.split("_")[2])
+    except Exception:
+        return await c.answer("Ошибка")
+    tpl = get_template(tid)
+    if not tpl: return await c.answer("Шаблон не найден", show_alert=True)
+
+    body_has_text  = "{текст}" in tpl.get("body", "")
+    body_has_foto  = "{фото}"  in tpl.get("body", "")
+    ph_info = []
+    if body_has_text: ph_info.append("{текст} ✅")
+    if body_has_foto: ph_info.append("{фото} ✅")
+    if not ph_info:   ph_info.append("нет плейсхолдеров")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Изменить шаблон",  callback_data=f"tpl_edit_body_{tid}"),
+         InlineKeyboardButton(text="✏️ Переименовать",    callback_data=f"tpl_edit_name_{tid}")],
+        [InlineKeyboardButton(text="🔘 Изменить кнопки",  callback_data=f"tpl_edit_buttons_{tid}")],
+        [InlineKeyboardButton(text="🗑 Удалить",          callback_data=f"tpl_delete_{tid}"),
+         InlineKeyboardButton(text="🔙 К списку",         callback_data="manage_templates")],
+    ])
+    try:
+        await c.message.edit_text(
+            f"📄 <b>{pyhtml.escape(tpl['name'])}</b>\n\n"
+            f"<b>Тело шаблона:</b>\n<code>{tpl_body_preview(tpl['body'])}</code>\n\n"
+            f"<b>Плейсхолдеры:</b> {', '.join(ph_info)}\n"
+            f"<b>Кнопки:</b> {pyhtml.escape(tpl.get('buttons_raw','')) or '<i>нет</i>'}\n\n"
+            f"📅 Создан: {tpl.get('created_at', '?')}",
+            reply_markup=kb, parse_mode="HTML"
+        )
+    except Exception:
+        await c.message.answer(
+            f"📄 <b>{pyhtml.escape(tpl['name'])}</b>",
+            reply_markup=kb, parse_mode="HTML"
+        )
+
+# ── Создание шаблона (2 шага: название → тело) ──
+@dp.callback_query(F.data == "tpl_create")
+async def tpl_create_start(c: CallbackQuery, state: FSMContext):
+    if not is_admin(c.from_user.id): return await c.answer("⛔", show_alert=True)
+    await state.set_state(TemplateStates.name)
+    await c.message.answer(
+        "📄 <b>Создание шаблона — Шаг 1/3</b>\n\n"
+        "Введи <b>название</b> шаблона:\n"
+        "<i>Например: «Новости», «Акция», «Анонс»</i>\n\n"
+        "<i>/cancel — отмена</i>",
+        parse_mode="HTML"
+    )
+
+@dp.message(TemplateStates.name)
+async def tpl_step_name(m: Message, state: FSMContext):
+    name = (m.text or "").strip()
+    if not name or len(name) > 64:
+        return await m.answer("❌ Название: от 1 до 64 символов.")
+    await state.update_data(tpl_name=name)
+    await state.set_state(TemplateStates.body)
+    await m.answer(
+        f"✅ Название: <b>{pyhtml.escape(name)}</b>\n\n"
+        "📄 <b>Шаг 2/3 — Тело шаблона</b>\n\n"
+        "Напиши текст поста как он будет выглядеть.\n"
+        "Используй плейсхолдеры:\n"
+        "• <code>{текст}</code> — здесь будет вставляться произвольный текст\n"
+        "• <code>{фото}</code> — здесь будет прикрепляться фото\n\n"
+        "<b>Примеры:</b>\n"
+        "<code>🔥 АКЦИЯ!\n\n{текст}\n\n👉 Подробности у @manager</code>\n\n"
+        "<code>{фото}\n\n📢 Новость дня:\n{текст}</code>\n\n"
+        "HTML-теги тоже работают: <code>&lt;b&gt;жирный&lt;/b&gt;</code>\n\n"
+        "<i>/cancel — отмена</i>",
+        parse_mode="HTML"
+    )
+
+@dp.message(TemplateStates.body)
+async def tpl_step_body(m: Message, state: FSMContext):
+    body = (m.text or "").strip()
+    if not body:
+        return await m.answer("❌ Шаблон не может быть пустым.")
+    await state.update_data(tpl_body=body)
+    await state.set_state(TemplateStates.buttons_raw)
+
+    has_text = "{текст}" in body
+    has_foto = "{фото}"  in body
+    ph_list  = []
+    if has_text: ph_list.append("<b>{текст}</b>")
+    if has_foto: ph_list.append("<b>{фото}</b>")
+    ph_str = ", ".join(ph_list) if ph_list else "<i>нет плейсхолдеров — шаблон будет публиковаться как есть</i>"
+
+    await m.answer(
+        f"✅ Шаблон принят!\n"
+        f"Плейсхолдеры: {ph_str}\n\n"
+        "🔘 <b>Шаг 3/3 — Кнопки по умолчанию</b>\n\n"
+        "Эти кнопки будут предложены при каждой публикации с этим шаблоном.\n\n"
+        "Формат:\n"
+        "<code>Сайт | https://site.com</code>\n\n"
+        "Напиши <b>нет</b> — без кнопок.",
+        parse_mode="HTML"
+    )
+
+@dp.message(TemplateStates.buttons_raw)
+async def tpl_step_buttons(m: Message, state: FSMContext):
+    raw = (m.text or "").strip()
+    if raw.lower() in ("нет", "no", "-"):
+        raw = ""
+    has_btns = bool(raw and "|" in raw)
+    await state.update_data(tpl_buttons=raw)
+
+    if not has_btns:
+        await _tpl_save(m, state, layout="rows")
+        return
+
+    await state.set_state(TemplateStates.btn_layout)
+    layout_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="📋 Столбцом",  callback_data="tpl_layout_rows"),
+        InlineKeyboardButton(text="➡️ Строчкой", callback_data="tpl_layout_columns"),
+    ]])
+    await m.answer(
+        "📐 <b>Раскладка кнопок шаблона</b>",
+        reply_markup=layout_kb, parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data.startswith("tpl_layout_"))
+async def tpl_layout_chosen(c: CallbackQuery, state: FSMContext):
+    layout = c.data.replace("tpl_layout_", "")
+    await c.answer()
+    await _tpl_save(c.message, state, layout=layout)
+
+async def _tpl_save(msg, state: FSMContext, layout: str = "rows"):
+    data = await state.get_data()
+    await state.clear()
+    tpl = {
+        "id":          next_template_id(),
+        "name":        data.get("tpl_name", "Шаблон"),
+        "body":        data.get("tpl_body", ""),
+        "buttons_raw": data.get("tpl_buttons", ""),
+        "btn_layout":  layout,
+        "created_at":  datetime.now().strftime("%d.%m.%Y %H:%M"),
+    }
+    templates().append(tpl)
+    await save_config()
+
+    has_text = "{текст}" in tpl["body"]
+    has_foto = "{фото}"  in tpl["body"]
+    ph_list  = []
+    if has_text: ph_list.append("{текст}")
+    if has_foto: ph_list.append("{фото}")
+    ph_str = ", ".join(ph_list) if ph_list else "нет"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📄 К шаблонам", callback_data="manage_templates")],
+        [InlineKeyboardButton(text="🔙 В меню",     callback_data="to_main")],
+    ])
+    await msg.answer(
+        f"✅ <b>Шаблон «{pyhtml.escape(tpl['name'])}» создан!</b>\n\n"
+        f"Плейсхолдеры: {ph_str}\n"
+        f"Кнопки: {'есть' if tpl['buttons_raw'] else 'нет'}",
+        reply_markup=kb, parse_mode="HTML"
+    )
+
+# ── Редактирование полей шаблона ──
+@dp.callback_query(F.data.startswith("tpl_edit_"))
+async def tpl_edit_field(c: CallbackQuery, state: FSMContext):
+    if not is_admin(c.from_user.id): return await c.answer("⛔", show_alert=True)
+    parts = c.data.split("_")
+    field = parts[2]   # body / name / buttons
+    try:
+        tid = int(parts[3])
+    except Exception:
+        return await c.answer("Ошибка")
+    tpl = get_template(tid)
+    if not tpl: return await c.answer("Шаблон не найден", show_alert=True)
+
+    await state.set_state(EditTemplateField.value)
+    await state.update_data(edit_tpl_id=tid, edit_tpl_field=field)
+
+    prompts = {
+        "body":    (
+            "✏️ Введи новый текст шаблона.\n"
+            "Используй <code>{текст}</code> и <code>{фото}</code>:"
+        ),
+        "name":    "✏️ Введи новое название шаблона:",
+        "buttons": "🔘 Введи новые кнопки (<code>Текст | URL</code>) или «нет»:",
+    }
+    await c.message.answer(prompts.get(field, "Введи новое значение:"), parse_mode="HTML")
+
+@dp.message(EditTemplateField.value)
+async def tpl_edit_apply(m: Message, state: FSMContext):
+    data  = await state.get_data()
+    tid   = data["edit_tpl_id"]
+    field = data["edit_tpl_field"]
+    await state.clear()
+
+    tpl = get_template(tid)
+    if not tpl:
+        return await m.answer("❌ Шаблон не найден.")
+
+    val = (m.text or "").strip()
+    if field == "name":
+        if not val or len(val) > 64:
+            return await m.answer("❌ Название от 1 до 64 символов.")
+        tpl["name"] = val
+    elif field == "body":
+        if not val:
+            return await m.answer("❌ Шаблон не может быть пустым.")
+        tpl["body"] = val
+    elif field == "buttons":
+        tpl["buttons_raw"] = "" if val.lower() in ("нет", "no", "-") else val
+
+    await save_config()
+    await m.answer(
+        f"✅ Шаблон <b>{pyhtml.escape(tpl['name'])}</b> обновлён!",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="📄 Открыть", callback_data=f"tpl_view_{tid}"),
+            InlineKeyboardButton(text="📄 К списку", callback_data="manage_templates"),
+        ]]),
+        parse_mode="HTML"
+    )
+
+# ── Удаление шаблона ──
+@dp.callback_query(F.data.startswith("tpl_delete_confirm_"))
+async def tpl_delete_confirm(c: CallbackQuery, state: FSMContext):
+    if not is_admin(c.from_user.id): return await c.answer("⛔", show_alert=True)
+    try:
+        tid = int(c.data.split("_")[3])
+    except Exception:
+        return await c.answer("Ошибка")
+    tpl = get_template(tid)
+    name = tpl["name"] if tpl else "?"
+    cfg()["templates"] = [t for t in templates() if t["id"] != tid]
+    await save_config()
+    await c.answer(f"🗑 Шаблон «{name}» удалён", show_alert=True)
+    await manage_templates(c, state)
+
+@dp.callback_query(F.data.startswith("tpl_delete_"))
+async def tpl_delete(c: CallbackQuery, state: FSMContext):
+    if not is_admin(c.from_user.id): return await c.answer("⛔", show_alert=True)
+    # Не обрабатываем tpl_delete_confirm_ здесь (у него свой хендлер выше)
+    if "confirm" in c.data: return
+    try:
+        tid = int(c.data.split("_")[2])
+    except Exception:
+        return await c.answer("Ошибка")
+    tpl = get_template(tid)
+    if not tpl: return await c.answer("Шаблон не найден", show_alert=True)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🗑 Да, удалить",  callback_data=f"tpl_delete_confirm_{tid}"),
+        InlineKeyboardButton(text="❌ Отмена",        callback_data=f"tpl_view_{tid}"),
+    ]])
+    try:
+        await c.message.edit_text(
+            f"🗑 Удалить <b>{pyhtml.escape(tpl['name'])}</b>?\n\nЭто нельзя отменить.",
+            reply_markup=kb, parse_mode="HTML"
+        )
+    except Exception:
+        await c.message.answer(
+            f"🗑 Удалить <b>{pyhtml.escape(tpl['name'])}</b>?",
+            reply_markup=kb, parse_mode="HTML"
+        )
 
 # ──────────────────────────────────────────────────────────────
 # MAIN
