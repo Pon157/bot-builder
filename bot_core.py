@@ -64,6 +64,24 @@ class BanMiddleware(BaseMiddleware):
             
             # ЖЕЛЕЗОБЕТОН: Если забанен — СРАЗУ БЛОК без проверки админа
             if user and user.get("is_banned"):
+                # Если это АДМИН — предлагаем разбаниться, не блокируем
+                is_admin = (self.bot_instance.admin_chat_id and user_id == self.bot_instance.admin_chat_id)
+                if is_admin:
+                    # Пропускаем callback с разбаном
+                    if isinstance(event, CallbackQuery) and event.data == "selfunban":
+                        return await handler(event, data)
+                    unban_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="🔓 Разбанить себя", callback_data="selfunban")
+                    ]])
+                    if isinstance(event, Message):
+                        await event.answer(
+                            "⚠️ <b>Вы случайно забанили себя (администратора).</b>\n"
+                            "Нажмите кнопку ниже, чтобы снять блокировку:",
+                            reply_markup=unban_kb
+                        )
+                    elif isinstance(event, CallbackQuery):
+                        await event.answer("⚠️ Вы забанили себя. Используйте /start чтобы разбаниться.", show_alert=True)
+                    return  # ПРЕРЫВАЕМ, но кнопка предложена
                 # Если это сообщение — пишем текстом
                 if isinstance(event, Message):
                     await event.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
@@ -1683,6 +1701,10 @@ class BotInstance:
 
         # 🚫 БАН
         if command == "ban":
+            # Защита: нельзя забанить администратора
+            if self.admin_chat_id and uid == self.admin_chat_id:
+                await m.reply("⛔ <b>Нельзя забанить администратора бота.</b>")
+                return True
             target_user["is_banned"] = True
             self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
             await self._save_to_db(headers)
@@ -1704,6 +1726,10 @@ class BotInstance:
 
         # ⚠️ ВАРН
         elif command == "warn":
+            # Защита: нельзя выдать варн администратору
+            if self.admin_chat_id and uid == self.admin_chat_id:
+                await m.reply("⛔ <b>Нельзя выдать варн администратору бота.</b>")
+                return True
             target_user["warns"] = target_user.get("warns", 0) + 1
             if target_user["warns"] >= ban_limit:
                 target_user["is_banned"] = True
@@ -1846,7 +1872,17 @@ class BotInstance:
         async def handle_start_msg(m: Message):
             user, is_new = await self.get_user_state(m)
             if user.get("is_banned"):
-                await m.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
+                if self.admin_chat_id and m.from_user.id == self.admin_chat_id:
+                    unban_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="🔓 Разбанить себя", callback_data="selfunban")
+                    ]])
+                    await m.answer(
+                        "⚠️ <b>Вы случайно забанили себя (администратора).</b>\n"
+                        "Нажмите кнопку ниже, чтобы снять блокировку:",
+                        reply_markup=unban_kb
+                    )
+                else:
+                    await m.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
                 return
 
             # Сбрасываем состояние flow и тикетов при /start
@@ -1917,7 +1953,17 @@ class BotInstance:
             
             # Заблокированный — отвечаем и СРАЗУ выходим
             if user.get("is_banned"):
-                await m.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
+                if self.admin_chat_id and m.from_user.id == self.admin_chat_id:
+                    unban_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="🔓 Разбанить себя", callback_data="selfunban")
+                    ]])
+                    await m.answer(
+                        "⚠️ <b>Вы случайно забанили себя (администратора).</b>\n"
+                        "Нажмите кнопку ниже, чтобы снять блокировку:",
+                        reply_markup=unban_kb
+                    )
+                else:
+                    await m.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
                 return
 
             uid = user['id']
@@ -2162,7 +2208,29 @@ class BotInstance:
                 await m.answer("Пожалуйста, воспользуйтесь меню или нажмите кнопку для открытия обращения.", reply_markup=self.get_main_keyboard())
 
 
-        # 5. Закрытие AI-сессии (inline callback)
+        # 5. Саморазбан администратора (inline callback)
+        @self.router.callback_query(lambda c: c.data == 'selfunban')
+        async def on_selfunban(cb: CallbackQuery):
+            uid_cb = cb.from_user.id
+            # Только администратор может использовать эту кнопку
+            if not (self.admin_chat_id and uid_cb == self.admin_chat_id):
+                await cb.answer("⛔ Эта кнопка только для администратора.", show_alert=True)
+                return
+            user_cb = next((u for u in self.users_list if u.get('id') == uid_cb), None)
+            if user_cb:
+                user_cb["is_banned"] = False
+                user_cb["warns"] = 0
+                self.stats_data["bannedCount"] = max(0, self.stats_data.get("bannedCount", 1) - 1)
+                headers = {
+                    "apikey": self.sb_key,
+                    "Authorization": f"Bearer {self.sb_key}",
+                    "Content-Type": "application/json"
+                }
+                await self._save_to_db(headers)
+            await cb.message.edit_text("✅ <b>Блокировка снята. Вы снова администратор бота.</b>")
+            await cb.answer("✅ Разбан выполнен!", show_alert=False)
+
+        # 6. Закрытие AI-сессии (inline callback)
         @self.router.callback_query(lambda c: c.data == 'ai_close')
         async def on_ai_close(cb: CallbackQuery):
             uid_cb = cb.from_user.id
