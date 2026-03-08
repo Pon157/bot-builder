@@ -14,6 +14,7 @@ free_ads_server.py
   • free_bot_stats — корректно читает users_count из connectedUsers.
 """
 
+import asyncio
 import os, time, json, secrets, hashlib, uuid, httpx
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Header, Request
@@ -1444,6 +1445,21 @@ async def start_free_bot(bot_id: str):
 
     success = await pm.start_bot(bot_id, merged)
     if success is True:
+        # Даём боту 3 секунды на старт — он может сразу перейти в CONFLICT
+        await asyncio.sleep(3)
+        try:
+            check = await db.get("bots", params={"id": f"eq.{bot_id}", "select": "status"})
+            current_status = check.json()[0].get("status") if check.json() else "RUNNING"
+        except Exception:
+            current_status = "RUNNING"
+
+        if current_status == "CONFLICT":
+            raise HTTPException(
+                409,
+                "Токен уже используется в другом конструкторе или Telegram-боте. "
+                "Отключите бота от всех сторонних сервисов и попробуйте снова."
+            )
+
         try:
             await db.patch("bots", params={"id": f"eq.{bot_id}"}, json={"status": "RUNNING"})
         except Exception as e:
@@ -1451,6 +1467,31 @@ async def start_free_bot(bot_id: str):
         return {"status": "ok", "message": "Бот запущен"}
     else:
         raise HTTPException(500, f"Не удалось запустить бота: {success}")
+
+
+@router.get("/api/free/bots/{bot_id}/conflict-info")
+async def free_bot_conflict_info(bot_id: str, user_id: str):
+    """
+    Возвращает информацию о конфликте токена (когда статус бота = CONFLICT).
+    Фронтенд может опрашивать этот эндпоинт и показывать подсказку пользователю.
+    """
+    db = _db()
+    r = await db.get("bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}"})
+    if not r.json():
+        raise HTTPException(404, "Бот не найден")
+    bot = r.json()[0]
+    status = bot.get("status", "IDLE")
+    if status == "CONFLICT":
+        return {
+            "conflict": True,
+            "message": (
+                "Токен уже используется в другом боте или конструкторе. "
+                "Пожалуйста, отключите бота от стороннего сервиса "
+                "(остановите его там), затем нажмите «Запустить» снова."
+            ),
+            "status": status,
+        }
+    return {"conflict": False, "status": status}
 
 
 @router.post("/api/bots/{bot_id}/stop")
