@@ -323,6 +323,21 @@ class BanMiddleware(BaseMiddleware[Message]):
         user_id = self.event.from_id
         user = next((u for u in bot_instance.users_list if u.get('id') == user_id), None)
         if user and user.get("is_banned"):
+            is_admin = (bot_instance.admin_chat_id and user_id == bot_instance.admin_chat_id)
+            if is_admin:
+                # Предлагаем кнопку разбана
+                kb = Keyboard(one_time=True, inline=False)
+                kb.add(Text("🔓 Разбанить себя"), color=KeyboardButtonColor.POSITIVE)
+                try:
+                    await self.event.answer(
+                        "⚠️ Вы случайно забанили себя (администратора).\n"
+                        "Нажмите кнопку ниже, чтобы снять блокировку:",
+                        keyboard=kb.get_json()
+                    )
+                except Exception:
+                    pass
+                self.stop("Admin is banned — offered self-unban")
+                return
             try:
                 await self.event.answer("🚫 Вы заблокированы в этом боте.")
             except Exception:
@@ -1443,6 +1458,10 @@ class BotInstance:
 
         # 🚫 БАН
         if command == "ban":
+            # Защита: нельзя забанить администратора
+            if self.admin_chat_id and uid == self.admin_chat_id:
+                await self.bot.api.messages.send(peer_id=self.admin_chat_id, message="⛔ Нельзя забанить администратора бота.", random_id=0)
+                return True
             target_user["is_banned"] = True
             self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
             await self._save_to_db()
@@ -1464,6 +1483,10 @@ class BotInstance:
 
         # ⚠️ ВАРН
         elif command == "warn":
+            # Защита: нельзя выдать варн администратору
+            if self.admin_chat_id and uid == self.admin_chat_id:
+                await self.bot.api.messages.send(peer_id=self.admin_chat_id, message="⛔ Нельзя выдать варн администратору бота.", random_id=0)
+                return True
             target_user["warns"] = target_user.get("warns", 0) + 1
             if self.auto_ban_limit > 0 and target_user["warns"] >= self.auto_ban_limit:
                 target_user["is_banned"] = True
@@ -1672,6 +1695,29 @@ class BotInstance:
                     except Exception as e:
                         logger.warning(f"ai_close callback error: {e}")
 
+        # ── Саморазбан администратора ──
+        @self.bot.on.message(func=lambda m: (
+            m.text == "🔓 Разбанить себя" and
+            self.admin_chat_id is not None and
+            m.from_id == self.admin_chat_id
+        ))
+        async def handle_selfunban(m: Message):
+            user_cb = next((u for u in self.users_list if u.get("id") == m.from_id), None)
+            if user_cb:
+                user_cb["is_banned"] = False
+                user_cb["warns"] = 0
+                await self._save_to_db()
+            main_kb = self.get_main_keyboard()
+            try:
+                await self.bot.api.messages.send(
+                    peer_id=m.from_id,
+                    message="✅ Блокировка снята. Вы снова администратор бота.",
+                    keyboard=main_kb,
+                    random_id=0
+                )
+            except Exception as e:
+                logger.warning(f"selfunban send error: {e}")
+
         # ── Сообщения от пользователей ──
         @self.bot.on.message()
         async def handle_user_input(m: Message):
@@ -1690,14 +1736,27 @@ class BotInstance:
             
             # БАН (дополнительная проверка на случай, если middleware пропустил)
             if user.get("is_banned"):
-                try:
-                    await self.bot.api.messages.send(
-                        peer_id=user['id'],
-                        message="🚫 Вы заблокированы в этом боте.",
-                        random_id=0
-                    )
-                except Exception:
-                    pass
+                if self.admin_chat_id and m.from_id == self.admin_chat_id:
+                    kb = Keyboard(one_time=True, inline=False)
+                    kb.add(Text("🔓 Разбанить себя"), color=KeyboardButtonColor.POSITIVE)
+                    try:
+                        await self.bot.api.messages.send(
+                            peer_id=user['id'],
+                            message="⚠️ Вы случайно забанили себя (администратора).\nНажмите кнопку ниже, чтобы снять блокировку:",
+                            keyboard=kb.get_json(),
+                            random_id=0
+                        )
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        await self.bot.api.messages.send(
+                            peer_id=user['id'],
+                            message="🚫 Вы заблокированы в этом боте.",
+                            random_id=0
+                        )
+                    except Exception:
+                        pass
                 return
 
             # Анти-спам
