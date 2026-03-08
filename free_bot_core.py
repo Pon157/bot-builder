@@ -61,6 +61,26 @@ class BanMiddleware(BaseMiddleware):
         if user_tg:
             user = next((u for u in self.bi.users_list if u.get("id") == user_tg.id), None)
             if user and user.get("is_banned"):
+                is_admin = (self.bi.admin_chat_id and user_tg.id == self.bi.admin_chat_id)
+                if is_admin:
+                    # Пропускаем callback с разбаном
+                    if isinstance(event, CallbackQuery) and event.data == "selfunban":
+                        return await handler(event, data)
+                    unban_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="🔓 Разбанить себя", callback_data="selfunban")
+                    ]])
+                    try:
+                        if isinstance(event, Message):
+                            await event.answer(
+                                "⚠️ <b>Вы случайно забанили себя (администратора).</b>\n"
+                                "Нажмите кнопку ниже, чтобы снять блокировку:",
+                                reply_markup=unban_kb
+                            )
+                        elif isinstance(event, CallbackQuery):
+                            await event.answer("⚠️ Вы забанили себя. Напишите /start чтобы разбаниться.", show_alert=True)
+                    except Exception:
+                        pass
+                    return
                 if isinstance(event, Message):
                     try:
                         await event.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
@@ -846,6 +866,10 @@ class FreeBotInstance:
             return True
 
         elif command == "ban":
+            # Защита: нельзя забанить администратора
+            if self.admin_chat_id and uid == self.admin_chat_id:
+                await m.reply("⛔ <b>Нельзя забанить администратора бота.</b>")
+                return True
             target_user["is_banned"] = True
             self.stats_data["bannedCount"] = self.stats_data.get("bannedCount", 0) + 1
             await self._save_to_db()
@@ -869,6 +893,10 @@ class FreeBotInstance:
             return True
 
         elif command == "warn":
+            # Защита: нельзя выдать варн администратору
+            if self.admin_chat_id and uid == self.admin_chat_id:
+                await m.reply("⛔ <b>Нельзя выдать варн администратору бота.</b>")
+                return True
             target_user["warns"] = target_user.get("warns", 0) + 1
             if ban_limit > 0 and target_user["warns"] >= ban_limit:
                 target_user["is_banned"] = True
@@ -1013,7 +1041,17 @@ class FreeBotInstance:
 
             user, is_new = await self.get_user_state(m)
             if user.get("is_banned"):
-                await m.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
+                if self.admin_chat_id and m.from_user.id == self.admin_chat_id:
+                    unban_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="🔓 Разбанить себя", callback_data="selfunban")
+                    ]])
+                    await m.answer(
+                        "⚠️ <b>Вы случайно забанили себя (администратора).</b>\n"
+                        "Нажмите кнопку ниже, чтобы снять блокировку:",
+                        reply_markup=unban_kb
+                    )
+                else:
+                    await m.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
                 return
 
             reply_kb  = self.get_main_keyboard()
@@ -1075,6 +1113,27 @@ class FreeBotInstance:
                     pass
 
             await self.log_and_update(user["id"], m.from_user.full_name, "/start")
+
+        # ── 3а. Саморазбан администратора ───────────────────────────────────
+        @self.user_router.callback_query(lambda c: c.data == "selfunban")
+        async def handle_selfunban(cb: CallbackQuery):
+            uid_cb = cb.from_user.id
+            if not (self.admin_chat_id and uid_cb == self.admin_chat_id):
+                try:
+                    await cb.answer("⛔ Эта кнопка только для администратора.", show_alert=True)
+                except Exception:
+                    pass
+                return
+            user_cb = next((u for u in self.users_list if u.get("id") == uid_cb), None)
+            if user_cb:
+                user_cb["is_banned"] = False
+                user_cb["warns"] = 0
+                await self._push_state_immediate()
+            try:
+                await cb.message.edit_text("✅ <b>Блокировка снята. Вы снова администратор бота.</b>")
+                await cb.answer("✅ Разбан выполнен!", show_alert=False)
+            except Exception:
+                pass
 
         # ── 3. FIX v6: Callback-обработчик для инлайн-кнопок типа "message" ─
         @self.user_router.callback_query(lambda c: c.data and c.data.startswith("inl_msg:"))
@@ -1216,10 +1275,23 @@ class FreeBotInstance:
 
             user, is_new = await self.get_user_state(m)
             if user.get("is_banned"):
-                try:
-                    await m.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
-                except Exception:
-                    pass
+                if self.admin_chat_id and m.from_user.id == self.admin_chat_id:
+                    unban_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="🔓 Разбанить себя", callback_data="selfunban")
+                    ]])
+                    try:
+                        await m.answer(
+                            "⚠️ <b>Вы случайно забанили себя (администратора).</b>\n"
+                            "Нажмите кнопку ниже, чтобы снять блокировку:",
+                            reply_markup=unban_kb
+                        )
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        await m.answer("🚫 <b>Вы заблокированы в этом боте.</b>")
+                    except Exception:
+                        pass
                 return
 
             uid = user["id"]
