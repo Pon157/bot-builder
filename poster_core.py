@@ -656,11 +656,11 @@ async def del_channel(c: CallbackQuery, state: FSMContext):
 # ──────────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "tpl_none")
 async def tpl_none_chosen(c: CallbackQuery, state: FSMContext):
-    await state.update_data(active_template=None)
+    await state.update_data(active_template=None, tpl_fill_text="", tpl_text_filled=False)
     await c.answer()
     await _go_to_content(c.message, state)
 
-@dp.callback_query(F.data.startswith("tpl_pick_"))
+@dp.callback_query(F.data.startswith("tpl_pick_"), CreatePost.template_pick)
 async def tpl_pick_chosen(c: CallbackQuery, state: FSMContext):
     try:
         tid = int(c.data.split("_")[2])
@@ -669,56 +669,60 @@ async def tpl_pick_chosen(c: CallbackQuery, state: FSMContext):
     tpl = get_template(tid)
     if not tpl:
         return await c.answer("Шаблон не найден", show_alert=True)
-    await state.update_data(active_template=tid)
+
+    await state.update_data(active_template=tid, tpl_fill_text="", tpl_text_filled=False)
     await c.answer()
 
     body_has_text = "{текст}" in tpl.get("body", "")
-    ph_str = "<b>{текст}</b>" if body_has_text else "нет (шаблон фиксированный)"
+    ph_str = "<b>{текст}</b>" if body_has_text else "<i>нет — шаблон фиксированный</i>"
 
+    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Использовать", callback_data="tpl_confirm")],
+        [InlineKeyboardButton(text="🔙 Выбрать другой", callback_data="tpl_back")],
+    ])
     try:
         await c.message.edit_text(
             f"📄 <b>{pyhtml.escape(tpl['name'])}</b>\n\n"
             f"<b>Шаблон:</b>\n<code>{tpl_body_preview(tpl['body'])}</code>\n\n"
-            f"Плейсхолдеры: {ph_str}\n\n"
-            f"При публикации ты заполнишь их своим контентом.",
-            reply_markup=kb, parse_mode="HTML"
+            f"Плейсхолдер: {ph_str}",
+            reply_markup=confirm_kb, parse_mode="HTML"
         )
     except Exception:
         await c.message.answer(
             f"📄 <b>{pyhtml.escape(tpl['name'])}</b> выбран.",
-            reply_markup=kb, parse_mode="HTML"
+            reply_markup=confirm_kb, parse_mode="HTML"
         )
 
 @dp.callback_query(F.data == "tpl_confirm")
 async def tpl_confirm(c: CallbackQuery, state: FSMContext):
     await c.answer()
     data = await state.get_data()
-    tid = data.get("active_template")
-    tpl = get_template(tid) if tid is not None else None
+    tid  = data.get("active_template")
+    tpl  = get_template(tid) if tid is not None else None
     if not tpl:
         await _go_to_content(c.message, state)
         return
-    # Начинаем заполнение шаблона
     await _start_fill_template(c.message, state, tpl)
 
 @dp.callback_query(F.data == "tpl_back")
 async def tpl_back(c: CallbackQuery, state: FSMContext):
-    await state.update_data(active_template=None)
+    await state.update_data(active_template=None, tpl_fill_text="", tpl_text_filled=False)
     await state.set_state(CreatePost.template_pick)
-    kb = templates_list_kb(show_none=True)
     try:
-        await c.message.edit_text("📄 <b>Выбери шаблон</b>", reply_markup=kb, parse_mode="HTML")
+        await c.message.edit_text(
+            "📄 <b>Выбери шаблон</b>",
+            reply_markup=templates_list_kb(show_none=True), parse_mode="HTML"
+        )
     except Exception:
-        await c.message.answer("📄 <b>Выбери шаблон</b>", reply_markup=kb, parse_mode="HTML")
+        await c.message.answer(
+            "📄 <b>Выбери шаблон</b>",
+            reply_markup=templates_list_kb(show_none=True), parse_mode="HTML"
+        )
 
 async def _start_fill_template(msg, state: FSMContext, tpl: dict):
-    """Просит ввести {текст} для шаблона, затем идёт к обычному контенту (фото/медиа)."""
+    """Если шаблон имеет {текст} — просим его ввести. Потом спрашиваем медиа."""
     body = tpl.get("body", "")
-    needs_text = "{текст}" in body
-
-    await state.update_data(tpl_fill_text="")
-
-    if needs_text:
+    if "{текст}" in body:
         await state.set_state(CreatePost.fill_text)
         await msg.answer(
             f"✏️ <b>Шаблон «{pyhtml.escape(tpl['name'])}»</b>\n\n"
@@ -728,53 +732,54 @@ async def _start_fill_template(msg, state: FSMContext, tpl: dict):
             parse_mode="HTML"
         )
     else:
-        # Шаблон без {текст} — сразу спрашиваем медиа
+        # Нет {текст} — сразу к медиа
+        await state.update_data(tpl_text_filled=True)
         await _ask_for_media(msg, state)
 
 @dp.message(CreatePost.fill_text)
 async def fill_template_text(m: Message, state: FSMContext):
-    # Сохраняем текст в HTML
     filled_text = entities_to_html(m.text or "", m.entities)
-    await state.update_data(tpl_fill_text=filled_text)
+    await state.update_data(tpl_fill_text=filled_text, tpl_text_filled=True)
     await _ask_for_media(m, state)
 
 async def _ask_for_media(msg, state: FSMContext):
-    """После ввода текста — спрашиваем медиа (фото/видео и т.д.) или сразу к кнопкам."""
-    data = await state.get_data()
-    tid  = data.get("active_template")
-    tpl  = get_template(tid) if tid is not None else None
-
-    # Переходим к обычному шагу content, но с пометкой что текст уже заполнен
-    await state.update_data(tpl_text_filled=True)
+    """Переходим к шагу content с пометкой что нужно применить шаблон."""
     await state.set_state(CreatePost.content)
-
     await msg.answer(
         "🖼 <b>Медиа (необязательно)</b>\n\n"
-        "Прикрепи фото, видео, GIF или документ — они добавятся к посту.\n\n"
-        "Или отправь любой символ / точку <code>.</code> — пост будет только текстовым.\n\n"
+        "Прикрепи фото, видео, GIF или документ.\n\n"
+        "Или отправь точку <code>.</code> — пост будет только текстовым.\n\n"
         "<i>/cancel — отмена</i>",
         parse_mode="HTML"
     )
 
 async def _apply_template_and_go(msg, state: FSMContext, content: dict):
-    """Подставляет {текст} в шаблон, объединяет с медиа из content, идёт к кнопкам."""
+    """Подставляет {текст} в шаблон + прикрепляет медиа из content."""
     data      = await state.get_data()
     tid       = data.get("active_template")
     tpl       = get_template(tid) if tid is not None else None
     user_text = data.get("tpl_fill_text", "")
 
     if tpl:
-        filled_content = apply_template(tpl, user_text, photo_id=content.get("file_id") if content.get("type") == "photo" else None)
-        # Сохраняем тип медиа из content (фото/видео/etc), но текст из шаблона
-        if content.get("type") not in (None, "text") and content.get("file_id"):
-            filled_content["type"]    = content["type"]
-            filled_content["file_id"] = content["file_id"]
+        # Текст = шаблон с подставленным {текст}
+        body   = tpl.get("body", "")
+        filled_text = body.replace("{текст}", user_text).strip()
+
+        # Если у пользователя есть медиа — используем его, текст = caption
+        if content.get("type") not in (None, "text", "") and content.get("file_id"):
+            filled_content = {
+                "type":    content["type"],
+                "file_id": content["file_id"],
+                "text":    filled_text,
+            }
+        else:
+            filled_content = {"type": "text", "file_id": None, "text": filled_text}
     else:
         filled_content = content
 
     await state.update_data(content=filled_content)
 
-    # Кнопки из шаблона — подсказка
+    # Подсказка про кнопки шаблона
     tpl_btns_hint = ""
     if tpl and tpl.get("buttons_raw"):
         tpl_btns_hint = (
@@ -794,13 +799,13 @@ async def _apply_template_and_go(msg, state: FSMContext, content: dict):
     )
 
 async def _go_to_content(msg, state: FSMContext):
-    """Обычный путь без шаблона — к вводу контента."""
+    """Обычный путь без шаблона."""
     await state.set_state(CreatePost.content)
     await msg.answer(
-        "📝 <b>Шаг 1 — Контент поста</b>\n\n"
+        "📝 <b>Контент поста</b>\n\n"
         "Отправь что хочешь опубликовать:\n"
         "• Текст — <b>форматируй прямо в Telegram</b>\n"
-        "• Фото / Видео / GIF / Аудио / Документ\n"
+        "• Фото / Видео / GIF / Аудио / Документ / Стикер\n"
         "• Медиа + подпись\n\n"
         "<i>/cancel — отмена</i>",
         parse_mode="HTML"
@@ -815,38 +820,30 @@ async def step1_start(c: CallbackQuery, state: FSMContext):
     if not channels():
         return await c.answer("❌ Сначала добавь хотя бы один канал!", show_alert=True)
 
-    # Если шаблонов нет — сразу к контенту
+    await state.update_data(active_template=None, tpl_fill_text="", tpl_text_filled=False)
+
     if not templates():
-        await state.set_state(CreatePost.content)
-        await c.message.answer(
-            "📝 <b>Шаг 1 — Контент поста</b>\n\n"
-            "Отправь что хочешь опубликовать:\n"
-            "• Текст — <b>форматируй прямо в Telegram</b>\n"
-            "• Фото / Видео / GIF / Аудио / Документ / Стикер\n"
-            "• Медиа + подпись с форматированием\n\n"
-            "<i>/cancel — отмена</i>",
-            parse_mode="HTML"
-        )
+        # Шаблонов нет — сразу к контенту
+        await _go_to_content(c.message, state)
         return
 
     await state.set_state(CreatePost.template_pick)
-    kb = templates_list_kb(show_none=True)
     await c.message.answer(
         "📄 <b>Выбери шаблон</b>\n\n"
         "Или нажми «Без шаблона» — создать обычный пост.\n\n"
         "<i>/cancel — отмена</i>",
-        reply_markup=kb, parse_mode="HTML"
+        reply_markup=templates_list_kb(show_none=True), parse_mode="HTML"
     )
 
 # ──────────────────────────────────────────────────────────────
-# WIZARD: ШАГ 2 — КНОПКИ
+# WIZARD: ШАГ 2 — КОНТЕНТ
 # ──────────────────────────────────────────────────────────────
 @dp.message(CreatePost.content)
 async def step2_buttons(m: Message, state: FSMContext):
     content = extract_content(m)
     data    = await state.get_data()
 
-    # Если пришли сюда после заполнения шаблона — применяем шаблон
+    # Шаблонный путь — применяем шаблон
     if data.get("tpl_text_filled"):
         # Точка/пустышка = только текст, без медиа
         if content.get("type") == "text" and (content.get("text") or "").strip() in (".", "-", ""):
@@ -854,15 +851,14 @@ async def step2_buttons(m: Message, state: FSMContext):
         await _apply_template_and_go(m, state, content)
         return
 
-    # Обычный путь без шаблона
+    # Обычный путь
     await state.update_data(content=content)
     await state.set_state(CreatePost.buttons)
     await m.answer(
-        "🔘 <b>Шаг 2 — Инлайн кнопки</b>\n\n"
+        "🔘 <b>Инлайн кнопки</b>\n\n"
         "Формат:\n"
-        "<code>Текст кнопки | https://ссылка.com</code>\n"
-        "<code>Ещё кнопка  | https://другая.com</code>\n\n"
-        "Напиши <b>нет</b> — пропустить кнопки.\n\n"
+        "<code>Текст кнопки | https://ссылка.com</code>\n\n"
+        "Напиши <b>нет</b> — без кнопок.\n\n"
         "<i>/cancel — отмена</i>",
         parse_mode="HTML"
     )
