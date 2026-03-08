@@ -89,6 +89,35 @@ def get_anon_id(user_id: int) -> str:
     """Генерация короткого хеша для анонимности"""
     return hashlib.md5(str(user_id).encode()).hexdigest()[:6].upper()
 
+# ── ПРИОРИТЕТЫ ТИКЕТОВ ────────────────────────────────────────────────────────
+PRIORITY_LEVELS = {
+    "normal": {
+        "label": "Нейтральный",
+        "prefix": "🟡",
+        "notify_user": "ℹ️ <b>Приоритет вашего обращения:</b> Нейтральный.",
+    },
+    "high": {
+        "label": "Высокий",
+        "prefix": "🔴",
+        "notify_user": "🔴 <b>Приоритет вашего обращения повышен!</b>\nОператоры рассмотрят его в первую очередь.",
+    },
+    "low": {
+        "label": "Низкий",
+        "prefix": "⚪",
+        "notify_user": "⚪ <b>Приоритет вашего обращения снижен.</b>\nОбращение будет рассмотрено в порядке общей очереди.",
+    },
+}
+
+def build_topic_name(user: dict, settings: dict, priority: str = "normal") -> str:
+    """Формирует название топика с учётом приоритета."""
+    is_anon = settings.get('anonymousTopics', False)
+    prefix = PRIORITY_LEVELS.get(priority, PRIORITY_LEVELS["normal"])["prefix"]
+    if is_anon:
+        base = f"#{get_anon_id(user['id'])}"
+    else:
+        base = f"{user.get('first_name', 'Пользователь')} [{user['id']}]"
+    return f"{prefix} {base}"
+
 def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_text: str = "") -> str:
     """Формирование заголовка сообщения для админа"""
     is_anon = settings.get('anonymousTopics', False)
@@ -1292,8 +1321,8 @@ class BotInstance:
 
         # Создаем новый топик
         try:
-            is_anon = self.settings.get('anonymousTopics', False)
-            topic_name = f"#{get_anon_id(user['id'])}" if is_anon else f"{user['first_name']} [{user['id']}]"
+            priority = user.get("priority", "normal")
+            topic_name = build_topic_name(user, self.settings, priority)
             
             # Сама команда создания в Telegram
             new_topic = await self.bot.create_forum_topic(self.admin_chat_id, topic_name)
@@ -1696,6 +1725,66 @@ class BotInstance:
             target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
             await self._save_to_db(headers)
             await m.reply(f"✅ Предупреждение снято. Теперь варнов у <code>{uid}</code>: {target_user['warns']}")
+            return True
+
+        # 🎯 ПРИОРИТЕТ ТИКЕТА
+        elif command == "priority":
+            if len(cmd_parts) < 2:
+                await m.reply(
+                    "🎯 <b>Управление приоритетом:</b>\n\n"
+                    "/priority high — 🔴 Высокий\n"
+                    "/priority normal — 🟡 Нейтральный\n"
+                    "/priority low — ⚪ Низкий\n\n"
+                    "<i>Используйте команду в топике пользователя или с реплаем на его сообщение.</i>"
+                )
+                return True
+
+            level = cmd_parts[1].lower()
+            if level not in PRIORITY_LEVELS:
+                await m.reply("❌ Неверный уровень. Доступны: <code>high</code>, <code>normal</code>, <code>low</code>")
+                return True
+
+            pinfo = PRIORITY_LEVELS[level]
+            target_user["priority"] = level
+
+            # Переименовываем топик
+            thread_id = target_user.get("last_topic_id")
+            if thread_id and self.use_topics:
+                new_name = build_topic_name(target_user, self.settings, level)
+                try:
+                    await self.bot.edit_forum_topic(
+                        chat_id=self.admin_chat_id,
+                        message_thread_id=thread_id,
+                        name=new_name
+                    )
+                except Exception as e:
+                    logger.warning(f"Не удалось переименовать топик: {e}")
+
+            # Уведомляем пользователя
+            try:
+                await self.bot.send_message(uid, pinfo["notify_user"], parse_mode="HTML")
+            except Exception:
+                pass
+
+            # Уведомление в топик для команды
+            admin_note_lines = {
+                "high": "🔴 <b>ВЫСОКИЙ ПРИОРИТЕТ</b>\nОбращение помечено как срочное и требует первоочередной обработки.",
+                "normal": "🟡 <b>Нейтральный приоритет</b>\nОбращение переведено в стандартную очередь.",
+                "low": "⚪ <b>Низкий приоритет</b>\nОбращение помечено как несрочное.",
+            }
+            try:
+                if thread_id:
+                    await self.bot.send_message(
+                        chat_id=self.admin_chat_id,
+                        message_thread_id=thread_id,
+                        text=admin_note_lines[level],
+                        parse_mode="HTML"
+                    )
+            except Exception:
+                pass
+
+            await self._save_to_db(headers)
+            await m.reply(f"✅ Приоритет установлен: {pinfo['prefix']} <b>{pinfo['label']}</b>\nПользователь уведомлён.")
             return True
 
         return False
