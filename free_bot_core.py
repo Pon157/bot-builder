@@ -61,7 +61,7 @@ class BanMiddleware(BaseMiddleware):
         if user_tg:
             user = next((u for u in self.bi.users_list if u.get("id") == user_tg.id), None)
             if user and user.get("is_banned"):
-                is_admin = (self.bi.admin_chat_id and user_tg.id == self.bi.admin_chat_id)
+                is_admin = (user_tg.id in self.bi.admin_ids) if self.bi.admin_ids else False
                 if is_admin:
                     # Пропускаем callback с разбаном
                     if isinstance(event, CallbackQuery) and event.data == "selfunban":
@@ -191,6 +191,10 @@ class FreeBotInstance:
             self.admin_chat_id = int(str(admin_raw).strip()) if admin_raw else None
         except (ValueError, TypeError):
             self.admin_chat_id = None
+
+        # Личные Telegram ID владельцев/администраторов бота
+        raw_admin_ids = raw_cfg.get("adminIds") or data.get("adminIds") or []
+        self.admin_ids: set = set(int(x) for x in raw_admin_ids if x)
 
         self.settings       = raw_cfg.get("settings") or {}
         self.use_topics     = self.settings.get("useTopics", False)
@@ -867,7 +871,7 @@ class FreeBotInstance:
 
         elif command == "ban":
             # Защита: нельзя забанить администратора
-            if self.admin_chat_id and uid == self.admin_chat_id:
+            if uid in self.admin_ids:
                 await m.reply("⛔ <b>Нельзя забанить администратора бота.</b>")
                 return True
             target_user["is_banned"] = True
@@ -894,7 +898,7 @@ class FreeBotInstance:
 
         elif command == "warn":
             # Защита: нельзя выдать варн администратору
-            if self.admin_chat_id and uid == self.admin_chat_id:
+            if uid in self.admin_ids:
                 await m.reply("⛔ <b>Нельзя выдать варн администратору бота.</b>")
                 return True
             target_user["warns"] = target_user.get("warns", 0) + 1
@@ -1041,7 +1045,7 @@ class FreeBotInstance:
 
             user, is_new = await self.get_user_state(m)
             if user.get("is_banned"):
-                if self.admin_chat_id and m.from_user.id == self.admin_chat_id:
+                if m.from_user.id in self.admin_ids:
                     unban_kb = InlineKeyboardMarkup(inline_keyboard=[[
                         InlineKeyboardButton(text="🔓 Разбанить себя", callback_data="selfunban")
                     ]])
@@ -1118,7 +1122,7 @@ class FreeBotInstance:
         @self.user_router.callback_query(lambda c: c.data == "selfunban")
         async def handle_selfunban(cb: CallbackQuery):
             uid_cb = cb.from_user.id
-            if not (self.admin_chat_id and uid_cb == self.admin_chat_id):
+            if uid_cb not in self.admin_ids:
                 try:
                     await cb.answer("⛔ Эта кнопка только для администратора.", show_alert=True)
                 except Exception:
@@ -1275,7 +1279,7 @@ class FreeBotInstance:
 
             user, is_new = await self.get_user_state(m)
             if user.get("is_banned"):
-                if self.admin_chat_id and m.from_user.id == self.admin_chat_id:
+                if m.from_user.id in self.admin_ids:
                     unban_kb = InlineKeyboardMarkup(inline_keyboard=[[
                         InlineKeyboardButton(text="🔓 Разбанить себя", callback_data="selfunban")
                     ]])
@@ -1486,117 +1490,13 @@ class FreeBotInstance:
     # ЗАПУСК
     # ─────────────────────────────────────────────────────────────────────────
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # ЗАЩИТА ОТ КОНКУРИРУЮЩИХ ИНСТАНСОВ
-    # ─────────────────────────────────────────────────────────────────────────
-
-    async def _acquire_exclusive_lock(self) -> bool:
-        """
-        Проверяет и захватывает эксклюзивный контроль над токеном.
-        Сбрасывает webhook и конкурирующие polling-сессии через Telegram API.
-        Возвращает True если бот успешно захватил управление.
-        """
-        try:
-            # 1. Сначала удаляем webhook (если кто-то его поставил)
-            wh_info = await self.bot.get_webhook_info()
-            if wh_info.url:
-                logger.warning(
-                    f"[{self.bot_id}] Обнаружен активный webhook: {wh_info.url!r} — удаляю"
-                )
-                await self.bot.delete_webhook(drop_pending_updates=True)
-                await asyncio.sleep(1)
-
-            # 2. Пробуем getUpdates с offset=−1 и timeout=0 — если вернёт 409,
-            #    значит другой клиент уже держит polling.
-            try:
-                await self.bot.get_updates(offset=-1, limit=1, timeout=0,
-                                           allowed_updates=[])
-            except Exception as e:
-                err = str(e)
-                if "409" in err or "Conflict" in err.lower():
-                    logger.warning(
-                        f"[{self.bot_id}] Конфликт polling (409): "
-                        f"токен уже используется во внешнем конструкторе. "
-                        f"Жду 5 сек и повторяю..."
-                    )
-                    await asyncio.sleep(5)
-                    # Повторная попытка — внешний клиент должен был отвалиться
-                    try:
-                        await self.bot.get_updates(offset=-1, limit=1, timeout=0,
-                                                   allowed_updates=[])
-                    except Exception as e2:
-                        if "409" in str(e2) or "Conflict" in str(e2).lower():
-                            logger.error(
-                                f"[{self.bot_id}] Не удалось вытеснить внешний polling за 5 сек. "
-                                f"Пользователь должен отключить бота от стороннего конструктора."
-                            )
-                            # Уведомляем в БД о проблеме
-                            await self._mark_conflict_in_db()
-                            return False
-
-            logger.info(f"[{self.bot_id}] Эксклюзивный захват токена выполнен ✅")
-            return True
-
-        except TelegramForbiddenError:
-            logger.error(f"[{self.bot_id}] Токен отозван или бот заблокирован.")
-            return False
-        except Exception as e:
-            logger.warning(f"[{self.bot_id}] _acquire_exclusive_lock error (non-fatal): {e}")
-            return True  # не блокируем запуск при неизвестных ошибках
-
-    async def _mark_conflict_in_db(self):
-        """Записывает в БД что бот не может стартовать из-за конфликта токена."""
-        try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                await client.patch(
-                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                    json={"status": "CONFLICT"},
-                    headers={**self.headers, "Prefer": "return=minimal"}
-                )
-        except Exception:
-            pass
-
-    async def _conflict_watchdog(self):
-        """
-        Фоновый мониторинг: если Telegram вернёт 409 во время работы —
-        логируем и при необходимости перезапускаем polling.
-        """
-        await asyncio.sleep(60)
-        while self.is_running:
-            try:
-                me = await self.bot.get_me()
-                logger.debug(f"[{self.bot_id}] Watchdog: бот @{me.username} работает нормально")
-            except Exception as e:
-                err = str(e)
-                if "409" in err or "Conflict" in err.lower():
-                    logger.warning(
-                        f"[{self.bot_id}] Watchdog: обнаружен конфликт 409. "
-                        f"Внешний конструктор перехватил polling. Останавливаю бота."
-                    )
-                    await self._mark_conflict_in_db()
-                    self.is_running = False
-                    # Принудительно останавливаем dispatcher
-                    await self.dp.stop_polling()
-                    return
-            await asyncio.sleep(60)
-
     async def run_instance(self):
         logger.info(f"[FREE] Бот {self.bot_id} стартует...")
 
         await self.sync_database_logic()
 
-        # ── Захват эксклюзивного контроля над токеном ──────────────────────
-        lock_ok = await self._acquire_exclusive_lock()
-        if not lock_ok:
-            logger.error(
-                f"[{self.bot_id}] СТОП: токен уже используется в другом конструкторе. "
-                f"Попросите пользователя отключить бота от стороннего сервиса."
-            )
-            return
-
         asyncio.create_task(self.config_sync_loop())
         asyncio.create_task(self.daily_stats_rotator())
-        asyncio.create_task(self._conflict_watchdog())
 
         await self.core_handlers_setup()
 
@@ -1617,19 +1517,8 @@ class FreeBotInstance:
             await self.dp.start_polling(
                 self.bot,
                 drop_pending_updates=True,
-                allowed_updates=["message", "callback_query", "my_chat_member"],
-                handle_signals=False,
+                allowed_updates=["message", "callback_query", "my_chat_member"]
             )
-        except Exception as e:
-            err = str(e)
-            if "409" in err or "Conflict" in err.lower():
-                logger.error(
-                    f"[{self.bot_id}] Polling завершён из-за конфликта 409. "
-                    f"Токен используется в другом конструкторе — помечаю CONFLICT."
-                )
-                await self._mark_conflict_in_db()
-            else:
-                logger.error(f"[{self.bot_id}] Polling error: {e}")
         finally:
             self.is_running = False
             await self.bot.session.close()
