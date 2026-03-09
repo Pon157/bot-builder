@@ -47,7 +47,7 @@ class SubscriptionMiddleware(BaseMiddleware):
     """
     Проверяет обязательную подписку на каналы/чаты перед обработкой сообщения.
     Если пользователь не подписан — отправляет список каналов с кнопкой проверки.
-    Пропускает: администраторов бота, команду /start, callback с check_sub.
+    Пропускает: администраторов бота, callback с check_sub.
     """
     def __init__(self, bot_instance):
         self.bot_instance = bot_instance
@@ -75,10 +75,6 @@ class SubscriptionMiddleware(BaseMiddleware):
 
         # Пропускаем callback "check_sub" — это кнопка проверки подписки
         if isinstance(event, CallbackQuery) and event.data == "check_sub":
-            return await handler(event, data)
-
-        # Пропускаем /start только для первой загрузки (до проверки)
-        if isinstance(event, Message) and event.text and event.text.startswith('/start'):
             return await handler(event, data)
 
         # Проверяем подписку на все каналы
@@ -1929,17 +1925,19 @@ class BotInstance:
             logging.error(f"❌ Ошибка сохранения в БД: {e}")
         
     async def core_handlers_setup(self):
-        # Регистрируем проверку бана ПЕРВОЙ для всех типов событий
+        # В aiogram 3 middleware выполняются в порядке регистрации (onion model).
+        # Первым регистрируем подписку — она обёртывает всё остальное.
+        # Если не подписан — блокируем сразу, не доходим до бана/лицензии.
+        self.router.message.middleware(SubscriptionMiddleware(self))
+        self.router.callback_query.middleware(SubscriptionMiddleware(self))
+
+        # Проверка бана
         self.router.message.middleware(BanMiddleware(self))
-        self.router.callback_query.middleware(BanMiddleware(self)) # Чтобы кнопки не жались
+        self.router.callback_query.middleware(BanMiddleware(self))
         
         # Проверка лицензии
         self.router.message.middleware(LicenseMiddleware(self))
         self.router.callback_query.middleware(LicenseMiddleware(self))
-
-        # Проверка обязательной подписки (ПОСЛЕ бана и лицензии)
-        self.router.message.middleware(SubscriptionMiddleware(self))
-        self.router.callback_query.middleware(SubscriptionMiddleware(self))
 
         # Обработчик кнопки "Я подписался — проверить"
         @self.router.callback_query(F.data == "check_sub")
