@@ -43,6 +43,84 @@ class LicenseMiddleware(BaseMiddleware):
             return 
         return await handler(event, data)
 
+class SubscriptionMiddleware(BaseMiddleware):
+    """
+    Проверяет обязательную подписку на каналы/чаты перед обработкой сообщения.
+    Если пользователь не подписан — отправляет список каналов с кнопкой проверки.
+    Пропускает: администраторов бота, команду /start, callback с check_sub.
+    """
+    def __init__(self, bot_instance):
+        self.bot_instance = bot_instance
+        super().__init__()
+
+    async def __call__(
+        self,
+        handler: Callable[[Any, Dict[str, Any]], Awaitable[Any]],
+        event: Any,
+        data: Dict[str, Any]
+    ) -> Any:
+        required_channels = getattr(self.bot_instance, 'required_channels', [])
+        if not required_channels:
+            return await handler(event, data)
+
+        user_tg = getattr(event, 'from_user', None)
+        if not user_tg:
+            return await handler(event, data)
+
+        user_id = user_tg.id
+
+        # Пропускаем администраторов
+        if user_id in (self.bot_instance.admin_ids or set()):
+            return await handler(event, data)
+
+        # Пропускаем callback "check_sub" — это кнопка проверки подписки
+        if isinstance(event, CallbackQuery) and event.data == "check_sub":
+            return await handler(event, data)
+
+        # Пропускаем /start только для первой загрузки (до проверки)
+        if isinstance(event, Message) and event.text and event.text.startswith('/start'):
+            return await handler(event, data)
+
+        # Проверяем подписку на все каналы
+        not_subscribed = []
+        for ch in required_channels:
+            ch_id = ch.get('id', '').strip()
+            if not ch_id:
+                continue
+            try:
+                member = await self.bot_instance.bot.get_chat_member(ch_id, user_id)
+                if member.status in ('left', 'kicked', 'banned'):
+                    not_subscribed.append(ch)
+            except Exception:
+                not_subscribed.append(ch)  # Если ошибка — считаем не подписан
+
+        if not_subscribed:
+            # Строим список каналов с кнопками
+            rows = []
+            for ch in not_subscribed:
+                label = ch.get('title') or ch.get('id', 'Канал')
+                url = ch.get('url', '')
+                if url:
+                    rows.append([InlineKeyboardButton(text=f"📢 {label}", url=url)])
+                else:
+                    rows.append([InlineKeyboardButton(text=f"📢 {label}", url=f"https://t.me/{str(ch.get('id','')).lstrip('@')}")])
+            rows.append([InlineKeyboardButton(text="✅ Я подписался — проверить", callback_data="check_sub")])
+            kb = InlineKeyboardMarkup(inline_keyboard=rows)
+
+            msg_text = (
+                "🔒 <b>Для использования бота необходимо подписаться на наши каналы:</b>\n\n"
+                + "\n".join(f"• {ch.get('title') or ch.get('id', 'Канал')}" for ch in not_subscribed)
+                + "\n\nПосле подписки нажмите кнопку ниже 👇"
+            )
+            if isinstance(event, Message):
+                await event.answer(msg_text, reply_markup=kb)
+            elif isinstance(event, CallbackQuery):
+                await event.answer("Вы ещё не подписались на все каналы!", show_alert=True)
+            return  # Блокируем дальнейшую обработку
+
+        return await handler(event, data)
+
+
 class BanMiddleware(BaseMiddleware):
     def __init__(self, bot_instance):
         self.bot_instance = bot_instance
@@ -609,6 +687,11 @@ class BotInstance:
         # buttons теперь могут содержать children: [{text, response, type, children:[...]}]
         # и triggerFlow: {...}
         
+        # ── Обязательная подписка ──
+        # Список: [{id: "@channel", title: "Название", url: "https://..."}]
+        sub_enabled = full_cfg.get('requiredSubEnabled', False)
+        self.required_channels = full_cfg.get('requiredChannels', []) if sub_enabled else []
+
         # Статистика
         incoming_stats = full_cfg.get('stats', {})
         self.stats_data = {
@@ -1853,6 +1936,63 @@ class BotInstance:
         # Проверка лицензии
         self.router.message.middleware(LicenseMiddleware(self))
         self.router.callback_query.middleware(LicenseMiddleware(self))
+
+        # Проверка обязательной подписки (ПОСЛЕ бана и лицензии)
+        self.router.message.middleware(SubscriptionMiddleware(self))
+        self.router.callback_query.middleware(SubscriptionMiddleware(self))
+
+        # Обработчик кнопки "Я подписался — проверить"
+        @self.router.callback_query(F.data == "check_sub")
+        async def handle_check_sub(cb: CallbackQuery):
+            required_channels = getattr(self, 'required_channels', [])
+            user_id = cb.from_user.id
+            not_subscribed = []
+            for ch in required_channels:
+                ch_id = ch.get('id', '').strip()
+                if not ch_id:
+                    continue
+                try:
+                    member = await self.bot.get_chat_member(ch_id, user_id)
+                    if member.status in ('left', 'kicked', 'banned'):
+                        not_subscribed.append(ch)
+                except Exception:
+                    not_subscribed.append(ch)
+
+            if not_subscribed:
+                await cb.answer("❌ Вы ещё не подписались на все каналы!", show_alert=True)
+            else:
+                await cb.answer("✅ Отлично! Теперь вы можете пользоваться ботом.", show_alert=True)
+                try:
+                    await cb.message.delete()
+                except Exception:
+                    pass
+                # Показываем стартовое сообщение
+                user_rec = next((u for u in self.users_list if u['id'] == user_id), None)
+                if not user_rec:
+                    user_rec = {
+                        "id": user_id, "first_name": cb.from_user.first_name,
+                        "username": cb.from_user.username, "is_banned": False,
+                        "is_active": True, "warns": 0,
+                        "joined_at": int(time.time()), "last_seen": int(time.time()),
+                        "last_topic_id": None
+                    }
+                    self.users_list.append(user_rec)
+                reply_kb  = self.get_main_keyboard()
+                inline_kb = self.build_inline_from_list(self.welcome_inline)
+                try:
+                    if self.welcome_photo:
+                        await self.bot.send_photo(
+                            chat_id=user_id, photo=self.welcome_photo,
+                            caption=self.welcome_text,
+                            reply_markup=inline_kb if inline_kb else reply_kb
+                        )
+                    else:
+                        await self.bot.send_message(
+                            chat_id=user_id, text=self.welcome_text,
+                            reply_markup=inline_kb if inline_kb else reply_kb
+                        )
+                except Exception as e:
+                    logger.warning(f"check_sub welcome error: {e}")
 
         # 1. Обработка блокировки бота пользователем
         @self.router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=ChatMemberStatus.KICKED))
