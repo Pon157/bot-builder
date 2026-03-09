@@ -65,7 +65,7 @@ class BanMiddleware(BaseMiddleware):
             # ЖЕЛЕЗОБЕТОН: Если забанен — СРАЗУ БЛОК без проверки админа
             if user and user.get("is_banned"):
                 # Если это АДМИН — предлагаем разбаниться, не блокируем
-                is_admin = (self.bot_instance.admin_chat_id and user_id == self.bot_instance.admin_chat_id)
+                is_admin = (user_id in self.bot_instance.admin_ids) if self.bot_instance.admin_ids else False
                 if is_admin:
                     # Пропускаем callback с разбаном
                     if isinstance(event, CallbackQuery) and event.data == "selfunban":
@@ -552,9 +552,13 @@ class BotInstance:
         
         self.vk_group_id = full_cfg.get('vk_group_id') or full_cfg.get('vkGroupId')
 
-        # Читаем Admin ID
+        # Читаем Admin ID (ID чата/форума для пересылки)
         admin_id_raw = full_cfg.get('admin_chat_id') or full_cfg.get('adminChatId')
         self.admin_chat_id = int(str(admin_id_raw).strip()) if admin_id_raw else None
+
+        # Читаем список личных Telegram ID владельцев/администраторов бота
+        raw_admin_ids = full_cfg.get('adminIds', [])
+        self.admin_ids: set = set(int(x) for x in raw_admin_ids if x)
 
         # Настройки безопасности и тем
         self.settings = full_cfg.get('settings', {})
@@ -1702,7 +1706,7 @@ class BotInstance:
         # 🚫 БАН
         if command == "ban":
             # Защита: нельзя забанить администратора
-            if self.admin_chat_id and uid == self.admin_chat_id:
+            if uid in self.admin_ids:
                 await m.reply("⛔ <b>Нельзя забанить администратора бота.</b>")
                 return True
             target_user["is_banned"] = True
@@ -1727,7 +1731,7 @@ class BotInstance:
         # ⚠️ ВАРН
         elif command == "warn":
             # Защита: нельзя выдать варн администратору
-            if self.admin_chat_id and uid == self.admin_chat_id:
+            if uid in self.admin_ids:
                 await m.reply("⛔ <b>Нельзя выдать варн администратору бота.</b>")
                 return True
             target_user["warns"] = target_user.get("warns", 0) + 1
@@ -1872,7 +1876,7 @@ class BotInstance:
         async def handle_start_msg(m: Message):
             user, is_new = await self.get_user_state(m)
             if user.get("is_banned"):
-                if self.admin_chat_id and m.from_user.id == self.admin_chat_id:
+                if m.from_user.id in self.admin_ids:
                     unban_kb = InlineKeyboardMarkup(inline_keyboard=[[
                         InlineKeyboardButton(text="🔓 Разбанить себя", callback_data="selfunban")
                     ]])
@@ -1953,7 +1957,7 @@ class BotInstance:
             
             # Заблокированный — отвечаем и СРАЗУ выходим
             if user.get("is_banned"):
-                if self.admin_chat_id and m.from_user.id == self.admin_chat_id:
+                if m.from_user.id in self.admin_ids:
                     unban_kb = InlineKeyboardMarkup(inline_keyboard=[[
                         InlineKeyboardButton(text="🔓 Разбанить себя", callback_data="selfunban")
                     ]])
@@ -2213,7 +2217,7 @@ class BotInstance:
         async def on_selfunban(cb: CallbackQuery):
             uid_cb = cb.from_user.id
             # Только администратор может использовать эту кнопку
-            if not (self.admin_chat_id and uid_cb == self.admin_chat_id):
+            if uid_cb not in self.admin_ids:
                 await cb.answer("⛔ Эта кнопка только для администратора.", show_alert=True)
                 return
             user_cb = next((u for u in self.users_list if u.get('id') == uid_cb), None)
