@@ -920,8 +920,10 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                   )}
                 </section>
               )}
+            </div>
+          )}
 
-
+          {/* Зона опасных действий */}
           <div className="lg:col-span-2 mt-4">
             {isAdminMode ? (
               <div className="p-6 border border-zinc-800 bg-zinc-900/40 rounded-[2rem] flex items-center gap-4 opacity-50 pointer-events-none">
