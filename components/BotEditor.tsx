@@ -776,10 +776,152 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                   ))}
                 </div>
               </div>
-            </div>
-          )}
+              {/* ── ОБЯЗАТЕЛЬНАЯ ПОДПИСКА ── */}
+              {!isVK && (
+                <section className="bg-[#111] border border-violet-500/20 p-8 rounded-[2.5rem] space-y-5">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
+                      <Lock className="w-4 h-4 text-violet-400" />Обязательная подписка
+                    </h3>
+                    <button
+                      onClick={() => {
+                        const enabled = !(bot.requiredSubEnabled ?? false);
+                        handleLocalUpdate({ ...bot, requiredSubEnabled: enabled });
+                      }}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[9px] font-black uppercase border transition-all ${
+                        bot.requiredSubEnabled
+                          ? 'bg-violet-500/15 border-violet-500/30 text-violet-300'
+                          : 'bg-black border-zinc-800 text-zinc-500'
+                      }`}
+                    >
+                      {bot.requiredSubEnabled
+                        ? <ToggleRight className="w-4 h-4" />
+                        : <ToggleLeft className="w-4 h-4" />}
+                      {bot.requiredSubEnabled ? 'Включено' : 'Выключено'}
+                    </button>
+                  </div>
 
-          {/* Зона опасных действий */}
+                  {/* Уведомление */}
+                  <div className="bg-amber-500/8 border border-amber-500/20 rounded-2xl p-4 flex gap-3">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <p className="text-[10px] font-black text-amber-300 uppercase tracking-wide">Перед добавлением канала/чата</p>
+                      <p className="text-[9px] text-amber-400/70 leading-relaxed">
+                        Бот <b>должен быть добавлен в канал/чат как администратор</b> (или хотя бы участник для публичных каналов), чтобы иметь возможность проверять подписку пользователей через <code className="text-amber-300">get_chat_member</code>.
+                      </p>
+                    </div>
+                  </div>
+
+                  {bot.requiredSubEnabled && (
+                    <div className="space-y-4 animate-in fade-in duration-200">
+                      <div className="space-y-3">
+                        {((bot.requiredChannels || []) as any[]).map((ch: any, idx: number) => (
+                          <div key={idx} className="bg-black border border-zinc-800 rounded-2xl p-4 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[9px] font-black text-zinc-500 uppercase tracking-wider flex items-center gap-1.5">
+                                <Hash className="w-2.5 h-2.5 text-violet-400" />Канал / Чат #{idx + 1}
+                              </span>
+                              <button
+                                onClick={() => {
+                                  const chs = (bot.requiredChannels || []).filter((_: any, i: number) => i !== idx);
+                                  handleLocalUpdate({ ...bot, requiredChannels: chs });
+                                }}
+                                className="w-7 h-7 flex items-center justify-center rounded-lg bg-rose-500/10 text-rose-500 hover:bg-rose-500/20 transition-all"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                            <div className="grid grid-cols-1 gap-2">
+                              <div>
+                                <span className="text-[8px] text-zinc-600 uppercase font-bold ml-1">ID канала / чата</span>
+                                <input
+                                  type="text"
+                                  placeholder="@mychannel или -1001234567890"
+                                  className="w-full mt-1.5 bg-zinc-900 border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-violet-500 transition-all font-mono"
+                                  value={ch.id || ''}
+                                  onChange={e => {
+                                    const chs = [...(bot.requiredChannels || [])];
+                                    chs[idx] = { ...chs[idx], id: e.target.value };
+                                    handleLocalUpdate({ ...bot, requiredChannels: chs });
+                                  }}
+                                />
+                              </div>
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <span className="text-[8px] text-zinc-600 uppercase font-bold ml-1">Название (для юзера)</span>
+                                  <input
+                                    type="text"
+                                    placeholder="Наш канал"
+                                    className="w-full mt-1.5 bg-zinc-900 border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-violet-500 transition-all"
+                                    value={ch.title || ''}
+                                    onChange={e => {
+                                      const chs = [...(bot.requiredChannels || [])];
+                                      chs[idx] = { ...chs[idx], title: e.target.value };
+                                      handleLocalUpdate({ ...bot, requiredChannels: chs });
+                                    }}
+                                  />
+                                </div>
+                                <div>
+                                  <span className="text-[8px] text-zinc-600 uppercase font-bold ml-1">Ссылка (кнопка)</span>
+                                  <input
+                                    type="text"
+                                    placeholder="https://t.me/mychannel"
+                                    className="w-full mt-1.5 bg-zinc-900 border border-zinc-800 p-3 rounded-xl text-xs text-white outline-none focus:border-violet-500 transition-all"
+                                    value={ch.url || ''}
+                                    onChange={e => {
+                                      const chs = [...(bot.requiredChannels || [])];
+                                      chs[idx] = { ...chs[idx], url: e.target.value };
+                                      handleLocalUpdate({ ...bot, requiredChannels: chs });
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          const chs = [...(bot.requiredChannels || []), { id: '', title: '', url: '' }];
+                          handleLocalUpdate({ ...bot, requiredChannels: chs });
+                        }}
+                        className="w-full py-3.5 rounded-2xl border border-dashed border-violet-500/30 text-violet-400 text-[10px] font-black uppercase tracking-wider hover:bg-violet-500/5 transition-all flex items-center justify-center gap-2"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> Добавить канал / чат
+                      </button>
+
+                      {(bot.requiredChannels || []).length > 0 && (
+                        <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-4">
+                          <p className="text-[8px] text-zinc-500 uppercase font-black mb-2 flex items-center gap-1.5">
+                            <Smartphone className="w-2.5 h-2.5" />Превью сообщения для пользователя
+                          </p>
+                          <div className="bg-black rounded-xl p-3 space-y-2">
+                            <p className="text-[10px] text-white leading-relaxed">
+                              🔒 <b>Для использования бота необходимо подписаться на наши каналы:</b>
+                            </p>
+                            {((bot.requiredChannels || []) as any[]).filter((c: any) => c.id || c.title).map((c: any, i: number) => (
+                              <p key={i} className="text-[10px] text-zinc-400">• {c.title || c.id}</p>
+                            ))}
+                            <div className="mt-2 space-y-1.5">
+                              {((bot.requiredChannels || []) as any[]).filter((c: any) => c.title || c.id).map((c: any, i: number) => (
+                                <div key={i} className="bg-violet-500/10 border border-violet-500/20 rounded-lg py-2 px-3 text-center text-[10px] text-violet-300 font-semibold">
+                                  📢 {c.title || c.id}
+                                </div>
+                              ))}
+                              <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg py-2 px-3 text-center text-[10px] text-emerald-300 font-semibold">
+                                ✅ Я подписался — проверить
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </section>
+              )}
+
+
           <div className="lg:col-span-2 mt-4">
             {isAdminMode ? (
               <div className="p-6 border border-zinc-800 bg-zinc-900/40 rounded-[2rem] flex items-center gap-4 opacity-50 pointer-events-none">
