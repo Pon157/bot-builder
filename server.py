@@ -636,6 +636,8 @@ async def get_user_bots(user_id: str):
             bot["ai"]           = cfg.get("ai", {})
             bot["welcomePhoto"] = cfg.get("welcomePhoto", "")
             bot["welcomeInline"]= cfg.get("welcomeInline", [])
+            bot["requiredSubEnabled"] = cfg.get("requiredSubEnabled", False)
+            bot["requiredChannels"]   = cfg.get("requiredChannels",   [])
 
             # --- КРИТИЧНО ДЛЯ АНАЛИТИКИ ---
             # Статистика может быть в колонке stats ИЛИ внутри config.stats.
@@ -701,8 +703,6 @@ async def save_bot(b: dict):
                     "botLink":    b.get("botLink",    ""),
                     "lotteries":  [],
                     "users":      [],
-                    "requiredSubEnabled": b.get("requiredSubEnabled", False),
-                    "requiredChannels":   b.get("requiredChannels",   []),
                 },
                 "stats": {},
                 "admin_chat_id": None,
@@ -822,9 +822,6 @@ async def save_bot(b: dict):
             "users":      old_config.get("users",     []),
             # AI-конфиг
             "ai": ai_config,
-            # Обязательная подписка
-            "requiredSubEnabled": get_val("requiredSubEnabled", False),
-            "requiredChannels":   get_val("requiredChannels",   []),
         }
 
         # 5. ТОКЕН (Берем новый или оставляем старый зашифрованный)
@@ -865,6 +862,8 @@ async def save_bot(b: dict):
             "channels":     channels_val,
             "lotChannel":   lot_channel_val,
             "botLink":      bot_link_val,
+            "requiredSubEnabled": ui_config.get("requiredSubEnabled", False),
+            "requiredChannels":   ui_config.get("requiredChannels",   []),
             "stats": curr.get("stats") or old_config.get("stats") or {},
             "id": bid
         }
