@@ -822,6 +822,9 @@ async def save_bot(b: dict):
             "users":      old_config.get("users",     []),
             # AI-конфиг
             "ai": ai_config,
+            # Обязательная подписка
+            "requiredSubEnabled": b.get("requiredSubEnabled") if b.get("requiredSubEnabled") is not None else inc_cfg.get("requiredSubEnabled") if inc_cfg.get("requiredSubEnabled") is not None else old_config.get("requiredSubEnabled", False),
+            "requiredChannels":   b.get("requiredChannels")   if b.get("requiredChannels")   is not None else inc_cfg.get("requiredChannels")   if inc_cfg.get("requiredChannels")   is not None else old_config.get("requiredChannels",   []),
         }
 
         # 5. ТОКЕН (Берем новый или оставляем старый зашифрованный)
@@ -862,8 +865,6 @@ async def save_bot(b: dict):
             "channels":     channels_val,
             "lotChannel":   lot_channel_val,
             "botLink":      bot_link_val,
-            "requiredSubEnabled": ui_config.get("requiredSubEnabled", False),
-            "requiredChannels":   ui_config.get("requiredChannels",   []),
             "stats": curr.get("stats") or old_config.get("stats") or {},
             "id": bid
         }
