@@ -323,7 +323,7 @@ class BanMiddleware(BaseMiddleware[Message]):
         user_id = self.event.from_id
         user = next((u for u in bot_instance.users_list if u.get('id') == user_id), None)
         if user and user.get("is_banned"):
-            is_admin = (bot_instance.admin_chat_id and user_id == bot_instance.admin_chat_id)
+            is_admin = (user_id in bot_instance.admin_ids) if bot_instance.admin_ids else False
             if is_admin:
                 # Предлагаем кнопку разбана
                 kb = Keyboard(one_time=True, inline=False)
@@ -1459,7 +1459,7 @@ class BotInstance:
         # 🚫 БАН
         if command == "ban":
             # Защита: нельзя забанить администратора
-            if self.admin_chat_id and uid == self.admin_chat_id:
+            if uid in self.admin_ids:
                 await self.bot.api.messages.send(peer_id=self.admin_chat_id, message="⛔ Нельзя забанить администратора бота.", random_id=0)
                 return True
             target_user["is_banned"] = True
@@ -1484,7 +1484,7 @@ class BotInstance:
         # ⚠️ ВАРН
         elif command == "warn":
             # Защита: нельзя выдать варн администратору
-            if self.admin_chat_id and uid == self.admin_chat_id:
+            if uid in self.admin_ids:
                 await self.bot.api.messages.send(peer_id=self.admin_chat_id, message="⛔ Нельзя выдать варн администратору бота.", random_id=0)
                 return True
             target_user["warns"] = target_user.get("warns", 0) + 1
@@ -1699,7 +1699,7 @@ class BotInstance:
         @self.bot.on.message(func=lambda m: (
             m.text == "🔓 Разбанить себя" and
             self.admin_chat_id is not None and
-            m.from_id == self.admin_chat_id
+            m.from_id in self.admin_ids
         ))
         async def handle_selfunban(m: Message):
             user_cb = next((u for u in self.users_list if u.get("id") == m.from_id), None)
@@ -1736,7 +1736,7 @@ class BotInstance:
             
             # БАН (дополнительная проверка на случай, если middleware пропустил)
             if user.get("is_banned"):
-                if self.admin_chat_id and m.from_id == self.admin_chat_id:
+                if m.from_id in self.admin_ids:
                     kb = Keyboard(one_time=True, inline=False)
                     kb.add(Text("🔓 Разбанить себя"), color=KeyboardButtonColor.POSITIVE)
                     try:
