@@ -60,6 +60,7 @@ class SubscriptionMiddleware(BaseMiddleware):
         data: Dict[str, Any]
     ) -> Any:
         required_channels = getattr(self.bot_instance, 'required_channels', [])
+
         if not required_channels:
             return await handler(event, data)
 
@@ -69,11 +70,14 @@ class SubscriptionMiddleware(BaseMiddleware):
 
         user_id = user_tg.id
 
+        logger.info(f"[SubCheck] user={user_id} channels={[c.get('id') for c in required_channels]}")
+
         # Пропускаем администраторов
         if user_id in (self.bot_instance.admin_ids or set()):
+            logger.info(f"[SubCheck] user={user_id} — ADMIN, skip")
             return await handler(event, data)
 
-        # Пропускаем callback "check_sub" — это кнопка проверки подписки
+        # Пропускаем callback "check_sub"
         if isinstance(event, CallbackQuery) and event.data == "check_sub":
             return await handler(event, data)
 
@@ -85,21 +89,20 @@ class SubscriptionMiddleware(BaseMiddleware):
                 continue
             try:
                 member = await self.bot_instance.bot.get_chat_member(ch_id, user_id)
+                logger.info(f"[SubCheck] user={user_id} ch={ch_id} status={member.status}")
                 if member.status in ('left', 'kicked', 'banned'):
                     not_subscribed.append(ch)
-            except Exception:
-                not_subscribed.append(ch)  # Если ошибка — считаем не подписан
+            except Exception as e:
+                logger.warning(f"[SubCheck] get_chat_member error ch={ch_id}: {e}")
+                not_subscribed.append(ch)
 
         if not_subscribed:
-            # Строим список каналов с кнопками
+            logger.info(f"[SubCheck] user={user_id} NOT subscribed to: {[c.get('id') for c in not_subscribed]}")
             rows = []
             for ch in not_subscribed:
                 label = ch.get('title') or ch.get('id', 'Канал')
-                url = ch.get('url', '')
-                if url:
-                    rows.append([InlineKeyboardButton(text=f"📢 {label}", url=url)])
-                else:
-                    rows.append([InlineKeyboardButton(text=f"📢 {label}", url=f"https://t.me/{str(ch.get('id','')).lstrip('@')}")])
+                url = ch.get('url', '') or f"https://t.me/{str(ch.get('id', '')).lstrip('@')}"
+                rows.append([InlineKeyboardButton(text=f"📢 {label}", url=url)])
             rows.append([InlineKeyboardButton(text="✅ Я подписался — проверить", callback_data="check_sub")])
             kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -111,9 +114,10 @@ class SubscriptionMiddleware(BaseMiddleware):
             if isinstance(event, Message):
                 await event.answer(msg_text, reply_markup=kb)
             elif isinstance(event, CallbackQuery):
-                await event.answer("Вы ещё не подписались на все каналы!", show_alert=True)
-            return  # Блокируем дальнейшую обработку
+                await event.answer("❌ Вы ещё не подписались на все каналы!", show_alert=True)
+            return
 
+        logger.info(f"[SubCheck] user={user_id} — OK, all subscribed")
         return await handler(event, data)
 
 
@@ -1925,19 +1929,20 @@ class BotInstance:
             logging.error(f"❌ Ошибка сохранения в БД: {e}")
         
     async def core_handlers_setup(self):
-        # В aiogram 3 middleware выполняются в порядке регистрации (onion model).
-        # Первым регистрируем подписку — она обёртывает всё остальное.
-        # Если не подписан — блокируем сразу, не доходим до бана/лицензии.
-        self.router.message.middleware(SubscriptionMiddleware(self))
-        self.router.callback_query.middleware(SubscriptionMiddleware(self))
+        # В aiogram 3 middleware выполняются в ОБРАТНОМ порядке регистрации.
+        # Последний зарегистрированный — выполняется первым (стек/onion).
+        # Поэтому SubscriptionMiddleware регистрируем ПОСЛЕДНЕЙ — она сработает ПЕРВОЙ.
 
-        # Проверка бана
-        self.router.message.middleware(BanMiddleware(self))
-        self.router.callback_query.middleware(BanMiddleware(self))
-        
-        # Проверка лицензии
+        # Порядок выполнения: License -> Ban -> Subscription (первая проверка)
         self.router.message.middleware(LicenseMiddleware(self))
         self.router.callback_query.middleware(LicenseMiddleware(self))
+
+        self.router.message.middleware(BanMiddleware(self))
+        self.router.callback_query.middleware(BanMiddleware(self))
+
+        # Подписка — регистрируем последней, выполняется первой
+        self.router.message.middleware(SubscriptionMiddleware(self))
+        self.router.callback_query.middleware(SubscriptionMiddleware(self))
 
         # Обработчик кнопки "Я подписался — проверить"
         @self.router.callback_query(F.data == "check_sub")
