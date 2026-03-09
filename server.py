@@ -701,6 +701,8 @@ async def save_bot(b: dict):
                     "botLink":    b.get("botLink",    ""),
                     "lotteries":  [],
                     "users":      [],
+                    "requiredSubEnabled": b.get("requiredSubEnabled", False),
+                    "requiredChannels":   b.get("requiredChannels",   []),
                 },
                 "stats": {},
                 "admin_chat_id": None,
@@ -820,6 +822,9 @@ async def save_bot(b: dict):
             "users":      old_config.get("users",     []),
             # AI-конфиг
             "ai": ai_config,
+            # Обязательная подписка
+            "requiredSubEnabled": get_val("requiredSubEnabled", False),
+            "requiredChannels":   get_val("requiredChannels",   []),
         }
 
         # 5. ТОКЕН (Берем новый или оставляем старый зашифрованный)
