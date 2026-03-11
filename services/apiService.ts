@@ -629,6 +629,25 @@ adminLogin: async (login: string, pass: string) => {
     );
     return r.ok ? await r.json() : null;
   },
+
+    // --- РЕФЕРАЛЬНАЯ СИСТЕМА ---
+
+  // Получить статистику рефералов пользователя
+  getReferralStats: async (userId: string) => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/referrals/stats/${userId}`, { method: 'GET' });
+      return response.ok ? await response.json() : null;
+    } catch (e) { return null; }
+  },
+
+  // Получить имя пригласившего по реферальному коду
+  getReferrerByCode: async (code: string) => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/referrals/referrer/${code}`, { method: 'GET' });
+      return response.ok ? await response.json() : null;
+    } catch (e) { return null; }
+  },
+  
   // --- BOT MANAGEMENT ---
 
   // --- ДОБАВИТЬ В api.ts ---
