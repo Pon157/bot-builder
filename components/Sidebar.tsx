@@ -9,7 +9,8 @@ import {
   LogOut, 
   ShieldCheck, 
   Bot,
-  Terminal
+  Terminal,
+  Users2
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -37,12 +38,9 @@ const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const expiry = Number(user.license_expires_at) || 0;
   const daysRemaining = Math.max(0, Math.ceil((expiry - Date.now()) / (1000 * 60 * 60 * 24)));
-  // Округляем до целого или оставляем 2 знака после запятой
   const balance = user.balance || 0;
 
-// Функция для создания ключа через систему лицензий
 const createSupportKey = async () => {
-    // 1. Спрашиваем НАЗВАНИЕ бота
     const targetName = prompt("Введите НАЗВАНИЕ бота для привязки ключа:", "");
     
     if (!targetName) {
@@ -57,7 +55,6 @@ const createSupportKey = async () => {
     }
 
     try {
-        // Передаем название в поле bot_id (на сервере мы будем знать, что это имя)
         const res = await api.generateKey(adminToken, 1, targetName); 
         
         if (res && res.key) {
@@ -110,6 +107,18 @@ const createSupportKey = async () => {
                 >
                     <UserCircle size={18} />
                     Профиль и Лицензия
+                </li>
+                {/* ===== НОВАЯ ВКЛАДКА РЕФЕРАЛЫ ===== */}
+                <li 
+                    className={`flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer transition-all font-medium text-sm ${activeTab === 'referrals' ? 'bg-zinc-800 text-white shadow-inner' : 'text-zinc-400 hover:bg-zinc-900'}`}
+                    onClick={() => setActiveTab('referrals')}
+                >
+                    <Users2 size={18} />
+                    <span className="flex-1">Рефералы</span>
+                    {/* Бейдж */}
+                    <span className="text-[9px] font-black uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded-md">
+                      Заработок
+                    </span>
                 </li>
             </ul>
         </div>
@@ -169,7 +178,6 @@ const createSupportKey = async () => {
       <div className="truncate">
         <p className="text-xs font-bold text-white truncate leading-none mb-1">{user.username}</p>
         <div className="flex items-center gap-1.5">
-          {/* Индикатор баланса: красный если 0, синий если есть деньги */}
           <div className={`w-1 h-1 rounded-full ${balance <= 0 ? 'bg-amber-500' : 'bg-emerald-500'}`}></div>
           <p className={`text-[9px] truncate font-black uppercase tracking-tighter ${balance <= 0 ? 'text-amber-500' : 'text-zinc-500'}`}>
             Баланс: <span className={balance > 0 ? "text-white" : ""}>{balance} ₽</span>
