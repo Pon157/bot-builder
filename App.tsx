@@ -18,6 +18,7 @@ import ChatSiteApp from './components/ChatSiteApp';
 import RefundPolicy from './components/RefundPolicy'; 
 import Contacts from './components/Contacts';
 import SuccessPage from './components/Success';
+import Referrals from './components/Referrals';
 import { api } from './services/apiService';
 import { Menu, X, ArrowLeft, ShieldAlert } from 'lucide-react';
 
@@ -393,6 +394,7 @@ const App: React.FC = () => {
                   <Route path="/broadcast" element={<BroadcastManager bots={bots} />} />
                   <Route path="/miniapps" element={<MiniAppBuilder user={user} />} />
                   <Route path="/chatplatform" element={<ChatPlatform user={user} />} />
+                  <Route path="/referrals" element={<Referrals user={user} />} />
                   {/* ── Free и Ads доступны и залогиненным пользователям ── */}
                   <Route path="/free" element={<FreePlan />} />
                   <Route path="/ads" element={<AdsPortal />} />
