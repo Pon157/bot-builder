@@ -18,7 +18,6 @@ import ChatSiteApp from './components/ChatSiteApp';
 import RefundPolicy from './components/RefundPolicy'; 
 import Contacts from './components/Contacts';
 import SuccessPage from './components/Success';
-import Referrals from './components/Referrals';
 import { api } from './services/apiService';
 import { Menu, X, ArrowLeft, ShieldAlert } from 'lucide-react';
 
@@ -26,6 +25,21 @@ import { Menu, X, ArrowLeft, ShieldAlert } from 'lucide-react';
 import FreePlan from './components/FreePlan';
 import AdsAuth from './components/AdsAuth';
 import AdsPortal from './components/AdsPortal';
+import Referrals from './components/Referrals';
+
+// --- [ РЕФЕРАЛЬНЫЙ РЕДИРЕКТ ] ---
+// Роут /ref/:refCode сохраняет код в localStorage и кидает на /auth
+const RefRedirect: React.FC = () => {
+  const { refCode } = useParams<{ refCode: string }>();
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (refCode) {
+      localStorage.setItem('pending_referral_code', refCode);
+    }
+    navigate('/auth', { replace: true });
+  }, [refCode, navigate]);
+  return null;
+};
 
 // --- [ КОМПОНЕНТ: РЕДАКТОР ДЛЯ АДМИНИСТРАТОРА ] ---
 const AdminBotEditorWrapper: React.FC = () => {
@@ -301,6 +315,8 @@ const App: React.FC = () => {
     <BrowserRouter>
       <Routes>
         {/* --- ПУБЛИЧНЫЕ РОУТЫ --- */}
+        {/* Реферальный роут: сохраняет код и редиректит на /auth */}
+        <Route path="/ref/:refCode" element={<RefRedirect />} />
         <Route path="/" element={<Landing />} />
         <Route path="/app/:appId" element={<MiniAppRenderer />} />
         <Route path="/chat/:slug" element={<ChatSiteApp />} />
@@ -392,9 +408,9 @@ const App: React.FC = () => {
                   })()} />
                   
                   <Route path="/broadcast" element={<BroadcastManager bots={bots} />} />
+                  <Route path="/referrals" element={<Referrals user={user} />} />
                   <Route path="/miniapps" element={<MiniAppBuilder user={user} />} />
                   <Route path="/chatplatform" element={<ChatPlatform user={user} />} />
-                  <Route path="/referrals" element={<Referrals user={user} />} />
                   {/* ── Free и Ads доступны и залогиненным пользователям ── */}
                   <Route path="/free" element={<FreePlan />} />
                   <Route path="/ads" element={<AdsPortal />} />
