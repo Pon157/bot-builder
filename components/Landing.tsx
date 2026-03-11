@@ -4,7 +4,11 @@ import { MessageSquare, Zap, BarChart3, Send, ArrowRight, Star, ExternalLink, X,
 const Landing = () => {
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
   const [reviewForm, setReviewForm] = useState({ name: '', role: '', text: '', rating: 5 });
-  const [reviews, setReviews] = useState<any[]>([]); 
+  const [reviews, setReviews] = useState<any[]>([]);
+
+  // Читаем реферальный код из URL (?ref=XXXX) и прокидываем на /auth
+  const refCode = new URLSearchParams(window.location.search).get('ref') || '';
+  const authHref = refCode ? `/auth?ref=${refCode}` : '/auth';
 
   const features = [
     {
@@ -113,7 +117,7 @@ const Landing = () => {
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 w-full max-w-3xl">
-            <a href="/auth" className="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white font-medium text-lg px-8 py-4 transition-colors w-full sm:w-auto">
+            <a href={authHref} className="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white font-medium text-lg px-8 py-4 transition-colors w-full sm:w-auto">
               Начать работу
               <ArrowRight className="w-5 h-5" />
             </a>
