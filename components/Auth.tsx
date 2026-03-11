@@ -27,15 +27,22 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
 
   useEffect(() => {
     checkServer();
-    // Читаем реферальный код из URL параметра ?ref=XXXXX
+
+    // Вариант 1: код в URL параметре ?ref=XXXXX (прямой переход)
     const params = new URLSearchParams(window.location.search);
-    const ref = params.get('ref');
+    const refFromUrl = params.get('ref');
+
+    // Вариант 2: код сохранён в localStorage через /ref/:refCode роут
+    const refFromStorage = localStorage.getItem('pending_referral_code');
+
+    const ref = refFromUrl || refFromStorage || '';
+
     if (ref) {
       setReferralCode(ref);
-      // Переключаемся сразу на регистрацию
       setMode('register');
-      // Подгружаем имя пригласившего
       fetchReferrerName(ref);
+      // Очищаем из localStorage чтобы не применялся повторно
+      localStorage.removeItem('pending_referral_code');
     }
   }, []);
 
