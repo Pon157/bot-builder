@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User } from '../types';
 import { api } from '../services/apiService';
-import { Mail, Lock, User as UserIcon, ShieldCheck, ArrowLeft, RefreshCw, CheckSquare, Square } from 'lucide-react';
+import { Mail, Lock, User as UserIcon, ShieldCheck, ArrowLeft, RefreshCw, CheckSquare, Square, Users } from 'lucide-react';
 
 interface AuthProps {
   onLogin: (user: User) => void;
@@ -15,22 +15,46 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
   const [code, setCode] = useState('');
-  const [consent, setConsent] = useState(true); // Состояние согласия на рассылку
+  const [consent, setConsent] = useState(true);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+  // Реферальный код из URL
+  const [referralCode, setReferralCode] = useState('');
+  const [referralUsername, setReferralUsername] = useState('');
 
   const GITHUB_RAW_URL = "https://raw.githubusercontent.com/Pon157/bot-builder/main";
+
+  useEffect(() => {
+    checkServer();
+    // Читаем реферальный код из URL параметра ?ref=XXXXX
+    const params = new URLSearchParams(window.location.search);
+    const ref = params.get('ref');
+    if (ref) {
+      setReferralCode(ref);
+      // Переключаемся сразу на регистрацию
+      setMode('register');
+      // Подгружаем имя пригласившего
+      fetchReferrerName(ref);
+    }
+  }, []);
+
+  const fetchReferrerName = async (code: string) => {
+    try {
+      const data = await api.getReferrerByCode(code);
+      if (data?.username) {
+        setReferralUsername(data.username);
+      }
+    } catch (e) {
+      console.error('Referrer lookup failed', e);
+    }
+  };
 
   const checkServer = async () => {
     setServerStatus('checking');
     const isOnline = await api.checkConnection();
     setServerStatus(isOnline ? 'online' : 'offline');
   };
-
-  useEffect(() => {
-    checkServer();
-  }, []);
 
   const handleRequestVerification = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -51,13 +75,13 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     setLoading(true);
     setError('');
     try {
-      // Передаем consent вместе с данными регистрации
       const user = await api.verifyAndRegister({ 
         email, 
         code, 
         password, 
         username,
-        marketing_consent: consent // Поле для БД
+        marketing_consent: consent,
+        referral_code: referralCode || undefined  // Передаём реферальный код если есть
       });
       if (user) onLogin(user);
     } catch (err: any) {
@@ -114,6 +138,26 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
       <div className="w-full max-w-md space-y-6 bg-[#111] p-10 rounded-[2.5rem] border border-zinc-800 shadow-2xl relative overflow-hidden">
         <div className="absolute -top-24 -right-24 w-48 h-48 bg-blue-600/10 blur-[100px] rounded-full"></div>
         
+        {/* Баннер реферальной ссылки */}
+        {referralCode && mode === 'register' && (
+          <div className="relative z-10 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl px-4 py-3 flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0">
+              <Users size={16} className="text-emerald-400" />
+            </div>
+            <div>
+              <p className="text-[11px] font-black text-emerald-400 uppercase tracking-widest">
+                Реферальная ссылка
+              </p>
+              <p className="text-xs text-zinc-400">
+                Вас пригласил{' '}
+                <span className="text-white font-bold">
+                  {referralUsername || 'пользователь'}
+                </span>
+              </p>
+            </div>
+          </div>
+        )}
+
         <div className="text-center relative z-10">
           <div className="mx-auto w-14 h-14 bg-blue-600 rounded-2xl flex items-center justify-center mb-6 shadow-lg shadow-blue-600/20">
             <ShieldCheck className="text-white w-8 h-8" />
@@ -176,7 +220,6 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
                 <input type="password" required className="w-full bg-black border border-zinc-800 rounded-2xl p-4 pl-12 text-sm text-white focus:ring-1 focus:ring-blue-500 outline-none transition-all" placeholder="Придумайте пароль" value={password} onChange={e => setPassword(e.target.value)} />
               </div>
               
-              {/* Кнопка/Чекбокс согласия на рассылку */}
               <button 
                 type="button" 
                 onClick={() => setConsent(!consent)}
@@ -211,7 +254,6 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
             </form>
           )}
 
-          {/* ... Оставшиеся формы forgot и reset без изменений ... */}
           {mode === 'forgot' && (
             <form className="space-y-4" onSubmit={handleForgotPassword}>
               <p className="text-zinc-500 text-xs text-center mb-4">Введите Email для восстановления доступа.</p>
