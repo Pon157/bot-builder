@@ -4184,6 +4184,293 @@ async def buy_service(d: dict):
         "message":     f"✅ {label} — активировано"
     }
 
+"""
+============================================================
+ДОБАВИТЬ В server.py — Реферальная система
+============================================================
+Вставить после секции 4 (ЭНДПОИНТЫ АВТОРИЗАЦИИ), перед секцией 5.
+============================================================
+"""
+
+import math
+
+# ==========================================
+# РЕФЕРАЛЬНАЯ СИСТЕМА
+# ==========================================
+
+def _get_commission_percent(total_invited: int) -> int:
+    """Возвращает процент комиссии на основе количества приглашённых."""
+    if total_invited >= 20:
+        return 20
+    elif total_invited >= 10:
+        return 15
+    return 10
+
+
+def _generate_referral_code(user_id: str) -> str:
+    """Генерирует уникальный реферальный код на основе user_id."""
+    return secrets.token_hex(4).upper()
+
+
+@app.get("/api/referrals/referrer/{code}")
+async def get_referrer_by_code(code: str):
+    """Публичный эндпоинт: вернуть имя пользователя по реферальному коду."""
+    r = await db.get("users", params={"referral_code": f"eq.{code}", "select": "id,username"})
+    if not r.json():
+        raise HTTPException(404, "Реферальный код не найден")
+    return r.json()[0]
+
+
+@app.get("/api/referrals/stats/{user_id}")
+async def get_referral_stats(user_id: str):
+    """
+    Возвращает полную статистику рефералов пользователя:
+    - реферальный код и ссылку
+    - количество приглашённых
+    - сумму заработанных денег
+    - процент комиссии
+    - список приглашённых с деталями
+    """
+    # 1. Получаем пользователя
+    u_r = await db.get("users", params={"id": f"eq.{user_id}", "select": "id,username,referral_code"})
+    if not u_r.json():
+        raise HTTPException(404, "Пользователь не найден")
+    
+    user_data = u_r.json()[0]
+    ref_code = user_data.get("referral_code")
+    
+    # Если кода нет — генерируем и сохраняем
+    if not ref_code:
+        ref_code = _generate_referral_code(user_id)
+        await db.patch("users", params={"id": f"eq.{user_id}"}, json={"referral_code": ref_code})
+
+    # 2. Список приглашённых пользователей
+    invited_r = await db.get("users", params={
+        "referred_by": f"eq.{user_id}",
+        "select": "id,username,created_at"
+    })
+    invited_users = invited_r.json() if invited_r.status_code == 200 else []
+    
+    total_invited = len(invited_users)
+    commission_percent = _get_commission_percent(total_invited)
+    
+    # 3. Считаем заработок с каждого приглашённого
+    referral_details = []
+    total_earnings = 0
+    
+    for inv_user in invited_users:
+        inv_id = inv_user["id"]
+        # Ищем транзакции начисления комиссии этому реферреру
+        tx_r = await db.get("referral_earnings", params={
+            "referrer_id": f"eq.{user_id}",
+            "referred_id": f"eq.{inv_id}",
+            "select": "amount"
+        })
+        earned_from = sum(t.get("amount", 0) for t in (tx_r.json() or []))
+        total_earnings += earned_from
+        
+        referral_details.append({
+            "id": inv_id,
+            "username": inv_user["username"],
+            "joined_at": inv_user.get("created_at", 0),
+            "earned_from": round(earned_from, 2)
+        })
+    
+    # Формируем реферальную ссылку
+    frontend_url = os.getenv("FRONTEND_URL", "https://dialogengine.webtm.ru")
+    referral_link = f"{frontend_url}?ref={ref_code}"
+    
+    return {
+        "referral_code": ref_code,
+        "referral_link": referral_link,
+        "total_invited": total_invited,
+        "earnings_total": round(total_earnings, 2),
+        "commission_percent": commission_percent,
+        "referrals": sorted(referral_details, key=lambda x: x["joined_at"], reverse=True)
+    }
+
+
+# ============================================================
+# ИЗМЕНИТЬ эндпоинт /api/auth/verify-and-register
+# Добавить обработку реферального кода после создания пользователя
+# ============================================================
+
+# ЗАМЕНИТЬ существующий @app.post("/api/auth/verify-and-register") на этот:
+
+@app.post("/api/auth/verify-and-register")
+async def verify_reg_with_referral(d: dict):
+    email = d['email'].lower()
+    
+    # Проверка кода
+    r = await db.get("temp_codes", params={
+        "email": f"eq.{email}", 
+        "code": f"eq.{d['code']}",
+        "type": "eq.VERIFY"
+    })
+    
+    if not r.json():
+        raise HTTPException(400, "Неверный код подтверждения")
+    
+    uid = f"u_{secrets.token_hex(4)}"
+    
+    # Генерируем реферальный код для нового пользователя
+    new_ref_code = secrets.token_hex(4).upper()
+    
+    user_data = {
+        "id": uid,
+        "username": d['username'],
+        "email": email,
+        "password": hash_pwd(d['password']), 
+        "balance": 0,
+        "license_expires_at": int(time.time()*1000) + 259200000,  # +3 дня
+        "marketing_consent": d.get('marketing_consent', False),
+        "referral_code": new_ref_code,
+        "referred_by": None  # Будет заполнено ниже
+    }
+    
+    # Обработка реферального кода
+    ref_code_input = d.get('referral_code', '').strip().upper()
+    referrer_id = None
+    
+    if ref_code_input:
+        # Ищем пригласившего
+        ref_r = await db.get("users", params={
+            "referral_code": f"eq.{ref_code_input}",
+            "select": "id,username,balance"
+        })
+        referrer_data = ref_r.json()
+        
+        if referrer_data:
+            referrer = referrer_data[0]
+            referrer_id = referrer["id"]
+            user_data["referred_by"] = referrer_id
+            
+            logger.info(f"👥 Новый реферал: {d['username']} приглашён пользователем {referrer['username']}")
+    
+    # Создаём пользователя
+    await db.post("users", json=user_data)
+    await db.delete("temp_codes", params={"email": f"eq.{email}"})
+    
+    # Начисляем бонус 10 рублей пригласившему
+    if referrer_id:
+        try:
+            # Начисляем 10 рублей на баланс реферрера
+            referrer_r = await db.get("users", params={"id": f"eq.{referrer_id}", "select": "balance"})
+            if referrer_r.json():
+                old_balance = float(referrer_r.json()[0].get("balance", 0))
+                new_balance = old_balance + 10.0
+                
+                await db.patch("users", 
+                    params={"id": f"eq.{referrer_id}"},
+                    json={"balance": new_balance}
+                )
+                
+                # Записываем транзакцию в историю
+                await db.post("payment_transactions", json={
+                    "user_id": referrer_id,
+                    "type": "referral_bonus",
+                    "amount": 10.0,
+                    "balance_after": new_balance,
+                    "description": f"Реферальный бонус за регистрацию {d['username']}",
+                    "service": "referral",
+                    "status": "completed"
+                })
+                
+                logger.info(f"💰 Реферальный бонус +10₽ начислен {referrer['username']}")
+        except Exception as e:
+            logger.error(f"Ошибка начисления реферального бонуса: {e}")
+    
+    return user_data
+
+
+# ============================================================
+# ДОБАВИТЬ хук в /api/payments/yookassa/callback (webhook)
+# и /api/payments/buy — начислять комиссию реферреру при каждой оплате
+# 
+# Добавить вызов этой функции после успешного зачисления баланса:
+# await _pay_referral_commission(user_id, amount_paid)
+# ============================================================
+
+async def _pay_referral_commission(buyer_id: str, payment_amount: float):
+    """
+    Начисляет комиссию рефереру при каждой оплате покупателя.
+    Вызывается из webhook и /api/payments/buy после успешной транзакции.
+    """
+    try:
+        # Получаем данные покупателя (нужен referred_by)
+        buyer_r = await db.get("users", params={
+            "id": f"eq.{buyer_id}",
+            "select": "id,username,referred_by"
+        })
+        if not buyer_r.json():
+            return
+        
+        buyer = buyer_r.json()[0]
+        referrer_id = buyer.get("referred_by")
+        
+        if not referrer_id:
+            return  # У этого пользователя нет реферрера
+        
+        # Получаем данные реферрера и его количество приглашённых
+        referrer_r = await db.get("users", params={
+            "id": f"eq.{referrer_id}",
+            "select": "id,username,balance"
+        })
+        if not referrer_r.json():
+            return
+        referrer = referrer_r.json()[0]
+        
+        # Считаем количество приглашённых для определения % комиссии
+        count_r = await db.get("users", params={
+            "referred_by": f"eq.{referrer_id}",
+            "select": "id"
+        })
+        total_invited = len(count_r.json() or [])
+        commission_percent = _get_commission_percent(total_invited)
+        
+        # Считаем сумму комиссии
+        commission = round(payment_amount * commission_percent / 100, 2)
+        if commission <= 0:
+            return
+        
+        # Начисляем комиссию
+        old_balance = float(referrer.get("balance", 0))
+        new_balance = old_balance + commission
+        
+        await db.patch("users",
+            params={"id": f"eq.{referrer_id}"},
+            json={"balance": new_balance}
+        )
+        
+        # Записываем транзакцию комиссии
+        await db.post("payment_transactions", json={
+            "user_id": referrer_id,
+            "type": "referral_commission",
+            "amount": commission,
+            "balance_after": new_balance,
+            "description": f"Реферальная комиссия {commission_percent}% от покупки {buyer['username']} ({payment_amount}₽)",
+            "service": "referral",
+            "status": "completed"
+        })
+        
+        # Записываем в таблицу referral_earnings для детальной статистики
+        await db.post("referral_earnings", json={
+            "referrer_id": referrer_id,
+            "referred_id": buyer_id,
+            "amount": commission,
+            "payment_amount": payment_amount,
+            "commission_percent": commission_percent,
+            "created_at": int(time.time() * 1000)
+        })
+        
+        logger.info(
+            f"💸 Реферальная комиссия: {referrer['username']} получил "
+            f"{commission}₽ ({commission_percent}%) за покупку {buyer['username']} на {payment_amount}₽"
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка начисления реферальной комиссии: {e}", exc_info=True)
+
 from free_ads_server import router as free_ads_router
 app.include_router(free_ads_router)
 
