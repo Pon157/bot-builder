@@ -376,14 +376,14 @@ async def request_ver(d: dict):
 
 @app.post("/api/auth/verify-and-register")
 async def verify_reg(d: dict):
-    email = d["email"].lower()
+    email = d['email'].lower()
 
+    # Проверка кода
     r = await db.get("temp_codes", params={
         "email": f"eq.{email}",
         "code": f"eq.{d['code']}",
         "type": "eq.VERIFY"
     })
-
     if not r.json():
         raise HTTPException(400, "Неверный код подтверждения")
 
@@ -402,6 +402,7 @@ async def verify_reg(d: dict):
         "referred_by": None
     }
 
+    # ── Обработка реферального кода ──────────────────────────────────────
     ref_code_input = (d.get("referral_code") or "").strip().upper()
     referrer_id = None
     referrer_username = None
@@ -412,7 +413,7 @@ async def verify_reg(d: dict):
             "referral_code": f"eq.{ref_code_input}",
             "select": "id,username,balance"
         })
-        referrer_list = ref_r.json()
+        referrer_list = ref_r.json() if ref_r.status_code == 200 else []
         if referrer_list:
             referrer = referrer_list[0]
             referrer_id = referrer["id"]
@@ -421,28 +422,46 @@ async def verify_reg(d: dict):
             user_data["referred_by"] = referrer_id
             logger.info(f"👥 Реферал: {d['username']} приглашён {referrer_username} (код {ref_code_input})")
         else:
-            logger.warning(f"⚠️ Реферальный код {ref_code_input} не найден в БД")
+            logger.warning(f"⚠️ Реферальный код '{ref_code_input}' не найден в БД")
 
-    await db.post("users", json=user_data)
+    # Создаём пользователя
+    create_r = await db.post("users", json=user_data)
+    logger.info(f"👤 Создан пользователь {uid} ({d['username']}), статус: {create_r.status_code}")
     await db.delete("temp_codes", params={"email": f"eq.{email}"})
 
+    # ── Начисляем бонус пригласившему ────────────────────────────────────
+    # Уровни: 1-9 приглашённых = 5₽, 10-19 = 10₽, 20+ = 15₽
     if referrer_id:
         try:
-            new_referrer_balance = referrer_old_balance + 10.0
-            await db.patch("users",
+            count_r = await db.get("users", params={
+                "referred_by": f"eq.{referrer_id}",
+                "select": "id"
+            })
+            total_invited = len(count_r.json() or [])
+            if total_invited < 10:
+                bonus = 5.0
+            elif total_invited < 20:
+                bonus = 10.0
+            else:
+                bonus = 15.0
+
+            new_referrer_balance = referrer_old_balance + bonus
+            patch_r = await db.patch("users",
                 params={"id": f"eq.{referrer_id}"},
                 json={"balance": new_referrer_balance}
             )
+            logger.info(f"💰 balance patch статус: {patch_r.status_code}, тело: {patch_r.text[:200]}")
+
             await db.post("payment_transactions", json={
                 "user_id": referrer_id,
                 "type": "referral_bonus",
-                "amount": 10.0,
+                "amount": bonus,
                 "balance_after": new_referrer_balance,
-                "description": f"Реферальный бонус за регистрацию {d['username']}",
+                "description": f"Реферальный бонус +{bonus}₽ за регистрацию {d['username']} (приглашено: {total_invited})",
                 "service": "referral",
                 "status": "completed"
             })
-            logger.info(f"💰 Реферальный бонус +10₽ → {referrer_username} (баланс: {new_referrer_balance}₽)")
+            logger.info(f"💰 Бонус +{bonus}₽ → {referrer_username} (всего приглашено: {total_invited}, новый баланс: {new_referrer_balance}₽)")
         except Exception as e:
             logger.error(f"❌ Ошибка начисления реферального бонуса: {e}", exc_info=True)
 
@@ -505,7 +524,7 @@ async def reset_p(d: dict):
 # ==========================================
 
 def _get_commission_percent(total_invited: int) -> int:
-    """Возвращает процент комиссии по количеству приглашённых."""
+    """Процент комиссии с покупок реферала: <10 = 10%, 10-19 = 15%, 20+ = 20%"""
     if total_invited >= 20:
         return 20
     elif total_invited >= 10:
@@ -541,7 +560,6 @@ async def _pay_referral_commission(buyer_id: str, payment_amount: float):
         })
         total_invited = len(count_r.json() or [])
         commission_percent = _get_commission_percent(total_invited)
-
         commission = round(payment_amount * commission_percent / 100, 2)
         if commission <= 0:
             return
@@ -562,22 +580,29 @@ async def _pay_referral_commission(buyer_id: str, payment_amount: float):
             "service": "referral",
             "status": "completed"
         })
-        await db.post("referral_earnings", json={
-            "referrer_id": referrer_id,
-            "referred_id": buyer_id,
-            "amount": commission,
-            "payment_amount": payment_amount,
-            "commission_percent": commission_percent,
-            "created_at": int(time.time() * 1000)
-        })
-        logger.info(f"💸 Комиссия: {referrer['username']} +{commission}₽ ({commission_percent}% от {payment_amount}₽ покупки {buyer['username']})")
+        # Пишем в referral_earnings для детальной статистики
+        try:
+            await db.post("referral_earnings", json={
+                "referrer_id": referrer_id,
+                "referred_id": buyer_id,
+                "amount": commission,
+                "payment_amount": payment_amount,
+                "commission_percent": commission_percent,
+                "created_at": int(time.time() * 1000)
+            })
+        except Exception:
+            pass  # Таблица может ещё не существовать
+        logger.info(
+            f"💸 Комиссия: {referrer['username']} +{commission}₽ "
+            f"({commission_percent}% от {payment_amount}₽ покупки {buyer['username']})"
+        )
     except Exception as e:
         logger.error(f"❌ Ошибка начисления комиссии: {e}", exc_info=True)
 
 
 @app.get("/api/referrals/referrer/{code}")
 async def get_referrer_by_code(code: str):
-    """Публичный эндпоинт: имя пользователя по реферальному коду."""
+    """Публичный: имя пользователя по реферальному коду (для баннера в Auth)."""
     r = await db.get("users", params={"referral_code": f"eq.{code}", "select": "id,username"})
     if not r.json():
         raise HTTPException(404, "Реферальный код не найден")
@@ -586,7 +611,7 @@ async def get_referrer_by_code(code: str):
 
 @app.get("/api/referrals/stats/{user_id}")
 async def get_referral_stats(user_id: str):
-    """Полная статистика рефералов пользователя."""
+    """Полная статистика рефералов пользователя для страницы /referrals."""
     u_r = await db.get("users", params={"id": f"eq.{user_id}", "select": "id,username,referral_code"})
     if not u_r.json():
         raise HTTPException(404, "Пользователь не найден")
@@ -594,6 +619,7 @@ async def get_referral_stats(user_id: str):
     user_data = u_r.json()[0]
     ref_code = user_data.get("referral_code")
 
+    # Если кода нет — генерируем и сохраняем
     if not ref_code:
         ref_code = secrets.token_hex(4).upper()
         await db.patch("users", params={"id": f"eq.{user_id}"}, json={"referral_code": ref_code})
@@ -611,12 +637,15 @@ async def get_referral_stats(user_id: str):
 
     for inv_user in invited_users:
         inv_id = inv_user["id"]
-        tx_r = await db.get("referral_earnings", params={
-            "referrer_id": f"eq.{user_id}",
-            "referred_id": f"eq.{inv_id}",
-            "select": "amount"
-        })
-        earned_from = sum(float(t.get("amount", 0)) for t in (tx_r.json() or []))
+        try:
+            tx_r = await db.get("referral_earnings", params={
+                "referrer_id": f"eq.{user_id}",
+                "referred_id": f"eq.{inv_id}",
+                "select": "amount"
+            })
+            earned_from = sum(float(t.get("amount", 0)) for t in (tx_r.json() or []))
+        except Exception:
+            earned_from = 0.0
         total_earnings += earned_from
         referral_details.append({
             "id": inv_id,
