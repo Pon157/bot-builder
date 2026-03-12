@@ -96,6 +96,145 @@ class BanMiddleware(BaseMiddleware):
 
 
 # ════════════════════════════════════════════════════════════════════════════════
+# MEMORY BASE MIDDLEWARE
+# ════════════════════════════════════════════════════════════════════════════════
+
+class MemoryBaseMiddleware(BaseMiddleware):
+    """
+    Проверяет пользователей по антиспам-базе MemoryBase.
+    Работает через кэш в Supabase (таблица memory_base_cache).
+    """
+    def __init__(self, bot_instance):
+        self.bi = bot_instance
+        super().__init__()
+
+    async def __call__(self, handler: Callable, event: Any, data: Dict) -> Any:
+        settings = getattr(self.bi, 'settings', {})
+        if not settings.get('memoryBaseEnabled', False):
+            return await handler(event, data)
+
+        user_tg = getattr(event, 'from_user', None)
+        if not user_tg:
+            return await handler(event, data)
+
+        user_id = user_tg.id
+
+        if user_id in (self.bi.admin_ids or set()):
+            return await handler(event, data)
+
+        if isinstance(event, CallbackQuery) and event.data and event.data.startswith("mb_unban_"):
+            return await handler(event, data)
+
+        user_rec = next((u for u in self.bi.users_list if u.get('id') == user_id), None)
+
+        if user_rec and user_rec.get('mb_restricted'):
+            if isinstance(event, Message):
+                await event.answer(
+                    "🚫 <b>Доступ ограничен.</b>\n\n"
+                    "Вы находитесь в антиспам-базе "
+                    "<a href=\"https://t.me/MemoryBaseBot\">MemoryBase</a>.\n"
+                    "Для восстановления доступа обратитесь к владельцу бота."
+                )
+            elif isinstance(event, CallbackQuery):
+                await event.answer("🚫 Доступ ограничен (MemoryBase).", show_alert=True)
+            return
+
+        last_mb_check = user_rec.get('last_mb_check', 0) if user_rec else 0
+        if time.time() - last_mb_check < 86400:
+            return await handler(event, data)
+
+        asyncio.create_task(self._check_and_restrict(event, user_tg, user_rec, settings))
+        return await handler(event, data)
+
+    async def _check_and_restrict(self, event: Any, user_tg, user_rec: Optional[dict], settings: dict):
+        user_id = user_tg.id
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                r = await client.get(
+                    f"{self.bi.sb_url}/rest/v1/memory_base_cache",
+                    headers=self.bi.headers,
+                    params={"user_id": f"eq.{user_id}", "select": "*"}
+                )
+                if r.status_code != 200 or not r.json():
+                    if user_rec:
+                        user_rec['last_mb_check'] = int(time.time())
+                    return
+                row     = r.json()[0]
+                status  = row.get('status', 'clean')
+                reasons = row.get('reasons', [])
+
+            if user_rec:
+                user_rec['last_mb_check'] = int(time.time())
+
+            if status != 'in_base':
+                return
+
+            block_reasons = settings.get('memoryBaseBlockReasons', [])
+            should_block = (not block_reasons or any(r in block_reasons for r in reasons))
+
+            if not should_block:
+                return
+
+            if user_rec:
+                user_rec['mb_restricted'] = True
+                user_rec['mb_reasons']    = reasons
+            else:
+                user_rec = {
+                    "id": user_id, "first_name": user_tg.first_name or "",
+                    "username": user_tg.username or "", "is_banned": False,
+                    "mb_restricted": True, "mb_reasons": reasons, "warns": 0,
+                    "joined_at": int(time.time()), "last_seen": int(time.time()),
+                    "last_mb_check": int(time.time()), "last_topic_id": None,
+                }
+                self.bi.users_list.append(user_rec)
+
+            await self.bi._push_state()
+
+            reasons_human = {
+                "scammer": "Мошенник ⛔️", "bad_admin": "Плохой админ ❌",
+                "bad_owner": "Плохой владелец ❌", "bad_behavior": "Нарушитель 🐔",
+                "spammer": "Спамер 🚫", "raider": "Рейдер 💥",
+            }
+            r_text = ", ".join(reasons_human.get(r, r) for r in reasons if not r.startswith("other:"))
+            other  = [r.replace("other:", "") for r in reasons if r.startswith("other:")]
+            if other:
+                r_text += (", " if r_text else "") + ", ".join(other)
+
+            try:
+                await self.bi.bot.send_message(
+                    user_id,
+                    f"🚫 <b>Ваш доступ к боту ограничен.</b>\n\n"
+                    f"Вы найдены в антиспам-базе "
+                    f"<a href=\"https://t.me/MemoryBaseBot\">MemoryBase</a>.\n"
+                    f"<b>Причина:</b> {r_text or '—'}\n\n"
+                    f"Для восстановления доступа обратитесь к владельцу бота."
+                )
+            except Exception:
+                pass
+
+            if self.bi.admin_chat_id:
+                try:
+                    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                    name_str  = user_tg.full_name or f"User {user_id}"
+                    uname_str = f" (@{user_tg.username})" if user_tg.username else ""
+                    unban_kb  = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="✅ Разбанить", callback_data=f"mb_unban_{user_id}")
+                    ]])
+                    await self.bi.bot.send_message(
+                        self.bi.admin_chat_id,
+                        f"🔴 <b>MemoryBase: Ограничен пользователь</b>\n\n"
+                        f"👤 {name_str}{uname_str}\n🆔 <code>{user_id}</code>\n"
+                        f"📌 <b>Причина:</b> {r_text or '—'}\n\n"
+                        f"Пользователю ограничен доступ к боту. Нажмите для разбана:",
+                        reply_markup=unban_kb
+                    )
+                except Exception as e:
+                    logger.warning(f"[MB] admin notify error: {e}")
+        except Exception as e:
+            logger.error(f"[MB] free _check_and_restrict error: {e}")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
 # ХЕЛПЕРЫ
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -203,6 +342,13 @@ class FreeBotInstance:
         self.forward_native = self.settings.get("forwardMessages", False)
         self.rate_limit     = float(self.settings.get("rateLimit", 1.0))
         self.auto_ban_limit = int(self.settings.get("autoBanThreshold", 3))
+
+        # ── MemoryBase антиспам ──
+        self.mb_enabled       = self.settings.get("memoryBaseEnabled", False)
+        self.mb_block_reasons = self.settings.get("memoryBaseBlockReasons", [])
+
+        # ── DVR мониторинг ──
+        self.dvr_enabled = self.settings.get("dvrEnabled", False)
 
         self.buttons  = raw_cfg.get("buttons")  or []
         self.triggers = raw_cfg.get("triggers") or []
@@ -1017,6 +1163,10 @@ class FreeBotInstance:
         self.user_router.message.middleware(BanMiddleware(self))
         self.user_router.callback_query.middleware(BanMiddleware(self))
 
+        # MemoryBase — проверка антиспам-базы
+        self.user_router.message.middleware(MemoryBaseMiddleware(self))
+        self.user_router.callback_query.middleware(MemoryBaseMiddleware(self))
+
         # ── 1. Пользователь заблокировал бота ──────────────────────────────
         @self.user_router.my_chat_member(
             ChatMemberUpdatedFilter(member_status_changed=ChatMemberStatus.KICKED)
@@ -1138,6 +1288,39 @@ class FreeBotInstance:
                 await cb.answer("✅ Разбан выполнен!", show_alert=False)
             except Exception:
                 pass
+
+        # ── MemoryBase разбан (только для администраторов) ──
+        @self.user_router.callback_query(lambda c: c.data and c.data.startswith("mb_unban_"))
+        async def handle_mb_unban(cb: CallbackQuery):
+            uid_cb = cb.from_user.id
+            if uid_cb not in (self.admin_ids or set()):
+                await cb.answer("⛔ Только для администраторов.", show_alert=True)
+                return
+            try:
+                target_uid = int(cb.data.split("mb_unban_")[1])
+            except (IndexError, ValueError):
+                await cb.answer("❌ Ошибка.", show_alert=True)
+                return
+            target = next((u for u in self.users_list if u.get('id') == target_uid), None)
+            if target:
+                target['mb_restricted'] = False
+                target['mb_reasons']    = []
+                target['last_mb_check'] = 0
+                await self._push_state()
+            try:
+                await self.bot.send_message(
+                    target_uid,
+                    "✅ <b>Доступ восстановлен!</b>\n\n"
+                    "Администратор бота разрешил вам пользоваться ботом.\n"
+                    "Нажмите /start чтобы начать."
+                )
+            except Exception:
+                pass
+            try:
+                await cb.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            await cb.answer("✅ Пользователь разбанен.", show_alert=True)
 
         # ── 3. FIX v6: Callback-обработчик для инлайн-кнопок типа "message" ─
         @self.user_router.callback_query(lambda c: c.data and c.data.startswith("inl_msg:"))
