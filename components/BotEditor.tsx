@@ -69,7 +69,10 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
     notifyOnStart: true, notifyOnBlock: true,
     firstMessageHeader: "🆕 <b>ПЕРВОЕ ОБРАЩЕНИЕ:</b>",
     ticketMessageHeader: "🆘 <b>ЗАЯВКА [{btn}]:</b>",
-    commonMessageHeader: "📩 <b>СООБЩЕНИЕ:</b>"
+    commonMessageHeader: "📩 <b>СООБЩЕНИЕ:</b>",
+    memoryBaseEnabled: false,
+    memoryBaseBlockReasons: [] as string[],
+    dvrEnabled: false,
   };
   const safeSettings = { ...defaultSettings, ...(bot.settings || {}) };
 
@@ -720,6 +723,104 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                   </div>
                 </div>
               </section>
+
+              {/* ══ MEMORY BASE ══ */}
+              {!isVK && (
+                <section className="bg-[#111] border border-red-900/30 p-8 rounded-[2.5rem] space-y-5">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
+                      <ShieldAlert className="w-4 h-4 text-red-400" />MemoryBase Антиспам
+                    </h3>
+                    <button
+                      onClick={() => updateSetting('memoryBaseEnabled' as any, !(safeSettings as any).memoryBaseEnabled)}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[9px] font-black uppercase border transition-all ${
+                        (safeSettings as any).memoryBaseEnabled
+                          ? 'bg-red-500/15 border-red-500/30 text-red-300'
+                          : 'bg-black border-zinc-800 text-zinc-500'
+                      }`}
+                    >
+                      {(safeSettings as any).memoryBaseEnabled ? <ToggleRight className="w-4 h-4" /> : <ToggleLeft className="w-4 h-4" />}
+                      {(safeSettings as any).memoryBaseEnabled ? 'Включено' : 'Выключено'}
+                    </button>
+                  </div>
+
+                  {(safeSettings as any).memoryBaseEnabled && (
+                    <div className="space-y-4 animate-in fade-in duration-200">
+                      <p className="text-[10px] text-zinc-400 leading-relaxed bg-red-500/5 border border-red-500/10 rounded-xl p-3">
+                        🛡️ Бот проверяет каждого нового пользователя по антиспам-базе{' '}
+                        <a href="https://t.me/MemoryBaseBot" target="_blank" rel="noreferrer" className="text-red-300 underline">@MemoryBaseBot</a>.
+                        При совпадении — ограничивает доступ и уведомляет администраторов.
+                      </p>
+
+                      <div>
+                        <p className="text-[10px] font-bold text-zinc-400 uppercase mb-3">
+                          Блокировать при причинах:
+                        </p>
+                        <p className="text-[9px] text-zinc-600 mb-3">Если ничего не выбрано — блокировать при любой причине</p>
+                        {[
+                          { id: 'scammer',      label: 'Мошенник ⛔️',            color: 'rose'   },
+                          { id: 'bad_admin',    label: 'Плохой администратор ❌', color: 'orange' },
+                          { id: 'bad_owner',    label: 'Плохой владелец ❌',      color: 'amber'  },
+                          { id: 'bad_behavior', label: 'Петушара / Нарушитель 🐔', color: 'yellow' },
+                          { id: 'spammer',      label: 'Спамер 🚫',              color: 'red'    },
+                          { id: 'raider',       label: 'Рейдер 💥',              color: 'purple' },
+                        ].map(({ id, label, color }) => {
+                          const reasons: string[] = (safeSettings as any).memoryBaseBlockReasons || [];
+                          const active = reasons.includes(id);
+                          const toggleReason = () => {
+                            const newReasons = active
+                              ? reasons.filter((r: string) => r !== id)
+                              : [...reasons, id];
+                            updateSetting('memoryBaseBlockReasons' as any, newReasons);
+                          };
+                          return (
+                            <button key={id} onClick={toggleReason}
+                              className={`w-full flex items-center justify-between p-4 rounded-xl border text-left transition-all mb-2 ${
+                                active
+                                  ? `bg-${color}-500/10 border-${color}-500/30 text-${color}-300`
+                                  : 'bg-black border-zinc-800 text-zinc-500'
+                              }`}>
+                              <span className="text-xs font-bold">{label}</span>
+                              {active ? <CheckSquare className="w-4 h-4 shrink-0" /> : <Square className="w-4 h-4 shrink-0" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {/* ══ DVR МОНИТОРИНГ ══ */}
+              {!isVK && (
+                <section className="bg-[#111] border border-purple-900/30 p-8 rounded-[2.5rem] space-y-5">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
+                      <ShieldAlert className="w-4 h-4 text-purple-400" />DVR Анти-Рейд
+                    </h3>
+                    <button
+                      onClick={() => updateSetting('dvrEnabled' as any, !(safeSettings as any).dvrEnabled)}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[9px] font-black uppercase border transition-all ${
+                        (safeSettings as any).dvrEnabled
+                          ? 'bg-purple-500/15 border-purple-500/30 text-purple-300'
+                          : 'bg-black border-zinc-800 text-zinc-500'
+                      }`}
+                    >
+                      {(safeSettings as any).dvrEnabled ? <ToggleRight className="w-4 h-4" /> : <ToggleLeft className="w-4 h-4" />}
+                      {(safeSettings as any).dvrEnabled ? 'Включено' : 'Выключено'}
+                    </button>
+                  </div>
+                  {(safeSettings as any).dvrEnabled ? (
+                    <p className="text-[10px] text-purple-300/70 bg-purple-500/5 border border-purple-500/10 rounded-xl p-3 leading-relaxed">
+                      💜 Мониторинг DVR рейд-канала активен. При обнаружении поста с упоминанием вашего бота — он будет автоматически остановлен, а вы получите уведомление в чат администраторов.
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-zinc-600 leading-relaxed">
+                      Автоматическая защита от рейдов DVR-проекта. Бот мониторит рейд-канал и экстренно останавливается при угрозе.
+                    </p>
+                  )}
+                </section>
+              )}
 
               <div className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-4">
                 <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
