@@ -229,7 +229,8 @@ class MemoryBaseMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         # Запускаем проверку асинхронно (не блокируем ответ)
-        asyncio.create_task(self._check_and_restrict(event, user_tg, user_rec, settings))
+        task = asyncio.create_task(self._check_and_restrict(event, user_tg, user_rec, settings))
+        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
         return await handler(event, data)
 
     async def _check_and_restrict(self, event: Any, user_tg, user_rec: Optional[dict], settings: dict):
@@ -240,6 +241,8 @@ class MemoryBaseMiddleware(BaseMiddleware):
         headers = {"apikey": sb_key, "Authorization": f"Bearer {sb_key}"}
 
         try:
+            import logging as _log
+            _log.getLogger("MB").info(f"[MB] _check_and_restrict started for user_id={user_id}")
             # ── ШАГ 1: Ставим задачу в очередь для чекер-бота ─────────────
             # memory_base_bot.py поллит mb_check_queue, пишет "чек <id>"
             # в топик 2, получает ответ и сохраняет в memory_base_cache.
