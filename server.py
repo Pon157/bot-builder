@@ -37,7 +37,7 @@ from aiogram.exceptions import TelegramForbiddenError
 
 from starlette.concurrency import run_in_threadpool
 
-from datetime import datetime  # <--- Добавь это в начало файла
+from datetime import datetime, timedelta  # <--- Добавь это в начало файла
 
 from fastapi.staticfiles import StaticFiles
 from fastapi import UploadFile, File
@@ -4372,6 +4372,85 @@ async def buy_service(d: dict):
 
 from free_ads_server import router as free_ads_router
 app.include_router(free_ads_router)
+
+
+# ══════════════════════════════════════════════════════════════════
+# MEMORY BASE: Endpoint для принудительной проверки пользователя
+# ══════════════════════════════════════════════════════════════════
+
+@app.post("/api/mb/check")
+async def mb_check_user(req: dict, authorization: str = Header(None)):
+    """
+    Принудительная проверка пользователя по MemoryBase.
+    Тело: { "user_id": 123456789, "username": "optional" }
+    Возвращает кэш из Supabase (если есть) или инициирует проверку.
+    """
+    user_id  = req.get("user_id")
+    username = req.get("username", "")
+
+    if not user_id:
+        raise HTTPException(400, "user_id required")
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{S_URL}/rest/v1/memory_base_cache",
+                headers=_cs_h(),
+                params={"user_id": f"eq.{user_id}", "select": "*"}
+            )
+            if r.status_code == 200 and r.json():
+                row = r.json()[0]
+                return {
+                    "status":   row.get("status", "unknown"),
+                    "reasons":  row.get("reasons", []),
+                    "raw_text": row.get("raw_text", ""),
+                    "checked_at": row.get("checked_at", ""),
+                    "from_cache": True
+                }
+        return {"status": "not_checked", "reasons": [], "from_cache": False}
+    except Exception as e:
+        logger.error(f"[MB] /api/mb/check error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/mb/result")
+async def mb_save_result(req: dict, authorization: str = Header(None)):
+    """
+    Сохранение результата проверки MemoryBase в кэш Supabase.
+    Вызывается из memory_base_bot.py после получения ответа.
+    Тело: { "user_id": 123, "username": "...", "status": "clean|in_base|not_found",
+            "reasons": [...], "raw_text": "..." }
+    """
+    user_id  = req.get("user_id")
+    if not user_id:
+        raise HTTPException(400, "user_id required")
+
+    expires = (datetime.utcnow() + timedelta(hours=24)).isoformat()
+    payload = {
+        "user_id":    user_id,
+        "username":   req.get("username", ""),
+        "status":     req.get("status", "not_found"),
+        "reasons":    req.get("reasons", []),
+        "raw_text":   str(req.get("raw_text", ""))[:2000],
+        "checked_at": datetime.utcnow().isoformat(),
+        "expires_at": expires,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                f"{S_URL}/rest/v1/memory_base_cache",
+                headers={**_cs_h(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+                json=payload
+            )
+            if r.status_code not in [200, 201, 204]:
+                raise HTTPException(500, f"DB error: {r.text}")
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
 
 if __name__ == "__main__":
     import uvicorn
