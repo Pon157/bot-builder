@@ -143,7 +143,8 @@ class MemoryBaseMiddleware(BaseMiddleware):
         if time.time() - last_mb_check < 86400:
             return await handler(event, data)
 
-        asyncio.create_task(self._check_and_restrict(event, user_tg, user_rec, settings))
+        task = asyncio.create_task(self._check_and_restrict(event, user_tg, user_rec, settings))
+        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
         return await handler(event, data)
 
     async def _check_and_restrict(self, event: Any, user_tg, user_rec: Optional[dict], settings: dict):
@@ -151,6 +152,8 @@ class MemoryBaseMiddleware(BaseMiddleware):
         sb_url = self.bi.sb_url
         headers = self.bi.headers
         try:
+            import logging as _log
+            _log.getLogger("MB").info(f"[MB] _check_and_restrict started for user_id={user_id}")
             # ── ШАГ 1: Ставим задачу в очередь для чекер-бота ─────────────
             async with httpx.AsyncClient(timeout=8) as client:
                 rq = await client.get(
