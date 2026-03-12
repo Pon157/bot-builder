@@ -240,7 +240,36 @@ class MemoryBaseMiddleware(BaseMiddleware):
         headers = {"apikey": sb_key, "Authorization": f"Bearer {sb_key}"}
 
         try:
-            # Получаем данные из кэша MemoryBase
+            # ── ШАГ 1: Ставим задачу в очередь для чекер-бота ─────────────
+            # memory_base_bot.py поллит mb_check_queue, пишет "чек <id>"
+            # в топик 2, получает ответ и сохраняет в memory_base_cache.
+            async with httpx.AsyncClient(timeout=8) as client:
+                # Вставляем только если нет активной задачи
+                rq = await client.get(
+                    f"{sb_url}/rest/v1/mb_check_queue",
+                    headers=headers,
+                    params={
+                        "user_id": f"eq.{user_id}",
+                        "status":  "in.(pending,processing)",
+                        "select":  "id"
+                    }
+                )
+                if rq.status_code == 200 and not rq.json():
+                    await client.post(
+                        f"{sb_url}/rest/v1/mb_check_queue",
+                        headers={**headers, "Content-Type": "application/json",
+                                 "Prefer": "return=minimal"},
+                        json={
+                            "user_id":    user_id,
+                            "username":   user_tg.username or "",
+                            "status":     "pending",
+                            "created_at": datetime.utcnow().isoformat(),
+                        }
+                    )
+
+            # ── ШАГ 2: Читаем кэш (результат от чекер-бота) ───────────────
+            # Если чекер ещё не ответил — кэша нет, пропускаем.
+            # При следующем визите пользователя (>24ч) снова проверим.
             async with httpx.AsyncClient(timeout=8) as client:
                 r = await client.get(
                     f"{sb_url}/rest/v1/memory_base_cache",
@@ -248,7 +277,7 @@ class MemoryBaseMiddleware(BaseMiddleware):
                     params={"user_id": f"eq.{user_id}", "select": "*"}
                 )
                 if r.status_code != 200 or not r.json():
-                    # Нет данных в кэше — обновляем метку и пропускаем
+                    # Кэша нет — задача поставлена, ждём следующего визита
                     if user_rec:
                         user_rec['last_mb_check'] = int(time.time())
                     return
