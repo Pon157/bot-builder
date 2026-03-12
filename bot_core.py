@@ -190,6 +190,8 @@ class MemoryBaseMiddleware(BaseMiddleware):
     ) -> Any:
         # Проверяем, включена ли MemoryBase
         settings = getattr(self.bi, 'settings', {})
+        _uid = getattr(getattr(event, 'from_user', None), 'id', '?')
+        logger.info(f"[MB] middleware called uid={_uid} enabled={settings.get('memoryBaseEnabled')} settings_keys={list(settings.keys())[:5]}")
         if not settings.get('memoryBaseEnabled', False):
             return await handler(event, data)
 
