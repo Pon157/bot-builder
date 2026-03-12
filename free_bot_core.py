@@ -148,11 +148,38 @@ class MemoryBaseMiddleware(BaseMiddleware):
 
     async def _check_and_restrict(self, event: Any, user_tg, user_rec: Optional[dict], settings: dict):
         user_id = user_tg.id
+        sb_url = self.bi.sb_url
+        headers = self.bi.headers
         try:
+            # ── ШАГ 1: Ставим задачу в очередь для чекер-бота ─────────────
+            async with httpx.AsyncClient(timeout=8) as client:
+                rq = await client.get(
+                    f"{sb_url}/rest/v1/mb_check_queue",
+                    headers=headers,
+                    params={
+                        "user_id": f"eq.{user_id}",
+                        "status":  "in.(pending,processing)",
+                        "select":  "id"
+                    }
+                )
+                if rq.status_code == 200 and not rq.json():
+                    await client.post(
+                        f"{sb_url}/rest/v1/mb_check_queue",
+                        headers={**headers, "Content-Type": "application/json",
+                                 "Prefer": "return=minimal"},
+                        json={
+                            "user_id":    user_id,
+                            "username":   user_tg.username or "",
+                            "status":     "pending",
+                            "created_at": datetime.utcnow().isoformat(),
+                        }
+                    )
+
+            # ── ШАГ 2: Читаем кэш ─────────────────────────────────────────
             async with httpx.AsyncClient(timeout=8) as client:
                 r = await client.get(
-                    f"{self.bi.sb_url}/rest/v1/memory_base_cache",
-                    headers=self.bi.headers,
+                    f"{sb_url}/rest/v1/memory_base_cache",
+                    headers=headers,
                     params={"user_id": f"eq.{user_id}", "select": "*"}
                 )
                 if r.status_code != 200 or not r.json():
