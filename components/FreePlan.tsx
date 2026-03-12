@@ -732,6 +732,90 @@ const FreeBotEditor: React.FC<{
                 }} />
             </div>
           ))}
+
+          {/* MemoryBase */}
+          <div className="mt-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <ShieldAlert size={12} className="text-red-400" />MemoryBase Антиспам
+                </p>
+                <p className="text-[9px] text-zinc-500 uppercase">Проверка по антиспам-базе</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => updateStg('memoryBaseEnabled', !(stg as any).memoryBaseEnabled)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase border transition-all ${
+                  (stg as any).memoryBaseEnabled
+                    ? 'bg-red-500/15 border-red-500/30 text-red-300'
+                    : 'bg-zinc-900 border-zinc-700 text-zinc-500'
+                }`}
+              >
+                {(stg as any).memoryBaseEnabled ? <ToggleRight size={13} /> : <ToggleLeft size={13} />}
+                {(stg as any).memoryBaseEnabled ? 'Вкл' : 'Выкл'}
+              </button>
+            </div>
+
+            {(stg as any).memoryBaseEnabled && (
+              <div className="space-y-2 pl-1 animate-in fade-in duration-200">
+                <p className="text-[9px] text-zinc-500 uppercase font-bold mb-2">Блокировать при причинах:</p>
+                <p className="text-[8px] text-zinc-600 mb-2">Если ничего — блокировать при любой причине</p>
+                {[
+                  { id: 'scammer',      label: 'Мошенник ⛔️' },
+                  { id: 'bad_admin',    label: 'Плохой admin ❌' },
+                  { id: 'bad_owner',    label: 'Плохой владелец ❌' },
+                  { id: 'bad_behavior', label: 'Петушара 🐔' },
+                  { id: 'spammer',      label: 'Спамер 🚫' },
+                  { id: 'raider',       label: 'Рейдер 💥' },
+                ].map(({ id, label }) => {
+                  const reasons: string[] = (stg as any).memoryBaseBlockReasons || [];
+                  const active = reasons.includes(id);
+                  return (
+                    <button key={id} type="button"
+                      onClick={() => {
+                        const nr = active ? reasons.filter((r: string) => r !== id) : [...reasons, id];
+                        updateStg('memoryBaseBlockReasons', nr);
+                      }}
+                      className={`w-full flex items-center justify-between p-3 rounded-xl border text-left transition-all ${
+                        active ? 'bg-red-500/10 border-red-500/30 text-red-300' : 'bg-black border-zinc-800 text-zinc-500'
+                      }`}>
+                      <span className="text-[11px] font-bold">{label}</span>
+                      {active ? <CheckSquare size={12} /> : <SquareIcon size={12} />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* DVR */}
+          <div className="mt-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <ShieldAlert size={12} className="text-purple-400" />DVR Анти-Рейд
+                </p>
+                <p className="text-[9px] text-zinc-500 uppercase">Защита от рейд-атак</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => updateStg('dvrEnabled', !(stg as any).dvrEnabled)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase border transition-all ${
+                  (stg as any).dvrEnabled
+                    ? 'bg-purple-500/15 border-purple-500/30 text-purple-300'
+                    : 'bg-zinc-900 border-zinc-700 text-zinc-500'
+                }`}
+              >
+                {(stg as any).dvrEnabled ? <ToggleRight size={13} /> : <ToggleLeft size={13} />}
+                {(stg as any).dvrEnabled ? 'Вкл' : 'Выкл'}
+              </button>
+            </div>
+            {(stg as any).dvrEnabled && (
+              <p className="text-[9px] text-purple-300/70 mt-2 bg-purple-500/5 border border-purple-500/10 rounded-xl p-2.5 leading-relaxed">
+                💜 Мониторинг DVR рейд-канала активен.
+              </p>
+            )}
+          </div>
         </Section>
 
         <Section title={`Кнопки (${buttons.length})`} icon={<Zap size={13} className="text-blue-400" />}>
