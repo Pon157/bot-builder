@@ -364,8 +364,7 @@ class MemoryBaseBotService:
         # Резолвим pending Future когда видим ответ-паттерн MemoryBase
 
         @self.router.message(
-            F.chat.id == ADMIN_CHAT_ID,
-            F.message_thread_id == MB_CHECK_TOPIC_ID
+            lambda m: m.chat.id == ADMIN_CHAT_ID and m.message_thread_id == MB_CHECK_TOPIC_ID
         )
         async def on_mb_topic_message(m: Message):
             text = (m.text or m.caption or "").strip()
@@ -429,41 +428,25 @@ class MemoryBaseBotService:
         # Сюда попадают ТОЛЬКО сообщения из топика 4 (DVR-уведомлений)
         # Никакой другой топик не затрагивается
 
-        # ── ТОПИК 4: DVR — два хендлера ─────────────────────────────────────
-        # Telegram не всегда заполняет forward_from_chat (зависит от настроек канала).
-        # Поэтому: первый хендлер — классическое пересланное, второй — любое сообщение в топике.
+        # ── ТОПИК 4: DVR ─────────────────────────────────────────────────────
+        # Используем лямбды вместо F.chat.id == константа — надёжнее в aiogram 3.x
+        # Ловим ВСЁ что приходит в топик 4: пересланные из канала И обычные сообщения
 
         @self.router.message(
-            F.chat.id == ADMIN_CHAT_ID,
-            F.message_thread_id == DVR_ADMIN_TOPIC_ID,
-            F.forward_from_chat.as_("fwd_chat")
-        )
-        async def on_dvr_topic_forwarded(m: Message, fwd_chat):
-            """Пересланное из канала сообщение в топике 4 (forward_from_chat заполнен)."""
-            text = (m.text or m.caption or "").strip()
-            logger.info(
-                f"[DVR] Forwarded from channel {fwd_chat.id} "
-                f"topic={DVR_ADMIN_TOPIC_ID}: {text[:80]!r}"
-            )
-            await _handle_dvr(self.bot, text)
-
-        @self.router.message(
-            F.chat.id == ADMIN_CHAT_ID,
-            F.message_thread_id == DVR_ADMIN_TOPIC_ID,
+            lambda m: m.chat.id == ADMIN_CHAT_ID and m.message_thread_id == DVR_ADMIN_TOPIC_ID
         )
         async def on_dvr_topic_any(m: Message):
-            """Любое сообщение в топике 4 (DVR без forward_from_chat или обычное уведомление)."""
-            # Если forward_from_chat есть — уже обработано хендлером выше
-            if m.forward_from_chat:
-                return
+            """Любое сообщение в топике 4 — DVR уведомление."""
             text = (m.text or m.caption or "").strip()
+            fwd_info = f"fwd_from={m.forward_from_chat.id}" if m.forward_from_chat else "no_fwd"
+            logger.info(f"[DVR] topic4 msg: {fwd_info} text={text[:80]!r}")
             if not text:
                 return
-            logger.info(f"[DVR] Message (no fwd_chat) in topic {DVR_ADMIN_TOPIC_ID}: {text[:80]!r}")
-            # Реагируем если в тексте есть упоминание бота (@username / bot / бот)
-            text_low = text.lower()
-            if "@" in text_low or "bot" in text_low or "бот" in text_low:
+            # Реагируем на пересланные ИЛИ на любой текст с упоминанием @
+            if m.forward_from_chat or "@" in text or "bot" in text.lower() or "бот" in text.lower():
                 await _handle_dvr(self.bot, text)
+            else:
+                logger.info(f"[DVR] topic4 msg skipped (no @ mention)")
 
         # ── /check — ручная проверка ─────────────────────────────────────────
 
