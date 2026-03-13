@@ -145,7 +145,7 @@ class MemoryBaseMiddleware(BaseMiddleware):
         time_since = time.time() - last_mb_check
         logger.info(f"[MB] uid={user_id} last_mb_check={last_mb_check} time_since={int(time_since)}s will_skip={time_since < 86400}")
         if time_since < 86400:
-            # Локальный кэш свежий — проверяем реальное наличие записи в Supabase
+            # Локальный кэш свежий — проверяем реальный статус в Supabase
             try:
                 sb_url = self.bi.sb_url
                 h = self.bi.headers
@@ -153,17 +153,44 @@ class MemoryBaseMiddleware(BaseMiddleware):
                     _r = await _c.get(
                         f"{sb_url}/rest/v1/memory_base_cache",
                         headers=h,
-                        params={"user_id": f"eq.{user_id}", "select": "status,expires_at"}
+                        params={"user_id": f"eq.{user_id}", "select": "status,reasons"}
                     )
                     if _r.status_code == 200:
                         _rows = _r.json()
-                        if _rows:
-                            logger.info(f"[MB] uid={user_id} cache exists status={_rows[0].get('status')} — skip check")
-                            return await handler(event, data)
-                        else:
+                        if not _rows:
+                            # Записи нет — сбрасываем и идём на полную проверку
                             logger.info(f"[MB] uid={user_id} last_mb_check set but NO cache row — forcing recheck")
                             if user_rec:
                                 user_rec['last_mb_check'] = 0
+                            # не return — идём дальше к _check_and_restrict
+                        else:
+                            _cache_row = _rows[0]
+                            _status = _cache_row.get('status', 'not_found')
+                            _reasons = _cache_row.get('reasons', [])
+                            logger.info(f"[MB] uid={user_id} cache hit status={_status} reasons={_reasons}")
+
+                            if _status == 'in_base':
+                                _block_reasons = settings.get('memoryBaseBlockReasons', [])
+                                _should_block = (not _block_reasons or any(r in _block_reasons for r in _reasons))
+                                if _should_block:
+                                    if user_rec:
+                                        user_rec['mb_restricted'] = True
+                                        user_rec['mb_reasons'] = _reasons
+                                    if isinstance(event, Message):
+                                        await event.answer(
+                                            "🚫 <b>Доступ ограничен.</b>\n\n"
+                                            "Вы находитесь в антиспам-базе "
+                                            "<a href=\"https://t.me/MemoryBaseBot\">MemoryBase</a>.\n"
+                                            "Для восстановления доступа обратитесь к владельцу бота."
+                                        )
+                                    elif isinstance(event, CallbackQuery):
+                                        await event.answer("🚫 Доступ ограничен (MemoryBase).", show_alert=True)
+                                    return  # БЛОКИРУЕМ
+                            # Статус clean/not_found — пропускаем
+                            return await handler(event, data)
+                    else:
+                        logger.warning(f"[MB] cache check failed status={_r.status_code} — пропускаем")
+                        return await handler(event, data)
             except Exception as _e:
                 logger.warning(f"[MB] cache pre-check error: {_e} — пропускаем")
                 return await handler(event, data)
