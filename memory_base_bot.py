@@ -419,7 +419,7 @@ class MemoryBaseBotService:
 
         @self.app.on_message(
             filters.chat(ADMIN_CHAT_ID) &
-            filters.topic(MB_CHECK_TOPIC_ID)
+            filters.create(lambda _, __, m: getattr(m, "message_thread_id", None) == MB_CHECK_TOPIC_ID)
         )
         async def on_mb_message(client: Client, msg: Message):
             """Все сообщения в топике MB — включая от @MemoryBaseBot."""
@@ -454,7 +454,7 @@ class MemoryBaseBotService:
 
         @self.app.on_message(
             filters.chat(ADMIN_CHAT_ID) &
-            filters.topic(DVR_ADMIN_TOPIC_ID)
+            filters.create(lambda _, __, m: getattr(m, "message_thread_id", None) == DVR_ADMIN_TOPIC_ID)
         )
         async def on_dvr_message(client: Client, msg: Message):
             """Любое сообщение в DVR топике."""
