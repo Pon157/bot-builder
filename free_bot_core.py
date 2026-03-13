@@ -145,8 +145,27 @@ class MemoryBaseMiddleware(BaseMiddleware):
         if time.time() - last_mb_check < 86400:
             return await handler(event, data)
 
-        task = asyncio.create_task(self._check_and_restrict(event, user_tg, user_rec, settings))
-        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+        # Уведомляем пользователя что идёт проверка
+        wait_msg = None
+        try:
+            if isinstance(event, Message):
+                wait_msg = await event.answer(
+                    "🔍 <b>Проверяю вас по базе пользователей в Memory Base...</b>\nПожалуйста, подождите."
+                )
+        except Exception:
+            pass
+
+        # Ждём результат (блокируем до ответа чекера)
+        should_block = await self._check_and_restrict(event, user_tg, user_rec, settings)
+
+        if wait_msg:
+            try:
+                await wait_msg.delete()
+            except Exception:
+                pass
+
+        if should_block:
+            return
         return await handler(event, data)
 
     async def _check_and_restrict(self, event: Any, user_tg, user_rec: Optional[dict], settings: dict):
@@ -180,32 +199,42 @@ class MemoryBaseMiddleware(BaseMiddleware):
                         }
                     )
 
-            # ── ШАГ 2: Читаем кэш ─────────────────────────────────────────
-            async with httpx.AsyncClient(timeout=8) as client:
-                r = await client.get(
-                    f"{sb_url}/rest/v1/memory_base_cache",
-                    headers=headers,
-                    params={"user_id": f"eq.{user_id}", "select": "*"}
-                )
-                if r.status_code != 200 or not r.json():
-                    if user_rec:
-                        user_rec['last_mb_check'] = int(time.time())
-                    return
-                row     = r.json()[0]
-                status  = row.get('status', 'clean')
-                reasons = row.get('reasons', [])
+            # ── ШАГ 2: Поллим кэш до 30 сек ─────────────────────────────
+            # Чекер-бот пишет чек, ждём его ответа. Таймаут 30 сек — пускаем.
+            import time as _time
+            deadline = _time.time() + 30
+            row = None
+            while _time.time() < deadline:
+                await asyncio.sleep(2)
+                async with httpx.AsyncClient(timeout=8) as client:
+                    r = await client.get(
+                        f"{sb_url}/rest/v1/memory_base_cache",
+                        headers=headers,
+                        params={"user_id": f"eq.{user_id}", "select": "*"}
+                    )
+                    if r.status_code == 200 and r.json():
+                        row = r.json()[0]
+                        break
+
+            if row is None:
+                if user_rec:
+                    user_rec['last_mb_check'] = int(_time.time())
+                return False
+
+            status  = row.get('status', 'clean')
+            reasons = row.get('reasons', [])
 
             if user_rec:
                 user_rec['last_mb_check'] = int(time.time())
 
             if status != 'in_base':
-                return
+                return False
 
             block_reasons = settings.get('memoryBaseBlockReasons', [])
             should_block = (not block_reasons or any(r in block_reasons for r in reasons))
 
             if not should_block:
-                return
+                return False
 
             if user_rec:
                 user_rec['mb_restricted'] = True
@@ -262,8 +291,11 @@ class MemoryBaseMiddleware(BaseMiddleware):
                     )
                 except Exception as e:
                     logger.warning(f"[MB] admin notify error: {e}")
+            return True  # Заблокирован
+
         except Exception as e:
             logger.error(f"[MB] free _check_and_restrict error: {e}")
+            return False
 
 
 # ════════════════════════════════════════════════════════════════════════════════
