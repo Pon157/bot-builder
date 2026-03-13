@@ -227,12 +227,16 @@ def extract_uid_from_mb(text: str) -> Optional[str]:
 
 
 def _is_mb_pattern(text: str) -> bool:
-    """Проверяет, похож ли текст на ответ MemoryBase."""
+    """Проверяет, похож ли текст на ответ MemoryBase.
+    Намеренно широкий список — лучше лишний раз проверить, чем потерять ответ.
+    """
     low = text.lower()
     return any(p in low for p in [
         "нет в базе", "не найден", "есть в базе",
         "не поступало жалоб", "🔴", "🟡", "🟢",
-        "человек есть", "человека нет", "memorybase"
+        "человек есть", "человека нет", "memorybase", "memory base",
+        "в базе данных", "чист", "жалоб нет", "найден в базе",
+        "проверка", "база данных", "результат",
     ])
 
 
@@ -376,58 +380,90 @@ class MemoryBaseBotService:
             if not text:
                 return
 
-            # Пропускаем СВОИ запросы
+            # Пропускаем СВОИ запросы "чек <id>"
             if re.match(r'^чек\s+\d+', text, re.IGNORECASE):
                 logger.debug(f"[MB] Skipping own request: {text[:40]}")
                 return
 
-            # Проверяем паттерн MemoryBase
-            if not _is_mb_pattern(text):
-                logger.debug(f"[MB] Not MB pattern, skipping: {text[:60]!r}")
+            # Если нет ни одного pending — нет смысла обрабатывать
+            async with _pending_lock:
+                if not _pending:
+                    logger.debug(f"[MB] No pending futures, skipping message")
+                    return
+
+            # Пробуем извлечь user_id из ответа MemoryBase
+            uid_from_text = extract_uid_from_mb(text)
+
+            # Проверяем паттерн MemoryBase — но ТОЛЬКО если нет явного uid
+            # Если uid нашли — резолвим без проверки паттерна (надёжнее)
+            if not uid_from_text and not _is_mb_pattern(text):
+                logger.debug(f"[MB] Not MB pattern and no uid, skipping: {text[:60]!r}")
                 return
 
-            logger.info(f"[MB] MB response in topic {MB_CHECK_TOPIC_ID}: {text[:100]}")
-
-            # Извлекаем user_id из ответа
-            uid_from_text = extract_uid_from_mb(text)
+            logger.info(f"[MB] MB response in topic {MB_CHECK_TOPIC_ID}: uid_found={uid_from_text} text={text[:100]!r}")
 
             async with _pending_lock:
                 resolved = False
 
-                # Резолвим по конкретному user_id если нашли в тексте
+                # Приоритет 1: резолвим по конкретному user_id из текста
                 if uid_from_text and uid_from_text in _pending:
                     fut = _pending[uid_from_text]
                     if not fut.done():
                         fut.set_result(text)
-                        logger.info(f"[MB] Resolved future for uid={uid_from_text}")
+                        logger.info(f"[MB] ✅ Resolved future for uid={uid_from_text} (by uid in text)")
                         resolved = True
 
-                # Иначе — резолвим первый незавершённый Future
+                # Приоритет 2: если uid не найден или не совпал — берём первый незавершённый
                 if not resolved:
                     for key, fut in list(_pending.items()):
                         if not fut.done():
                             fut.set_result(text)
-                            logger.info(f"[MB] Resolved first pending future (key={key})")
+                            logger.info(f"[MB] ✅ Resolved first pending future key={key} (fallback)")
+                            resolved = True
                             break
+
+                if not resolved:
+                    logger.warning(f"[MB] No unresolved futures to match response")
 
         # ── ТОПИК 4: DVR — строго фильтруем по thread_id ────────────────────
         # Сюда попадают ТОЛЬКО сообщения из топика 4 (DVR-уведомлений)
         # Никакой другой топик не затрагивается
+
+        # ── ТОПИК 4: DVR — два хендлера ─────────────────────────────────────
+        # Telegram не всегда заполняет forward_from_chat (зависит от настроек канала).
+        # Поэтому: первый хендлер — классическое пересланное, второй — любое сообщение в топике.
 
         @self.router.message(
             F.chat.id == ADMIN_CHAT_ID,
             F.message_thread_id == DVR_ADMIN_TOPIC_ID,
             F.forward_from_chat.as_("fwd_chat")
         )
-        async def on_dvr_topic_message(m: Message, fwd_chat):
-            # Реагируем ТОЛЬКО на сообщения пересланные из канала DVR
-            # Любые обычные сообщения в топике 4 игнорируются
+        async def on_dvr_topic_forwarded(m: Message, fwd_chat):
+            """Пересланное из канала сообщение в топике 4 (forward_from_chat заполнен)."""
             text = (m.text or m.caption or "").strip()
             logger.info(
                 f"[DVR] Forwarded from channel {fwd_chat.id} "
-                f"in topic {DVR_ADMIN_TOPIC_ID}: {text[:80]!r}"
+                f"topic={DVR_ADMIN_TOPIC_ID}: {text[:80]!r}"
             )
             await _handle_dvr(self.bot, text)
+
+        @self.router.message(
+            F.chat.id == ADMIN_CHAT_ID,
+            F.message_thread_id == DVR_ADMIN_TOPIC_ID,
+        )
+        async def on_dvr_topic_any(m: Message):
+            """Любое сообщение в топике 4 (DVR без forward_from_chat или обычное уведомление)."""
+            # Если forward_from_chat есть — уже обработано хендлером выше
+            if m.forward_from_chat:
+                return
+            text = (m.text or m.caption or "").strip()
+            if not text:
+                return
+            logger.info(f"[DVR] Message (no fwd_chat) in topic {DVR_ADMIN_TOPIC_ID}: {text[:80]!r}")
+            # Реагируем если в тексте есть упоминание бота (@username / bot / бот)
+            text_low = text.lower()
+            if "@" in text_low or "bot" in text_low or "бот" in text_low:
+                await _handle_dvr(self.bot, text)
 
         # ── /check — ручная проверка ─────────────────────────────────────────
 
@@ -507,6 +543,8 @@ class MemoryBaseBotService:
         # ОБЯЗАН быть АДМИНИСТРАТОРОМ группы — иначе Telegram не шлёт
         # сообщения от других ботов нашему боту.
         try:
+            # Сбрасываем webhook — иначе TelegramConflictError при polling
+            await self.bot.delete_webhook(drop_pending_updates=True)
             await self.dp.start_polling(
                 self.bot,
                 allowed_updates=["message", "channel_post",
