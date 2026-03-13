@@ -2790,8 +2790,14 @@ class BotInstance:
         
         logger.info(f"[*] Бот {self.bot_id} готов к работе. Лицензия: {'Истекла' if self.license_expired else 'ОК'}")
         
-        try: 
-            await self.dp.start_polling(self.bot)
+        try:
+            # Сбрасываем webhook — иначе getUpdates (polling) даёт TelegramConflictError
+            await self.bot.delete_webhook(drop_pending_updates=True)
+            await self.dp.start_polling(
+                self.bot,
+                drop_pending_updates=True,
+                allowed_updates=["message", "callback_query", "my_chat_member"]
+            )
         finally:
             self.is_running = False
             await self.bot.session.close()
