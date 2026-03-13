@@ -68,8 +68,8 @@ SUPABASE_URL          = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY          = os.getenv("SUPABASE_KEY", "")
 BOTS_API_URL          = os.getenv("BOTS_API_URL", "https://dialogengine.webtm.ru")
 ADMIN_TOKEN           = os.getenv("ADMIN_TOKEN", "")
-ADMIN_CHAT_ID         = int(os.getenv("ADMIN_CHECK_CHAT_ID", os.getenv("ADMIN_CHAT_ID", "-1003772028132")))
-MB_CHECK_TOPIC_ID     = int(os.getenv("ADMIN_CHECK_TOPIC_ID", os.getenv("MB_CHECK_TOPIC_ID", "2")))
+ADMIN_CHAT_ID         = int(os.getenv("ADMIN_CHAT_ID", "-1003772028132"))
+MB_CHECK_TOPIC_ID     = int(os.getenv("MB_CHECK_TOPIC_ID", "2"))
 DVR_ADMIN_TOPIC_ID    = int(os.getenv("DVR_ADMIN_TOPIC_ID", "4"))
 
 QUEUE_POLL_INTERVAL = 2.0    # сек между опросами очереди
@@ -416,33 +416,17 @@ class MemoryBaseBotService:
 
         @self.router.message(
             F.chat.id == ADMIN_CHAT_ID,
-            F.message_thread_id == DVR_ADMIN_TOPIC_ID
+            F.message_thread_id == DVR_ADMIN_TOPIC_ID,
+            F.forward_from_chat.as_("fwd_chat")
         )
-        async def on_dvr_topic_message(m: Message):
+        async def on_dvr_topic_message(m: Message, fwd_chat):
+            # Реагируем ТОЛЬКО на сообщения пересланные из канала DVR
+            # Любые обычные сообщения в топике 4 игнорируются
             text = (m.text or m.caption or "").strip()
-
-            # DEBUG: логируем ВСЁ что приходит в топик 4
             logger.info(
-                f"[DVR DEBUG] topic={m.message_thread_id} "
-                f"from={m.from_user.id if m.from_user else 'chan'} "
-                f"fwd_chat={m.forward_from_chat.id if m.forward_from_chat else None} "
-                f"text={text[:60]!r}"
+                f"[DVR] Forwarded from channel {fwd_chat.id} "
+                f"in topic {DVR_ADMIN_TOPIC_ID}: {text[:80]!r}"
             )
-
-            if not text:
-                return
-
-            # Ищем: либо пересланное из другого чата/канала, либо паттерны рейда в тексте
-            is_forwarded_from_channel = (m.forward_from_chat is not None)
-            has_raid_pattern = any(p in text.lower() for p in [
-                "рейд", "raid", "флуд", "flood", "атак", "спам", "spam"
-            ])
-
-            if not is_forwarded_from_channel and not has_raid_pattern:
-                logger.debug(f"[DVR] Not a raid signal, skipping")
-                return
-
-            logger.info(f"[DVR] Raid signal in topic {DVR_ADMIN_TOPIC_ID}: {text[:120]}")
             await _handle_dvr(self.bot, text)
 
         # ── /check — ручная проверка ─────────────────────────────────────────
