@@ -380,19 +380,75 @@ class MemoryBaseBotService:
         class DebugMiddleware(BaseMiddleware):
             async def __call__(self, handler: Callable, event: Message, data: dict) -> Any:
                 logger.info(
-                    f"[ALL] chat={event.chat.id} thread={event.message_thread_id} "
+                    f"[ALL] type=message chat={event.chat.id} thread={event.message_thread_id} "
                     f"from={event.from_user.id if event.from_user else 'none'} "
                     f"fwd_chat={event.forward_from_chat.id if event.forward_from_chat else '-'} "
                     f"text={((event.text or event.caption or '')[:60])!r}"
                 )
                 return await handler(event, data)
 
+        class DebugChannelMiddleware(BaseMiddleware):
+            async def __call__(self, handler: Callable, event: Message, data: dict) -> Any:
+                logger.info(
+                    f"[ALL] type=channel_post chat={event.chat.id} thread={event.message_thread_id} "
+                    f"fwd_chat={event.forward_from_chat.id if event.forward_from_chat else '-'} "
+                    f"text={((event.text or event.caption or '')[:60])!r}"
+                )
+                return await handler(event, data)
+
         self.router.message.middleware(DebugMiddleware())
+        self.router.channel_post.middleware(DebugChannelMiddleware())
+
+        # ── CATCH-ALL для диагностики: любой channel_post в нашем чате ───────
+        # (определяем раньше специфичных — aiogram проверяет в порядке регистрации)
+        @self.router.channel_post()
+        async def on_any_channel_post(m: Message):
+            logger.info(
+                f"[CATCH] channel_post chat={m.chat.id} thread={m.message_thread_id} "
+                f"ADMIN_CHAT_ID={ADMIN_CHAT_ID} match={m.chat.id == ADMIN_CHAT_ID} "
+                f"text={(m.text or m.caption or '')[:80]!r}"
+            )
+            # Обрабатываем MB топик 2
+            if m.chat.id == ADMIN_CHAT_ID and m.message_thread_id == MB_CHECK_TOPIC_ID:
+                text = (m.text or m.caption or "").strip()
+                if text and not re.match(r'^чек\s+\d+', text, re.IGNORECASE):
+                    uid_from_text = extract_uid_from_mb(text)
+                    if uid_from_text or _is_mb_pattern(text):
+                        logger.info(f"[MB] channel_post MB response: {text[:100]!r}")
+                        async with _pending_lock:
+                            resolved = False
+                            if uid_from_text and uid_from_text in _pending:
+                                fut = _pending[uid_from_text]
+                                if not fut.done():
+                                    fut.set_result(text)
+                                    logger.info(f"[MB] ✅ Resolved via channel_post uid={uid_from_text}")
+                                    resolved = True
+                            if not resolved:
+                                for key, fut in list(_pending.items()):
+                                    if not fut.done():
+                                        fut.set_result(text)
+                                        logger.info(f"[MB] ✅ Resolved first pending via channel_post key={key}")
+                                        break
+            # Обрабатываем DVR топик 4
+            elif m.chat.id == ADMIN_CHAT_ID and m.message_thread_id == DVR_ADMIN_TOPIC_ID:
+                text = (m.text or m.caption or "").strip()
+                logger.info(f"[DVR] channel_post in topic4: {text[:80]!r}")
+                if text and ("@" in text or "bot" in text.lower() or "бот" in text.lower() or m.forward_from_chat):
+                    await _handle_dvr(self.bot, text)
 
         # ── ТОПИК 2: ловим ВСЕ сообщения в MB-топике ────────────────────────
         # Строго фильтруем: chat_id == ADMIN_CHAT_ID и thread_id == MB_CHECK_TOPIC_ID
         # Пропускаем свои собственные запросы "чек X"
         # Резолвим pending Future когда видим ответ-паттерн MemoryBase
+
+        # ── CATCH-ALL: любое сообщение — логируем для диагностики chat.id ────
+        @self.router.message()
+        async def on_any_message_debug(m: Message):
+            logger.info(
+                f"[CATCH] message chat={m.chat.id} thread={m.message_thread_id} "
+                f"ADMIN_CHAT_ID={ADMIN_CHAT_ID} match={m.chat.id == ADMIN_CHAT_ID} "
+                f"text={(m.text or m.caption or '')[:60]!r}"
+            )
 
         @self.router.message(
             lambda m: m.chat.id == ADMIN_CHAT_ID and m.message_thread_id == MB_CHECK_TOPIC_ID
@@ -549,6 +605,21 @@ class MemoryBaseBotService:
 
         logger.info(f"[*] MemoryBase Bot запущен")
         logger.info(f"[*] Чат={ADMIN_CHAT_ID} | MB топик={MB_CHECK_TOPIC_ID} | DVR топик={DVR_ADMIN_TOPIC_ID}")
+
+        # ── Диагностика при старте: проверяем доступ к чату ─────────────────
+        try:
+            chat_info = await self.bot.get_chat(ADMIN_CHAT_ID)
+            logger.info(f"[*] ✅ Чат найден: id={chat_info.id} title={chat_info.title!r} type={chat_info.type}")
+            me = await self.bot.get_me()
+            logger.info(f"[*] ✅ Бот: @{me.username} id={me.id}")
+            # Проверяем что бот — администратор
+            member = await self.bot.get_chat_member(ADMIN_CHAT_ID, me.id)
+            logger.info(f"[*] Статус бота в чате: {member.status}")
+            if member.status not in ("administrator", "creator"):
+                logger.warning("[*] ⚠️ БОТ НЕ АДМИНИСТРАТОР ГРУППЫ! Он не будет получать сообщения от других ботов!")
+        except Exception as e:
+            logger.error(f"[*] ❌ НЕ МОГУ ПОЛУЧИТЬ ЧАТ {ADMIN_CHAT_ID}: {e}")
+            logger.error("[*] Проверь ADMIN_CHAT_ID в .env — для супергруппы формат: -100XXXXXXXXXX")
 
         asyncio.create_task(self.queue_worker())
 
