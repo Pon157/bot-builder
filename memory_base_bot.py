@@ -58,6 +58,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("MemoryBaseBot")
 
+# Подавляем спам Peer id invalid из Pyrogram для чужих чатов
+logging.getLogger("pyrogram.client").setLevel(logging.ERROR)
+
 # ── Конфиг ────────────────────────────────────────────────────────────────────
 BOT_TOKEN    = os.getenv("MEMORY_BASE_BOT_TOKEN", "")
 API_ID       = int(os.getenv("PYROGRAM_API_ID", "0"))
@@ -442,9 +445,22 @@ class MemoryBaseBotService:
 
         # ── Регистрируем хендлеры ─────────────────────────────────────────────
 
+        # ── CATCH-ALL из нашего чата — диагностика ──────────────────────────
         @self.app.on_message(
-            filters.chat(ADMIN_CHAT_ID) &
-            filters.create(lambda _, __, m: getattr(m, "message_thread_id", None) == MB_CHECK_TOPIC_ID)
+            filters.create(lambda _, __, m: getattr(m.chat, "id", None) == ADMIN_CHAT_ID)
+        )
+        async def on_any_admin_chat(client: Client, msg: Message):
+            sender = getattr(msg.from_user, "username", None) or getattr(msg.sender_chat, "username", None) or "?"
+            logger.info(
+                f"[ALL] thread={msg.message_thread_id} from=@{sender} "
+                f"text={(msg.text or msg.caption or '')[:60]!r}"
+            )
+
+        @self.app.on_message(
+            filters.create(lambda _, __, m: (
+                getattr(m.chat, "id", None) == ADMIN_CHAT_ID and
+                getattr(m, "message_thread_id", None) == MB_CHECK_TOPIC_ID
+            ))
         )
         async def on_mb_message(client: Client, msg: Message):
             """Все сообщения в топике MB — включая от @MemoryBaseBot."""
@@ -478,8 +494,10 @@ class MemoryBaseBotService:
                         return
 
         @self.app.on_message(
-            filters.chat(ADMIN_CHAT_ID) &
-            filters.create(lambda _, __, m: getattr(m, "message_thread_id", None) == DVR_ADMIN_TOPIC_ID)
+            filters.create(lambda _, __, m: (
+                getattr(m.chat, "id", None) == ADMIN_CHAT_ID and
+                getattr(m, "message_thread_id", None) == DVR_ADMIN_TOPIC_ID
+            ))
         )
         async def on_dvr_message(client: Client, msg: Message):
             """Любое сообщение в DVR топике."""
