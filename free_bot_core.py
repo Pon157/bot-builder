@@ -142,8 +142,31 @@ class MemoryBaseMiddleware(BaseMiddleware):
             return
 
         last_mb_check = user_rec.get('last_mb_check', 0) if user_rec else 0
-        if time.time() - last_mb_check < 86400:
-            return await handler(event, data)
+        time_since = time.time() - last_mb_check
+        logger.info(f"[MB] uid={user_id} last_mb_check={last_mb_check} time_since={int(time_since)}s will_skip={time_since < 86400}")
+        if time_since < 86400:
+            # Локальный кэш свежий — проверяем реальное наличие записи в Supabase
+            try:
+                sb_url = self.bi.sb_url
+                h = self.bi.headers
+                async with httpx.AsyncClient(timeout=5) as _c:
+                    _r = await _c.get(
+                        f"{sb_url}/rest/v1/memory_base_cache",
+                        headers=h,
+                        params={"user_id": f"eq.{user_id}", "select": "status,expires_at"}
+                    )
+                    if _r.status_code == 200:
+                        _rows = _r.json()
+                        if _rows:
+                            logger.info(f"[MB] uid={user_id} cache exists status={_rows[0].get('status')} — skip check")
+                            return await handler(event, data)
+                        else:
+                            logger.info(f"[MB] uid={user_id} last_mb_check set but NO cache row — forcing recheck")
+                            if user_rec:
+                                user_rec['last_mb_check'] = 0
+            except Exception as _e:
+                logger.warning(f"[MB] cache pre-check error: {_e} — пропускаем")
+                return await handler(event, data)
 
         # Уведомляем пользователя что идёт проверка
         wait_msg = None
@@ -176,7 +199,7 @@ class MemoryBaseMiddleware(BaseMiddleware):
             import logging as _log
             _log.getLogger("MB").info(f"[MB] _check_and_restrict started for user_id={user_id}")
             # ── ШАГ 1: Ставим задачу в очередь для чекер-бота ─────────────
-            async with httpx.AsyncClient(timeout=8) as client:
+            async with httpx.AsyncClient(timeout=10) as client:
                 rq = await client.get(
                     f"{sb_url}/rest/v1/mb_check_queue",
                     headers=headers,
@@ -186,11 +209,12 @@ class MemoryBaseMiddleware(BaseMiddleware):
                         "select":  "id"
                     }
                 )
+                logger.info(f"[MB] queue check status={rq.status_code} existing={rq.json()}")
                 if rq.status_code == 200 and not rq.json():
-                    await client.post(
+                    ins = await client.post(
                         f"{sb_url}/rest/v1/mb_check_queue",
                         headers={**headers, "Content-Type": "application/json",
-                                 "Prefer": "return=minimal"},
+                                 "Prefer": "return=representation"},
                         json={
                             "user_id":    user_id,
                             "username":   user_tg.username or "",
@@ -198,9 +222,11 @@ class MemoryBaseMiddleware(BaseMiddleware):
                             "created_at": datetime.utcnow().isoformat(),
                         }
                     )
+                    logger.info(f"[MB] queue insert status={ins.status_code} body={ins.text[:200]}")
+                else:
+                    logger.info(f"[MB] task already in queue for user={user_id}, waiting...")
 
             # ── ШАГ 2: Поллим кэш до 30 сек ─────────────────────────────
-            # Чекер-бот пишет чек, ждём его ответа. Таймаут 30 сек — пускаем.
             import time as _time
             deadline = _time.time() + 30
             row = None
@@ -214,7 +240,9 @@ class MemoryBaseMiddleware(BaseMiddleware):
                     )
                     if r.status_code == 200 and r.json():
                         row = r.json()[0]
+                        logger.info(f"[MB] cache hit for user={user_id}: {row.get('status')}")
                         break
+                    logger.debug(f"[MB] cache miss for user={user_id}, retrying...")
 
             if row is None:
                 if user_rec:
