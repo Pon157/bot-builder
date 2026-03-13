@@ -119,15 +119,18 @@ async def sb_get_pending_checks() -> List[dict]:
     return []
 
 
-async def sb_update_queue(row_id: str, upd: dict):
+async def sb_update_queue(row_id, upd: dict):
+    """row_id может быть int (bigserial) или str (uuid) — кастим безопасно."""
     try:
         async with httpx.AsyncClient(timeout=5) as c:
-            await c.patch(
+            r = await c.patch(
                 f"{SUPABASE_URL}/rest/v1/mb_check_queue",
                 headers={**_sb_h(), "Prefer": "return=minimal"},
                 params={"id": f"eq.{row_id}"},
                 json=upd
             )
+            if r.status_code not in (200, 204):
+                logger.error(f"[MB] sb_update_queue {r.status_code}: {r.text[:200]} row_id={row_id}")
     except Exception as e:
         logger.error(f"[MB] sb_update_queue error: {e}")
 
@@ -260,13 +263,21 @@ class MemoryBaseBotService:
     async def queue_worker(self):
         """Поллинг mb_check_queue → выполнение проверок."""
         logger.info("[MB] Queue worker started")
+        _iteration = 0
         while self.is_running:
             try:
+                # Каждые 30 итераций (~60 сек) — сбрасываем зависшие processing задачи
+                _iteration += 1
+                if _iteration % 30 == 1:
+                    await self._reset_stale_processing()
+
                 tasks = await sb_get_pending_checks()
                 for task in tasks:
                     row_id   = task["id"]
                     user_id  = int(task["user_id"])
                     username = task.get("username", "")
+
+                    logger.info(f"[MB] Picked task id={row_id} user={user_id}")
 
                     # Помечаем processing сразу
                     await sb_update_queue(row_id, {"status": "processing"})
@@ -278,6 +289,26 @@ class MemoryBaseBotService:
                 logger.error(f"[MB] queue_worker error: {e}")
 
             await asyncio.sleep(QUEUE_POLL_INTERVAL)
+
+    async def _reset_stale_processing(self):
+        """Сбрасываем задачи зависшие в processing > 2 минут → обратно в pending."""
+        try:
+            from datetime import datetime, timedelta, timezone
+            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+            async with httpx.AsyncClient(timeout=8) as c:
+                r = await c.patch(
+                    f"{SUPABASE_URL}/rest/v1/mb_check_queue",
+                    headers={**_sb_h(), "Prefer": "return=minimal"},
+                    params={
+                        "status":     "eq.processing",
+                        "updated_at": f"lt.{cutoff}",
+                    },
+                    json={"status": "pending"}
+                )
+                if r.status_code in (200, 204):
+                    logger.info("[MB] Stale processing tasks reset to pending")
+        except Exception as e:
+            logger.warning(f"[MB] _reset_stale_processing error: {e}")
 
     async def _do_check(self, row_id: str, user_id: int, username: str):
         """
