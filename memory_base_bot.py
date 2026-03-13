@@ -296,7 +296,7 @@ async def handle_dvr(app: Client, text: str):
         await app.send_message(
             chat_id=ADMIN_CHAT_ID,
             text=text_out,
-            message_thread_id=DVR_ADMIN_TOPIC_ID,
+            reply_to_message_id=DVR_ADMIN_TOPIC_ID,
             disable_web_page_preview=True
         )
     except Exception as e:
@@ -391,7 +391,7 @@ class MemoryBaseBotService:
                 await self.app.send_message(
                     chat_id=ADMIN_CHAT_ID,
                     text=f"чек {user_id}",
-                    message_thread_id=MB_CHECK_TOPIC_ID
+                    reply_to_message_id=MB_CHECK_TOPIC_ID
                 )
                 logger.info(f"[MB] Sent 'чек {user_id}' → topic {MB_CHECK_TOPIC_ID}")
             except FloodWait as e:
@@ -400,7 +400,7 @@ class MemoryBaseBotService:
                 await self.app.send_message(
                     chat_id=ADMIN_CHAT_ID,
                     text=f"чек {user_id}",
-                    message_thread_id=MB_CHECK_TOPIC_ID
+                    reply_to_message_id=MB_CHECK_TOPIC_ID
                 )
 
             # Ждём ответ от @MemoryBaseBot
@@ -497,14 +497,26 @@ class MemoryBaseBotService:
             me = await self.app.get_me()
             logger.info(f"[*] ✅ Авторизован как @{me.username} id={me.id}")
 
-            # Проверяем чат — Pyrogram в bot-режиме требует сначала получить апдейт из чата
-            # В user-режиме работает сразу
+            # Резолвим чат — в bot-режиме Pyrogram нужен InputPeerChannel
             try:
                 chat = await self.app.get_chat(ADMIN_CHAT_ID)
                 logger.info(f"[*] ✅ Чат: {chat.title!r} id={chat.id}")
+                # Сохраняем резолвленный peer для отправки сообщений
+                self._chat_peer = chat.id
             except Exception as e:
                 logger.warning(f"[*] ⚠️ get_chat({ADMIN_CHAT_ID}): {e}")
-                logger.warning("[*] Это нормально для bot-режима при первом запуске — бот получит чат после первого сообщения")
+                # В bot-режиме пробуем через get_entity c raw ID
+                try:
+                    from pyrogram.raw import functions, types as raw_types
+                    # Конвертируем -100XXXXXXXXXX в обычный channel_id
+                    channel_id = int(str(ADMIN_CHAT_ID).replace("-100", ""))
+                    peer = await self.app.resolve_peer(ADMIN_CHAT_ID)
+                    logger.info(f"[*] ✅ Peer resolved: {peer}")
+                    self._chat_peer = ADMIN_CHAT_ID
+                except Exception as e2:
+                    logger.warning(f"[*] ⚠️ resolve_peer: {e2}")
+                    logger.warning("[*] В bot-режиме: перешли в чат боту хотя бы одно сообщение из группы")
+                    self._chat_peer = ADMIN_CHAT_ID
 
             asyncio.create_task(self.queue_worker())
 
