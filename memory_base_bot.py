@@ -310,13 +310,38 @@ async def handle_dvr(app: Client, text: str):
 class MemoryBaseBotService:
 
     def __init__(self):
-        self.app = Client(
-            name="memory_base_checker",
-            bot_token=BOT_TOKEN,
-            api_id=API_ID,
-            api_hash=API_HASH,
-            # Pyrogram сохраняет сессию в файл memory_base_checker.session
-        )
+        # Если задан PYROGRAM_SESSION_STRING — используем готовую строку сессии
+        # Если задан MEMORY_BASE_BOT_TOKEN — bot-режим
+        # Иначе — интерактивная авторизация по номеру телефона (user-режим)
+        session_string = os.getenv("PYROGRAM_SESSION_STRING", "")
+        if session_string:
+            # Строка сессии — запускается без интерактива, удобно для сервера
+            self.app = Client(
+                name="memory_base_checker",
+                api_id=API_ID,
+                api_hash=API_HASH,
+                session_string=session_string,
+            )
+            logger.info("[*] Режим: user (session string)")
+        elif BOT_TOKEN:
+            # Bot-режим — НЕ видит сообщения от других ботов без admin прав
+            self.app = Client(
+                name="memory_base_checker",
+                bot_token=BOT_TOKEN,
+                api_id=API_ID,
+                api_hash=API_HASH,
+            )
+            logger.info("[*] Режим: bot token")
+        else:
+            # User-режим — интерактивный вход по номеру телефона
+            # Сессия сохранится в memory_base_checker.session
+            # После первого входа перезапускать не нужно
+            self.app = Client(
+                name="memory_base_checker",
+                api_id=API_ID,
+                api_hash=API_HASH,
+            )
+            logger.info("[*] Режим: user (интерактивный вход)")
         self.is_running = True
 
     # ── Воркер очереди ────────────────────────────────────────────────────────
@@ -472,12 +497,14 @@ class MemoryBaseBotService:
             me = await self.app.get_me()
             logger.info(f"[*] ✅ Авторизован как @{me.username} id={me.id}")
 
-            # Проверяем чат
+            # Проверяем чат — Pyrogram в bot-режиме требует сначала получить апдейт из чата
+            # В user-режиме работает сразу
             try:
                 chat = await self.app.get_chat(ADMIN_CHAT_ID)
                 logger.info(f"[*] ✅ Чат: {chat.title!r} id={chat.id}")
             except Exception as e:
-                logger.error(f"[*] ❌ Не могу получить чат {ADMIN_CHAT_ID}: {e}")
+                logger.warning(f"[*] ⚠️ get_chat({ADMIN_CHAT_ID}): {e}")
+                logger.warning("[*] Это нормально для bot-режима при первом запуске — бот получит чат после первого сообщения")
 
             asyncio.create_task(self.queue_worker())
 
@@ -494,5 +521,29 @@ async def main():
     await service.run()
 
 
+async def generate_session_string():
+    """
+    Запусти python3 memory_base_bot.py --gen-session
+    Введи номер телефона и код — получишь SESSION_STRING для .env
+    """
+    print("=== Генерация SESSION_STRING для user-режима ===")
+    print(f"API_ID={API_ID}, API_HASH={'*' * 8 if API_HASH else 'НЕ ЗАДАН'}")
+    app = Client(
+        name="session_gen",
+        api_id=API_ID,
+        api_hash=API_HASH,
+    )
+    async with app:
+        session = await app.export_session_string()
+        print("\n✅ Твоя SESSION_STRING (добавь в .env):")
+        print(f"PYROGRAM_SESSION_STRING={session}")
+        print("\nПосле добавления в .env убери MEMORY_BASE_BOT_TOKEN из запуска чекера,")
+        print("или оставь — user-режим имеет приоритет.")
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--gen-session":
+        asyncio.run(generate_session_string())
+    else:
+        asyncio.run(main())
