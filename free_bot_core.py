@@ -129,71 +129,61 @@ class MemoryBaseMiddleware(BaseMiddleware):
 
         user_rec = next((u for u in self.bi.users_list if u.get('id') == user_id), None)
 
-        if user_rec and user_rec.get('mb_restricted'):
-            if isinstance(event, Message):
-                await event.answer(
-                    "🚫 <b>Доступ ограничен.</b>\n\n"
-                    "Вы находитесь в антиспам-базе "
-                    "<a href=\"https://t.me/MemoryBaseBot\">MemoryBase</a>.\n"
-                    "Для восстановления доступа обратитесь к владельцу бота."
+        # ── ВСЕГДА проверяем актуальный статус в Supabase ──────────────────
+        # Supabase — единственный источник правды. Локальный mb_restricted не используем.
+        try:
+            sb_url = self.bi.sb_url
+            h = self.bi.headers
+            async with httpx.AsyncClient(timeout=5) as _c:
+                _r = await _c.get(
+                    f"{sb_url}/rest/v1/memory_base_cache",
+                    headers=h,
+                    params={"user_id": f"eq.{user_id}", "select": "status,reasons,expires_at"}
                 )
-            elif isinstance(event, CallbackQuery):
-                await event.answer("🚫 Доступ ограничен (MemoryBase).", show_alert=True)
-            return
+                if _r.status_code == 200:
+                    _rows = _r.json()
+                    if _rows:
+                        _cache_row = _rows[0]
+                        _status  = _cache_row.get('status', 'not_found')
+                        _reasons = _cache_row.get('reasons', [])
+                        logger.info(f"[MB] uid={user_id} supabase status={_status} reasons={_reasons}")
 
-        last_mb_check = user_rec.get('last_mb_check', 0) if user_rec else 0
-        time_since = time.time() - last_mb_check
-        logger.info(f"[MB] uid={user_id} last_mb_check={last_mb_check} time_since={int(time_since)}s will_skip={time_since < 86400}")
-        if time_since < 86400:
-            # Локальный кэш свежий — проверяем реальный статус в Supabase
-            try:
-                sb_url = self.bi.sb_url
-                h = self.bi.headers
-                async with httpx.AsyncClient(timeout=5) as _c:
-                    _r = await _c.get(
-                        f"{sb_url}/rest/v1/memory_base_cache",
-                        headers=h,
-                        params={"user_id": f"eq.{user_id}", "select": "status,reasons"}
-                    )
-                    if _r.status_code == 200:
-                        _rows = _r.json()
-                        if not _rows:
-                            # Записи нет — сбрасываем и идём на полную проверку
-                            logger.info(f"[MB] uid={user_id} last_mb_check set but NO cache row — forcing recheck")
-                            if user_rec:
-                                user_rec['last_mb_check'] = 0
-                            # не return — идём дальше к _check_and_restrict
+                        if _status == 'in_base':
+                            _block_reasons = settings.get('memoryBaseBlockReasons', [])
+                            _should_block  = (not _block_reasons or any(r in _block_reasons for r in _reasons))
+                            if _should_block:
+                                if user_rec:
+                                    user_rec['mb_restricted'] = True
+                                    user_rec['mb_reasons']    = _reasons
+                                if isinstance(event, Message):
+                                    await event.answer(
+                                        "🚫 <b>Доступ ограничен.</b>\n\n"
+                                        "Вы находитесь в антиспам-базе "
+                                        "<a href=\"https://t.me/MemoryBaseBot\">MemoryBase</a>.\n"
+                                        "Для восстановления доступа обратитесь к владельцу бота."
+                                    )
+                                elif isinstance(event, CallbackQuery):
+                                    await event.answer("🚫 Доступ ограничен (MemoryBase).", show_alert=True)
+                                return  # БЛОКИРУЕМ
                         else:
-                            _cache_row = _rows[0]
-                            _status = _cache_row.get('status', 'not_found')
-                            _reasons = _cache_row.get('reasons', [])
-                            logger.info(f"[MB] uid={user_id} cache hit status={_status} reasons={_reasons}")
-
-                            if _status == 'in_base':
-                                _block_reasons = settings.get('memoryBaseBlockReasons', [])
-                                _should_block = (not _block_reasons or any(r in _block_reasons for r in _reasons))
-                                if _should_block:
-                                    if user_rec:
-                                        user_rec['mb_restricted'] = True
-                                        user_rec['mb_reasons'] = _reasons
-                                    if isinstance(event, Message):
-                                        await event.answer(
-                                            "🚫 <b>Доступ ограничен.</b>\n\n"
-                                            "Вы находитесь в антиспам-базе "
-                                            "<a href=\"https://t.me/MemoryBaseBot\">MemoryBase</a>.\n"
-                                            "Для восстановления доступа обратитесь к владельцу бота."
-                                        )
-                                    elif isinstance(event, CallbackQuery):
-                                        await event.answer("🚫 Доступ ограничен (MemoryBase).", show_alert=True)
-                                    return  # БЛОКИРУЕМ
-                            # Статус clean/not_found — пропускаем
+                            # Статус clean/not_found — снимаем локальный флаг если был
+                            if user_rec and user_rec.get('mb_restricted'):
+                                user_rec['mb_restricted'] = False
+                                user_rec['mb_reasons']    = []
+                        # Запись есть — проверяем нужна ли перепроверка (раз в 24ч)
+                        last_mb_check = user_rec.get('last_mb_check', 0) if user_rec else 0
+                        if time.time() - last_mb_check < 86400:
                             return await handler(event, data)
+                        # Иначе — ставим в очередь на перепроверку
                     else:
-                        logger.warning(f"[MB] cache check failed status={_r.status_code} — пропускаем")
-                        return await handler(event, data)
-            except Exception as _e:
-                logger.warning(f"[MB] cache pre-check error: {_e} — пропускаем")
-                return await handler(event, data)
+                        # Записи нет — первичная проверка
+                        logger.info(f"[MB] uid={user_id} no cache row — queuing check")
+                else:
+                    logger.warning(f"[MB] supabase check failed {_r.status_code} — пропускаем")
+                    return await handler(event, data)
+        except Exception as _e:
+            logger.warning(f"[MB] supabase pre-check error: {_e} — пропускаем")
+            return await handler(event, data)
 
         # Уведомляем пользователя что идёт проверка
         wait_msg = None
@@ -334,14 +324,15 @@ class MemoryBaseMiddleware(BaseMiddleware):
                     name_str  = user_tg.full_name or f"User {user_id}"
                     uname_str = f" (@{user_tg.username})" if user_tg.username else ""
                     unban_kb  = InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="✅ Разбанить", callback_data=f"mb_unban_{user_id}")
+                        InlineKeyboardButton(text="✅ Разрешить доступ", callback_data=f"mb_unban_{user_id}")
                     ]])
                     await self.bi.bot.send_message(
                         self.bi.admin_chat_id,
-                        f"🔴 <b>MemoryBase: Ограничен пользователь</b>\n\n"
+                        f"🔴 <b>MemoryBase заблокировал пользователя</b>\n\n"
                         f"👤 {name_str}{uname_str}\n🆔 <code>{user_id}</code>\n"
-                        f"📌 <b>Причина:</b> {r_text or '—'}\n\n"
-                        f"Пользователю ограничен доступ к боту. Нажмите для разбана:",
+                        f"📌 <b>Причина(ы):</b> {r_text or '—'}\n\n"
+                        f"Пользователь заблокирован в боте системой MemoryBase.\n"
+                        f"Если хотите разрешить ему писать — нажмите кнопку ниже 👇",
                         reply_markup=unban_kb
                     )
                 except Exception as e:
@@ -1426,6 +1417,24 @@ class FreeBotInstance:
                 target['mb_reasons']    = []
                 target['last_mb_check'] = 0
                 await self._push_state()
+
+            # ── Удаляем запись из memory_base_cache в Supabase ──
+            # Иначе при следующем сообщении middleware снова заблокирует
+            try:
+                async with httpx.AsyncClient(timeout=8) as _uc:
+                    _del = await _uc.delete(
+                        f"{self.sb_url}/rest/v1/memory_base_cache",
+                        headers={
+                            "apikey": self.headers.get("apikey", ""),
+                            "Authorization": self.headers.get("Authorization", ""),
+                            "Prefer": "return=minimal"
+                        },
+                        params={"user_id": f"eq.{target_uid}"}
+                    )
+                    logger.info(f"[MB] cache delete for uid={target_uid} status={_del.status_code}")
+            except Exception as _de:
+                logger.warning(f"[MB] cache delete error: {_de}")
+
             try:
                 await self.bot.send_message(
                     target_uid,
