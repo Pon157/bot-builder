@@ -1761,6 +1761,8 @@ class FreeBotInstance:
         )
 
         try:
+            # Сбрасываем webhook — иначе getUpdates (polling) даёт TelegramConflictError
+            await self.bot.delete_webhook(drop_pending_updates=True)
             await self.dp.start_polling(
                 self.bot,
                 drop_pending_updates=True,
