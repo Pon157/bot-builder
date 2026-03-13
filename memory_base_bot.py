@@ -68,8 +68,8 @@ SUPABASE_URL          = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY          = os.getenv("SUPABASE_KEY", "")
 BOTS_API_URL          = os.getenv("BOTS_API_URL", "https://dialogengine.webtm.ru")
 ADMIN_TOKEN           = os.getenv("ADMIN_TOKEN", "")
-ADMIN_CHAT_ID         = int(os.getenv("ADMIN_CHAT_ID", "-1003772028132"))
-MB_CHECK_TOPIC_ID     = int(os.getenv("MB_CHECK_TOPIC_ID", "2"))
+ADMIN_CHAT_ID         = int(os.getenv("ADMIN_CHECK_CHAT_ID", os.getenv("ADMIN_CHAT_ID", "-1003772028132")))
+MB_CHECK_TOPIC_ID     = int(os.getenv("ADMIN_CHECK_TOPIC_ID", os.getenv("MB_CHECK_TOPIC_ID", "2")))
 DVR_ADMIN_TOPIC_ID    = int(os.getenv("DVR_ADMIN_TOPIC_ID", "4"))
 
 QUEUE_POLL_INTERVAL = 2.0    # сек между опросами очереди
