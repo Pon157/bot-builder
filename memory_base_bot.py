@@ -1,37 +1,36 @@
 """
-memory_base_bot.py  v2
+memory_base_bot.py  v3 — Pyrogram
 ================================================================================
-ИСПРАВЛЕННАЯ АРХИТЕКТУРА:
+Переписан с aiogram на Pyrogram.
 
-  FLOW MEMORYBASE:
-  1. bot_core.py (MemoryBaseMiddleware) → INSERT в mb_check_queue (status=pending)
-  2. memory_base_bot.py polling-ом тянет задачи из mb_check_queue
-  3. Пишет "чек <user_id>" в топик 2 чата администраторов
-  4. Ловит ЛЮБОЕ сообщение в топике 2 с паттернами MemoryBase в тексте
-     (не фильтруем по from_user — aiogram не видит другие боты в группе,
-      зато видит их сообщения если наш бот — администратор группы)
-  5. Парсит ответ, POST в memory_base_cache
+Почему Pyrogram:
+  - Видит сообщения от ДРУГИХ БОТОВ без прав администратора (user-режим или bot+admin)
+  - Нет разницы между message/channel_post — всё одно событие
+  - Нет проблем с порядком хендлеров
+  - Прямой доступ к любым апдейтам без allowed_updates
+
+FLOW MEMORYBASE:
+  1. bot_core.py → INSERT в mb_check_queue (pending)
+  2. queue_worker тянет задачи
+  3. Пишет "чек <user_id>" в топик MB_CHECK_TOPIC_ID
+  4. Pyrogram ловит ВСЕ сообщения в топике — включая от @MemoryBaseBot
+  5. Парсит → POST в memory_base_cache
   6. Помечает задачу done
-  7. bot_core.py при следующей проверке GET из memory_base_cache видит результат
 
-  FLOW DVR:
-  - Кто-то пересылает пост из DVR-канала в ТОПИК 4
-  - Фильтр СТРОГО: chat_id=ADMIN_CHAT_ID AND message_thread_id=DVR_ADMIN_TOPIC_ID
-  - Ищем username наших ботов → останавливаем → уведомляем
-
-ВАЖНО для работы MB-ответов:
-  Наш чекер-бот должен быть АДМИНИСТРАТОРОМ группы с правом
-  "Читать сообщения" (в Telegram это права бота в группе).
-  Тогда aiogram получит сообщения от @MemoryBaseBot через polling.
+FLOW DVR:
+  - Любой пост/пересылка в топик DVR_ADMIN_TOPIC_ID с @username бота
+  - Останавливаем бота через API
 
 ПЕРЕМЕННЫЕ .env:
-  MEMORY_BASE_BOT_TOKEN  — токен чекер-бота
-  ADMIN_CHAT_ID          — ID чата администраторов (-1003772028132)
-  MB_CHECK_TOPIC_ID      — топик для проверок (2)
-  DVR_ADMIN_TOPIC_ID     — топик для DVR-постов (4)
+  MEMORY_BASE_BOT_TOKEN   — токен бота (для Pyrogram Bot)
+  PYROGRAM_API_ID         — api_id из my.telegram.org
+  PYROGRAM_API_HASH       — api_hash из my.telegram.org
+  ADMIN_CHECK_CHAT_ID     — ID супергруппы (-1003772028132)
+  MB_CHECK_TOPIC_ID       — топик для чека (2)
+  DVR_ADMIN_TOPIC_ID      — топик для DVR (4)
   SUPABASE_URL, SUPABASE_KEY
-  BOTS_API_URL           — https://dialogengine.webtm.ru
-  ADMIN_TOKEN            — секрет для API остановки ботов
+  BOTS_API_URL            — https://dialogengine.webtm.ru
+  ADMIN_TOKEN             — секрет для API остановки
 ================================================================================
 """
 
@@ -40,17 +39,14 @@ import logging
 import os
 import re
 import sys
-import secrets
 import httpx
-import time
-from datetime import datetime, timedelta
+
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List, Tuple
 
-from aiogram import Bot, Dispatcher, Router, F
-from aiogram.enums import ParseMode
-from aiogram.filters import Command
-from aiogram.types import Message
-from aiogram.client.default import DefaultBotProperties
+from pyrogram import Client, filters
+from pyrogram.types import Message
+from pyrogram.errors import FloodWait
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -63,18 +59,21 @@ logging.basicConfig(
 logger = logging.getLogger("MemoryBaseBot")
 
 # ── Конфиг ────────────────────────────────────────────────────────────────────
-MEMORY_BASE_BOT_TOKEN = os.getenv("MEMORY_BASE_BOT_TOKEN", "")
-SUPABASE_URL          = os.getenv("SUPABASE_URL", "").rstrip("/")
-SUPABASE_KEY          = os.getenv("SUPABASE_KEY", "")
-BOTS_API_URL          = os.getenv("BOTS_API_URL", "https://dialogengine.webtm.ru")
-ADMIN_TOKEN           = os.getenv("ADMIN_TOKEN", "")
-ADMIN_CHAT_ID         = int(os.getenv("ADMIN_CHECK_CHAT_ID") or os.getenv("ADMIN_CHAT_ID") or "-1003772028132")
-MB_CHECK_TOPIC_ID     = int(os.getenv("MB_CHECK_TOPIC_ID", "2"))
-DVR_ADMIN_TOPIC_ID    = int(os.getenv("DVR_ADMIN_TOPIC_ID", "4"))
+BOT_TOKEN    = os.getenv("MEMORY_BASE_BOT_TOKEN", "")
+API_ID       = int(os.getenv("PYROGRAM_API_ID", "0"))
+API_HASH     = os.getenv("PYROGRAM_API_HASH", "")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+BOTS_API_URL = os.getenv("BOTS_API_URL", "https://dialogengine.webtm.ru")
+ADMIN_TOKEN  = os.getenv("ADMIN_TOKEN", "")
 
-QUEUE_POLL_INTERVAL = 2.0    # сек между опросами очереди
-MB_RESPONSE_TIMEOUT = 30.0   # сек ожидания ответа MemoryBase
-CACHE_TTL           = 86400  # 24 часа
+ADMIN_CHAT_ID      = int(os.getenv("ADMIN_CHECK_CHAT_ID") or os.getenv("ADMIN_CHAT_ID") or "0")
+MB_CHECK_TOPIC_ID  = int(os.getenv("MB_CHECK_TOPIC_ID", "2"))
+DVR_ADMIN_TOPIC_ID = int(os.getenv("DVR_ADMIN_TOPIC_ID", "4"))
+
+QUEUE_POLL_INTERVAL = 2.0
+MB_RESPONSE_TIMEOUT = 30.0
+CACHE_TTL           = 86400
 
 MB_REASON_MAP = {
     "мошенник":        "scammer",
@@ -89,7 +88,6 @@ MB_REASON_MAP = {
 _pending: Dict[str, asyncio.Future] = {}
 _pending_lock = asyncio.Lock()
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # SUPABASE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -102,8 +100,7 @@ def _sb_h() -> dict:
     }
 
 
-async def sb_get_pending_checks() -> List[dict]:
-    """Получить задачи со статусом pending из mb_check_queue."""
+async def sb_get_pending() -> List[dict]:
     try:
         async with httpx.AsyncClient(timeout=10) as c:
             r = await c.get(
@@ -120,7 +117,6 @@ async def sb_get_pending_checks() -> List[dict]:
 
 
 async def sb_update_queue(row_id, upd: dict):
-    """row_id может быть int (bigserial) или str (uuid) — кастим безопасно."""
     try:
         async with httpx.AsyncClient(timeout=5) as c:
             r = await c.patch(
@@ -130,22 +126,21 @@ async def sb_update_queue(row_id, upd: dict):
                 json=upd
             )
             if r.status_code not in (200, 204):
-                logger.error(f"[MB] sb_update_queue {r.status_code}: {r.text[:200]} row_id={row_id}")
+                logger.error(f"[MB] sb_update_queue {r.status_code}: {r.text[:200]}")
     except Exception as e:
         logger.error(f"[MB] sb_update_queue error: {e}")
 
 
 async def sb_save_cache(user_id: int, username: str,
                         status: str, reasons: List[str], raw_text: str):
-    """Сохранить результат в memory_base_cache (upsert по user_id)."""
-    expires = (datetime.utcnow() + timedelta(seconds=CACHE_TTL)).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(seconds=CACHE_TTL)).isoformat()
     payload = {
         "user_id":    user_id,
         "username":   username or "",
         "status":     status,
         "reasons":    reasons,
         "raw_text":   raw_text[:2000],
-        "checked_at": datetime.utcnow().isoformat(),
+        "checked_at": datetime.now(timezone.utc).isoformat(),
         "expires_at": expires,
     }
     try:
@@ -155,12 +150,29 @@ async def sb_save_cache(user_id: int, username: str,
                 headers={**_sb_h(), "Prefer": "resolution=merge-duplicates,return=minimal"},
                 json=payload
             )
-            if r.status_code not in [200, 201, 204]:
+            if r.status_code not in (200, 201, 204):
                 logger.error(f"[MB] sb_save_cache error {r.status_code}: {r.text}")
             else:
-                logger.info(f"[MB] Cached user={user_id} status={status} reasons={reasons}")
+                logger.info(f"[MB] ✅ Cached uid={user_id} status={status} reasons={reasons}")
     except Exception as e:
         logger.error(f"[MB] sb_save_cache exception: {e}")
+
+
+async def sb_reset_stale_processing():
+    """Сбрасываем задачи зависшие в processing > 2 мин обратно в pending."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        async with httpx.AsyncClient(timeout=8) as c:
+            r = await c.patch(
+                f"{SUPABASE_URL}/rest/v1/mb_check_queue",
+                headers={**_sb_h(), "Prefer": "return=minimal"},
+                params={"status": "eq.processing", "updated_at": f"lt.{cutoff}"},
+                json={"status": "pending"}
+            )
+            if r.status_code in (200, 204):
+                logger.info("[MB] Stale tasks reset")
+    except Exception as e:
+        logger.warning(f"[MB] reset_stale error: {e}")
 
 
 async def get_all_running_bots() -> List[dict]:
@@ -184,10 +196,9 @@ async def stop_bot_via_api(bot_id: str) -> bool:
             r = await c.post(
                 f"{BOTS_API_URL}/api/bots/stop",
                 json={"bot_id": bot_id},
-                headers={"X-Admin-Token": ADMIN_TOKEN,
-                         "Content-Type": "application/json"}
+                headers={"X-Admin-Token": ADMIN_TOKEN, "Content-Type": "application/json"}
             )
-            return r.status_code in [200, 201, 204]
+            return r.status_code in (200, 201, 204)
     except Exception as e:
         logger.error(f"[DVR] stop_bot error: {e}")
         return False
@@ -209,7 +220,7 @@ def parse_mb_response(text: str) -> Tuple[str, List[str]]:
         reasons = []
         m = re.search(r'причина[:\s]+([^\n📖]+)', text, re.IGNORECASE)
         if m:
-            raw = m.group(1).strip()
+            raw   = m.group(1).strip()
             clean = re.sub(r'[^\w\s]', '', raw, flags=re.UNICODE).strip().lower()
             matched = False
             for kw, cat in MB_REASON_MAP.items():
@@ -224,427 +235,25 @@ def parse_mb_response(text: str) -> Tuple[str, List[str]]:
 
 
 def extract_uid_from_mb(text: str) -> Optional[str]:
-    """Извлекает user_id из строки вида '🔴 @name / [12345678]'."""
     m = re.search(r'\[(\d{5,})\]', text)
     return m.group(1) if m else None
 
 
 def _is_mb_pattern(text: str) -> bool:
-    """Проверяет, похож ли текст на ответ MemoryBase.
-    Намеренно широкий список — лучше лишний раз проверить, чем потерять ответ.
-    """
     low = text.lower()
     return any(p in low for p in [
         "нет в базе", "не найден", "есть в базе",
         "не поступало жалоб", "🔴", "🟡", "🟢",
         "человек есть", "человека нет", "memorybase", "memory base",
         "в базе данных", "чист", "жалоб нет", "найден в базе",
-        "проверка", "база данных", "результат",
     ])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# СЕРВИС
+# DVR HANDLER
 # ══════════════════════════════════════════════════════════════════════════════
 
-class MemoryBaseBotService:
-
-    def __init__(self):
-        self.bot = Bot(
-            token=MEMORY_BASE_BOT_TOKEN,
-            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-        )
-        self.dp         = Dispatcher()
-        self.router     = Router()
-        self.is_running = True
-
-    # ── Воркер очереди ────────────────────────────────────────────────────────
-
-    async def queue_worker(self):
-        """Поллинг mb_check_queue → выполнение проверок."""
-        logger.info("[MB] Queue worker started")
-        _iteration = 0
-        while self.is_running:
-            try:
-                # Каждые 30 итераций (~60 сек) — сбрасываем зависшие processing задачи
-                _iteration += 1
-                if _iteration % 30 == 1:
-                    await self._reset_stale_processing()
-
-                tasks = await sb_get_pending_checks()
-                for task in tasks:
-                    row_id   = task["id"]
-                    user_id  = int(task["user_id"])
-                    username = task.get("username", "")
-
-                    logger.info(f"[MB] Picked task id={row_id} user={user_id}")
-
-                    # Помечаем processing сразу
-                    await sb_update_queue(row_id, {"status": "processing"})
-
-                    asyncio.create_task(
-                        self._do_check(row_id, user_id, username)
-                    )
-            except Exception as e:
-                logger.error(f"[MB] queue_worker error: {e}")
-
-            await asyncio.sleep(QUEUE_POLL_INTERVAL)
-
-    async def _reset_stale_processing(self):
-        """Сбрасываем задачи зависшие в processing > 2 минут → обратно в pending."""
-        try:
-            from datetime import datetime, timedelta, timezone
-            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
-            async with httpx.AsyncClient(timeout=8) as c:
-                r = await c.patch(
-                    f"{SUPABASE_URL}/rest/v1/mb_check_queue",
-                    headers={**_sb_h(), "Prefer": "return=minimal"},
-                    params={
-                        "status":     "eq.processing",
-                        "updated_at": f"lt.{cutoff}",
-                    },
-                    json={"status": "pending"}
-                )
-                if r.status_code in (200, 204):
-                    logger.info("[MB] Stale processing tasks reset to pending")
-        except Exception as e:
-            logger.warning(f"[MB] _reset_stale_processing error: {e}")
-
-    async def _do_check(self, row_id: str, user_id: int, username: str):
-        """
-        Выполняет одну проверку:
-        1. Пишет "чек <user_id>" в топик 2
-        2. Ждёт когда on_mb_topic_message зарезолвит Future
-        3. Парсит, сохраняет в кэш, помечает done
-        """
-        key = str(user_id)
-        logger.info(f"[MB] Starting check: user={user_id}")
-
-        loop   = asyncio.get_event_loop()
-        future: asyncio.Future = loop.create_future()
-
-        async with _pending_lock:
-            # Не дублируем если уже ждём
-            if key in _pending and not _pending[key].done():
-                logger.info(f"[MB] Already pending for {key}, skipping duplicate")
-                await sb_update_queue(row_id, {"status": "done"})
-                return
-            _pending[key] = future
-
-        try:
-            # Пишем запрос в топик 2
-            await self.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=f"чек {user_id}",
-                message_thread_id=MB_CHECK_TOPIC_ID
-            )
-            logger.info(f"[MB] Sent 'чек {user_id}' → topic {MB_CHECK_TOPIC_ID}")
-
-            # Ждём ответа из обработчика on_mb_topic_message
-            raw_text = await asyncio.wait_for(future, timeout=MB_RESPONSE_TIMEOUT)
-
-        except asyncio.TimeoutError:
-            logger.warning(f"[MB] Timeout for user {user_id}")
-            await sb_update_queue(row_id, {"status": "error", "error_text": "timeout"})
-            async with _pending_lock:
-                _pending.pop(key, None)
-            return
-
-        except Exception as e:
-            logger.error(f"[MB] _do_check exception for {user_id}: {e}")
-            await sb_update_queue(row_id, {"status": "error", "error_text": str(e)[:200]})
-            async with _pending_lock:
-                _pending.pop(key, None)
-            return
-
-        finally:
-            async with _pending_lock:
-                _pending.pop(key, None)
-
-        # Парсим и сохраняем
-        status, reasons = parse_mb_response(raw_text)
-        logger.info(f"[MB] Parsed: user={user_id} status={status} reasons={reasons}")
-
-        await sb_save_cache(user_id, username, status, reasons, raw_text)
-        await sb_update_queue(row_id, {"status": "done"})
-
-    # ── Обработчики ──────────────────────────────────────────────────────────
-
-    def setup_handlers(self):
-
-        # ── ДИАГНОСТИКА через middleware (не блокирует цепочку) ───────────────
-
-        from aiogram import BaseMiddleware
-        from typing import Callable, Awaitable, Any
-
-        class DebugMiddleware(BaseMiddleware):
-            async def __call__(self, handler: Callable, event: Message, data: dict) -> Any:
-                logger.info(
-                    f"[ALL] type=message chat={event.chat.id} thread={event.message_thread_id} "
-                    f"from={event.from_user.id if event.from_user else 'none'} "
-                    f"fwd_chat={event.forward_from_chat.id if event.forward_from_chat else '-'} "
-                    f"text={((event.text or event.caption or '')[:60])!r}"
-                )
-                return await handler(event, data)
-
-        class DebugChannelMiddleware(BaseMiddleware):
-            async def __call__(self, handler: Callable, event: Message, data: dict) -> Any:
-                logger.info(
-                    f"[ALL] type=channel_post chat={event.chat.id} thread={event.message_thread_id} "
-                    f"fwd_chat={event.forward_from_chat.id if event.forward_from_chat else '-'} "
-                    f"text={((event.text or event.caption or '')[:60])!r}"
-                )
-                return await handler(event, data)
-
-        self.router.message.middleware(DebugMiddleware())
-        self.router.channel_post.middleware(DebugChannelMiddleware())
-
-        # ── CATCH-ALL для диагностики: любой channel_post в нашем чате ───────
-        # (определяем раньше специфичных — aiogram проверяет в порядке регистрации)
-        @self.router.channel_post()
-        async def on_any_channel_post(m: Message):
-            logger.info(
-                f"[CATCH] channel_post chat={m.chat.id} thread={m.message_thread_id} "
-                f"ADMIN_CHAT_ID={ADMIN_CHAT_ID} match={m.chat.id == ADMIN_CHAT_ID} "
-                f"text={(m.text or m.caption or '')[:80]!r}"
-            )
-            # Обрабатываем MB топик 2
-            if m.chat.id == ADMIN_CHAT_ID and m.message_thread_id == MB_CHECK_TOPIC_ID:
-                text = (m.text or m.caption or "").strip()
-                if text and not re.match(r'^чек\s+\d+', text, re.IGNORECASE):
-                    uid_from_text = extract_uid_from_mb(text)
-                    if uid_from_text or _is_mb_pattern(text):
-                        logger.info(f"[MB] channel_post MB response: {text[:100]!r}")
-                        async with _pending_lock:
-                            resolved = False
-                            if uid_from_text and uid_from_text in _pending:
-                                fut = _pending[uid_from_text]
-                                if not fut.done():
-                                    fut.set_result(text)
-                                    logger.info(f"[MB] ✅ Resolved via channel_post uid={uid_from_text}")
-                                    resolved = True
-                            if not resolved:
-                                for key, fut in list(_pending.items()):
-                                    if not fut.done():
-                                        fut.set_result(text)
-                                        logger.info(f"[MB] ✅ Resolved first pending via channel_post key={key}")
-                                        break
-            # Обрабатываем DVR топик 4
-            elif m.chat.id == ADMIN_CHAT_ID and m.message_thread_id == DVR_ADMIN_TOPIC_ID:
-                text = (m.text or m.caption or "").strip()
-                logger.info(f"[DVR] channel_post in topic4: {text[:80]!r}")
-                if text and ("@" in text or "bot" in text.lower() or "бот" in text.lower() or m.forward_from_chat):
-                    await _handle_dvr(self.bot, text)
-
-        # ── ТОПИК 2: ловим ВСЕ сообщения в MB-топике ────────────────────────
-        # Строго фильтруем: chat_id == ADMIN_CHAT_ID и thread_id == MB_CHECK_TOPIC_ID
-        # Пропускаем свои собственные запросы "чек X"
-        # Резолвим pending Future когда видим ответ-паттерн MemoryBase
-
-        # ── CATCH-ALL: любое сообщение — логируем для диагностики chat.id ────
-        @self.router.message()
-        async def on_any_message_debug(m: Message):
-            logger.info(
-                f"[CATCH] message chat={m.chat.id} thread={m.message_thread_id} "
-                f"ADMIN_CHAT_ID={ADMIN_CHAT_ID} match={m.chat.id == ADMIN_CHAT_ID} "
-                f"text={(m.text or m.caption or '')[:60]!r}"
-            )
-
-        @self.router.message(
-            lambda m: m.chat.id == ADMIN_CHAT_ID and m.message_thread_id == MB_CHECK_TOPIC_ID
-        )
-        async def on_mb_topic_message(m: Message):
-            text = (m.text or m.caption or "").strip()
-
-            # DEBUG: логируем все входящие в топик 2 для диагностики
-            logger.info(
-                f"[MB DEBUG] topic={m.message_thread_id} "
-                f"from={m.from_user.id if m.from_user else 'chan'} "
-                f"text={text[:80]!r}"
-            )
-
-            if not text:
-                return
-
-            # Пропускаем СВОИ запросы "чек <id>"
-            if re.match(r'^чек\s+\d+', text, re.IGNORECASE):
-                logger.debug(f"[MB] Skipping own request: {text[:40]}")
-                return
-
-            # Если нет ни одного pending — нет смысла обрабатывать
-            async with _pending_lock:
-                if not _pending:
-                    logger.debug(f"[MB] No pending futures, skipping message")
-                    return
-
-            # Пробуем извлечь user_id из ответа MemoryBase
-            uid_from_text = extract_uid_from_mb(text)
-
-            # Проверяем паттерн MemoryBase — но ТОЛЬКО если нет явного uid
-            # Если uid нашли — резолвим без проверки паттерна (надёжнее)
-            if not uid_from_text and not _is_mb_pattern(text):
-                logger.debug(f"[MB] Not MB pattern and no uid, skipping: {text[:60]!r}")
-                return
-
-            logger.info(f"[MB] MB response in topic {MB_CHECK_TOPIC_ID}: uid_found={uid_from_text} text={text[:100]!r}")
-
-            async with _pending_lock:
-                resolved = False
-
-                # Приоритет 1: резолвим по конкретному user_id из текста
-                if uid_from_text and uid_from_text in _pending:
-                    fut = _pending[uid_from_text]
-                    if not fut.done():
-                        fut.set_result(text)
-                        logger.info(f"[MB] ✅ Resolved future for uid={uid_from_text} (by uid in text)")
-                        resolved = True
-
-                # Приоритет 2: если uid не найден или не совпал — берём первый незавершённый
-                if not resolved:
-                    for key, fut in list(_pending.items()):
-                        if not fut.done():
-                            fut.set_result(text)
-                            logger.info(f"[MB] ✅ Resolved first pending future key={key} (fallback)")
-                            resolved = True
-                            break
-
-                if not resolved:
-                    logger.warning(f"[MB] No unresolved futures to match response")
-
-        # ── ТОПИК 4: DVR — строго фильтруем по thread_id ────────────────────
-        # Сюда попадают ТОЛЬКО сообщения из топика 4 (DVR-уведомлений)
-        # Никакой другой топик не затрагивается
-
-        # ── ТОПИК 4: DVR ─────────────────────────────────────────────────────
-        # Используем лямбды вместо F.chat.id == константа — надёжнее в aiogram 3.x
-        # Ловим ВСЁ что приходит в топик 4: пересланные из канала И обычные сообщения
-
-        @self.router.message(
-            lambda m: m.chat.id == ADMIN_CHAT_ID and m.message_thread_id == DVR_ADMIN_TOPIC_ID
-        )
-        async def on_dvr_topic_any(m: Message):
-            """Любое сообщение в топике 4 — DVR уведомление."""
-            text = (m.text or m.caption or "").strip()
-            fwd_info = f"fwd_from={m.forward_from_chat.id}" if m.forward_from_chat else "no_fwd"
-            logger.info(f"[DVR] topic4 msg: {fwd_info} text={text[:80]!r}")
-            if not text:
-                return
-            # Реагируем на пересланные ИЛИ на любой текст с упоминанием @
-            if m.forward_from_chat or "@" in text or "bot" in text.lower() or "бот" in text.lower():
-                await _handle_dvr(self.bot, text)
-            else:
-                logger.info(f"[DVR] topic4 msg skipped (no @ mention)")
-
-        # ── /check — ручная проверка ─────────────────────────────────────────
-
-        @self.router.message(Command("check"))
-        async def cmd_check(m: Message):
-            parts = (m.text or "").split(maxsplit=1)
-            if len(parts) < 2:
-                await m.reply("Использование: /check <user_id>")
-                return
-
-            query = parts[1].strip().lstrip("@")
-            if not query.isdigit():
-                await m.reply("❌ Передайте числовой user_id")
-                return
-
-            uid = int(query)
-            sm  = await m.reply("🔍 Проверяю...")
-
-            # Создаём задачу в очереди
-            row_id = f"mbq_{secrets.token_hex(6)}"
-            try:
-                async with httpx.AsyncClient(timeout=8) as c:
-                    await c.post(
-                        f"{SUPABASE_URL}/rest/v1/mb_check_queue",
-                        headers={**_sb_h(), "Prefer": "return=minimal"},
-                        json={"id": row_id, "user_id": uid,
-                              "username": "", "status": "pending",
-                              "created_at": datetime.utcnow().isoformat()}
-                    )
-            except Exception as e:
-                await sm.edit_text(f"❌ Ошибка постановки в очередь: {e}")
-                return
-
-            # Ждём результата (поллинг кэша)
-            deadline = time.time() + 35
-            result   = None
-            while time.time() < deadline:
-                await asyncio.sleep(2)
-                try:
-                    async with httpx.AsyncClient(timeout=5) as c:
-                        r = await c.get(
-                            f"{SUPABASE_URL}/rest/v1/memory_base_cache",
-                            headers=_sb_h(),
-                            params={"user_id": f"eq.{uid}", "select": "*"}
-                        )
-                        if r.status_code == 200 and r.json():
-                            result = r.json()[0]
-                            break
-                except Exception:
-                    pass
-
-            if result:
-                status  = result.get("status", "not_found")
-                reasons = result.get("reasons", [])
-                await sm.edit_text(_fmt({"status": status, "reasons": reasons,
-                                         "user_id": uid, "username": result.get("username", "")}))
-            else:
-                await sm.edit_text("⏱ Таймаут — MemoryBase не ответил вовремя")
-
-    # ── Запуск ────────────────────────────────────────────────────────────────
-
-    async def run(self):
-        if not MEMORY_BASE_BOT_TOKEN:
-            logger.error("MEMORY_BASE_BOT_TOKEN не задан в .env!")
-            return
-
-        self.setup_handlers()
-        self.dp.include_router(self.router)
-
-        logger.info(f"[*] MemoryBase Bot запущен")
-        logger.info(f"[*] Чат={ADMIN_CHAT_ID} | MB топик={MB_CHECK_TOPIC_ID} | DVR топик={DVR_ADMIN_TOPIC_ID}")
-
-        # ── Диагностика при старте: проверяем доступ к чату ─────────────────
-        try:
-            chat_info = await self.bot.get_chat(ADMIN_CHAT_ID)
-            logger.info(f"[*] ✅ Чат найден: id={chat_info.id} title={chat_info.title!r} type={chat_info.type}")
-            me = await self.bot.get_me()
-            logger.info(f"[*] ✅ Бот: @{me.username} id={me.id}")
-            # Проверяем что бот — администратор
-            member = await self.bot.get_chat_member(ADMIN_CHAT_ID, me.id)
-            logger.info(f"[*] Статус бота в чате: {member.status}")
-            if member.status not in ("administrator", "creator"):
-                logger.warning("[*] ⚠️ БОТ НЕ АДМИНИСТРАТОР ГРУППЫ! Он не будет получать сообщения от других ботов!")
-        except Exception as e:
-            logger.error(f"[*] ❌ НЕ МОГУ ПОЛУЧИТЬ ЧАТ {ADMIN_CHAT_ID}: {e}")
-            logger.error("[*] Проверь ADMIN_CHAT_ID в .env — для супергруппы формат: -100XXXXXXXXXX")
-
-        asyncio.create_task(self.queue_worker())
-
-        # ВАЖНО: allowed_updates должен включать "message" и "channel_post"
-        # Чтобы получать сообщения от @MemoryBaseBot в группе, наш бот
-        # ОБЯЗАН быть АДМИНИСТРАТОРОМ группы — иначе Telegram не шлёт
-        # сообщения от других ботов нашему боту.
-        try:
-            # Сбрасываем webhook — иначе TelegramConflictError при polling
-            await self.bot.delete_webhook(drop_pending_updates=True)
-            await self.dp.start_polling(
-                self.bot,
-                allowed_updates=["message", "channel_post",
-                                  "edited_message", "callback_query"]
-            )
-        finally:
-            self.is_running = False
-            await self.bot.session.close()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DVR HANDLER (вынесен наружу для чистоты)
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def _handle_dvr(bot: Bot, text: str):
+async def handle_dvr(app: Client, text: str):
     """Ищем наших ботов в тексте DVR-поста и останавливаем."""
     bots = await get_all_running_bots()
     if not bots:
@@ -654,7 +263,7 @@ async def _handle_dvr(bot: Bot, text: str):
     mentioned  = []
 
     for br in bots:
-        cfg  = br.get("config") or {}
+        cfg   = br.get("config") or {}
         uname = (
             cfg.get("botUsername") or cfg.get("bot_username") or
             cfg.get("username") or ""
@@ -662,10 +271,10 @@ async def _handle_dvr(bot: Bot, text: str):
 
         if uname and (uname in text_lower or f"@{uname}" in text_lower):
             mentioned.append(br)
-            logger.warning(f"[DVR] Mentioned bot: {br.get('name')} (@{uname})")
+            logger.warning(f"[DVR] Упомянут бот: {br.get('name')} (@{uname})")
 
     if not mentioned:
-        logger.info("[DVR] No our bots found in post")
+        logger.info("[DVR] Наших ботов в посте нет")
         return
 
     stopped, failed = [], []
@@ -680,11 +289,11 @@ async def _handle_dvr(bot: Bot, text: str):
         f"🚨 <b>DVR: Рейд-атака!</b>\n\n"
         f"✅ <b>Остановлено:</b>\n{s_str}\n\n"
         f"❌ <b>Не удалось:</b>\n{f_str}\n\n"
-        f"Восстановите работу на:\n"
+        f"Восстановите работу: "
         f"<a href=\"https://dialogengine.webtm.ru\">dialogengine.webtm.ru</a>"
     )
     try:
-        await bot.send_message(
+        await app.send_message(
             chat_id=ADMIN_CHAT_ID,
             text=text_out,
             message_thread_id=DVR_ADMIN_TOPIC_ID,
@@ -695,32 +304,195 @@ async def _handle_dvr(bot: Bot, text: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ФОРМАТИРОВАНИЕ
+# ОСНОВНОЙ СЕРВИС
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _fmt(r: dict) -> str:
-    HR = {
-        "scammer": "Мошенник ⛔️", "bad_admin": "Плохой админ ❌",
-        "bad_owner": "Плохой владелец ❌", "bad_behavior": "Петушара 🐔",
-        "spammer": "Спамер 🚫", "raider": "Рейдер 💥",
-    }
-    uid  = r.get("user_id")
-    un   = r.get("username", "")
-    st   = r.get("status", "error")
-    reas = r.get("reasons", [])
+class MemoryBaseBotService:
 
-    u = (f"ID: <code>{uid}</code>" if uid else "") + (f"  @{un}" if un else "")
+    def __init__(self):
+        self.app = Client(
+            name="memory_base_checker",
+            bot_token=BOT_TOKEN,
+            api_id=API_ID,
+            api_hash=API_HASH,
+            # Pyrogram сохраняет сессию в файл memory_base_checker.session
+        )
+        self.is_running = True
 
-    if st == "clean":
-        return f"✅ <b>MemoryBase: Чисто</b>\n{u}\nНе найден в базе."
-    if st == "in_base":
-        lines = "\n".join(f"• {HR.get(x, x)}" for x in reas if not x.startswith("other:"))
-        other = [x.replace("other:", "") for x in reas if x.startswith("other:")]
-        if other:
-            lines += "\n• " + "\n• ".join(other)
-        return f"🔴 <b>MemoryBase: В базе!</b>\n{u}\n\n<b>Причины:</b>\n{lines or '—'}"
-    return f"🟡 <b>MemoryBase: Нет данных</b>\n{u}"
+    # ── Воркер очереди ────────────────────────────────────────────────────────
+
+    async def queue_worker(self):
+        logger.info("[MB] Queue worker started")
+        iteration = 0
+        while self.is_running:
+            try:
+                iteration += 1
+                if iteration % 30 == 1:
+                    await sb_reset_stale_processing()
+
+                tasks = await sb_get_pending()
+                for task in tasks:
+                    row_id   = task["id"]
+                    user_id  = int(task["user_id"])
+                    username = task.get("username", "")
+                    logger.info(f"[MB] Task id={row_id} user={user_id}")
+                    await sb_update_queue(row_id, {"status": "processing"})
+                    asyncio.create_task(self._do_check(row_id, user_id, username))
+            except Exception as e:
+                logger.error(f"[MB] queue_worker error: {e}")
+
+            await asyncio.sleep(QUEUE_POLL_INTERVAL)
+
+    # ── Проверка пользователя ─────────────────────────────────────────────────
+
+    async def _do_check(self, row_id, user_id: int, username: str):
+        key = str(user_id)
+        loop = asyncio.get_event_loop()
+
+        try:
+            logger.info(f"[MB] Starting check: user={user_id}")
+
+            # Создаём Future для ожидания ответа
+            async with _pending_lock:
+                if key in _pending and not _pending[key].done():
+                    logger.info(f"[MB] Already pending for {user_id}, skip")
+                    await sb_update_queue(row_id, {"status": "done"})
+                    return
+                fut = loop.create_future()
+                _pending[key] = fut
+
+            # Отправляем "чек user_id" в топик MB
+            try:
+                await self.app.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text=f"чек {user_id}",
+                    message_thread_id=MB_CHECK_TOPIC_ID
+                )
+                logger.info(f"[MB] Sent 'чек {user_id}' → topic {MB_CHECK_TOPIC_ID}")
+            except FloodWait as e:
+                logger.warning(f"[MB] FloodWait {e.value}s")
+                await asyncio.sleep(e.value)
+                await self.app.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text=f"чек {user_id}",
+                    message_thread_id=MB_CHECK_TOPIC_ID
+                )
+
+            # Ждём ответ от @MemoryBaseBot
+            try:
+                raw_text = await asyncio.wait_for(fut, timeout=MB_RESPONSE_TIMEOUT)
+                logger.info(f"[MB] Got response for {user_id}: {raw_text[:80]!r}")
+            except asyncio.TimeoutError:
+                logger.warning(f"[MB] Timeout waiting for {user_id}")
+                await sb_update_queue(row_id, {"status": "error", "error_text": "timeout"})
+                return
+            finally:
+                async with _pending_lock:
+                    _pending.pop(key, None)
+
+            # Парсим и сохраняем
+            status, reasons = parse_mb_response(raw_text)
+            logger.info(f"[MB] Parsed: uid={user_id} status={status} reasons={reasons}")
+            await sb_save_cache(user_id, username, status, reasons, raw_text)
+            await sb_update_queue(row_id, {"status": "done"})
+
+        except Exception as e:
+            logger.error(f"[MB] _do_check exception for {user_id}: {e}")
+            await sb_update_queue(row_id, {"status": "error", "error_text": str(e)[:200]})
+            async with _pending_lock:
+                _pending.pop(key, None)
+
+    # ── Запуск ────────────────────────────────────────────────────────────────
+
+    async def run(self):
+        if not BOT_TOKEN:
+            logger.error("MEMORY_BASE_BOT_TOKEN не задан!")
+            return
+        if not API_ID or not API_HASH:
+            logger.error("PYROGRAM_API_ID / PYROGRAM_API_HASH не заданы!")
+            return
+
+        logger.info(f"[*] MemoryBase Bot (Pyrogram) запускается")
+        logger.info(f"[*] Чат={ADMIN_CHAT_ID} | MB топик={MB_CHECK_TOPIC_ID} | DVR топик={DVR_ADMIN_TOPIC_ID}")
+
+        # ── Регистрируем хендлеры ─────────────────────────────────────────────
+
+        @self.app.on_message(
+            filters.chat(ADMIN_CHAT_ID) &
+            filters.topic(MB_CHECK_TOPIC_ID)
+        )
+        async def on_mb_message(client: Client, msg: Message):
+            """Все сообщения в топике MB — включая от @MemoryBaseBot."""
+            text = (msg.text or msg.caption or "").strip()
+            logger.info(
+                f"[MB] topic2 msg from={msg.from_user.id if msg.from_user else msg.sender_chat} "
+                f"text={text[:80]!r}"
+            )
+
+            # Пропускаем наши собственные "чек X"
+            if re.match(r'^чек\s+\d+', text, re.IGNORECASE):
+                return
+
+            if not (_is_mb_pattern(text) or extract_uid_from_mb(text)):
+                return
+
+            uid_from_text = extract_uid_from_mb(text)
+            async with _pending_lock:
+                # Пробуем резолвить конкретный uid
+                if uid_from_text and uid_from_text in _pending:
+                    fut = _pending[uid_from_text]
+                    if not fut.done():
+                        fut.set_result(text)
+                        logger.info(f"[MB] ✅ Resolved uid={uid_from_text}")
+                        return
+                # Резолвим первый ожидающий
+                for k, fut in list(_pending.items()):
+                    if not fut.done():
+                        fut.set_result(text)
+                        logger.info(f"[MB] ✅ Resolved first pending key={k}")
+                        return
+
+        @self.app.on_message(
+            filters.chat(ADMIN_CHAT_ID) &
+            filters.topic(DVR_ADMIN_TOPIC_ID)
+        )
+        async def on_dvr_message(client: Client, msg: Message):
+            """Любое сообщение в DVR топике."""
+            text = (msg.text or msg.caption or "").strip()
+            fwd  = msg.forward_from_chat
+            logger.info(
+                f"[DVR] topic4 msg from={msg.from_user.id if msg.from_user else '-'} "
+                f"fwd={fwd.id if fwd else '-'} text={text[:80]!r}"
+            )
+            if fwd or "@" in text or "bot" in text.lower() or "бот" in text.lower():
+                await handle_dvr(self.app, text)
+
+        # Запускаем воркер и polling
+        async with self.app:
+            me = await self.app.get_me()
+            logger.info(f"[*] ✅ Авторизован как @{me.username} id={me.id}")
+
+            # Проверяем чат
+            try:
+                chat = await self.app.get_chat(ADMIN_CHAT_ID)
+                logger.info(f"[*] ✅ Чат: {chat.title!r} id={chat.id}")
+            except Exception as e:
+                logger.error(f"[*] ❌ Не могу получить чат {ADMIN_CHAT_ID}: {e}")
+
+            asyncio.create_task(self.queue_worker())
+
+            logger.info("[*] Pyrogram polling started — ловим ВСЕ сообщения включая от ботов")
+            await asyncio.Event().wait()  # держим app живым
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ENTRY POINT
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def main():
+    service = MemoryBaseBotService()
+    await service.run()
 
 
 if __name__ == "__main__":
-    asyncio.run(MemoryBaseBotService().run())
+    asyncio.run(main())
