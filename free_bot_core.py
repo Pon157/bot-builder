@@ -988,6 +988,45 @@ class FreeBotInstance:
     # ПЕРИОДИЧЕСКАЯ СИНХРОНИЗАЦИЯ КОНФИГА
     # ─────────────────────────────────────────────────────────────────────────
 
+    async def dvr_notify_worker(self):
+        """Поллим dvr_events и отправляем уведомления о DVR-рейде."""
+        if not self.admin_chat_id:
+            return
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=8) as c:
+                    r = await c.get(
+                        f"{self.sb_url}/rest/v1/dvr_events",
+                        headers={"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"},
+                        params={"bot_id": f"eq.{self.bot_id}", "status": "eq.pending", "select": "*"}
+                    )
+                    if r.status_code == 200 and r.json():
+                        for ev in r.json():
+                            try:
+                                bot_username = ev.get("bot_username", "")
+                                await self.bot.send_message(
+                                    self.admin_chat_id,
+                                    f"🚨 <b>Система безопасности Dialoge Engine</b>\n\n"
+                                    f"Обнаружена рейдерская атака на вашего бота"
+                                    f"{f' <b>@{bot_username}</b>' if bot_username else ''}.\n\n"
+                                    f"✅ Бот был автоматически <b>остановлен</b> для защиты.\n\n"
+                                    f"Восстановите работу на: "
+                                    f"<a href=\"https://dialogengine.webtm.ru\">dialogengine.webtm.ru</a>"
+                                )
+                                await c.patch(
+                                    f"{self.sb_url}/rest/v1/dvr_events",
+                                    headers={"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}",
+                                             "Content-Type": "application/json", "Prefer": "return=minimal"},
+                                    params={"id": f"eq.{ev['id']}"},
+                                    json={"status": "done"}
+                                )
+                                logger.info(f"[DVR] ✅ Notify sent to {self.admin_chat_id}")
+                            except Exception as e:
+                                logger.warning(f"[DVR] notify error: {e}")
+            except Exception as e:
+                logger.warning(f"[DVR] worker error: {e}")
+            await asyncio.sleep(5)
+
     async def config_sync_loop(self):
         await asyncio.sleep(30)
         while self.is_running:
@@ -1851,6 +1890,7 @@ class FreeBotInstance:
 
         asyncio.create_task(self.config_sync_loop())
         asyncio.create_task(self.daily_stats_rotator())
+        asyncio.create_task(self.dvr_notify_worker())
 
         await self.core_handlers_setup()
 
