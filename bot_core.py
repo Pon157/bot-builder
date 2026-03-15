@@ -249,6 +249,37 @@ class MemoryBaseMiddleware(BaseMiddleware):
                                     )
                                 elif isinstance(event, CallbackQuery):
                                     await event.answer("🚫 Доступ ограничен (MemoryBase).", show_alert=True)
+                                # ── Уведомление в админ чат (один раз) ──────────
+                                _already_notified = user_rec.get('mb_notified', False) if user_rec else False
+                                if self.bi.admin_chat_id and not _already_notified:
+                                    try:
+                                        _rh = {"scammer":"Мошенник ⛔️","bad_admin":"Плохой админ ❌",
+                                               "bad_owner":"Плохой владелец ❌","bad_behavior":"Нарушитель 🐔",
+                                               "spammer":"Спамер 🚫","raider":"Рейдер 💥"}
+                                        _rt = ", ".join(_rh.get(r,r) for r in _reasons if not r.startswith("other:"))
+                                        _ot = [r.replace("other:","") for r in _reasons if r.startswith("other:")]
+                                        if _ot: _rt += (", " if _rt else "") + ", ".join(_ot)
+                                        _nm = user_tg.full_name or f"User {user_id}"
+                                        _un = f" (@{user_tg.username})" if user_tg.username else ""
+                                        _is_start = isinstance(event, Message) and bool(getattr(event, 'text', '') or '') and (event.text or '').strip().startswith("/start")
+                                        _act = "написал /start" if _is_start else "написал сообщение"
+                                        _kb = InlineKeyboardMarkup(inline_keyboard=[[
+                                            InlineKeyboardButton(text="✅ Разрешить доступ", callback_data=f"mb_unban_{user_id}")
+                                        ]])
+                                        await self.bi.bot.send_message(
+                                            self.bi.admin_chat_id,
+                                            f"🔴 <b>MemoryBase: пользователь в базе</b>\n\n"
+                                            f"👤 {_nm}{_un}\n🆔 <code>{user_id}</code>\n"
+                                            f"📌 <b>Причина(ы):</b> {_rt or '—'}\n\n"
+                                            f"Пользователь {_act} и был заблокирован.\n"
+                                            f"Если хотите разрешить ему писать — нажмите кнопку ниже 👇",
+                                            reply_markup=_kb,
+                                        )
+                                        if user_rec:
+                                            user_rec['mb_notified'] = True
+                                            await self.bi.sync_queue.put(("sync_state", None))
+                                    except Exception as _ne:
+                                        logger.warning(f"[MB] admin notify error: {_ne}")
                                 return  # БЛОКИРУЕМ
                         else:
                             # Статус clean/not_found — снимаем локальный флаг если был
@@ -2284,16 +2315,19 @@ class BotInstance:
             # Иначе при следующем сообщении middleware снова заблокирует
             try:
                 async with httpx.AsyncClient(timeout=8) as _uc:
-                    _del = await _uc.delete(
+                    # Не удаляем — меняем статус на clean (разбан сохраняется навсегда)
+                    _del = await _uc.patch(
                         f"{self.sb_url}/rest/v1/memory_base_cache",
                         headers={
                             "apikey": self.sb_key,
                             "Authorization": f"Bearer {self.sb_key}",
+                            "Content-Type": "application/json",
                             "Prefer": "return=minimal"
                         },
-                        params={"user_id": f"eq.{target_uid}"}
+                        params={"user_id": f"eq.{target_uid}"},
+                        json={"status": "clean", "reasons": []}
                     )
-                    logger.info(f"[MB] cache delete for uid={target_uid} status={_del.status_code}")
+                    logger.info(f"[MB] cache unban uid={target_uid} → clean, status={_del.status_code}")
             except Exception as _de:
                 logger.warning(f"[MB] cache delete error: {_de}")
 
