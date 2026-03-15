@@ -198,17 +198,18 @@ async def sb_reset_stale_processing():
 
 
 async def get_all_running_bots() -> List[dict]:
+    """Возвращает все боты (RUNNING + IDLE) для DVR поиска по username."""
     try:
         async with httpx.AsyncClient(timeout=10) as c:
             r = await c.get(
                 f"{SUPABASE_URL}/rest/v1/bots",
                 headers=_sb_h(),
-                params={"status": "eq.RUNNING", "select": "id,name,config"}
+                params={"select": "id,name,config,status"}
             )
             if r.status_code == 200:
                 return r.json()
     except Exception as e:
-        logger.error(f"[DVR] get_all_running_bots error: {e}")
+        logger.error(f"[DVR] get_all_bots error: {e}")
     return []
 
 
@@ -379,6 +380,8 @@ def _is_mb_pattern(text: str) -> bool:
 
 async def handle_dvr(app: Client, text: str):
     """Ищем наших ботов в тексте DVR-поста по username через getMe, останавливаем, уведомляем."""
+    # Сбрасываем кеш — бот мог быть переименован
+    _bot_username_cache.clear()
     bots = await get_all_running_bots()
     if not bots:
         logger.info("[DVR] нет запущенных ботов в БД")
@@ -425,20 +428,25 @@ async def handle_dvr(app: Client, text: str):
             failed.append((br, uname))
             logger.error(f"[DVR] ❌ Не удалось остановить: @{uname}")
 
-    # Уведомляем владельцев через API сервера (сервер использует токен бота)
+    # Записываем событие в dvr_events — bot_core/free_bot_core прочитает и отправит уведомление
     for br, uname in stopped:
         try:
-            async with httpx.AsyncClient(timeout=10) as c:
+            async with httpx.AsyncClient(timeout=8) as c:
                 r = await c.post(
-                    f"{BOTS_API_URL}/api/bots/dvr-notify/{br['id']}",
-                    headers={"X-Admin-Token": ADMIN_TOKEN}
+                    f"{SUPABASE_URL}/rest/v1/dvr_events",
+                    headers={**_sb_h(), "Prefer": "return=minimal"},
+                    json={
+                        "bot_id":       br["id"],
+                        "bot_username": uname,
+                        "status":       "pending",
+                    }
                 )
-                if r.status_code == 200:
-                    logger.info(f"[DVR] owner notified for @{uname} via server API")
+                if r.status_code in (200, 201, 204):
+                    logger.info(f"[DVR] dvr_event written for @{uname}")
                 else:
-                    logger.warning(f"[DVR] dvr-notify failed: {r.status_code} {r.text[:100]}")
+                    logger.warning(f"[DVR] dvr_event write failed: {r.status_code} {r.text[:100]}")
         except Exception as e:
-            logger.warning(f"[DVR] dvr-notify error for {br['id']}: {e}")
+            logger.warning(f"[DVR] dvr_event error for {br['id']}: {e}")
 
     # Отчёт в наш топик 4
     s_str = "\n".join(f"  • @{u}" for _, u in stopped) or "  —"
