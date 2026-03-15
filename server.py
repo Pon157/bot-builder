@@ -795,6 +795,7 @@ async def get_user_bots(user_id: str):
 
             # Поля для poster / randomizer / /broadcast
             bot["adminIds"]   = cfg.get("adminIds",   [])
+            bot["botUsername"] = cfg.get("botUsername", "")
             bot["channelId"]  = cfg.get("channelId",  "")
             bot["lotChannel"] = cfg.get("lotChannel", "")
             bot["botLink"]    = cfg.get("botLink",    "")
