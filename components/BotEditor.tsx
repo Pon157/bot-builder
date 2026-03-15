@@ -505,7 +505,8 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                   </p>
                 </label>
 
-                {/* Username бота — для DVR защиты */}
+                {/* Username бота — только для TG, для DVR защиты */}
+                {!isVK && (
                 <label className="block">
                   <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
                     <span className="text-amber-500 font-black">@</span>Username бота
@@ -519,6 +520,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                     Система защиты DVR использует username для остановки бота при рейде
                   </p>
                 </label>
+                )}
 
                 {/* Приветствие — не для постера */}
                 {!isPoster && (
