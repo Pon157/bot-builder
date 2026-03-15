@@ -516,22 +516,26 @@ class MemoryBaseBotService:
 
     async def queue_worker(self):
         logger.info("[MB] Queue worker started")
-        while True:
+        iteration = 0
+        while self.is_running:
             try:
-                # Убираем self. перед get_pending_tasks, так как это глобальная функция
-                tasks = await get_pending_tasks(limit=10) 
-                if tasks:
-                    logger.info(f"[MB] Найдено задач: {len(tasks)}")
-                    for t in tasks:
-                        # process_task — это метод класса, его оставляем с self.
-                        await self.process_task(t)
-                    await asyncio.sleep(1)
-                else:
-                    await asyncio.sleep(5)
+                iteration += 1
+                if iteration % 30 == 1:
+                    await sb_reset_stale_processing()
+
+                tasks = await sb_get_pending()
+                for task in tasks:
+                    row_id   = task["id"]
+                    user_id  = int(task["user_id"])
+                    username = task.get("username", "")
+                    logger.info(f"[MB] Task id={row_id} user={user_id}")
+                    await sb_update_queue(row_id, {"status": "processing"})
+                    asyncio.create_task(self._do_check(row_id, user_id, username))
             except Exception as e:
-                logger.error(f"[MB] Queue worker error: {e}")
-                await asyncio.sleep(10)
-              
+                logger.error(f"[MB] queue_worker error: {e}")
+
+            await asyncio.sleep(QUEUE_POLL_INTERVAL)
+
     # ── Проверка пользователя ─────────────────────────────────────────────────
 
     async def _do_check(self, row_id, user_id: int, username: str):
