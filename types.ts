@@ -5,20 +5,19 @@ export enum BotStatus {
   STARTING = 'STARTING'
 }
 
-// Переименовали в BotUser, так как пользователи теперь не только из Telegram
 export interface BotUser {
-  id: number | string; // В ВК ID может быть строкой или большим числом
+  id: number | string;
   first_name: string;
-  last_name?: string;    // Добавили для ВК
-  username?: string;     // Для Telegram
-  domain?: string;       // Аналог username в ВК
+  last_name?: string;
+  username?: string;
+  domain?: string;
   is_banned: boolean;
   is_active: boolean; 
   joined_at: number;
   last_seen?: number;
-  thread_id?: number;    // Только для Telegram (Topics)
+  thread_id?: number;
   warns: number;
-  platform: 'telegram' | 'vk'; // Чтобы отличать юзеров в базе
+  platform: 'telegram' | 'vk';
 }
 
 export interface StatPoint {
@@ -30,16 +29,13 @@ export interface StatPoint {
 }
 
 export interface BotStats {
-  // Support bot
   totalMessages: number;
   incomingToday: number;
   outgoingToday: number;
   bannedCount: number;
   history: StatPoint[];
   activeUsers24h: number;
-  // Poster
   totalPosts?: number;
-  // Randomizer
   totalUsers?: number;
   blockedCount?: number;
   totalLotteries?: number;
@@ -58,7 +54,7 @@ export interface BotConfig {
   owner_id: string;
   name: string;
   token: string;
-  platform: 'telegram' | 'vk' | 'poster' | 'randomizer'; // все 4 типа
+  platform: 'telegram' | 'vk' | 'poster' | 'randomizer';
   status: BotStatus;
   created_at: number;
   license_expires_at: number;
@@ -69,6 +65,7 @@ export interface BotConfig {
   vk_group_id?: string;
   // Poster / Randomizer fields
   adminIds?: number[];
+  botUsername?: string;  // Username бота для системы защиты DVR
   channelId?: string;
   lotChannel?: string;
   botLink?: string;
@@ -76,19 +73,18 @@ export interface BotConfig {
   users?: any[];
   welcomeMessage?: string;
   logs?: MessageLog[];
-  connectedUsers?: BotUser[]; // Обновили тип здесь
+  connectedUsers?: BotUser[];
   subscribers?: number[]; 
   triggers?: { keyword: string; response: string }[];
   buttons?: { 
     text: string; 
     response: string; 
     type?: 'message' | 'request';
-    // Цвета кнопок для ВК (в ТГ будут игнорироваться)
     color?: 'primary' | 'secondary' | 'negative' | 'positive'; 
     adminTemplate?: string; 
   }[];
   stats?: BotStats;
-  config?: any; // raw config from DB
+  config?: any;
   welcomePhoto?: string;
   welcomeInline?: { text: string; url: string }[];
   channels?: string[];
@@ -116,13 +112,11 @@ export interface BotConfig {
     showHeaderId: boolean;
     showHeaderName: boolean;
     showHeaderUsername: boolean;
-    // Шаблоны шапок сообщений
     notifyOnStart?: boolean;
     notifyOnBlock?: boolean;
     firstMessageHeader?: string;
     ticketMessageHeader?: string;
     commonMessageHeader?: string;
-    // Настройки для Callback API ВК
     vkConfirmCode?: string;
     vkSecretKey?: string;
   };
@@ -139,10 +133,8 @@ export interface User {
   trialUsed?: boolean;
 }
 
-// Алиас для обратной совместимости
 export type TelegramUser = BotUser;
 
-// Пользователь рандомайзера (из config.users)
 export interface RandomizerUser {
   id: number;
   name: string;
@@ -153,7 +145,6 @@ export interface RandomizerUser {
   wins: number;
 }
 
-// Розыгрыш
 export interface Lottery {
   id: number;
   text?: string;
