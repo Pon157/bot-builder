@@ -378,99 +378,99 @@ def _is_mb_pattern(text: str) -> bool:
 # DVR HANDLER
 # ══════════════════════════════════════════════════════════════════════════════
 
+async def send_direct_notify(bot_record: dict, bot_username: str):
+    """Отправляет уведомление владельцу напрямую через API Telegram."""
+    owner_id = bot_record.get("user_id")
+    token = bot_record.get("config", {}).get("token")
+    if not owner_id or not token:
+        return False
+
+    text = (
+        f"🚨 <b>ВНИМАНИЕ: Ваш бот @{bot_username} под атакой!</b>\n\n"
+        f"Бот был автоматически <b>ОСТАНОВЛЕН</b>, так как его имя "
+        f"появилось в списках DVR (рейд-атака).\n\n"
+        f"Запустить бота можно в панели управления после завершения атаки."
+    )
+    
+    try:
+        # Используем временный клиент, чтобы отправить сообщение от имени самого бота
+        async with httpx.AsyncClient() as client:
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload = {"chat_id": owner_id, "text": text, "parse_mode": "HTML"}
+            r = await client.post(url, json=payload, timeout=5)
+            return r.status_code == 200
+    except Exception as e:
+        logger.error(f"[DVR] Ошибка уведомления владельца {owner_id}: {e}")
+        return False
+
 async def handle_dvr(app: Client, text: str):
     """
-    Ищем наших ботов в тексте DVR-поста по username.
-    Оптимизировано: уведомляем владельца напрямую и останавливаем бота без записи в БД.
+    Централизованная обработка DVR. 
+    Сама находит, сама уведомляет, сама останавливает и отчитывается в чат админов.
     """
-    # Сбрасываем кеш — бот мог быть переименован
     _bot_username_cache.clear()
     bots = await get_all_running_bots()
     if not bots:
-        logger.info("[DVR] нет запущенных ботов в БД")
         return
 
-    # Извлекаем @username из текста
-    text_lower = text.lower()
-    mentioned_usernames = set(re.findall(r'@(\w+)', text_lower))
-    logger.info(f"[DVR] @usernames в тексте: {mentioned_usernames}")
-
+    mentioned_usernames = set(re.findall(r'@(\w+)', text.lower()))
     if not mentioned_usernames:
-        logger.info("[DVR] нет @username в тексте")
         return
 
-    # Резолвим username каждого бота через Telegram getMe (с кешем)
-    matched = []  # (bot_record, username)
+    matched = []
     tasks = []
     for br in bots:
-        cfg   = br.get("config") or {}
-        token = cfg.get("token", "")
-        hint  = cfg.get("botUsername") or cfg.get("bot_username") or ""
-        tasks.append((br, resolve_bot_username(br["id"], token, hint)))
+        cfg = br.get("config") or {}
+        tasks.append((br, resolve_bot_username(br["id"], cfg.get("token"), cfg.get("bot_username", ""))))
 
-    # Параллельно резолвим все
     for br, coro in tasks:
         uname = await coro
         if uname and uname.lower() in mentioned_usernames:
             matched.append((br, uname))
-            logger.warning(f"[DVR] ✅ Найден наш бот под атакой: @{uname} id={br['id']}")
 
     if not matched:
-        logger.info(f"[DVR] Наших ботов среди {mentioned_usernames} нет")
         return
 
     stopped, failed = [], []
-    
-    # Чтобы не плодить сотни клиентов, создаем ОДИН для всех запросов к API остановки
-    async with httpx.AsyncClient(timeout=10) as client:
-        for br, uname in matched:
-            # ── ШАГ 1: Прямое уведомление владельца ──
-            # (Функция notify_bot_owner должна быть определена в этом же файле)
-            try:
-                await notify_bot_owner(app, br, uname)
-                logger.info(f"[DVR] ✅ Владелец бота @{uname} уведомлен напрямую")
-            except Exception as e:
-                logger.error(f"[DVR] ❌ Ошибка уведомления для @{uname}: {e}")
 
-            # Ждём 2 сек, чтобы Telegram успел доставить сообщение, пока бот еще онлайн
-            await asyncio.sleep(2)
+    for br, uname in matched:
+        # 1. Прямое уведомление владельца (через Bot API напрямую)
+        notified = await send_direct_notify(br, uname)
+        if notified:
+            logger.info(f"[DVR] Владелец @{uname} уведомлен напрямую.")
+        
+        # 2. Остановка бота через наш серверный API
+        ok = await stop_bot_via_api(br["id"])
+        if ok:
+            stopped.append(uname)
+            logger.warning(f"[DVR] Бот @{uname} остановлен.")
+        else:
+            failed.append(uname)
+            logger.error(f"[DVR] Не удалось остановить @{uname}")
 
-            # ── ШАГ 2: Прямая остановка бота через API ──
-            try:
-                # Мы передаем client в stop_bot_via_api, если ваша функция это поддерживает,
-                # либо вызываем как есть:
-                ok = await stop_bot_via_api(br["id"])
-                if ok:
-                    stopped.append((br, uname))
-                    logger.warning(f"[DVR] ⛔ Бот @{uname} успешно ВЫКЛЮЧЕН")
-                else:
-                    failed.append((br, uname))
-                    logger.error(f"[DVR] ⚠️ Не удалось остановить бота @{uname}")
-            except Exception as e:
-                logger.error(f"[DVR] ❌ Критическая ошибка при остановке {uname}: {e}")
-
-    # ── ШАГ 3: Отчёт в административный топик ──
-    s_str = "\n".join(f"  • @{u}" for _, u in stopped) or "  —"
-    f_str = "\n".join(f"  • @{u}" for _, u in failed)  or "  —"
-    
-    text_out = (
-        f"🚨 <b>DVR: Обнаружена рейд-атака!</b>\n\n"
-        f"✅ <b>Остановлено ({len(stopped)}):</b>\n{s_str}\n\n"
-        f"❌ <b>Ошибка остановки ({len(failed)}):</b>\n{f_str}\n\n"
-        f"<i>Результат: Владельцы получили алерты, боты выключены для защиты.</i>"
-    )
-    
-    try:
-        await app.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=text_out,
-            reply_to_message_id=DVR_ADMIN_TOPIC_ID,
-            disable_web_page_preview=True
+    # 3. ОТЧЕТ В ЧАТ АДМИНОВ (То, что у вас пропало)
+    if stopped or failed:
+        s_str = "\n".join(f"  • @{u}" for u in stopped) or "  —"
+        f_str = "\n".join(f"  • @{u}" for u in failed) or "  —"
+        
+        text_out = (
+            f"🚨 <b>DVR: Система защиты сработала!</b>\n\n"
+            f"✅ <b>Остановлены боты ({len(stopped)}):</b>\n{s_str}\n\n"
+            f"❌ <b>Ошибка остановки ({len(failed)}):</b>\n{f_str}\n\n"
+            f"<i>Результат: Владельцы оповещены. Работа ботов прекращена.</i>"
         )
-    except Exception as e:
-        logger.error(f"[DVR] Отчет не отправлен в админ-чат: {e}")
-
-
+        
+        try:
+            # Отправляем отчет в ваш 4-й топик
+            await app.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=text_out,
+                reply_to_message_id=DVR_ADMIN_TOPIC_ID,
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            logger.error(f"[DVR] Ошибка отправки отчета в админ-чат: {e}")
+          
 # ══════════════════════════════════════════════════════════════════════════════
 # ОСНОВНОЙ СЕРВИС
 # ══════════════════════════════════════════════════════════════════════════════
