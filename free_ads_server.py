@@ -243,6 +243,7 @@ async def free_update_bot_config(bot_id: str, d: dict):
     except Exception:
         admin_ids_list = []
     new_cfg["adminIds"] = admin_ids_list
+    new_cfg["botUsername"] = (d.get("botUsername") or inc.get("botUsername") or existing_cfg.get("botUsername") or "").lower().lstrip("@").strip()
 
     for key in ["welcomeMessage", "welcomePhoto", "welcomeInline", "description"]:
         if key in inc:
@@ -535,6 +536,7 @@ async def free_vk_update_bot_config(bot_id: str, d: dict):
     except Exception:
         admin_ids_list = []
     new_cfg["adminIds"] = admin_ids_list
+    new_cfg["botUsername"] = (d.get("botUsername") or inc.get("botUsername") or existing_cfg.get("botUsername") or "").lower().lstrip("@").strip()
 
     try:
         admin_chat_id_int = int(admin_chat_id) if admin_chat_id else None
