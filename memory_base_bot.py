@@ -515,26 +515,21 @@ class MemoryBaseBotService:
             me = await self.app.get_me()
             logger.info(f"[*] ✅ Авторизован как @{me.username} id={me.id}")
 
-            # Резолвим чат — в bot-режиме Pyrogram нужен InputPeerChannel
+            # Резолвим чат через get_dialogs — заполняет кеш пиров при каждом старте
+            self._chat_peer = ADMIN_CHAT_ID
+            chat_found = False
             try:
-                chat = await self.app.get_chat(ADMIN_CHAT_ID)
-                logger.info(f"[*] ✅ Чат: {chat.title!r} id={chat.id}")
-                # Сохраняем резолвленный peer для отправки сообщений
-                self._chat_peer = chat.id
+                logger.info("[*] Сканирую диалоги для заполнения кеша...")
+                async for dialog in self.app.get_dialogs():
+                    if dialog.chat.id == ADMIN_CHAT_ID:
+                        logger.info(f"[*] ✅ Чат найден: {dialog.chat.title!r} id={dialog.chat.id}")
+                        chat_found = True
+                        break
+                if not chat_found:
+                    logger.error(f"[*] ❌ Чат {ADMIN_CHAT_ID} не найден в диалогах!")
+                    logger.error("[*] Убедись что аккаунт @Kotickr является участником группы")
             except Exception as e:
-                logger.warning(f"[*] ⚠️ get_chat({ADMIN_CHAT_ID}): {e}")
-                # В bot-режиме пробуем через get_entity c raw ID
-                try:
-                    from pyrogram.raw import functions, types as raw_types
-                    # Конвертируем -100XXXXXXXXXX в обычный channel_id
-                    channel_id = int(str(ADMIN_CHAT_ID).replace("-100", ""))
-                    peer = await self.app.resolve_peer(ADMIN_CHAT_ID)
-                    logger.info(f"[*] ✅ Peer resolved: {peer}")
-                    self._chat_peer = ADMIN_CHAT_ID
-                except Exception as e2:
-                    logger.warning(f"[*] ⚠️ resolve_peer: {e2}")
-                    logger.warning("[*] В bot-режиме: перешли в чат боту хотя бы одно сообщение из группы")
-                    self._chat_peer = ADMIN_CHAT_ID
+                logger.error(f"[*] ❌ get_dialogs error: {e}")
 
             asyncio.create_task(self.queue_worker())
 
