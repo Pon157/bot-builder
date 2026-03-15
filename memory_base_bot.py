@@ -515,26 +515,23 @@ class MemoryBaseBotService:
     # ── Воркер очереди ────────────────────────────────────────────────────────
 
     async def queue_worker(self):
-    logger.info("[MB] Queue worker started")
-    while True:
-        try:
-            # Можно увеличить лимит до 10, чтобы за один раз обрабатывать больше, 
-            # но реже делать сами запросы к БД
-            tasks = await self.get_pending_tasks(limit=10) 
-            if tasks:
-                for t in tasks:
-                    await self.process_task(t)
-                # Если задачи были, можно поспать меньше
-                await asyncio.sleep(1)
-            else:
-                # Если задач НЕТ, спим дольше (например, 5 секунд)
-                await asyncio.sleep(5) 
-        except Exception as e:
-            logger.error(f"[MB] Queue worker error: {e}")
-            await asyncio.sleep(10)
-
-            await asyncio.sleep(QUEUE_POLL_INTERVAL)
-
+        logger.info("[MB] Queue worker started")
+        while True:
+            try:
+                # Опрашиваем очередь задач
+                tasks = await self.get_pending_tasks(limit=10)
+                if tasks:
+                    logger.info(f"[MB] Found {len(tasks)} tasks to process")
+                    for t in tasks:
+                        await self.process_task(t)
+                    # Если задачи были, проверяем снова через 1 сек
+                    await asyncio.sleep(1)
+                else:
+                    # Если задач НЕТ, спим 5 секунд, чтобы не нагружать базу
+                    await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(f"[MB] Queue worker error: {e}")
+                await asyncio.sleep(10)
     # ── Проверка пользователя ─────────────────────────────────────────────────
 
     async def _do_check(self, row_id, user_id: int, username: str):
