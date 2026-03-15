@@ -251,24 +251,28 @@ async def resolve_bot_username(bot_id: str, token: str, bot_username_hint: str =
     return None
 
 
-async def notify_bot_owner(app: Client, bot_record: dict, bot_username: str):
-    """Уведомляем владельца бота о рейде в его admin_chat_id."""
+async def notify_bot_owner(bot_record: dict, bot_username: str):
+    """
+    Уведомляем владельца бота о рейде напрямую через токен его бота.
+    Вызывается ДО остановки бота, пока токен ещё рабочий.
+    """
     cfg = bot_record.get("config") or {}
     admin_chat_id = cfg.get("admin_chat_id") or cfg.get("adminChatId")
     if not admin_chat_id:
         logger.warning(f"[DVR] no admin_chat_id for bot {bot_record.get('id')}")
         return
+    token = decrypt_token(cfg.get("token", ""))
+    if not token:
+        logger.warning(f"[DVR] no token for bot {bot_record.get('id')}, skipping owner notify")
+        return
     try:
-        # Уведомление отправляем через токен САМОГО бота-воркера
-        token = decrypt_token(cfg.get("token", ""))
-        if not token:
-            logger.warning(f"[DVR] no token for bot {bot_record.get('id')}, skipping owner notify")
-            return
         async with httpx.AsyncClient(timeout=10) as c:
             r = await c.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
                 json={
-                    "chat_id": int(admin_chat_id),
+                    "chat_id":                  int(admin_chat_id),
+                    "parse_mode":               "HTML",
+                    "disable_web_page_preview": True,
                     "text": (
                         "🚨 <b>Система безопасности Dialoge Engine</b>\n\n"
                         f"Обнаружена рейдерская атака на вашего бота <b>@{bot_username}</b>.\n\n"
@@ -276,40 +280,12 @@ async def notify_bot_owner(app: Client, bot_record: dict, bot_username: str):
                         "Восстановите работу бота на:\n"
                         '<a href="https://dialogengine.webtm.ru">dialogengine.webtm.ru</a>'
                     ),
-                    "parse_mode": "HTML",
-                    "disable_web_page_preview": True,
                 }
             )
             if r.status_code == 200:
-                logger.info(f"[DVR] owner notified via bot @{bot_username} → chat {admin_chat_id}")
+                logger.info(f"[DVR] ✅ Owner notified via @{bot_username} → chat {admin_chat_id}")
             else:
-                logger.warning(f"[DVR] sendMessage failed: {r.status_code} {r.text[:100]}")
-    except Exception as e:
-        logger.warning(f"[DVR] owner notify error for {bot_record.get('id')}: {e}")
-
-
-async def notify_bot_owner(app: Client, bot_record: dict, bot_username: str):
-    """Уведомляем владельца бота о рейде в его admin_chat_id."""
-    cfg = bot_record.get("config") or {}
-    admin_chat_id = cfg.get("admin_chat_id") or cfg.get("adminChatId")
-    bot_name = bot_record.get("name") or bot_username
-    if not admin_chat_id:
-        logger.warning(f"[DVR] no admin_chat_id for bot {bot_record.get('id')}")
-        return
-    try:
-        await app.send_message(
-            chat_id=int(admin_chat_id),
-            text=(
-                f"🚨 <b>Система безопасности Dialoge Engine</b>\n\n"
-                f"Обнаружена рейдерская атака на вашего бота "
-                f"<b>@{bot_username}</b>.\n\n"
-                f"✅ Бот был автоматически <b>остановлен</b> для защиты.\n\n"
-                f"Восстановите работу бота на:\n"
-                f"<a href=\"https://dialogengine.webtm.ru\">dialogengine.webtm.ru</a>"
-            ),
-            disable_web_page_preview=True
-        )
-        logger.info(f"[DVR] owner notified for bot {bot_record.get('id')} → chat {admin_chat_id}")
+                logger.warning(f"[DVR] sendMessage failed {r.status_code}: {r.text[:150]}")
     except Exception as e:
         logger.warning(f"[DVR] owner notify error for {bot_record.get('id')}: {e}")
 
@@ -421,7 +397,19 @@ async def handle_dvr(app: Client, text: str):
 
     stopped, failed = [], []
     for br, uname in matched:
-        # Сначала пишем событие — бот прочитает и отправит уведомление
+        # 1. Уведомляем владельца СРАЗУ через токен его бота (пока он ещё жив)
+        await notify_bot_owner(br, uname)
+
+        # 2. Останавливаем бот
+        ok = await stop_bot_via_api(br["id"])
+        if ok:
+            stopped.append((br, uname))
+            logger.warning(f"[DVR] ✅ Остановлен: @{uname}")
+        else:
+            failed.append((br, uname))
+            logger.error(f"[DVR] ❌ Не удалось остановить: @{uname}")
+
+        # 3. Пишем событие в dvr_events (для истории / фронтенда)
         try:
             async with httpx.AsyncClient(timeout=8) as c:
                 r = await c.post(
@@ -430,27 +418,15 @@ async def handle_dvr(app: Client, text: str):
                     json={
                         "bot_id":       br["id"],
                         "bot_username": uname,
-                        "status":       "pending",
+                        "status":       "done",  # сразу done — уведомление уже отправлено
                     }
                 )
                 if r.status_code in (200, 201, 204):
-                    logger.info(f"[DVR] dvr_event written for @{uname}")
+                    logger.info(f"[DVR] dvr_event written (done) for @{uname}")
                 else:
                     logger.warning(f"[DVR] dvr_event write failed: {r.status_code} {r.text[:100]}")
         except Exception as e:
             logger.warning(f"[DVR] dvr_event error for {br['id']}: {e}")
-
-        # Ждём 3 сек чтобы бот успел прочитать событие и отправить уведомление
-        await asyncio.sleep(3)
-
-        # Теперь останавливаем
-        ok = await stop_bot_via_api(br["id"])
-        if ok:
-            stopped.append((br, uname))
-            logger.warning(f"[DVR] ✅ Остановлен: @{uname}")
-        else:
-            failed.append((br, uname))
-            logger.error(f"[DVR] ❌ Не удалось остановить: @{uname}")
 
     # Отчёт в наш топик 4
     s_str = "\n".join(f"  • @{u}" for _, u in stopped) or "  —"
