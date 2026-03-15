@@ -515,24 +515,23 @@ class MemoryBaseBotService:
     # ── Воркер очереди ────────────────────────────────────────────────────────
 
     async def queue_worker(self):
-        logger.info("[MB] Queue worker started")
-        iteration = 0
-        while self.is_running:
-            try:
-                iteration += 1
-                if iteration % 30 == 1:
-                    await sb_reset_stale_processing()
-
-                tasks = await sb_get_pending()
-                for task in tasks:
-                    row_id   = task["id"]
-                    user_id  = int(task["user_id"])
-                    username = task.get("username", "")
-                    logger.info(f"[MB] Task id={row_id} user={user_id}")
-                    await sb_update_queue(row_id, {"status": "processing"})
-                    asyncio.create_task(self._do_check(row_id, user_id, username))
-            except Exception as e:
-                logger.error(f"[MB] queue_worker error: {e}")
+    logger.info("[MB] Queue worker started")
+    while True:
+        try:
+            # Можно увеличить лимит до 10, чтобы за один раз обрабатывать больше, 
+            # но реже делать сами запросы к БД
+            tasks = await self.get_pending_tasks(limit=10) 
+            if tasks:
+                for t in tasks:
+                    await self.process_task(t)
+                # Если задачи были, можно поспать меньше
+                await asyncio.sleep(1)
+            else:
+                # Если задач НЕТ, спим дольше (например, 5 секунд)
+                await asyncio.sleep(5) 
+        except Exception as e:
+            logger.error(f"[MB] Queue worker error: {e}")
+            await asyncio.sleep(10)
 
             await asyncio.sleep(QUEUE_POLL_INTERVAL)
 
