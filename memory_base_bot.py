@@ -420,16 +420,7 @@ async def handle_dvr(app: Client, text: str):
 
     stopped, failed = [], []
     for br, uname in matched:
-        ok = await stop_bot_via_api(br["id"])
-        if ok:
-            stopped.append((br, uname))
-            logger.warning(f"[DVR] ✅ Остановлен: @{uname}")
-        else:
-            failed.append((br, uname))
-            logger.error(f"[DVR] ❌ Не удалось остановить: @{uname}")
-
-    # Записываем событие в dvr_events — bot_core/free_bot_core прочитает и отправит уведомление
-    for br, uname in stopped:
+        # Сначала пишем событие — бот прочитает и отправит уведомление
         try:
             async with httpx.AsyncClient(timeout=8) as c:
                 r = await c.post(
@@ -447,6 +438,18 @@ async def handle_dvr(app: Client, text: str):
                     logger.warning(f"[DVR] dvr_event write failed: {r.status_code} {r.text[:100]}")
         except Exception as e:
             logger.warning(f"[DVR] dvr_event error for {br['id']}: {e}")
+
+        # Ждём 3 сек чтобы бот успел прочитать событие и отправить уведомление
+        await asyncio.sleep(3)
+
+        # Теперь останавливаем
+        ok = await stop_bot_via_api(br["id"])
+        if ok:
+            stopped.append((br, uname))
+            logger.warning(f"[DVR] ✅ Остановлен: @{uname}")
+        else:
+            failed.append((br, uname))
+            logger.error(f"[DVR] ❌ Не удалось остановить: @{uname}")
 
     # Отчёт в наш топик 4
     s_str = "\n".join(f"  • @{u}" for _, u in stopped) or "  —"
