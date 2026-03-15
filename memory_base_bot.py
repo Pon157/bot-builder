@@ -555,64 +555,46 @@ class MemoryBaseBotService:
         logger.info(f"[*] MemoryBase Bot (Pyrogram) запускается")
         logger.info(f"[*] Чат={ADMIN_CHAT_ID} | MB топик={MB_CHECK_TOPIC_ID} | DVR топик={DVR_ADMIN_TOPIC_ID}")
 
-        # ── Регистрируем хендлеры ─────────────────────────────────────────────
+        # ── Единый хендлер для всего нашего чата ─────────────────────────────
+        # Pyrogram 2.0.106 в user-режиме не передаёт message_thread_id для топиков
+        # поэтому различаем MB и DVR по содержимому сообщения
 
         @self.app.on_message(
-            filters.create(lambda _, __, m: (
-                getattr(m.chat, "id", None) == ADMIN_CHAT_ID and
-                getattr(m, "message_thread_id", None) in (MB_CHECK_TOPIC_ID, None) and
-                getattr(m, "message_thread_id", None) != DVR_ADMIN_TOPIC_ID
-            ))
+            filters.create(lambda _, __, m: getattr(m.chat, "id", None) == ADMIN_CHAT_ID)
         )
-        async def on_mb_message(client: Client, msg: Message):
-            """Все сообщения в топике MB — включая от @MemoryBaseBot."""
-            text = (msg.text or msg.caption or "").strip()
-            sender = getattr(msg.from_user, "username", None) or getattr(msg.sender_chat, "username", None) or "?"
-            logger.info(
-                f"[MB] msg thread={getattr(msg, 'message_thread_id', None)} "
-                f"from=@{sender} text={text[:80]!r}"
-            )
+        async def on_admin_chat(client: Client, msg: Message):
+            text   = (msg.text or msg.caption or "").strip()
+            thread = getattr(msg, "message_thread_id", None)
+            sender = (getattr(msg.from_user, "username", None) or
+                      getattr(msg.sender_chat, "username", None) or
+                      str(getattr(msg.from_user, "id", "?") if msg.from_user else "?"))
+            logger.info(f"[CHAT] thread={thread} from=@{sender} text={text[:80]!r}")
 
             # Пропускаем наши собственные "чек X"
             if re.match(r'^чек\s+\d+', text, re.IGNORECASE):
                 return
 
-            # Пропускаем если это не ответ MemoryBase (нет паттерна и нет uid)
-            if not (_is_mb_pattern(text) or extract_uid_from_mb(text)):
-                logger.debug(f"[MB] skip non-MB message: {text[:40]!r}")
-                return
+            # ── Ответ от @MemoryBaseBot → резолвим Future ─────────────────
+            if _is_mb_pattern(text) or extract_uid_from_mb(text):
+                uid_from_text = extract_uid_from_mb(text)
+                async with _pending_lock:
+                    if uid_from_text and uid_from_text in _pending:
+                        fut = _pending[uid_from_text]
+                        if not fut.done():
+                            fut.set_result(text)
+                            logger.info(f"[MB] ✅ Resolved uid={uid_from_text}")
+                            return
+                    for k, fut in list(_pending.items()):
+                        if not fut.done():
+                            fut.set_result(text)
+                            logger.info(f"[MB] ✅ Resolved first pending key={k}")
+                            return
+                return  # MB паттерн но нет ожидающих — игнорируем
 
-            uid_from_text = extract_uid_from_mb(text)
-            async with _pending_lock:
-                # Пробуем резолвить конкретный uid
-                if uid_from_text and uid_from_text in _pending:
-                    fut = _pending[uid_from_text]
-                    if not fut.done():
-                        fut.set_result(text)
-                        logger.info(f"[MB] ✅ Resolved uid={uid_from_text}")
-                        return
-                # Резолвим первый ожидающий
-                for k, fut in list(_pending.items()):
-                    if not fut.done():
-                        fut.set_result(text)
-                        logger.info(f"[MB] ✅ Resolved first pending key={k}")
-                        return
-
-        @self.app.on_message(
-            filters.create(lambda _, __, m: (
-                getattr(m.chat, "id", None) == ADMIN_CHAT_ID and
-                getattr(m, "message_thread_id", None) == DVR_ADMIN_TOPIC_ID
-            ))
-        )
-        async def on_dvr_message(client: Client, msg: Message):
-            """Любое сообщение в DVR топике."""
-            text = (msg.text or msg.caption or "").strip()
-            fwd  = msg.forward_from_chat
-            logger.info(
-                f"[DVR] topic4 msg from={msg.from_user.id if msg.from_user else '-'} "
-                f"fwd={fwd.id if fwd else '-'} text={text[:80]!r}"
-            )
-            if fwd or "@" in text or "bot" in text.lower() or "бот" in text.lower():
+            # ── DVR: сообщение содержит @username → проверяем наших ботов ──
+            fwd = msg.forward_from_chat
+            if "@" in text or fwd:
+                logger.info(f"[DVR] обрабатываем: {text[:60]!r}")
                 await handle_dvr(self.app, text)
 
         # Запускаем воркер и polling
