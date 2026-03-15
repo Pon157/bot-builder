@@ -256,15 +256,34 @@ async def notify_bot_owner(bot_record: dict, bot_username: str):
     Уведомляем владельца бота о рейде напрямую через токен его бота.
     Вызывается ДО остановки бота, пока токен ещё рабочий.
     """
-    cfg = bot_record.get("config") or {}
-    admin_chat_id = cfg.get("admin_chat_id") or cfg.get("adminChatId")
+    bot_id = bot_record.get("id", "?")
+
+    # config может прийти как dict или как JSON-строка — нормализуем
+    raw_cfg = bot_record.get("config") or {}
+    if isinstance(raw_cfg, str):
+        try:
+            import json as _json
+            raw_cfg = _json.loads(raw_cfg)
+        except Exception as _je:
+            logger.error(f"[DVR] bot {bot_id}: config is string but failed to parse JSON: {_je}")
+            raw_cfg = {}
+
+    logger.info(f"[DVR] notify_bot_owner bot={bot_id} config_keys={list(raw_cfg.keys())[:10]}")
+
+    admin_chat_id = raw_cfg.get("admin_chat_id") or raw_cfg.get("adminChatId")
+    logger.info(f"[DVR] bot={bot_id} admin_chat_id={admin_chat_id!r}")
     if not admin_chat_id:
-        logger.warning(f"[DVR] no admin_chat_id for bot {bot_record.get('id')}")
+        logger.warning(f"[DVR] ❌ bot {bot_id}: нет admin_chat_id в конфиге — уведомление невозможно")
         return
-    token = decrypt_token(cfg.get("token", ""))
+
+    raw_token_val = raw_cfg.get("token", "")
+    logger.info(f"[DVR] bot={bot_id} token present={bool(raw_token_val)} len={len(raw_token_val)}")
+    token = decrypt_token(raw_token_val)
     if not token:
-        logger.warning(f"[DVR] no token for bot {bot_record.get('id')}, skipping owner notify")
+        logger.warning(f"[DVR] ❌ bot {bot_id}: токен пустой после расшифровки — уведомление невозможно")
         return
+
+    logger.info(f"[DVR] bot={bot_id} sending notify to chat={admin_chat_id} via @{bot_username}")
     try:
         async with httpx.AsyncClient(timeout=10) as c:
             r = await c.post(
@@ -285,9 +304,9 @@ async def notify_bot_owner(bot_record: dict, bot_username: str):
             if r.status_code == 200:
                 logger.info(f"[DVR] ✅ Owner notified via @{bot_username} → chat {admin_chat_id}")
             else:
-                logger.warning(f"[DVR] sendMessage failed {r.status_code}: {r.text[:150]}")
+                logger.error(f"[DVR] ❌ sendMessage failed {r.status_code}: {r.text[:300]}")
     except Exception as e:
-        logger.warning(f"[DVR] owner notify error for {bot_record.get('id')}: {e}")
+        logger.error(f"[DVR] ❌ owner notify exception for bot {bot_id}: {type(e).__name__}: {e}")
 
 
 async def stop_bot_via_api(bot_id: str) -> bool:
@@ -357,43 +376,44 @@ def _is_mb_pattern(text: str) -> bool:
 
 async def handle_dvr(app: Client, text: str):
     """Ищем наших ботов в тексте DVR-поста по username через getMe, останавливаем, уведомляем."""
-    # Сбрасываем кеш — бот мог быть переименован
+    logger.info(f"[DVR] handle_dvr triggered, text={text[:120]!r}")
+
     _bot_username_cache.clear()
     bots = await get_all_running_bots()
+    logger.info(f"[DVR] всего ботов в БД: {len(bots)}")
     if not bots:
-        logger.info("[DVR] нет запущенных ботов в БД")
+        logger.warning("[DVR] нет ботов в БД — выходим")
         return
 
-    # Извлекаем @username из текста
     text_lower = text.lower()
     mentioned_usernames = set(re.findall(r'@(\w+)', text_lower))
-    # Также ищем без @ (на случай если просто написали имя бота)
-    words = set(text_lower.split())
     logger.info(f"[DVR] @usernames в тексте: {mentioned_usernames}")
 
     if not mentioned_usernames:
-        logger.info("[DVR] нет @username в тексте")
+        logger.info("[DVR] нет @username в тексте — выходим")
         return
 
-    # Резолвим username каждого бота через Telegram getMe (с кешем)
-    matched = []  # (bot_record, username)
-    tasks = []
+    # Резолвим username каждого бота
+    matched = []
     for br in bots:
         cfg   = br.get("config") or {}
+        if isinstance(cfg, str):
+            try:
+                import json as _j; cfg = _j.loads(cfg)
+            except Exception: cfg = {}
         token = cfg.get("token", "")
         hint  = cfg.get("botUsername", "") or cfg.get("bot_username", "") or ""
-        tasks.append((br, resolve_bot_username(br["id"], token, hint)))
-
-    # Параллельно резолвим все
-    for br, coro in tasks:
-        uname = await coro
+        uname = await resolve_bot_username(br["id"], token, hint)
+        logger.info(f"[DVR] бот {br['id']} → resolved username=@{uname}")
         if uname and uname in mentioned_usernames:
             matched.append((br, uname))
-            logger.warning(f"[DVR] ✅ Найден наш бот: @{uname} id={br['id']}")
+            logger.warning(f"[DVR] ✅ Совпадение: @{uname} id={br['id']}")
 
     if not matched:
-        logger.info(f"[DVR] Наших ботов среди {mentioned_usernames} нет")
+        logger.info(f"[DVR] Наших ботов среди {mentioned_usernames} нет — выходим")
         return
+
+    logger.warning(f"[DVR] Найдено совпадений: {len(matched)} — начинаем уведомление и остановку")
 
     stopped, failed = [], []
     for br, uname in matched:
@@ -418,7 +438,7 @@ async def handle_dvr(app: Client, text: str):
                     json={
                         "bot_id":       br["id"],
                         "bot_username": uname,
-                        "status":       "done",  # сразу done — уведомление уже отправлено
+                        "status":       "done",
                     }
                 )
                 if r.status_code in (200, 201, 204):
