@@ -2932,7 +2932,6 @@ class BotInstance:
 
         # 2. Теперь запускаем их как фоновые задачи для обновления в будущем
         asyncio.create_task(self.database_sync_worker())
-        asyncio.create_task(self.dvr_notify_worker())
         asyncio.create_task(self.daily_stats_rotator())
         asyncio.create_task(self.license_checker())
         
