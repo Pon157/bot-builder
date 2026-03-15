@@ -216,13 +216,21 @@ async def get_all_running_bots() -> List[dict]:
 _bot_username_cache: Dict[str, str] = {}
 
 
-async def resolve_bot_username(bot_id: str, token: str) -> Optional[str]:
-    """Получаем username бота через Telegram getMe. Кешируем результат."""
+async def resolve_bot_username(bot_id: str, token: str, bot_username_hint: str = "") -> Optional[str]:
+    """Получаем username бота. Сначала из botUsername в конфиге, потом через getMe."""
     if bot_id in _bot_username_cache:
         return _bot_username_cache[bot_id]
+
+    # Приоритет 1: botUsername из конфига (сохранён во фронтенде)
+    hint = bot_username_hint.lower().lstrip("@").strip()
+    if hint:
+        _bot_username_cache[bot_id] = hint
+        logger.info(f"[DVR] username from config: @{hint} for bot_id={bot_id}")
+        return hint
+
+    # Приоритет 2: getMe через токен
     if not token:
         return None
-    # Расшифровываем токен если зашифрован
     raw_token = decrypt_token(token)
     if not raw_token:
         return None
@@ -234,7 +242,7 @@ async def resolve_bot_username(bot_id: str, token: str) -> Optional[str]:
                 uname = data.get("result", {}).get("username", "").lower()
                 if uname:
                     _bot_username_cache[bot_id] = uname
-                    logger.info(f"[DVR] resolved @{uname} for bot_id={bot_id}")
+                    logger.info(f"[DVR] resolved via getMe: @{uname} for bot_id={bot_id}")
                     return uname
     except Exception as e:
         logger.warning(f"[DVR] getMe error for {bot_id}: {e}")
@@ -394,7 +402,8 @@ async def handle_dvr(app: Client, text: str):
         cfg   = br.get("config") or {}
         token = cfg.get("token", "")
         if token:
-            tasks.append((br, resolve_bot_username(br["id"], token)))
+            hint = cfg.get("botUsername", "") or cfg.get("bot_username", "") or ""
+        tasks.append((br, resolve_bot_username(br["id"], token, hint)))
 
     # Параллельно резолвим все
     for br, coro in tasks:
