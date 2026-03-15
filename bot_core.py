@@ -212,9 +212,18 @@ class MemoryBaseMiddleware(BaseMiddleware):
         # Ищем пользователя в локальном кэше
         user_rec = next((u for u in self.bi.users_list if u.get('id') == user_id), None)
 
-        # ── ВСЕГДА проверяем актуальный статус в Supabase ──────────────────
-        # Не доверяем локальному mb_restricted — при разбане через БД
-        # локальный флаг не сбрасывается. Supabase — единственный источник правды.
+        # ── Локальный TTL-кэш: не ходим в Supabase чаще раза в 5 минут ──────
+        # Исключение: если mb_restricted=True — перепроверяем каждые 5 мин (вдруг разбанили)
+        MB_LOCAL_TTL = 300  # 5 минут
+        last_mb_check = user_rec.get('last_mb_check', 0) if user_rec else 0
+        mb_restricted = user_rec.get('mb_restricted', False) if user_rec else False
+
+        if user_rec and not mb_restricted and (time.time() - last_mb_check < MB_LOCAL_TTL):
+            # Знаем статус, он свежий и пользователь чист — пропускаем без запроса
+            return await handler(event, data)
+
+        # ── Проверяем актуальный статус в Supabase ──────────────────────────
+        # Только если: новый пользователь / кэш устарел / пользователь был заблокирован
         try:
             sb_url = self.bi.sb_url
             sb_key = self.bi.sb_key
@@ -286,13 +295,15 @@ class MemoryBaseMiddleware(BaseMiddleware):
                             if user_rec and user_rec.get('mb_restricted'):
                                 user_rec['mb_restricted'] = False
                                 user_rec['mb_reasons']    = []
-                        # Запись есть, статус не in_base — пропускаем если last_mb_check свежий
-                        last_mb_check = user_rec.get('last_mb_check', 0) if user_rec else 0
+                            # Обновляем метку — при следующем сообщении не будем ходить в Supabase
+                            if user_rec:
+                                user_rec['last_mb_check'] = int(time.time())
+                        # Запись есть, статус не in_base — пропускаем если last_mb_check достаточно свежий
                         if time.time() - last_mb_check < 86400:
                             return await handler(event, data)
                         # Иначе — ставим в очередь на перепроверку (могло устареть)
                     else:
-                        # Записи вообще нет — нужна первичная проверка
+                        # Записей в кэше вообще нет — нужна первичная проверка
                         logger.info(f"[MB] uid={user_id} no cache row — queuing check")
                 else:
                     logger.warning(f"[MB] supabase check failed {_r.status_code} — пропускаем")
@@ -371,7 +382,7 @@ class MemoryBaseMiddleware(BaseMiddleware):
             deadline = _time.time() + 30
             row = None
             while _time.time() < deadline:
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)  # было 2, уменьшает число запросов при ожидании
                 async with httpx.AsyncClient(timeout=8) as client:
                     r = await client.get(
                         f"{sb_url}/rest/v1/memory_base_cache",
@@ -1577,7 +1588,7 @@ class BotInstance:
                                 logger.warning(f"[DVR] notify error: {e}")
             except Exception as e:
                 logger.warning(f"[DVR] worker error: {e}")
-            await asyncio.sleep(5)
+            await asyncio.sleep(30)  # DVR-события редкие, 5с — расточительство ресурсов
 
     async def database_sync_worker(self):
         async with httpx.AsyncClient(timeout=10.0) as client:
