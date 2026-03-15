@@ -425,9 +425,20 @@ async def handle_dvr(app: Client, text: str):
             failed.append((br, uname))
             logger.error(f"[DVR] ❌ Не удалось остановить: @{uname}")
 
-    # Уведомляем владельцев через токен их бота
+    # Уведомляем владельцев через API сервера (сервер использует токен бота)
     for br, uname in stopped:
-        await notify_bot_owner(app, br, uname)
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.post(
+                    f"{BOTS_API_URL}/api/bots/dvr-notify/{br['id']}",
+                    headers={"X-Admin-Token": ADMIN_TOKEN}
+                )
+                if r.status_code == 200:
+                    logger.info(f"[DVR] owner notified for @{uname} via server API")
+                else:
+                    logger.warning(f"[DVR] dvr-notify failed: {r.status_code} {r.text[:100]}")
+        except Exception as e:
+            logger.warning(f"[DVR] dvr-notify error for {br['id']}: {e}")
 
     # Отчёт в наш топик 4
     s_str = "\n".join(f"  • @{u}" for _, u in stopped) or "  —"
