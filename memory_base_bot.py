@@ -518,20 +518,20 @@ class MemoryBaseBotService:
         logger.info("[MB] Queue worker started")
         while True:
             try:
-                # Опрашиваем очередь задач
-                tasks = await self.get_pending_tasks(limit=10)
+                # Убираем self. перед get_pending_tasks, так как это глобальная функция
+                tasks = await get_pending_tasks(limit=10) 
                 if tasks:
-                    logger.info(f"[MB] Found {len(tasks)} tasks to process")
+                    logger.info(f"[MB] Найдено задач: {len(tasks)}")
                     for t in tasks:
+                        # process_task — это метод класса, его оставляем с self.
                         await self.process_task(t)
-                    # Если задачи были, проверяем снова через 1 сек
                     await asyncio.sleep(1)
                 else:
-                    # Если задач НЕТ, спим 5 секунд, чтобы не нагружать базу
                     await asyncio.sleep(5)
             except Exception as e:
                 logger.error(f"[MB] Queue worker error: {e}")
                 await asyncio.sleep(10)
+              
     # ── Проверка пользователя ─────────────────────────────────────────────────
 
     async def _do_check(self, row_id, user_id: int, username: str):
