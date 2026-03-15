@@ -51,6 +51,25 @@ from pyrogram.errors import FloodWait
 from dotenv import load_dotenv
 load_dotenv()
 
+# Расшифровка токенов ботов (Fernet, ключ из ENCRYPTION_KEY)
+try:
+    from cryptography.fernet import Fernet
+    _E_KEY = os.getenv("ENCRYPTION_KEY", "")
+    _cipher = Fernet(_E_KEY.encode()) if _E_KEY else None
+except Exception:
+    _cipher = None
+
+def decrypt_token(val: str) -> str:
+    """Расшифровывает токен бота. Если не зашифрован — возвращает как есть."""
+    if not val:
+        return ""
+    if _cipher is None:
+        return val
+    try:
+        return _cipher.decrypt(val.encode()).decode()
+    except Exception:
+        return val  # уже расшифрован или не нужна расшифровка
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -203,9 +222,13 @@ async def resolve_bot_username(bot_id: str, token: str) -> Optional[str]:
         return _bot_username_cache[bot_id]
     if not token:
         return None
+    # Расшифровываем токен если зашифрован
+    raw_token = decrypt_token(token)
+    if not raw_token:
+        return None
     try:
         async with httpx.AsyncClient(timeout=8) as c:
-            r = await c.get(f"https://api.telegram.org/bot{token}/getMe")
+            r = await c.get(f"https://api.telegram.org/bot{raw_token}/getMe")
             if r.status_code == 200:
                 data = r.json()
                 uname = data.get("result", {}).get("username", "").lower()
@@ -227,7 +250,7 @@ async def notify_bot_owner(app: Client, bot_record: dict, bot_username: str):
         return
     try:
         # Уведомление отправляем через токен САМОГО бота-воркера
-        token = cfg.get("token", "")
+        token = decrypt_token(cfg.get("token", ""))
         if not token:
             logger.warning(f"[DVR] no token for bot {bot_record.get('id')}, skipping owner notify")
             return
