@@ -58,16 +58,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("MemoryBaseBot")
 
-# Подавляем спам "Peer id invalid" для чужих чатов
-logging.getLogger("pyrogram.client").setLevel(logging.CRITICAL)
-logging.getLogger("pyrogram.dispatcher").setLevel(logging.CRITICAL)
-
-def _suppress_peer_errors(loop, context):
-    exc = context.get("exception")
-    if exc and "Peer id invalid" in str(exc):
-        return  # тихо игнорируем
-    loop.default_exception_handler(context)
-
 # Подавляем спам Peer id invalid из Pyrogram для чужих чатов
 logging.getLogger("pyrogram.client").setLevel(logging.ERROR)
 
@@ -455,30 +445,19 @@ class MemoryBaseBotService:
 
         # ── Регистрируем хендлеры ─────────────────────────────────────────────
 
-        # ── CATCH-ALL из нашего чата — диагностика ──────────────────────────
-        @self.app.on_message(
-            filters.create(lambda _, __, m: getattr(m.chat, "id", None) == ADMIN_CHAT_ID)
-        )
-        async def on_any_admin_chat(client: Client, msg: Message):
-            sender = getattr(msg.from_user, "username", None) or getattr(msg.sender_chat, "username", None) or "?"
-            logger.info(
-                f"[ALL] thread={getattr(msg, 'message_thread_id', None)} from=@{sender} "
-                f"text={(msg.text or msg.caption or '')[:60]!r}"
-            )
-
         @self.app.on_message(
             filters.create(lambda _, __, m: (
                 getattr(m.chat, "id", None) == ADMIN_CHAT_ID and
-                # Принимаем из топика 2 ИЛИ без топика (MemoryBaseBot отвечает без thread_id)
                 getattr(m, "message_thread_id", None) in (MB_CHECK_TOPIC_ID, None)
             ))
         )
         async def on_mb_message(client: Client, msg: Message):
             """Все сообщения в топике MB — включая от @MemoryBaseBot."""
             text = (msg.text or msg.caption or "").strip()
+            sender = getattr(msg.from_user, "username", None) or getattr(msg.sender_chat, "username", None) or "?"
             logger.info(
-                f"[MB] topic2 msg from={msg.from_user.id if msg.from_user else getattr(msg.sender_chat, 'id', '?')} "
-                f"thread={getattr(msg, 'message_thread_id', None)} text={text[:80]!r}"
+                f"[MB] msg thread={getattr(msg, 'message_thread_id', None)} "
+                f"from=@{sender} text={text[:80]!r}"
             )
 
             # Пропускаем наши собственные "чек X"
@@ -526,22 +505,22 @@ class MemoryBaseBotService:
             me = await self.app.get_me()
             logger.info(f"[*] ✅ Авторизован как @{me.username} id={me.id}")
 
-            # Устанавливаем обработчик для подавления Peer id invalid
-            loop = asyncio.get_event_loop()
-            loop.set_exception_handler(_suppress_peer_errors)
-
-            # Резолвим чат через get_dialogs — заполняет кеш пиров при каждом старте
+            # Подавляем Peer id invalid для чужих чатов
+            asyncio.get_event_loop().set_exception_handler(
+                lambda loop, ctx: None if "Peer id invalid" in str(ctx.get("exception", "")) else loop.default_exception_handler(ctx)
+            )
+            # Резолвим наш чат через get_dialogs
             self._chat_peer = ADMIN_CHAT_ID
             try:
-                logger.info("[*] Сканирую диалоги для заполнения кеша...")
+                logger.info("[*] Сканирую диалоги...")
                 async for dialog in self.app.get_dialogs():
                     if dialog.chat.id == ADMIN_CHAT_ID:
-                        logger.info(f"[*] ✅ Чат найден: {dialog.chat.title!r} id={dialog.chat.id}")
+                        logger.info(f"[*] ✅ Чат: {dialog.chat.title!r}")
                         break
                 else:
-                    logger.error(f"[*] ❌ Чат {ADMIN_CHAT_ID} не найден — аккаунт не является участником!")
+                    logger.error("[*] ❌ Чат не найден в диалогах!")
             except Exception as e:
-                logger.error(f"[*] ❌ get_dialogs error: {e}")
+                logger.error(f"[*] ❌ get_dialogs: {e}")
 
             asyncio.create_task(self.queue_worker())
 
