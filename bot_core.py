@@ -430,11 +430,19 @@ class MemoryBaseMiddleware(BaseMiddleware):
             except Exception:
                 pass
 
-            # ── Уведомление администраторов ───────────────────────────────
-            if self.bi.admin_chat_id:
+            # ── Уведомление администраторов (только один раз) ────────────
+            already_notified = user_rec.get('mb_notified', False) if user_rec else False
+            if self.bi.admin_chat_id and not already_notified:
                 try:
                     name_str  = user_tg.full_name or f"User {user_id}"
                     uname_str = f" (@{user_tg.username})" if user_tg.username else ""
+
+                    # Определяем что именно написал пользователь
+                    is_start = (
+                        isinstance(event, Message) and
+                        event.text and event.text.strip().startswith("/start")
+                    )
+                    action_str = "написал /start" if is_start else "написал сообщение"
 
                     unban_kb = InlineKeyboardMarkup(inline_keyboard=[[
                         InlineKeyboardButton(
@@ -445,15 +453,18 @@ class MemoryBaseMiddleware(BaseMiddleware):
 
                     await self.bi.bot.send_message(
                         self.bi.admin_chat_id,
-                        f"🔴 <b>MemoryBase заблокировал пользователя</b>\n\n"
+                        f"🔴 <b>MemoryBase: пользователь в базе</b>\n\n"
                         f"👤 {name_str}{uname_str}\n"
                         f"🆔 <code>{user_id}</code>\n"
                         f"📌 <b>Причина(ы):</b> {r_text or '—'}\n\n"
-                        f"Пользователь заблокирован в боте системой MemoryBase.\n"
+                        f"Пользователь {action_str} и был заблокирован.\n"
                         f"Если хотите разрешить ему писать — нажмите кнопку ниже 👇",
                         reply_markup=unban_kb,
-                        message_thread_id=user_rec.get('last_topic_id') or None
                     )
+                    # Ставим флаг чтобы не спамить повторно
+                    if user_rec:
+                        user_rec['mb_notified'] = True
+                        await self.bi.sync_queue.put(("sync_state", None))
                 except Exception as e:
                     logger.warning(f"[MB] admin notify error: {e}")
 
@@ -2264,6 +2275,7 @@ class BotInstance:
             target = next((u for u in self.users_list if u.get('id') == target_uid), None)
             if target:
                 target['mb_restricted'] = False
+                target['mb_notified']    = False  # сброс — следующая блокировка снова уведомит
                 target['mb_reasons']    = []
                 target['last_mb_check'] = 0
                 await self.sync_queue.put(("sync_state", None))
