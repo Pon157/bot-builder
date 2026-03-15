@@ -411,6 +411,7 @@ const FreeBotEditor: React.FC<{
       welcomePhoto: cfg.welcomePhoto   || bAny.welcomePhoto   || '',
       adminId:      cfg.adminChatId    || String(bAny.admin_chat_id || bAny.adminChatId || ''),
       adminIds:     (cfg.adminIds || cfg.admin_ids || []) as string[],
+      botUsername:  (cfg.botUsername || '') as string,
       buttons:      (cfg.buttons  || []) as any[],
       triggers:     (cfg.triggers || []) as any[],
       inlineButtons:(cfg.inlineButtons || []) as InlineButton[],
@@ -424,6 +425,9 @@ const FreeBotEditor: React.FC<{
   const [welcomePhoto,  setWelcomePhoto]  = useState(() => initState(bot).welcomePhoto);
   const [adminId,       setAdminId]       = useState(() => initState(bot).adminId);
   const [adminIds,      setAdminIds]      = useState<string[]>(() => initState(bot).adminIds);
+  const [adminIdsRaw,   setAdminIdsRaw]   = useState(() => initState(bot).adminIds.join(', '));
+  const [botUsername,   setBotUsername]   = useState(() => initState(bot).botUsername);
+  const [adminIdsRaw,   setAdminIdsRaw]   = useState(() => initState(bot).adminIds.join(', '));
   const [buttons,       setButtons]       = useState<any[]>(() => initState(bot).buttons);
   const [triggers,      setTriggers]      = useState<any[]>(() => initState(bot).triggers);
   const [inlineButtons, setInlineButtons] = useState<InlineButton[]>(() => initState(bot).inlineButtons);
@@ -441,6 +445,7 @@ const FreeBotEditor: React.FC<{
       const s = initState(bot);
       setName(s.name); setToken(s.token); setWelcome(s.welcome);
       setWelcomePhoto(s.welcomePhoto); setAdminId(s.adminId); setAdminIds(s.adminIds);
+      setAdminIdsRaw(s.adminIds.join(', '));
       setButtons(s.buttons); setTriggers(s.triggers);
       setInlineButtons(s.inlineButtons); setStg(s.stg);
       setError(''); setSaveSuccess(false);
@@ -484,7 +489,7 @@ const FreeBotEditor: React.FC<{
         buttons, triggers,
         config: {
           welcomeMessage: welcome, welcomePhoto: welcomePhoto,
-          adminChatId: adminId, adminIds, inlineButtons, settings: stg,
+          adminChatId: adminId, adminIds, botUsername, inlineButtons, settings: stg,
         },
       };
       const res = await fetch(FREE_API(`/bots/${bot.id}/config`), {
@@ -583,8 +588,9 @@ const FreeBotEditor: React.FC<{
               <span className="text-zinc-600">(через запятую; пусто = все могут рассылать)</span>
             </span>
             <input
-              value={adminIds.join(', ')}
+              value={adminIdsRaw}
               onChange={e => {
+                setAdminIdsRaw(e.target.value); // сохраняем сырую строку
                 const raw = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
                 setAdminIds(raw);
               }}
@@ -592,6 +598,18 @@ const FreeBotEditor: React.FC<{
               placeholder="123456789, 987654321"
             />
             <p className="text-[10px] text-zinc-600 mt-1">Telegram ID пользователей, которые могут запускать /broadcast</p>
+          </label>
+          <label className="block">
+            <span className="text-[10px] font-bold text-zinc-500 uppercase flex items-center gap-1">
+              <span className="text-purple-400 font-black">@</span>Username бота
+            </span>
+            <input
+              value={botUsername.replace('@', '')}
+              onChange={e => setBotUsername(e.target.value.replace('@', '').toLowerCase().trim())}
+              className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-purple-500 transition-colors"
+              placeholder="mybot (без @)"
+            />
+            <p className="text-[10px] text-zinc-600 mt-1">Система защиты DVR использует username для остановки бота при рейде</p>
           </label>
         </Section>
 
@@ -963,6 +981,7 @@ const FreeVKBotEditor: React.FC<{
       const s = initState(bot);
       setName(s.name); setToken(s.token); setWelcome(s.welcome);
       setWelcomePhoto(s.welcomePhoto); setAdminId(s.adminId); setAdminIds(s.adminIds);
+      setAdminIdsRaw(s.adminIds.join(', '));
       setButtons(s.buttons); setTriggers(s.triggers);
       setInlineButtons(s.inlineButtons); setStg(s.stg);
       setError(''); setSaveSuccess(false);
@@ -1136,8 +1155,9 @@ const FreeVKBotEditor: React.FC<{
               <span className="text-zinc-600">(через запятую; пусто = все)</span>
             </span>
             <input
-              value={adminIds.join(', ')}
+              value={adminIdsRaw}
               onChange={e => {
+                setAdminIdsRaw(e.target.value); // сохраняем сырую строку
                 const raw = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
                 setAdminIds(raw);
               }}
