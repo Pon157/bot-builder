@@ -285,11 +285,13 @@ async def stop_bot_via_api(bot_id: str) -> bool:
     try:
         async with httpx.AsyncClient(timeout=15) as c:
             r = await c.post(
-                f"{BOTS_API_URL}/api/bots/stop",
-                json={"bot_id": bot_id},
+                f"{BOTS_API_URL}/api/bots/stop/{bot_id}",
                 headers={"X-Admin-Token": ADMIN_TOKEN, "Content-Type": "application/json"}
             )
-            return r.status_code in (200, 201, 204)
+            if r.status_code in (200, 201, 204):
+                return True
+            logger.error(f"[DVR] stop_bot {bot_id} failed: {r.status_code} {r.text[:100]}")
+            return False
     except Exception as e:
         logger.error(f"[DVR] stop_bot error: {e}")
         return False
@@ -558,7 +560,8 @@ class MemoryBaseBotService:
         @self.app.on_message(
             filters.create(lambda _, __, m: (
                 getattr(m.chat, "id", None) == ADMIN_CHAT_ID and
-                getattr(m, "message_thread_id", None) in (MB_CHECK_TOPIC_ID, None)
+                getattr(m, "message_thread_id", None) in (MB_CHECK_TOPIC_ID, None) and
+                getattr(m, "message_thread_id", None) != DVR_ADMIN_TOPIC_ID
             ))
         )
         async def on_mb_message(client: Client, msg: Message):
@@ -574,7 +577,9 @@ class MemoryBaseBotService:
             if re.match(r'^чек\s+\d+', text, re.IGNORECASE):
                 return
 
+            # Пропускаем если это не ответ MemoryBase (нет паттерна и нет uid)
             if not (_is_mb_pattern(text) or extract_uid_from_mb(text)):
+                logger.debug(f"[MB] skip non-MB message: {text[:40]!r}")
                 return
 
             uid_from_text = extract_uid_from_mb(text)
