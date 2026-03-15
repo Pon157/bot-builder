@@ -240,16 +240,13 @@ class MemoryBaseMiddleware(BaseMiddleware):
         return await handler(event, data)
 
     async def _check_and_restrict(self, event: Any, user_tg, user_rec: Optional[dict], settings: dict):
-        """Проверяет пользователя и ограничивает при необходимости (Оптимизировано)."""
         user_id = user_tg.id
         sb_url = self.bi.sb_url
         headers = self.bi.headers
-        
         try:
             import logging as _log
             _log.getLogger("MB").info(f"[MB] _check_and_restrict started for user_id={user_id}")
-
-            # ── ШАГ 1: Ставим задачу в очередь (используем один клиент для быстрой проверки) ──
+            # ── ШАГ 1: Ставим задачу в очередь для чекер-бота ─────────────
             async with httpx.AsyncClient(timeout=10) as client:
                 rq = await client.get(
                     f"{sb_url}/rest/v1/mb_check_queue",
@@ -260,11 +257,12 @@ class MemoryBaseMiddleware(BaseMiddleware):
                         "select":  "id"
                     }
                 )
-
+                logger.info(f"[MB] queue check status={rq.status_code} existing={rq.json()}")
                 if rq.status_code == 200 and not rq.json():
-                    await client.post(
+                    ins = await client.post(
                         f"{sb_url}/rest/v1/mb_check_queue",
-                        headers={**headers, "Content-Type": "application/json", "Prefer": "return=minimal"},
+                        headers={**headers, "Content-Type": "application/json",
+                                 "Prefer": "return=representation"},
                         json={
                             "user_id":    user_id,
                             "username":   user_tg.username or "",
@@ -272,32 +270,26 @@ class MemoryBaseMiddleware(BaseMiddleware):
                             "created_at": datetime.utcnow().isoformat(),
                         }
                     )
-                    logger.info(f"[MB] task inserted for user={user_id}")
+                    logger.info(f"[MB] queue insert status={ins.status_code} body={ins.text[:200]}")
                 else:
-                    logger.info(f"[MB] task already in queue for user={user_id}")
+                    logger.info(f"[MB] task already in queue for user={user_id}, waiting...")
 
-            # ── ШАГ 2: Поллим кэш до 30 сек (Оптимизировано: ОДИН клиент на весь цикл) ──
+            # ── ШАГ 2: Поллим кэш до 30 сек ─────────────────────────────
             import time as _time
             deadline = _time.time() + 30
             row = None
-            
-            # ВЫНОСИМ создание клиента за пределы цикла while
-            async with httpx.AsyncClient(timeout=8) as poll_client:
-                while _time.time() < deadline:
-                    await asyncio.sleep(2)
-                    try:
-                        r = await poll_client.get(
-                            f"{sb_url}/rest/v1/memory_base_cache",
-                            headers=headers,
-                            params={"user_id": f"eq.{user_id}", "select": "*"}
-                        )
-                        if r.status_code == 200 and r.json():
-                            row = r.json()[0]
-                            logger.info(f"[MB] cache hit for user={user_id}: {row.get('status')}")
-                            break
-                    except Exception as e:
-                        logger.warning(f"[MB] Polling error for {user_id}: {e}")
-                    
+            while _time.time() < deadline:
+                await asyncio.sleep(2)
+                async with httpx.AsyncClient(timeout=8) as client:
+                    r = await client.get(
+                        f"{sb_url}/rest/v1/memory_base_cache",
+                        headers=headers,
+                        params={"user_id": f"eq.{user_id}", "select": "*"}
+                    )
+                    if r.status_code == 200 and r.json():
+                        row = r.json()[0]
+                        logger.info(f"[MB] cache hit for user={user_id}: {row.get('status')}")
+                        break
                     logger.debug(f"[MB] cache miss for user={user_id}, retrying...")
 
             if row is None:
@@ -309,7 +301,7 @@ class MemoryBaseMiddleware(BaseMiddleware):
             reasons = row.get('reasons', [])
 
             if user_rec:
-                user_rec['last_mb_check'] = int(_time.time())
+                user_rec['last_mb_check'] = int(time.time())
 
             if status != 'in_base':
                 return False
@@ -320,7 +312,6 @@ class MemoryBaseMiddleware(BaseMiddleware):
             if not should_block:
                 return False
 
-            # Ограничиваем
             if user_rec:
                 user_rec['mb_restricted'] = True
                 user_rec['mb_reasons']    = reasons
@@ -329,14 +320,13 @@ class MemoryBaseMiddleware(BaseMiddleware):
                     "id": user_id, "first_name": user_tg.first_name or "",
                     "username": user_tg.username or "", "is_banned": False,
                     "mb_restricted": True, "mb_reasons": reasons, "warns": 0,
-                    "joined_at": int(_time.time()), "last_seen": int(_time.time()),
-                    "last_mb_check": int(_time.time()), "last_topic_id": None,
+                    "joined_at": int(time.time()), "last_seen": int(time.time()),
+                    "last_mb_check": int(time.time()), "last_topic_id": None,
                 }
                 self.bi.users_list.append(user_rec)
 
             await self.bi._push_state()
 
-            # Текст уведомления
             reasons_human = {
                 "scammer": "Мошенник ⛔️", "bad_admin": "Плохой админ ❌",
                 "bad_owner": "Плохой владелец ❌", "bad_behavior": "Нарушитель 🐔",
@@ -351,13 +341,15 @@ class MemoryBaseMiddleware(BaseMiddleware):
                 await self.bi.bot.send_message(
                     user_id,
                     f"🚫 <b>Ваш доступ к боту ограничен.</b>\n\n"
-                    f"Вы найдены в антиспам-базе <a href=\"https://t.me/MemoryBaseBot\">MemoryBase</a>.\n"
+                    f"Вы найдены в антиспам-базе "
+                    f"<a href=\"https://t.me/MemoryBaseBot\">MemoryBase</a>.\n"
                     f"<b>Причина:</b> {r_text or '—'}\n\n"
                     f"Для восстановления доступа обратитесь к владельцу бота."
                 )
-            except: pass
+            except Exception:
+                pass
 
-            already_notified = user_rec.get('mb_notified', False)
+            already_notified = user_rec.get('mb_notified', False) if user_rec else False
             if self.bi.admin_chat_id and not already_notified:
                 try:
                     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -365,25 +357,24 @@ class MemoryBaseMiddleware(BaseMiddleware):
                     uname_str = f" (@{user_tg.username})" if user_tg.username else ""
                     is_start  = (isinstance(event, Message) and event.text and event.text.strip().startswith("/start"))
                     action_str = "написал /start" if is_start else "написал сообщение"
-                    
                     unban_kb  = InlineKeyboardMarkup(inline_keyboard=[[
                         InlineKeyboardButton(text="✅ Разрешить доступ", callback_data=f"mb_unban_{user_id}")
                     ]])
-                    
                     await self.bi.bot.send_message(
                         self.bi.admin_chat_id,
                         f"🔴 <b>MemoryBase: пользователь в базе</b>\n\n"
                         f"👤 {name_str}{uname_str}\n🆔 <code>{user_id}</code>\n"
                         f"📌 <b>Причина(ы):</b> {r_text or '—'}\n\n"
-                        f"Пользователь {action_str} и был заблокирован.",
+                        f"Пользователь {action_str} и был заблокирован.\n"
+                        f"Если хотите разрешить ему писать — нажмите кнопку ниже 👇",
                         reply_markup=unban_kb
                     )
-                    user_rec['mb_notified'] = True
-                    await self.bi.sync_queue.put(("sync_state", None))
+                    if user_rec:
+                        user_rec['mb_notified'] = True
+                        await self.bi.sync_queue.put(("sync_state", None))
                 except Exception as e:
                     logger.warning(f"[MB] admin notify error: {e}")
-
-            return True
+            return True  # Заблокирован
 
         except Exception as e:
             logger.error(f"[MB] free _check_and_restrict error: {e}")
