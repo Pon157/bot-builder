@@ -426,8 +426,7 @@ const FreeBotEditor: React.FC<{
   const [adminId,       setAdminId]       = useState(() => initState(bot).adminId);
   const [adminIds,      setAdminIds]      = useState<string[]>(() => initState(bot).adminIds);
   const [adminIdsRaw,   setAdminIdsRaw]   = useState(() => initState(bot).adminIds.join(', '));
-  const [botUsername,   setBotUsername]   = useState(() => initState(bot).botUsername);
-  const [adminIdsRaw,   setAdminIdsRaw]   = useState(() => initState(bot).adminIds.join(', '));
+  const [botUsername,   setBotUsername]   = useState(() => (initState(bot) as any).botUsername || '');
   const [buttons,       setButtons]       = useState<any[]>(() => initState(bot).buttons);
   const [triggers,      setTriggers]      = useState<any[]>(() => initState(bot).triggers);
   const [inlineButtons, setInlineButtons] = useState<InlineButton[]>(() => initState(bot).inlineButtons);
@@ -445,7 +444,7 @@ const FreeBotEditor: React.FC<{
       const s = initState(bot);
       setName(s.name); setToken(s.token); setWelcome(s.welcome);
       setWelcomePhoto(s.welcomePhoto); setAdminId(s.adminId); setAdminIds(s.adminIds);
-      setAdminIdsRaw(s.adminIds.join(', '));
+      setAdminIdsRaw(s.adminIds.join(', ')); setBotUsername((s as any).botUsername || '');
       setButtons(s.buttons); setTriggers(s.triggers);
       setInlineButtons(s.inlineButtons); setStg(s.stg);
       setError(''); setSaveSuccess(false);
@@ -590,7 +589,7 @@ const FreeBotEditor: React.FC<{
             <input
               value={adminIdsRaw}
               onChange={e => {
-                setAdminIdsRaw(e.target.value); // сохраняем сырую строку
+                setAdminIdsRaw(e.target.value);
                 const raw = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
                 setAdminIds(raw);
               }}
@@ -965,6 +964,8 @@ const FreeVKBotEditor: React.FC<{
   const [welcomePhoto,  setWelcomePhoto]  = useState(() => initState(bot).welcomePhoto);
   const [adminId,       setAdminId]       = useState(() => initState(bot).adminId);
   const [adminIds,      setAdminIds]      = useState<string[]>(() => initState(bot).adminIds);
+  const [adminIdsRaw,   setAdminIdsRaw]   = useState(() => initState(bot).adminIds.join(', '));
+  const [botUsername,   setBotUsername]   = useState(() => (initState(bot) as any).botUsername || '');
   const [buttons,       setButtons]       = useState<any[]>(() => initState(bot).buttons);
   const [triggers,      setTriggers]      = useState<any[]>(() => initState(bot).triggers);
   const [inlineButtons, setInlineButtons] = useState<InlineButton[]>(() => initState(bot).inlineButtons);
@@ -981,7 +982,7 @@ const FreeVKBotEditor: React.FC<{
       const s = initState(bot);
       setName(s.name); setToken(s.token); setWelcome(s.welcome);
       setWelcomePhoto(s.welcomePhoto); setAdminId(s.adminId); setAdminIds(s.adminIds);
-      setAdminIdsRaw(s.adminIds.join(', '));
+      setAdminIdsRaw(s.adminIds.join(', ')); setBotUsername((s as any).botUsername || '');
       setButtons(s.buttons); setTriggers(s.triggers);
       setInlineButtons(s.inlineButtons); setStg(s.stg);
       setError(''); setSaveSuccess(false);
@@ -1157,7 +1158,7 @@ const FreeVKBotEditor: React.FC<{
             <input
               value={adminIdsRaw}
               onChange={e => {
-                setAdminIdsRaw(e.target.value); // сохраняем сырую строку
+                setAdminIdsRaw(e.target.value);
                 const raw = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
                 setAdminIds(raw);
               }}
