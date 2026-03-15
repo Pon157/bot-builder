@@ -1899,6 +1899,7 @@ class FreeBotInstance:
 
         asyncio.create_task(self.config_sync_loop())
         asyncio.create_task(self.daily_stats_rotator())
+        asyncio.create_task(self.dvr_notify_worker())
 
         await self.core_handlers_setup()
 
