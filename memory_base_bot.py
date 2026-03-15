@@ -193,6 +193,94 @@ async def get_all_running_bots() -> List[dict]:
     return []
 
 
+# Кеш username-ов ботов: bot_id → username
+_bot_username_cache: Dict[str, str] = {}
+
+
+async def resolve_bot_username(bot_id: str, token: str) -> Optional[str]:
+    """Получаем username бота через Telegram getMe. Кешируем результат."""
+    if bot_id in _bot_username_cache:
+        return _bot_username_cache[bot_id]
+    if not token:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=8) as c:
+            r = await c.get(f"https://api.telegram.org/bot{token}/getMe")
+            if r.status_code == 200:
+                data = r.json()
+                uname = data.get("result", {}).get("username", "").lower()
+                if uname:
+                    _bot_username_cache[bot_id] = uname
+                    logger.info(f"[DVR] resolved @{uname} for bot_id={bot_id}")
+                    return uname
+    except Exception as e:
+        logger.warning(f"[DVR] getMe error for {bot_id}: {e}")
+    return None
+
+
+async def notify_bot_owner(app: Client, bot_record: dict, bot_username: str):
+    """Уведомляем владельца бота о рейде в его admin_chat_id."""
+    cfg = bot_record.get("config") or {}
+    admin_chat_id = cfg.get("admin_chat_id") or cfg.get("adminChatId")
+    if not admin_chat_id:
+        logger.warning(f"[DVR] no admin_chat_id for bot {bot_record.get('id')}")
+        return
+    try:
+        # Уведомление отправляем через токен САМОГО бота-воркера
+        token = cfg.get("token", "")
+        if not token:
+            logger.warning(f"[DVR] no token for bot {bot_record.get('id')}, skipping owner notify")
+            return
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={
+                    "chat_id": int(admin_chat_id),
+                    "text": (
+                        "🚨 <b>Система безопасности Dialoge Engine</b>\n\n"
+                        f"Обнаружена рейдерская атака на вашего бота <b>@{bot_username}</b>.\n\n"
+                        "✅ Бот был автоматически <b>остановлен</b> для защиты.\n\n"
+                        "Восстановите работу бота на:\n"
+                        '<a href="https://dialogengine.webtm.ru">dialogengine.webtm.ru</a>'
+                    ),
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                }
+            )
+            if r.status_code == 200:
+                logger.info(f"[DVR] owner notified via bot @{bot_username} → chat {admin_chat_id}")
+            else:
+                logger.warning(f"[DVR] sendMessage failed: {r.status_code} {r.text[:100]}")
+    except Exception as e:
+        logger.warning(f"[DVR] owner notify error for {bot_record.get('id')}: {e}")
+
+
+async def notify_bot_owner(app: Client, bot_record: dict, bot_username: str):
+    """Уведомляем владельца бота о рейде в его admin_chat_id."""
+    cfg = bot_record.get("config") or {}
+    admin_chat_id = cfg.get("admin_chat_id") or cfg.get("adminChatId")
+    bot_name = bot_record.get("name") or bot_username
+    if not admin_chat_id:
+        logger.warning(f"[DVR] no admin_chat_id for bot {bot_record.get('id')}")
+        return
+    try:
+        await app.send_message(
+            chat_id=int(admin_chat_id),
+            text=(
+                f"🚨 <b>Система безопасности Dialoge Engine</b>\n\n"
+                f"Обнаружена рейдерская атака на вашего бота "
+                f"<b>@{bot_username}</b>.\n\n"
+                f"✅ Бот был автоматически <b>остановлен</b> для защиты.\n\n"
+                f"Восстановите работу бота на:\n"
+                f"<a href=\"https://dialogengine.webtm.ru\">dialogengine.webtm.ru</a>"
+            ),
+            disable_web_page_preview=True
+        )
+        logger.info(f"[DVR] owner notified for bot {bot_record.get('id')} → chat {admin_chat_id}")
+    except Exception as e:
+        logger.warning(f"[DVR] owner notify error for {bot_record.get('id')}: {e}")
+
+
 async def stop_bot_via_api(bot_id: str) -> bool:
     try:
         async with httpx.AsyncClient(timeout=15) as c:
@@ -257,43 +345,65 @@ def _is_mb_pattern(text: str) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_dvr(app: Client, text: str):
-    """Ищем наших ботов в тексте DVR-поста и останавливаем."""
+    """Ищем наших ботов в тексте DVR-поста по username через getMe, останавливаем, уведомляем."""
     bots = await get_all_running_bots()
     if not bots:
+        logger.info("[DVR] нет запущенных ботов в БД")
         return
 
+    # Извлекаем @username из текста
     text_lower = text.lower()
-    mentioned  = []
+    mentioned_usernames = set(re.findall(r'@(\w+)', text_lower))
+    # Также ищем без @ (на случай если просто написали имя бота)
+    words = set(text_lower.split())
+    logger.info(f"[DVR] @usernames в тексте: {mentioned_usernames}")
 
+    if not mentioned_usernames:
+        logger.info("[DVR] нет @username в тексте")
+        return
+
+    # Резолвим username каждого бота через Telegram getMe (с кешем)
+    matched = []  # (bot_record, username)
+    tasks = []
     for br in bots:
         cfg   = br.get("config") or {}
-        uname = (
-            cfg.get("botUsername") or cfg.get("bot_username") or
-            cfg.get("username") or ""
-        ).lower().lstrip("@")
+        token = cfg.get("token", "")
+        if token:
+            tasks.append((br, resolve_bot_username(br["id"], token)))
 
-        if uname and (uname in text_lower or f"@{uname}" in text_lower):
-            mentioned.append(br)
-            logger.warning(f"[DVR] Упомянут бот: {br.get('name')} (@{uname})")
+    # Параллельно резолвим все
+    for br, coro in tasks:
+        uname = await coro
+        if uname and uname in mentioned_usernames:
+            matched.append((br, uname))
+            logger.warning(f"[DVR] ✅ Найден наш бот: @{uname} id={br['id']}")
 
-    if not mentioned:
-        logger.info("[DVR] Наших ботов в посте нет")
+    if not matched:
+        logger.info(f"[DVR] Наших ботов среди {mentioned_usernames} нет")
         return
 
     stopped, failed = [], []
-    for br in mentioned:
+    for br, uname in matched:
         ok = await stop_bot_via_api(br["id"])
-        (stopped if ok else failed).append(br.get("name", br["id"]))
+        if ok:
+            stopped.append((br, uname))
+            logger.warning(f"[DVR] ✅ Остановлен: @{uname}")
+        else:
+            failed.append((br, uname))
+            logger.error(f"[DVR] ❌ Не удалось остановить: @{uname}")
 
-    s_str = "\n".join(f"  • {n}" for n in stopped) or "  —"
-    f_str = "\n".join(f"  • {n}" for n in failed)  or "  —"
+    # Уведомляем владельцев через токен их бота
+    for br, uname in stopped:
+        await notify_bot_owner(app, br, uname)
 
+    # Отчёт в наш топик 4
+    s_str = "\n".join(f"  • @{u}" for _, u in stopped) or "  —"
+    f_str = "\n".join(f"  • @{u}" for _, u in failed)  or "  —"
     text_out = (
         f"🚨 <b>DVR: Рейд-атака!</b>\n\n"
-        f"✅ <b>Остановлено:</b>\n{s_str}\n\n"
-        f"❌ <b>Не удалось:</b>\n{f_str}\n\n"
-        f"Восстановите работу: "
-        f"<a href=\"https://dialogengine.webtm.ru\">dialogengine.webtm.ru</a>"
+        f"✅ <b>Остановлено ({len(stopped)}):</b>\n{s_str}\n\n"
+        f"❌ <b>Не удалось ({len(failed)}):</b>\n{f_str}\n\n"
+        f"Владельцы уведомлены через своих ботов."
     )
     try:
         await app.send_message(
@@ -303,7 +413,7 @@ async def handle_dvr(app: Client, text: str):
             disable_web_page_preview=True
         )
     except Exception as e:
-        logger.error(f"[DVR] notify error: {e}")
+        logger.error(f"[DVR] admin notify error: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
