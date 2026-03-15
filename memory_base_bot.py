@@ -93,9 +93,10 @@ ADMIN_CHAT_ID      = int(os.getenv("ADMIN_CHECK_CHAT_ID") or os.getenv("ADMIN_CH
 MB_CHECK_TOPIC_ID  = int(os.getenv("MB_CHECK_TOPIC_ID", "2"))
 DVR_ADMIN_TOPIC_ID = int(os.getenv("DVR_ADMIN_TOPIC_ID", "4"))
 
-QUEUE_POLL_INTERVAL = 2.0
-MB_RESPONSE_TIMEOUT = 30.0
-CACHE_TTL           = 86400
+QUEUE_POLL_INTERVAL      = 5.0   # базовый интервал поллинга очереди
+QUEUE_IDLE_INTERVAL_MAX  = 20.0  # максимальный интервал когда очередь пуста
+MB_RESPONSE_TIMEOUT      = 30.0
+CACHE_TTL                = 86400
 
 MB_REASON_MAP = {
     "мошенник":        "scammer",
@@ -516,25 +517,37 @@ class MemoryBaseBotService:
 
     async def queue_worker(self):
         logger.info("[MB] Queue worker started")
-        iteration = 0
+        iteration   = 0
+        idle_streak = 0
         while self.is_running:
             try:
                 iteration += 1
-                if iteration % 30 == 1:
+                # Сброс зависших задач раз в ~2 минуты (не каждую итерацию)
+                if iteration % 24 == 1:
                     await sb_reset_stale_processing()
 
                 tasks = await sb_get_pending()
-                for task in tasks:
-                    row_id   = task["id"]
-                    user_id  = int(task["user_id"])
-                    username = task.get("username", "")
-                    logger.info(f"[MB] Task id={row_id} user={user_id}")
-                    await sb_update_queue(row_id, {"status": "processing"})
-                    asyncio.create_task(self._do_check(row_id, user_id, username))
+                if tasks:
+                    idle_streak = 0
+                    for task in tasks:
+                        row_id   = task["id"]
+                        user_id  = int(task["user_id"])
+                        username = task.get("username", "")
+                        logger.info(f"[MB] Task id={row_id} user={user_id}")
+                        await sb_update_queue(row_id, {"status": "processing"})
+                        asyncio.create_task(self._do_check(row_id, user_id, username))
+                else:
+                    idle_streak += 1
+
             except Exception as e:
                 logger.error(f"[MB] queue_worker error: {e}")
 
-            await asyncio.sleep(QUEUE_POLL_INTERVAL)
+            # Adaptive backoff: чем дольше пусто — тем реже поллим (до 20 сек)
+            sleep_time = min(
+                QUEUE_POLL_INTERVAL * (1 + idle_streak * 0.5),
+                QUEUE_IDLE_INTERVAL_MAX
+            )
+            await asyncio.sleep(sleep_time)
 
     # ── Проверка пользователя ─────────────────────────────────────────────────
 
@@ -555,21 +568,34 @@ class MemoryBaseBotService:
                 _pending[key] = fut
 
             # Отправляем "чек user_id" в топик MB
-            try:
-                await self.app.send_message(
-                    chat_id=ADMIN_CHAT_ID,
-                    text=f"чек {user_id}",
-                    reply_to_message_id=MB_CHECK_TOPIC_ID
-                )
-                logger.info(f"[MB] Sent 'чек {user_id}' → topic {MB_CHECK_TOPIC_ID}")
-            except FloodWait as e:
-                logger.warning(f"[MB] FloodWait {e.value}s")
-                await asyncio.sleep(e.value)
-                await self.app.send_message(
-                    chat_id=ADMIN_CHAT_ID,
-                    text=f"чек {user_id}",
-                    reply_to_message_id=MB_CHECK_TOPIC_ID
-                )
+            sent = False
+            for attempt in range(1, 4):  # до 3 попыток
+                try:
+                    await self.app.send_message(
+                        chat_id=ADMIN_CHAT_ID,
+                        text=f"чек {user_id}",
+                        reply_to_message_id=MB_CHECK_TOPIC_ID
+                    )
+                    logger.info(f"[MB] Sent 'чек {user_id}' → chat={ADMIN_CHAT_ID} topic={MB_CHECK_TOPIC_ID}")
+                    sent = True
+                    break
+                except FloodWait as e:
+                    logger.warning(f"[MB] FloodWait {e.value}s (attempt {attempt})")
+                    await asyncio.sleep(e.value)
+                except Exception as e:
+                    logger.error(
+                        f"[MB] ❌ send_message FAILED (attempt {attempt}): {type(e).__name__}: {e}\n"
+                        f"      chat_id={ADMIN_CHAT_ID} topic_id={MB_CHECK_TOPIC_ID}\n"
+                        f"      Проверь: бот добавлен в чат? Права на запись в топик?"
+                    )
+                    await asyncio.sleep(2)
+
+            if not sent:
+                logger.error(f"[MB] Все попытки отправки исчерпаны для user={user_id}, отмечаем error")
+                await sb_update_queue(row_id, {"status": "error", "error_text": "send_message failed after 3 attempts"})
+                async with _pending_lock:
+                    _pending.pop(key, None)
+                return
 
             # Ждём ответ от @MemoryBaseBot
             try:
