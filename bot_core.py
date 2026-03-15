@@ -1591,6 +1591,12 @@ class BotInstance:
             await asyncio.sleep(30)  # DVR-события редкие, 5с — расточительство ресурсов
 
     async def database_sync_worker(self):
+        # Дебаунс: не чаще раза в 15 сек для sync_state.
+        # log_message — всегда немедленно (важно для лога).
+        SYNC_DEBOUNCE = 15.0
+        _last_sync: float = 0.0
+        _pending_sync: bool = False
+
         async with httpx.AsyncClient(timeout=10.0) as client:
             headers = {
                 "apikey": self.sb_key,
@@ -1598,53 +1604,67 @@ class BotInstance:
                 "Content-Type": "application/json",
                 "Prefer": "return=minimal"
             }
-            while self.is_running:
+
+            async def _do_sync_state():
+                nonlocal _last_sync, _pending_sync
                 try:
-                    # Ждем задачу из очереди (например, "sync_state")
-                    item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
-                    action, payload = item
-                    
-                    if action == "log_message":
-                        await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
-                    
-                    elif action == "sync_state":
-                        # 1. ПОЛУЧАЕМ актуальный конфиг из базы
-                        res = await client.get(
-                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", 
+                    res = await client.get(
+                        f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                        headers=headers
+                    )
+                    if res.status_code == 200 and res.json():
+                        remote_data   = res.json()[0]
+                        remote_config = remote_data.get("config", {})
+                        new_config = {
+                            **remote_config,
+                            "stats":          self.stats_data,
+                            "connectedUsers": self.users_list,
+                            "admin_chat_id":  self.admin_chat_id,
+                            "adminChatId":    self.admin_chat_id
+                        }
+                        await client.patch(
+                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
+                            json={"config": new_config},
                             headers=headers
                         )
-                        
-                        if res.status_code == 200 and res.json():
-                            remote_data = res.json()[0]
-                            remote_config = remote_data.get("config", {})
-                            
-                            # 2. СОХРАНЯЕМ users_list и stats в БД
-                            new_config = {
-                                **remote_config, # Кнопки, триггеры, настройки из админки
-                                "stats": self.stats_data,
-                                "connectedUsers": self.users_list,
-                                "admin_chat_id": self.admin_chat_id,
-                                "adminChatId": self.admin_chat_id
-                            }
+                        saved_users = self.users_list
+                        saved_stats = self.stats_data
+                        self.apply_config({"config": remote_config})
+                        self.users_list = saved_users
+                        self.stats_data = saved_stats
+                except Exception as e:
+                    logger.error(f"Sync Worker _do_sync_state error: {e}")
+                finally:
+                    _last_sync    = time.time()
+                    _pending_sync = False
 
-                            # 3. ОТПРАВЛЯЕМ в БД
-                            await client.patch(
-                                f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", 
-                                json={"config": new_config}, 
-                                headers=headers
-                            )
-                            
-                            # 4. ОБНОВЛЯЕМ только кнопки/триггеры/настройки (НЕ users_list!)
-                            # Сохраняем текущих юзеров в памяти
-                            saved_users = self.users_list
-                            saved_stats = self.stats_data
-                            self.apply_config({"config": remote_config})
-                            # Возвращаем пользователей и статистику обратно
-                            self.users_list = saved_users
-                            self.stats_data = saved_stats
-                    
+            while self.is_running:
+                try:
+                    item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
+                    action, payload = item
+
+                    if action == "log_message":
+                        # Лог — всегда немедленно
+                        await client.post(
+                            f"{self.sb_url}/rest/v1/bot_messages",
+                            json=payload, headers=headers
+                        )
+
+                    elif action == "sync_state":
+                        now = time.time()
+                        if now - _last_sync >= SYNC_DEBOUNCE:
+                            # Прошло достаточно времени — пушим сразу
+                            await _do_sync_state()
+                        else:
+                            # Слишком рано — помечаем что нужен отложенный пуш
+                            _pending_sync = True
+
                     self.sync_queue.task_done()
+
                 except asyncio.TimeoutError:
+                    # Используем timeout-паузу чтобы сбросить накопленный pending
+                    if _pending_sync and (time.time() - _last_sync >= SYNC_DEBOUNCE):
+                        await _do_sync_state()
                     continue
                 except Exception as e:
                     logger.error(f"Sync Worker Error: {e}")
@@ -2942,7 +2962,6 @@ class BotInstance:
 
         # 2. Теперь запускаем их как фоновые задачи для обновления в будущем
         asyncio.create_task(self.database_sync_worker())
-        asyncio.create_task(self.dvr_notify_worker())
         asyncio.create_task(self.daily_stats_rotator())
         asyncio.create_task(self.license_checker())
         
