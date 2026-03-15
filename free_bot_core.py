@@ -129,8 +129,18 @@ class MemoryBaseMiddleware(BaseMiddleware):
 
         user_rec = next((u for u in self.bi.users_list if u.get('id') == user_id), None)
 
-        # ── ВСЕГДА проверяем актуальный статус в Supabase ──────────────────
-        # Supabase — единственный источник правды. Локальный mb_restricted не используем.
+        # ── Локальный TTL-кэш: не ходим в Supabase чаще раза в 5 минут ──────
+        # Исключение: если mb_restricted=True — перепроверяем каждые 5 мин (вдруг разбанили)
+        MB_LOCAL_TTL = 300  # 5 минут
+        last_mb_check = user_rec.get('last_mb_check', 0) if user_rec else 0
+        mb_restricted = user_rec.get('mb_restricted', False) if user_rec else False
+
+        if user_rec and not mb_restricted and (time.time() - last_mb_check < MB_LOCAL_TTL):
+            # Знаем статус, он свежий и пользователь чист — пропускаем без запроса
+            return await handler(event, data)
+
+        # ── Проверяем актуальный статус в Supabase ──────────────────────────
+        # Только если: новый пользователь / кэш устарел / пользователь был заблокирован
         try:
             sb_url = self.bi.sb_url
             h = self.bi.headers
@@ -201,8 +211,10 @@ class MemoryBaseMiddleware(BaseMiddleware):
                             if user_rec and user_rec.get('mb_restricted'):
                                 user_rec['mb_restricted'] = False
                                 user_rec['mb_reasons']    = []
+                            # Обновляем метку — при следующем сообщении не будем ходить в Supabase
+                            if user_rec:
+                                user_rec['last_mb_check'] = int(time.time())
                         # Запись есть — проверяем нужна ли перепроверка (раз в 24ч)
-                        last_mb_check = user_rec.get('last_mb_check', 0) if user_rec else 0
                         if time.time() - last_mb_check < 86400:
                             return await handler(event, data)
                         # Иначе — ставим в очередь на перепроверку
@@ -279,7 +291,7 @@ class MemoryBaseMiddleware(BaseMiddleware):
             deadline = _time.time() + 30
             row = None
             while _time.time() < deadline:
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)  # было 2, уменьшает число запросов при ожидании
                 async with httpx.AsyncClient(timeout=8) as client:
                     r = await client.get(
                         f"{sb_url}/rest/v1/memory_base_cache",
@@ -1025,7 +1037,7 @@ class FreeBotInstance:
                                 logger.warning(f"[DVR] notify error: {e}")
             except Exception as e:
                 logger.warning(f"[DVR] worker error: {e}")
-            await asyncio.sleep(5)
+            await asyncio.sleep(30)  # DVR-события редкие, 5с — расточительство ресурсов
 
     async def config_sync_loop(self):
         await asyncio.sleep(30)
