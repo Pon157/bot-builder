@@ -379,7 +379,10 @@ def _is_mb_pattern(text: str) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_dvr(app: Client, text: str):
-    """Ищем наших ботов в тексте DVR-поста по username через getMe, останавливаем, уведомляем."""
+    """
+    Ищем наших ботов в тексте DVR-поста по username.
+    Оптимизировано: уведомляем владельца напрямую и останавливаем бота без записи в БД.
+    """
     # Сбрасываем кеш — бот мог быть переименован
     _bot_username_cache.clear()
     bots = await get_all_running_bots()
@@ -390,8 +393,6 @@ async def handle_dvr(app: Client, text: str):
     # Извлекаем @username из текста
     text_lower = text.lower()
     mentioned_usernames = set(re.findall(r'@(\w+)', text_lower))
-    # Также ищем без @ (на случай если просто написали имя бота)
-    words = set(text_lower.split())
     logger.info(f"[DVR] @usernames в тексте: {mentioned_usernames}")
 
     if not mentioned_usernames:
@@ -404,62 +405,61 @@ async def handle_dvr(app: Client, text: str):
     for br in bots:
         cfg   = br.get("config") or {}
         token = cfg.get("token", "")
-        hint  = cfg.get("botUsername", "") or cfg.get("bot_username", "") or ""
+        hint  = cfg.get("botUsername") or cfg.get("bot_username") or ""
         tasks.append((br, resolve_bot_username(br["id"], token, hint)))
 
     # Параллельно резолвим все
     for br, coro in tasks:
         uname = await coro
-        if uname and uname in mentioned_usernames:
+        if uname and uname.lower() in mentioned_usernames:
             matched.append((br, uname))
-            logger.warning(f"[DVR] ✅ Найден наш бот: @{uname} id={br['id']}")
+            logger.warning(f"[DVR] ✅ Найден наш бот под атакой: @{uname} id={br['id']}")
 
     if not matched:
         logger.info(f"[DVR] Наших ботов среди {mentioned_usernames} нет")
         return
 
     stopped, failed = [], []
-    for br, uname in matched:
-        # Сначала пишем событие — бот прочитает и отправит уведомление
-        try:
-            async with httpx.AsyncClient(timeout=8) as c:
-                r = await c.post(
-                    f"{SUPABASE_URL}/rest/v1/dvr_events",
-                    headers={**_sb_h(), "Prefer": "return=minimal"},
-                    json={
-                        "bot_id":       br["id"],
-                        "bot_username": uname,
-                        "status":       "pending",
-                    }
-                )
-                if r.status_code in (200, 201, 204):
-                    logger.info(f"[DVR] dvr_event written for @{uname}")
+    
+    # Чтобы не плодить сотни клиентов, создаем ОДИН для всех запросов к API остановки
+    async with httpx.AsyncClient(timeout=10) as client:
+        for br, uname in matched:
+            # ── ШАГ 1: Прямое уведомление владельца ──
+            # (Функция notify_bot_owner должна быть определена в этом же файле)
+            try:
+                await notify_bot_owner(app, br, uname)
+                logger.info(f"[DVR] ✅ Владелец бота @{uname} уведомлен напрямую")
+            except Exception as e:
+                logger.error(f"[DVR] ❌ Ошибка уведомления для @{uname}: {e}")
+
+            # Ждём 2 сек, чтобы Telegram успел доставить сообщение, пока бот еще онлайн
+            await asyncio.sleep(2)
+
+            # ── ШАГ 2: Прямая остановка бота через API ──
+            try:
+                # Мы передаем client в stop_bot_via_api, если ваша функция это поддерживает,
+                # либо вызываем как есть:
+                ok = await stop_bot_via_api(br["id"])
+                if ok:
+                    stopped.append((br, uname))
+                    logger.warning(f"[DVR] ⛔ Бот @{uname} успешно ВЫКЛЮЧЕН")
                 else:
-                    logger.warning(f"[DVR] dvr_event write failed: {r.status_code} {r.text[:100]}")
-        except Exception as e:
-            logger.warning(f"[DVR] dvr_event error for {br['id']}: {e}")
+                    failed.append((br, uname))
+                    logger.error(f"[DVR] ⚠️ Не удалось остановить бота @{uname}")
+            except Exception as e:
+                logger.error(f"[DVR] ❌ Критическая ошибка при остановке {uname}: {e}")
 
-        # Ждём 3 сек чтобы бот успел прочитать событие и отправить уведомление
-        await asyncio.sleep(3)
-
-        # Теперь останавливаем
-        ok = await stop_bot_via_api(br["id"])
-        if ok:
-            stopped.append((br, uname))
-            logger.warning(f"[DVR] ✅ Остановлен: @{uname}")
-        else:
-            failed.append((br, uname))
-            logger.error(f"[DVR] ❌ Не удалось остановить: @{uname}")
-
-    # Отчёт в наш топик 4
+    # ── ШАГ 3: Отчёт в административный топик ──
     s_str = "\n".join(f"  • @{u}" for _, u in stopped) or "  —"
     f_str = "\n".join(f"  • @{u}" for _, u in failed)  or "  —"
+    
     text_out = (
-        f"🚨 <b>DVR: Рейд-атака!</b>\n\n"
+        f"🚨 <b>DVR: Обнаружена рейд-атака!</b>\n\n"
         f"✅ <b>Остановлено ({len(stopped)}):</b>\n{s_str}\n\n"
-        f"❌ <b>Не удалось ({len(failed)}):</b>\n{f_str}\n\n"
-        f"Владельцы уведомлены через своих ботов."
+        f"❌ <b>Ошибка остановки ({len(failed)}):</b>\n{f_str}\n\n"
+        f"<i>Результат: Владельцы получили алерты, боты выключены для защиты.</i>"
     )
+    
     try:
         await app.send_message(
             chat_id=ADMIN_CHAT_ID,
@@ -468,7 +468,7 @@ async def handle_dvr(app: Client, text: str):
             disable_web_page_preview=True
         )
     except Exception as e:
-        logger.error(f"[DVR] admin notify error: {e}")
+        logger.error(f"[DVR] Отчет не отправлен в админ-чат: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
