@@ -58,6 +58,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("MemoryBaseBot")
 
+# Подавляем спам "Peer id invalid" для чужих чатов
+logging.getLogger("pyrogram.client").setLevel(logging.CRITICAL)
+logging.getLogger("pyrogram.dispatcher").setLevel(logging.CRITICAL)
+
+def _suppress_peer_errors(loop, context):
+    exc = context.get("exception")
+    if exc and "Peer id invalid" in str(exc):
+        return  # тихо игнорируем
+    loop.default_exception_handler(context)
+
 # Подавляем спам Peer id invalid из Pyrogram для чужих чатов
 logging.getLogger("pyrogram.client").setLevel(logging.ERROR)
 
@@ -459,7 +469,8 @@ class MemoryBaseBotService:
         @self.app.on_message(
             filters.create(lambda _, __, m: (
                 getattr(m.chat, "id", None) == ADMIN_CHAT_ID and
-                getattr(m, 'message_thread_id', None) == MB_CHECK_TOPIC_ID
+                # Принимаем из топика 2 ИЛИ без топика (MemoryBaseBot отвечает без thread_id)
+                getattr(m, "message_thread_id", None) in (MB_CHECK_TOPIC_ID, None)
             ))
         )
         async def on_mb_message(client: Client, msg: Message):
@@ -467,7 +478,7 @@ class MemoryBaseBotService:
             text = (msg.text or msg.caption or "").strip()
             logger.info(
                 f"[MB] topic2 msg from={msg.from_user.id if msg.from_user else getattr(msg.sender_chat, 'id', '?')} "
-                f"text={text[:80]!r}"
+                f"thread={getattr(msg, 'message_thread_id', None)} text={text[:80]!r}"
             )
 
             # Пропускаем наши собственные "чек X"
@@ -496,7 +507,7 @@ class MemoryBaseBotService:
         @self.app.on_message(
             filters.create(lambda _, __, m: (
                 getattr(m.chat, "id", None) == ADMIN_CHAT_ID and
-                getattr(m, 'message_thread_id', None) == DVR_ADMIN_TOPIC_ID
+                getattr(m, "message_thread_id", None) == DVR_ADMIN_TOPIC_ID
             ))
         )
         async def on_dvr_message(client: Client, msg: Message):
@@ -505,7 +516,7 @@ class MemoryBaseBotService:
             fwd  = msg.forward_from_chat
             logger.info(
                 f"[DVR] topic4 msg from={msg.from_user.id if msg.from_user else '-'} "
-                f"fwd={fwd.id if fwd else '-'} thread={getattr(msg, 'message_thread_id', None)} text={text[:80]!r}"
+                f"fwd={fwd.id if fwd else '-'} text={text[:80]!r}"
             )
             if fwd or "@" in text or "bot" in text.lower() or "бот" in text.lower():
                 await handle_dvr(self.app, text)
@@ -515,18 +526,20 @@ class MemoryBaseBotService:
             me = await self.app.get_me()
             logger.info(f"[*] ✅ Авторизован как @{me.username} id={me.id}")
 
+            # Устанавливаем обработчик для подавления Peer id invalid
+            loop = asyncio.get_event_loop()
+            loop.set_exception_handler(_suppress_peer_errors)
+
             # Резолвим чат через get_dialogs — заполняет кеш пиров при каждом старте
             self._chat_peer = ADMIN_CHAT_ID
-            chat_found = False
             try:
                 logger.info("[*] Сканирую диалоги для заполнения кеша...")
                 async for dialog in self.app.get_dialogs():
                     if dialog.chat.id == ADMIN_CHAT_ID:
                         logger.info(f"[*] ✅ Чат найден: {dialog.chat.title!r} id={dialog.chat.id}")
-                        chat_found = True
                         break
-                if not chat_found:
-                    logger.error(f"[*] ❌ Чат {ADMIN_CHAT_ID} не найден в диалогах!")
+                else:
+                    logger.error(f"[*] ❌ Чат {ADMIN_CHAT_ID} не найден — аккаунт не является участником!")
             except Exception as e:
                 logger.error(f"[*] ❌ get_dialogs error: {e}")
 
