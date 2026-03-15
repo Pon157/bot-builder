@@ -103,7 +103,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
         if (updated) onUpdate(updated);
         setHasUnsavedChanges(false);
         const res = await api.startBotOnServer(bot);
-        if (res === true) onUpdate({ ...bot, status: BotStatus.RUNNING });
+        if (res === true) onUpdate({ ...(updated ?? bot), status: BotStatus.RUNNING });
         else alert(`Ошибка запуска: ${res}`);
       }
     } finally { setIsProcessing(false); }
