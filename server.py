@@ -881,6 +881,7 @@ async def save_bot(b: dict):
                     "settings": b.get("settings") or {"forwardToAdmin": True},
                     "connectedUsers": [],
                     "adminIds":   _ai,
+                    "botUsername": (b.get("botUsername") or "").lower().lstrip("@").strip(),
                     "channelId":  b.get("channelId",  ""),
                     "lotChannel": b.get("lotChannel", ""),
                     "botLink":    b.get("botLink",    ""),
@@ -997,6 +998,7 @@ async def save_bot(b: dict):
             "vk_group_id":   new_vk_id,
             "vkGroupId":     new_vk_id,
             "adminIds":   admin_ids_list,
+            "botUsername": (b.get("botUsername") or inc_cfg.get("botUsername") or old_config.get("botUsername") or "").lower().lstrip("@").strip(),
             "channelId":  channel_id_val,
             "channels":   channels_val,
             "lotChannel": lot_channel_val,
@@ -1044,6 +1046,7 @@ async def save_bot(b: dict):
             "vkGroupId":    new_vk_id,
             "vk_group_id":  new_vk_id,
             "adminIds":     admin_ids_list,
+            "botUsername":  (b.get("botUsername") or inc_cfg.get("botUsername") or old_config.get("botUsername") or "").lower().lstrip("@").strip(),
             "channelId":    channel_id_val,
             "channels":     channels_val,
             "lotChannel":   lot_channel_val,
@@ -1104,11 +1107,10 @@ async def stop_handler(bid: str):
 
 @app.post("/api/bots/dvr-notify/{bid}")
 async def dvr_notify_handler(bid: str, x_admin_token: str = Header(None)):
-    """Отправляет уведомление о DVR-рейде через токен самого бота."""
     if x_admin_token != A_SECRET:
         raise HTTPException(401, "Admin only")
     try:
-        r = await db.get("bots", params={"id": f"eq.{bid}", "select": "config,name"})
+        r = await db.get("bots", params={"id": f"eq.{bid}", "select": "config,name,admin_chat_id"})
         if r.status_code != 200 or not r.json():
             raise HTTPException(404, "Bot not found")
         bot_data = r.json()[0]
@@ -1135,8 +1137,8 @@ async def dvr_notify_handler(bid: str, x_admin_token: str = Header(None)):
                     "disable_web_page_preview": True,
                 }
             )
-        logger.info(f"[DVR] notify sent for {bid} → {admin_chat_id}: {resp.status_code}")
-        return {"ok": resp.status_code == 200, "status": resp.status_code}
+        logger.info(f"[DVR] notify sent for {bid}: {resp.status_code}")
+        return {"ok": resp.status_code == 200}
     except HTTPException:
         raise
     except Exception as e:
