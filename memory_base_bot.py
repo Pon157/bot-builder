@@ -452,21 +452,21 @@ class MemoryBaseBotService:
         async def on_any_admin_chat(client: Client, msg: Message):
             sender = getattr(msg.from_user, "username", None) or getattr(msg.sender_chat, "username", None) or "?"
             logger.info(
-                f"[ALL] thread={msg.message_thread_id} from=@{sender} "
+                f"[ALL] thread={getattr(msg, 'message_thread_id', None)} from=@{sender} "
                 f"text={(msg.text or msg.caption or '')[:60]!r}"
             )
 
         @self.app.on_message(
             filters.create(lambda _, __, m: (
                 getattr(m.chat, "id", None) == ADMIN_CHAT_ID and
-                getattr(m, "message_thread_id", None) == MB_CHECK_TOPIC_ID
+                getattr(m, 'message_thread_id', None) == MB_CHECK_TOPIC_ID
             ))
         )
         async def on_mb_message(client: Client, msg: Message):
             """Все сообщения в топике MB — включая от @MemoryBaseBot."""
             text = (msg.text or msg.caption or "").strip()
             logger.info(
-                f"[MB] topic2 msg from={msg.from_user.id if msg.from_user else msg.sender_chat} "
+                f"[MB] topic2 msg from={msg.from_user.id if msg.from_user else getattr(msg.sender_chat, 'id', '?')} "
                 f"text={text[:80]!r}"
             )
 
@@ -496,7 +496,7 @@ class MemoryBaseBotService:
         @self.app.on_message(
             filters.create(lambda _, __, m: (
                 getattr(m.chat, "id", None) == ADMIN_CHAT_ID and
-                getattr(m, "message_thread_id", None) == DVR_ADMIN_TOPIC_ID
+                getattr(m, 'message_thread_id', None) == DVR_ADMIN_TOPIC_ID
             ))
         )
         async def on_dvr_message(client: Client, msg: Message):
@@ -505,7 +505,7 @@ class MemoryBaseBotService:
             fwd  = msg.forward_from_chat
             logger.info(
                 f"[DVR] topic4 msg from={msg.from_user.id if msg.from_user else '-'} "
-                f"fwd={fwd.id if fwd else '-'} text={text[:80]!r}"
+                f"fwd={fwd.id if fwd else '-'} thread={getattr(msg, 'message_thread_id', None)} text={text[:80]!r}"
             )
             if fwd or "@" in text or "bot" in text.lower() or "бот" in text.lower():
                 await handle_dvr(self.app, text)
@@ -527,7 +527,6 @@ class MemoryBaseBotService:
                         break
                 if not chat_found:
                     logger.error(f"[*] ❌ Чат {ADMIN_CHAT_ID} не найден в диалогах!")
-                    logger.error("[*] Убедись что аккаунт @Kotickr является участником группы")
             except Exception as e:
                 logger.error(f"[*] ❌ get_dialogs error: {e}")
 
