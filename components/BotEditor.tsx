@@ -110,8 +110,18 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
   };
 
   // ── adminIds helper ──
-  const adminIdsStr = (bot.adminIds || []).join(', ');
+  const [adminIdsRaw, setAdminIdsRaw] = React.useState(() => (bot.adminIds || []).join(', '));
+  // Синхронизируем если бот сменился (смена вкладки)
+  const prevBotId = React.useRef(bot.id);
+  if (prevBotId.current !== bot.id) {
+    prevBotId.current = bot.id;
+    // В render нельзя вызывать setState — используем useEffect ниже
+  }
+  React.useEffect(() => {
+    setAdminIdsRaw((bot.adminIds || []).join(', '));
+  }, [bot.id]); // только при смене бота, не при каждом изменении
   const updateAdminIds = (str: string) => {
+    setAdminIdsRaw(str); // сохраняем сырую строку — не теряем незаконченный ввод
     const ids = str.split(',').map(s => s.trim()).filter(s => /^\d+$/.test(s)).map(Number);
     handleLocalUpdate({ ...bot, adminIds: ids });
   };
@@ -488,10 +498,25 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                   <input type="text"
                     placeholder="123456789, 987654321"
                     className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-amber-500 transition-all"
-                    value={adminIdsStr}
+                    value={adminIdsRaw}
                     onChange={e => updateAdminIds(e.target.value)} />
                   <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold tracking-wider">
                     {isPoster || isRandomizer ? 'Только эти пользователи могут управлять ботом' : 'Могут делать /broadcast прямо в боте'}
+                  </p>
+                </label>
+
+                {/* Username бота — для DVR защиты */}
+                <label className="block">
+                  <span className="text-[10px] font-bold text-zinc-500 uppercase ml-2 flex items-center gap-1.5">
+                    <span className="text-amber-500 font-black">@</span>Username бота
+                  </span>
+                  <input type="text"
+                    placeholder="mybot (без @)"
+                    className="w-full mt-2 bg-black border border-zinc-800 p-5 rounded-2xl text-white outline-none focus:border-amber-500 transition-all"
+                    value={(bot.botUsername || '').replace('@', '')}
+                    onChange={e => handleLocalUpdate({ ...bot, botUsername: e.target.value.replace('@', '').toLowerCase().trim() })} />
+                  <p className="text-[8px] text-zinc-600 mt-1.5 ml-2 uppercase font-bold tracking-wider">
+                    Система защиты DVR использует username для остановки бота при рейде
                   </p>
                 </label>
 
