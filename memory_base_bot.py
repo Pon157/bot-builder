@@ -401,8 +401,7 @@ async def handle_dvr(app: Client, text: str):
     for br in bots:
         cfg   = br.get("config") or {}
         token = cfg.get("token", "")
-        if token:
-            hint = cfg.get("botUsername", "") or cfg.get("bot_username", "") or ""
+        hint  = cfg.get("botUsername", "") or cfg.get("bot_username", "") or ""
         tasks.append((br, resolve_bot_username(br["id"], token, hint)))
 
     # Параллельно резолвим все
