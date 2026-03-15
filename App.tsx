@@ -293,8 +293,8 @@ const App: React.FC = () => {
     };
 
     try {
-      await api.saveBot(user.id, newBot);
-      setBots(prev => [...prev, newBot]);
+      const savedBot = await api.saveBot(user.id, newBot);
+      setBots(prev => [...prev, savedBot ?? newBot]);
       setSelectedBotId(newBotId);
       setIsModalOpen(false);
     } catch (e) {
