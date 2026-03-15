@@ -881,7 +881,6 @@ async def save_bot(b: dict):
                     "settings": b.get("settings") or {"forwardToAdmin": True},
                     "connectedUsers": [],
                     "adminIds":   _ai,
-                    "botUsername": (b.get("botUsername") or "").lower().lstrip("@").strip(),
                     "channelId":  b.get("channelId",  ""),
                     "lotChannel": b.get("lotChannel", ""),
                     "botLink":    b.get("botLink",    ""),
@@ -998,7 +997,6 @@ async def save_bot(b: dict):
             "vk_group_id":   new_vk_id,
             "vkGroupId":     new_vk_id,
             "adminIds":   admin_ids_list,
-            "botUsername": (b.get("botUsername") or inc_cfg.get("botUsername") or old_config.get("botUsername") or "").lower().lstrip("@").strip(),
             "channelId":  channel_id_val,
             "channels":   channels_val,
             "lotChannel": lot_channel_val,
@@ -1046,7 +1044,6 @@ async def save_bot(b: dict):
             "vkGroupId":    new_vk_id,
             "vk_group_id":  new_vk_id,
             "adminIds":     admin_ids_list,
-            "botUsername":  (b.get("botUsername") or inc_cfg.get("botUsername") or old_config.get("botUsername") or "").lower().lstrip("@").strip(),
             "channelId":    channel_id_val,
             "channels":     channels_val,
             "lotChannel":   lot_channel_val,
@@ -1103,6 +1100,48 @@ async def stop_handler(bid: str):
     await pm.stop_bot(bid)
     await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "IDLE"})
     return True
+
+
+@app.post("/api/bots/dvr-notify/{bid}")
+async def dvr_notify_handler(bid: str, x_admin_token: str = Header(None)):
+    """Отправляет уведомление о DVR-рейде через токен самого бота."""
+    if x_admin_token != A_SECRET:
+        raise HTTPException(401, "Admin only")
+    try:
+        r = await db.get("bots", params={"id": f"eq.{bid}", "select": "config,name"})
+        if r.status_code != 200 or not r.json():
+            raise HTTPException(404, "Bot not found")
+        bot_data = r.json()[0]
+        cfg = bot_data.get("config") or {}
+        raw_token = decrypt_val(cfg.get("token", ""))
+        admin_chat_id = bot_data.get("admin_chat_id") or cfg.get("admin_chat_id") or cfg.get("adminChatId")
+        bot_username = cfg.get("botUsername", "") or ""
+        if not raw_token or not admin_chat_id:
+            raise HTTPException(400, "No token or admin_chat_id")
+        async with httpx.AsyncClient(timeout=10) as c:
+            resp = await c.post(
+                f"https://api.telegram.org/bot{raw_token}/sendMessage",
+                json={
+                    "chat_id": int(admin_chat_id),
+                    "text": (
+                        f"🚨 <b>Система безопасности Dialoge Engine</b>\n\n"
+                        f"Обнаружена рейдерская атака на вашего бота"
+                        f"{f' <b>@{bot_username}</b>' if bot_username else ''}.\n\n"
+                        f"✅ Бот был автоматически <b>остановлен</b> для защиты.\n\n"
+                        f"Восстановите работу на: "
+                        f"<a href=\"https://dialogengine.webtm.ru\">dialogengine.webtm.ru</a>"
+                    ),
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                }
+            )
+        logger.info(f"[DVR] notify sent for {bid} → {admin_chat_id}: {resp.status_code}")
+        return {"ok": resp.status_code == 200, "status": resp.status_code}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[DVR] notify error for {bid}: {e}")
+        raise HTTPException(500, str(e))
 
 @app.get("/api/bots/status/{bid}")
 async def get_bot_status(bid: str):
