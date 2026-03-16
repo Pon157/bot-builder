@@ -486,6 +486,16 @@ class BotInstance:
         self.auto_ban_limit= int(self.settings.get('autoBanThreshold', 3))
         self.forward_all   = self.settings.get('forwardAll', False)  # Режим «без тикетов»
 
+        # ── Стафф-система (администраторы поддержки) ──
+        staff_cfg = full_cfg.get('staffSettings', {}) or {}
+        self.staff_enabled        = staff_cfg.get('enabled', False)
+        self.staff_notify         = staff_cfg.get('notifyOnAssign', True)
+        self.staff_show_list      = staff_cfg.get('showStaffList', False)
+        self.staff_list_btn_name  = staff_cfg.get('staffListButtonName', 'Список администрации')
+        self.staff_allow_switch   = staff_cfg.get('allowUserSwitch', True)
+        self.staff_assign_mode    = staff_cfg.get('assignMode', 'random')
+        self.staff_admins: list   = full_cfg.get('staffAdmins', []) or []
+
         # -- Список ID администраторов (из редактора, поле adminIds) --
         # Если список пустой -- команды разрешены всем участникам беседы
         raw_admin_ids = full_cfg.get('adminIds') or full_cfg.get('admin_ids') or []
@@ -1226,8 +1236,34 @@ class BotInstance:
     async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = ""):
         if not self.admin_chat_id:
             return
-        
-        header = format_admin_header(user, self.settings, is_first, btn_text)
+
+        # ── Стафф-система: назначаем при первом обращении ──
+        if self.staff_enabled and is_first and not user.get('assigned_staff_id'):
+            staff = self._assign_staff()
+            if staff:
+                await self._assign_staff_to_user(user, staff)
+                # Добавляем кнопки стафф-системы к следующей клавиатуре
+                extra_btns = await self._staff_keyboard_buttons()
+                if extra_btns:
+                    kb = Keyboard(one_time=False)
+                    for label, color in extra_btns:
+                        kb.add(Text(label), color=color)
+                    try:
+                        await self.bot.api.messages.send(
+                            peer_id=user['id'],
+                            message="ℹ️ Доступные действия:",
+                            keyboard=kb.get_json(),
+                            random_id=0
+                        )
+                    except Exception:
+                        pass
+
+        # Добавляем имя назначенного стаффера в шапку
+        staff_note = ""
+        if self.staff_enabled and user.get('assigned_staff_alias'):
+            staff_note = f"\n🧑‍💼 Администратор: {user['assigned_staff_alias']}"
+
+        header = format_admin_header(user, self.settings, is_first, btn_text) + staff_note
         user_text = m.text or ""
         full_text = (f"{header}\n{user_text}".strip()) if user_text else header
 
@@ -1257,6 +1293,10 @@ class BotInstance:
             )
             self.msg_map[sent_msg_id] = user['id']
             logger.debug(f"[msg_map] {sent_msg_id} -> {user['id']}")
+
+            # Статистика стаффера
+            if self.staff_enabled and user.get('assigned_staff_id'):
+                asyncio.create_task(self._post_staff_stat(user['assigned_staff_id'], 'message'))
 
         except Exception as e:
             logger.error(f"forward_to_admin error: {e}", exc_info=True)
@@ -1304,6 +1344,118 @@ class BotInstance:
             return True  # Список пустой = доверяем всем в беседе
         return user_id in self.admin_ids
 
+    # ══════════════════════════════════════════════════════════════════
+    # СТАФФ-СИСТЕМА (VK)
+    # ══════════════════════════════════════════════════════════════════
+
+    def _get_active_staff(self) -> list:
+        return [a for a in self.staff_admins if a.get('active', True) and a.get('vk_id')]
+
+    def _assign_staff(self) -> dict | None:
+        active = self._get_active_staff()
+        if not active:
+            return None
+        if self.staff_assign_mode == 'least':
+            return min(active, key=lambda a: a.get('stats', {}).get('ticketsAccepted', 0))
+        import random as _rnd
+        return _rnd.choice(active)
+
+    def _find_staff_by_arg(self, arg: str) -> dict | None:
+        arg = arg.strip().lstrip('@')
+        for a in self.staff_admins:
+            if str(a.get('vk_id', '')) == arg:
+                return a
+            if a.get('alias', '').lower() == arg.lower():
+                return a
+            if a.get('name', '').lower() == arg.lower():
+                return a
+        return None
+
+    async def _post_staff_stat(self, staff_id: str, event: str, value: int = 1):
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                sb_base = self.sb_url.replace('/rest/v1', '')
+                await client.post(
+                    f"{sb_base}/api/bots/{self.bot_id}/staff/stat",
+                    json={"staff_id": staff_id, "event": event, "value": value},
+                    headers={"apikey": self.sb_key}
+                )
+        except Exception as e:
+            logger.warning(f"[STAFF-VK] Ошибка обновления статы: {e}")
+
+    async def _assign_staff_to_user(self, user: dict, staff: dict):
+        uid = user['id']
+        user['assigned_staff_id']    = staff['id']
+        user['assigned_staff_alias'] = staff.get('alias', staff.get('name', '?'))
+        user['assigned_staff_vk']    = staff.get('vk_id')
+        user['_staff_assigned_at']   = int(time.time() * 1000)
+
+        if self.staff_notify:
+            try:
+                await self.bot.api.messages.send(
+                    peer_id=uid,
+                    message=f"👤 Ваше обращение принял: {staff.get('alias', staff.get('name'))}",
+                    random_id=0
+                )
+            except Exception:
+                pass
+
+        # Уведомляем стаффера в личку (VK)
+        try:
+            user_name = user.get('first_name', f"User#{uid}")
+            await self.bot.api.messages.send(
+                peer_id=staff['vk_id'],
+                message=f"📨 Новое обращение!\nПользователь: {user_name} (ID: {uid})",
+                random_id=0
+            )
+        except Exception:
+            pass
+
+        asyncio.create_task(self._post_staff_stat(staff['id'], 'accepted'))
+
+    async def _staff_keyboard_buttons(self) -> list:
+        """Возвращает доп. кнопки стафф-системы для клавиатуры пользователя."""
+        btns = []
+        if self.staff_allow_switch:
+            btns.append(("🔄 Сменить админа", KeyboardButtonColor.SECONDARY))
+        if self.staff_show_list:
+            btns.append((self.staff_list_btn_name, KeyboardButtonColor.SECONDARY))
+        return btns
+
+    async def _send_staff_list(self, peer_id: int):
+        """Отправляет пользователю список активных администраторов (VK: отдельные кнопки)."""
+        active = self._get_active_staff()
+        if not active:
+            await self.bot.api.messages.send(peer_id=peer_id, message="😔 Нет доступных администраторов.", random_id=0)
+            return
+        # VK не поддерживает inline callback как TG, поэтому список отправляем
+        # как клавиатуру с кнопками-именами (текстовые) + сохраняем ожидание выбора
+        kb = Keyboard(one_time=True)
+        for i, a in enumerate(active):
+            if i > 0 and i % 2 == 0:
+                kb.row()
+            kb.add(Text(f"👤 {a.get('alias', a.get('name', '?'))}", payload={"choose_staff": a['id']}), color=KeyboardButtonColor.PRIMARY)
+        kb.row()
+        kb.add(Text("↩️ Назад"), color=KeyboardButtonColor.SECONDARY)
+        await self.bot.api.messages.send(
+            peer_id=peer_id,
+            message="👥 Выберите администратора:",
+            keyboard=kb.get_json(),
+            random_id=0
+        )
+
+    def _format_staff_stat(self, staff: dict) -> str:
+        st = staff.get('stats', {})
+        avg_ms = st.get('avgResponseMs', 0)
+        avg_str = f"{round(avg_ms/1000)}с" if avg_ms and avg_ms < 60000 else (f"{round(avg_ms/60000)}м" if avg_ms else "—")
+        return (
+            f"📊 Статистика: {staff.get('alias', staff.get('name', '?'))}\n\n"
+            f"🎫 Принято тикетов: {st.get('ticketsAccepted', 0)}\n"
+            f"✅ Закрыто: {st.get('ticketsClosed', 0)}\n"
+            f"💬 Сообщений: {st.get('messagesSent', 0)}\n"
+            f"⏱ Среднее время ответа: {avg_str}"
+        )
+
     async def admin_control_logic(self, m: Message):
         """Единая логика всех админ-команд: /stats, /broadcast, /ban, /unban, /warn, /unwarn"""
         if not m.text or not (m.text.startswith("/") or m.text.startswith("!")): 
@@ -1349,6 +1501,34 @@ class BotInstance:
                     f"💬 Всего сообщений: {total_msgs}\n"
                     f"🚫 Заблокировано: {banned}"
                 ),
+                random_id=0
+            )
+            return True
+
+        # 📊 СТАТИСТИКА СТАФФ-АДМИНИСТРАТОРА
+        elif command == "stat" and self.staff_enabled:
+            sender_id = m.from_id
+            if len(cmd_parts) >= 2:
+                target_staff = self._find_staff_by_arg(cmd_parts[1])
+                if not target_staff:
+                    await self.bot.api.messages.send(
+                        peer_id=self.admin_chat_id,
+                        message=f"❌ Администратор '{cmd_parts[1]}' не найден.",
+                        random_id=0
+                    )
+                    return True
+            else:
+                target_staff = next((a for a in self.staff_admins if a.get('vk_id') == sender_id), None)
+                if not target_staff:
+                    await self.bot.api.messages.send(
+                        peer_id=self.admin_chat_id,
+                        message="❌ Ваш VK ID не найден среди администраторов.\nИспользуйте: /stat <ID> или /stat <псевдоним>",
+                        random_id=0
+                    )
+                    return True
+            await self.bot.api.messages.send(
+                peer_id=self.admin_chat_id,
+                message=self._format_staff_stat(target_staff),
                 random_id=0
             )
             return True
@@ -1507,6 +1687,33 @@ class BotInstance:
             target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
             await self._save_to_db()
             await self.bot.api.messages.send(peer_id=self.admin_chat_id, message=f"✅ Предупреждение снято. Текущее: {target_user['warns']}", random_id=0)
+            return True
+
+        # 🔄 СТАФФ: /give — передать тикет другому администратору
+        elif command == "give":
+            if not self.staff_enabled:
+                return False
+            if len(cmd_parts) < 2:
+                await self.bot.api.messages.send(
+                    peer_id=self.admin_chat_id,
+                    message="🔄 Передача тикета:\n/give <ID> или /give <псевдоним>",
+                    random_id=0
+                )
+                return True
+            new_staff = self._find_staff_by_arg(cmd_parts[1])
+            if not new_staff:
+                await self.bot.api.messages.send(peer_id=self.admin_chat_id, message=f"❌ Администратор '{cmd_parts[1]}' не найден.", random_id=0)
+                return True
+            if not new_staff.get('active'):
+                await self.bot.api.messages.send(peer_id=self.admin_chat_id, message=f"⚠️ Администратор {new_staff.get('alias', new_staff.get('name'))} неактивен.", random_id=0)
+                return True
+            await self._assign_staff_to_user(target_user, new_staff)
+            await self._save_to_db()
+            await self.bot.api.messages.send(
+                peer_id=self.admin_chat_id,
+                message=f"✅ Тикет передан: {new_staff.get('alias', new_staff.get('name'))}. Пользователь уведомлён.",
+                random_id=0
+            )
             return True
 
         return False
@@ -1785,6 +1992,17 @@ class BotInstance:
                             )
                         except Exception:
                             pass
+                    # Стафф: закрытие тикета
+                    if self.staff_enabled and user.get('assigned_staff_id'):
+                        asyncio.create_task(self._post_staff_stat(user['assigned_staff_id'], 'closed'))
+                        assigned_at = user.get('_staff_assigned_at')
+                        if assigned_at:
+                            elapsed_ms = int(time.time() * 1000) - assigned_at
+                            asyncio.create_task(self._post_staff_stat(user['assigned_staff_id'], 'response_ms', elapsed_ms))
+                        user.pop('assigned_staff_id', None)
+                        user.pop('assigned_staff_alias', None)
+                        user.pop('assigned_staff_vk', None)
+                        user.pop('_staff_assigned_at', None)
                     await self.bot.api.messages.send(
                         peer_id=user['id'],
                         message="Обращение закрыто.",
@@ -1792,6 +2010,48 @@ class BotInstance:
                         random_id=0
                     )
                     return
+
+                # ── СТАФФ: кнопка "Сменить админа" в тикете ──
+                if self.staff_enabled and self.staff_allow_switch and m.text and m.text.strip() == "🔄 Сменить админа":
+                    active = self._get_active_staff()
+                    current_id = user.get('assigned_staff_id')
+                    candidates = [a for a in active if a.get('id') != current_id]
+                    if not candidates:
+                        await self.bot.api.messages.send(peer_id=user['id'], message="😔 Других доступных администраторов нет.", random_id=0)
+                    else:
+                        import random as _rnd
+                        new_staff = _rnd.choice(candidates)
+                        await self._assign_staff_to_user(user, new_staff)
+                        await self.sync_queue.put(("sync_state", None))
+                        await self.bot.api.messages.send(
+                            peer_id=user['id'],
+                            message=f"✅ Обращение передано: {new_staff.get('alias', new_staff.get('name'))}",
+                            random_id=0
+                        )
+                    return
+
+                # ── СТАФФ: кнопка "Список администрации" в тикете ──
+                if self.staff_enabled and self.staff_show_list and m.text and m.text.strip() == self.staff_list_btn_name:
+                    await self._send_staff_list(user['id'])
+                    return
+
+                # ── СТАФФ: пользователь выбрал конкретного администратора из списка ──
+                if self.staff_enabled and m.text and m.text.strip().startswith("👤 "):
+                    chosen_alias = m.text.strip()[2:].strip()
+                    chosen_staff = next(
+                        (a for a in self.staff_admins if a.get('alias', a.get('name', '')) == chosen_alias and a.get('active')),
+                        None
+                    )
+                    if chosen_staff:
+                        await self._assign_staff_to_user(user, chosen_staff)
+                        await self.sync_queue.put(("sync_state", None))
+                        await self.bot.api.messages.send(
+                            peer_id=user['id'],
+                            message=f"✅ Обращение принял: {chosen_staff.get('alias', chosen_staff.get('name'))}",
+                            keyboard=self.get_main_keyboard(),
+                            random_id=0
+                        )
+                        return
 
                 # Тикет открыт — пересылаем всё админу
                 await self.forward_to_admin(m, user)
@@ -1806,6 +2066,25 @@ class BotInstance:
                 if clean_text in ("⬅️ Назад", "Назад"):
                     user.pop('_ai_session', None)
                     user.pop('_flow_nodes', None)
+
+                # ── СТАФФ: кнопки вне тикетного режима ──
+                if self.staff_enabled and self.staff_allow_switch and clean_text == "🔄 Сменить админа":
+                    active = self._get_active_staff()
+                    current_id = user.get('assigned_staff_id')
+                    candidates = [a for a in active if a.get('id') != current_id]
+                    if not candidates:
+                        await self.bot.api.messages.send(peer_id=user['id'], message="😔 Других доступных администраторов нет.", random_id=0)
+                    else:
+                        import random as _rnd
+                        new_staff = _rnd.choice(candidates)
+                        await self._assign_staff_to_user(user, new_staff)
+                        await self.sync_queue.put(("sync_state", None))
+                        await self.bot.api.messages.send(peer_id=user['id'], message=f"✅ Администратор изменён: {new_staff.get('alias', new_staff.get('name'))}", random_id=0)
+                    return
+
+                if self.staff_enabled and self.staff_show_list and clean_text == self.staff_list_btn_name:
+                    await self._send_staff_list(user['id'])
+                    return
                     self.clear_ai_context(user['id'])
                     await self.bot.api.messages.send(
                         peer_id=user['id'],
