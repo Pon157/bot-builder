@@ -990,6 +990,31 @@ async def save_bot(b: dict):
             "model":           raw_ai_cfg.get("model", "qwen-turbo"),
         }
 
+        # Стафф-система (администраторы поддержки)
+        raw_staff_admins = b.get("staffAdmins") or inc_cfg.get("staffAdmins") or old_config.get("staffAdmins") or []
+        if not isinstance(raw_staff_admins, list): raw_staff_admins = []
+        # Сохраняем stats из старого конфига, если фронтенд их не передал (они меняются только через бота)
+        old_staff_map = {a["id"]: a for a in old_config.get("staffAdmins", []) if isinstance(a, dict) and "id" in a}
+        merged_staff = []
+        for adm in raw_staff_admins:
+            if not isinstance(adm, dict): continue
+            aid = adm.get("id")
+            if aid and aid in old_staff_map:
+                # Сохраняем актуальную статистику из БД, фронтенд её не трогает
+                adm["stats"] = old_staff_map[aid].get("stats", adm.get("stats", {}))
+            merged_staff.append(adm)
+
+        raw_staff_settings = b.get("staffSettings") or inc_cfg.get("staffSettings") or old_config.get("staffSettings") or {}
+        if not isinstance(raw_staff_settings, dict): raw_staff_settings = {}
+        staff_settings_val = {
+            "enabled":              raw_staff_settings.get("enabled", False),
+            "notifyOnAssign":       raw_staff_settings.get("notifyOnAssign", True),
+            "showStaffList":        raw_staff_settings.get("showStaffList", False),
+            "staffListButtonName":  raw_staff_settings.get("staffListButtonName", "Список администрации"),
+            "allowUserSwitch":      raw_staff_settings.get("allowUserSwitch", True),
+            "assignMode":           raw_staff_settings.get("assignMode", "random"),
+        }
+
         ui_config = {
             "stats": old_config.get("stats", {}),
             "buttons": btns,
@@ -1013,6 +1038,9 @@ async def save_bot(b: dict):
             "users":      old_config.get("users",     []),
             # AI-конфиг
             "ai": ai_config,
+            # Стафф-система
+            "staffAdmins":    merged_staff,
+            "staffSettings":  staff_settings_val,
             # Обязательная подписка
             "requiredSubEnabled": b.get("requiredSubEnabled") if b.get("requiredSubEnabled") is not None else inc_cfg.get("requiredSubEnabled") if inc_cfg.get("requiredSubEnabled") is not None else old_config.get("requiredSubEnabled", False),
             "requiredChannels":   b.get("requiredChannels")   if b.get("requiredChannels")   is not None else inc_cfg.get("requiredChannels")   if inc_cfg.get("requiredChannels")   is not None else old_config.get("requiredChannels",   []),
@@ -1058,12 +1086,101 @@ async def save_bot(b: dict):
             "lotChannel":   lot_channel_val,
             "botLink":      bot_link_val,
             "stats": curr.get("stats") or old_config.get("stats") or {},
+            "staffAdmins":   merged_staff,
+            "staffSettings": staff_settings_val,
             "id": bid
         }
 
     except Exception as e:
         logger.error(f"🚨 Критическая ошибка сохранения: {e}", exc_info=True)
         raise HTTPException(500, str(e))
+
+# ──────────────────────────────────────────────────────────────────────────────
+# СТАФФ-СИСТЕМА: Обновление статистики администратора
+# Вызывается из bot_core.py / vkbot_core.py при каждом событии
+# ──────────────────────────────────────────────────────────────────────────────
+@app.post("/api/bots/{bid}/staff/stat")
+async def update_staff_stat(bid: str, req: dict):
+    """
+    Тело запроса: {
+      "staff_id": "abc123",          # id из BotStaffAdmin.id
+      "event": "accepted"|"closed"|"message"|"response_ms",
+      "value": 1                     # для response_ms — время в мс
+    }
+    """
+    try:
+        staff_id = req.get("staff_id")
+        event    = req.get("event")
+        value    = req.get("value", 1)
+        if not staff_id or not event:
+            raise HTTPException(400, "staff_id и event обязательны")
+
+        # Получаем текущий конфиг бота
+        r = await db.get("bots", params={"id": f"eq.{bid}"})
+        if r.status_code != 200 or not r.json():
+            raise HTTPException(404, "Бот не найден")
+        bot_data   = r.json()[0]
+        cfg        = bot_data.get("config", {}) or {}
+        staff_list = cfg.get("staffAdmins", [])
+
+        updated = False
+        for adm in staff_list:
+            if adm.get("id") != staff_id:
+                continue
+            st = adm.setdefault("stats", {
+                "ticketsAccepted": 0, "ticketsClosed": 0,
+                "messagesSent": 0,   "avgResponseMs": 0
+            })
+            if event == "accepted":
+                st["ticketsAccepted"] = st.get("ticketsAccepted", 0) + 1
+            elif event == "closed":
+                st["ticketsClosed"] = st.get("ticketsClosed", 0) + 1
+            elif event == "message":
+                st["messagesSent"] = st.get("messagesSent", 0) + 1
+            elif event == "response_ms":
+                # Скользящее среднее: новое = (старое * n + value) / (n+1)
+                n = st.get("ticketsAccepted", 1) or 1
+                old_avg = st.get("avgResponseMs", 0)
+                st["avgResponseMs"] = int((old_avg * (n - 1) + int(value)) / n)
+            updated = True
+            break
+
+        if not updated:
+            raise HTTPException(404, f"Администратор {staff_id} не найден в боте {bid}")
+
+        cfg["staffAdmins"] = staff_list
+        patch_r = await db.patch("bots", params={"id": f"eq.{bid}"}, json={"config": cfg})
+        if patch_r.status_code not in [200, 201, 204]:
+            raise HTTPException(500, f"Ошибка записи в БД: {patch_r.text}")
+
+        return {"ok": True, "staff_id": staff_id, "event": event}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка обновления стафф-статы: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/bots/{bid}/staff/stat")
+async def get_staff_stat(bid: str, staff_id: str = ""):
+    """Получить статистику одного или всех стафф-администраторов бота."""
+    try:
+        r = await db.get("bots", params={"id": f"eq.{bid}"})
+        if r.status_code != 200 or not r.json():
+            raise HTTPException(404, "Бот не найден")
+        cfg        = r.json()[0].get("config", {}) or {}
+        staff_list = cfg.get("staffAdmins", [])
+        if staff_id:
+            found = next((a for a in staff_list if a.get("id") == staff_id), None)
+            if not found:
+                raise HTTPException(404, "Администратор не найден")
+            return found
+        return {"staffAdmins": staff_list}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
         
 @app.post("/api/bots/start")
 async def start_handler(req: dict):
