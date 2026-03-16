@@ -867,7 +867,8 @@ class BotInstance:
         self.dp = Dispatcher()
         self.router = Router()
         
-        self.msg_map = {}
+        self.msg_map = {}           # admin_msg_id → user_id
+        self.user_to_admin_map = {}  # (user_id, user_msg_id) → admin_msg_id
         self.flood_cache = {}
         self.is_running = True
         self.sync_queue = asyncio.Queue()
@@ -1931,6 +1932,7 @@ class BotInstance:
             
             if sent_msg:
                 self.msg_map[sent_msg.message_id] = user['id']
+                self.user_to_admin_map[(user['id'], m.message_id)] = sent_msg.message_id
         except Exception as e:
             logger.error(f"Error inside _send_content_to_admin: {e}")
             raise e
@@ -2566,6 +2568,74 @@ class BotInstance:
                 except Exception as e:
                     await m.reply(f"❌ <b>Ошибка:</b> {e}")
 
+        # 3а. Редактирование сообщения администратором → обновить у пользователя
+        @self.router.edited_message(F.chat.id == self.admin_chat_id)
+        async def admin_edited_message(m: Message):
+            # Не обрабатываем команды
+            if m.text and (m.text.startswith("/") or m.text.startswith("!")):
+                return
+            target_id = None
+            if m.message_thread_id:
+                u = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
+                if u:
+                    target_id = u["id"]
+            if not target_id and m.reply_to_message:
+                target_id = self.msg_map.get(m.reply_to_message.message_id)
+            # Ищем оригинальное сообщение пользователя, которому соответствует это сообщение админа
+            admin_msg_id = m.message_id
+            user_msg_id = next(
+                (umid for (uid, umid), amid in self.user_to_admin_map.items() if amid == admin_msg_id),
+                None
+            )
+            if target_id and user_msg_id:
+                try:
+                    if m.text:
+                        await self.bot.edit_message_text(
+                            chat_id=target_id,
+                            message_id=user_msg_id,
+                            text=m.text,
+                            parse_mode="HTML"
+                        )
+                    elif m.caption is not None:
+                        await self.bot.edit_message_caption(
+                            chat_id=target_id,
+                            message_id=user_msg_id,
+                            caption=m.caption,
+                            parse_mode="HTML"
+                        )
+                except TelegramBadRequest as e:
+                    logger.warning(f"Admin edit → user failed: {e}")
+                except Exception as e:
+                    logger.warning(f"Admin edit → user error: {e}")
+
+        # 3б. Редактирование сообщения пользователем → обновить у админа
+        @self.router.edited_message()
+        async def user_edited_message(m: Message):
+            if self.admin_chat_id and m.chat.id == self.admin_chat_id:
+                return
+            uid = m.from_user.id
+            admin_msg_id = self.user_to_admin_map.get((uid, m.message_id))
+            if admin_msg_id and self.admin_chat_id:
+                try:
+                    if m.text:
+                        await self.bot.edit_message_text(
+                            chat_id=self.admin_chat_id,
+                            message_id=admin_msg_id,
+                            text=m.text,
+                            parse_mode="HTML"
+                        )
+                    elif m.caption is not None:
+                        await self.bot.edit_message_caption(
+                            chat_id=self.admin_chat_id,
+                            message_id=admin_msg_id,
+                            caption=m.caption,
+                            parse_mode="HTML"
+                        )
+                except TelegramBadRequest as e:
+                    logger.warning(f"User edit → admin failed: {e}")
+                except Exception as e:
+                    logger.warning(f"User edit → admin error: {e}")
+
         # 4. Сообщения от обычных пользователей
         @self.router.message()
         async def user_input_router(m: Message):
@@ -2977,7 +3047,7 @@ class BotInstance:
             await self.dp.start_polling(
                 self.bot,
                 drop_pending_updates=True,
-                allowed_updates=["message", "callback_query", "my_chat_member"]
+                allowed_updates=["message", "edited_message", "callback_query", "my_chat_member"]
             )
         finally:
             self.is_running = False
