@@ -2561,7 +2561,11 @@ class BotInstance:
             
             if target_id:
                 try:
-                    await self.bot.copy_message(target_id, m.chat.id, m.message_id)
+                    sent = await self.bot.copy_message(target_id, m.chat.id, m.message_id)
+                    if sent:
+                        # admin_msg_id → target_id, и (target_id, user_msg_id) → admin_msg_id
+                        self.msg_map[m.message_id] = target_id
+                        self.user_to_admin_map[(target_id, sent.message_id)] = m.message_id
                     await self.log_and_update(target_id, "Admin", m.text or "[Медиа]", is_admin=True)
                 except TelegramForbiddenError:
                     await m.reply("❌ <b>Ошибка:</b> Пользователь заблокировал бота.")
@@ -2574,19 +2578,22 @@ class BotInstance:
             # Не обрабатываем команды
             if m.text and (m.text.startswith("/") or m.text.startswith("!")):
                 return
-            target_id = None
-            if m.message_thread_id:
-                u = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
-                if u:
-                    target_id = u["id"]
-            if not target_id and m.reply_to_message:
-                target_id = self.msg_map.get(m.reply_to_message.message_id)
-            # Ищем оригинальное сообщение пользователя, которому соответствует это сообщение админа
             admin_msg_id = m.message_id
+            # Получаем target_id из msg_map (сохраняется при отправке)
+            target_id = self.msg_map.get(admin_msg_id)
+            # Ищем user_msg_id: ключ в user_to_admin_map где value == admin_msg_id
             user_msg_id = next(
-                (umid for (uid, umid), amid in self.user_to_admin_map.items() if amid == admin_msg_id),
+                (umid for (uid, umid), amid in self.user_to_admin_map.items()
+                 if amid == admin_msg_id),
                 None
             )
+            if not target_id and user_msg_id:
+                # Попробуем найти target_id через ключ маппинга
+                target_id = next(
+                    (uid for (uid, umid) in self.user_to_admin_map
+                     if umid == user_msg_id and self.user_to_admin_map.get((uid, umid)) == admin_msg_id),
+                    None
+                )
             if target_id and user_msg_id:
                 try:
                     if m.text:
