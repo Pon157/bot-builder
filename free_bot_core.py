@@ -454,6 +454,7 @@ class FreeBotInstance:
         self.user_router  = Router()
 
         self.msg_map:            Dict[int, int]  = {}
+        self.user_to_admin_map:  Dict[tuple, int] = {}  # (user_id, user_msg_id) → admin_msg_id
         self.flood_cache:        Dict[int, float] = {}
         self.broadcast_cache:    Dict[int, str]   = {}
         self.media_group_buffer: Dict[str, dict]  = {}
@@ -715,6 +716,7 @@ class FreeBotInstance:
                 )
                 if sent:
                     self.msg_map[sent.message_id] = user["id"]
+                    self.user_to_admin_map[(user["id"], m.message_id)] = sent.message_id
             except TelegramBadRequest as e:
                 err_str = str(e).lower()
                 if "message thread not found" in err_str or "thread" in err_str:
@@ -727,6 +729,7 @@ class FreeBotInstance:
                         )
                         if sent:
                             self.msg_map[sent.message_id] = user["id"]
+                            self.user_to_admin_map[(user["id"], m.message_id)] = sent.message_id
                     except Exception:
                         pass
                 else:
@@ -784,6 +787,7 @@ class FreeBotInstance:
                 s = await _do_send(thread_id)
                 if s:
                     self.msg_map[s.message_id] = user["id"]
+                    self.user_to_admin_map[(user["id"], m.message_id)] = s.message_id
             except TelegramBadRequest as e:
                 err_str = str(e).lower()
                 if "message thread not found" in err_str or "thread" in err_str:
@@ -797,6 +801,7 @@ class FreeBotInstance:
                         s2 = await _do_send(thread_id)
                         if s2:
                             self.msg_map[s2.message_id] = user["id"]
+                            self.user_to_admin_map[(user["id"], m.message_id)] = s2.message_id
                     except Exception as e2:
                         logger.error(f"forward_to_admin retry error: {e2}")
                 else:
@@ -1608,6 +1613,8 @@ class FreeBotInstance:
                 handled = await self.admin_control_logic(m)
                 if handled:
                     return
+                # Если команда не распознана — всё равно не отправляем пользователю
+                return
 
             bc = self.broadcast_cache.get(m.chat.id)
             if bc:
@@ -1633,12 +1640,79 @@ class FreeBotInstance:
 
             if target_id:
                 try:
-                    await self.bot.copy_message(target_id, m.chat.id, m.message_id)
+                    sent = await self.bot.copy_message(target_id, m.chat.id, m.message_id)
+                    if sent:
+                        # Сохраняем маппинг: сообщение пользователю ← сообщение от админа
+                        self.user_to_admin_map[(target_id, sent.message_id)] = m.message_id
+                        self.msg_map[m.message_id] = target_id
                     await self.log_and_update(target_id, "Admin", m.text or "[Медиа]", is_admin=True)
                 except TelegramForbiddenError:
                     await m.reply("❌ Пользователь заблокировал бота.")
                 except Exception as e:
                     await m.reply(f"❌ Ошибка: {e}")
+
+        # ── 4а. Редактирование сообщения администратором → обновить у пользователя
+        @self.admin_router.edited_message(lambda m: bool(self.admin_chat_id and m.chat.id == self.admin_chat_id))
+        async def admin_edited_message(m: Message):
+            # Команды не обрабатываем
+            if m.text and (m.text.startswith("/") or m.text.startswith("!")):
+                return
+            admin_msg_id = m.message_id
+            # Ищем, кому было скопировано это сообщение
+            target_id = self.msg_map.get(admin_msg_id)
+            user_msg_id = next(
+                (umid for (uid, umid), amid in self.user_to_admin_map.items()
+                 if amid == admin_msg_id and uid == target_id),
+                None
+            )
+            if target_id and user_msg_id:
+                try:
+                    if m.text:
+                        await self.bot.edit_message_text(
+                            chat_id=target_id,
+                            message_id=user_msg_id,
+                            text=m.text,
+                            parse_mode="HTML"
+                        )
+                    elif m.caption is not None:
+                        await self.bot.edit_message_caption(
+                            chat_id=target_id,
+                            message_id=user_msg_id,
+                            caption=m.caption,
+                            parse_mode="HTML"
+                        )
+                except TelegramBadRequest as e:
+                    logger.warning(f"Admin edit → user failed: {e}")
+                except Exception as e:
+                    logger.warning(f"Admin edit → user error: {e}")
+
+        # ── 4б. Редактирование сообщения пользователем → обновить у админа
+        @self.user_router.edited_message()
+        async def user_edited_message(m: Message):
+            if self.admin_chat_id and m.chat.id == self.admin_chat_id:
+                return
+            uid = m.from_user.id
+            admin_msg_id = self.user_to_admin_map.get((uid, m.message_id))
+            if admin_msg_id and self.admin_chat_id:
+                try:
+                    if m.text:
+                        await self.bot.edit_message_text(
+                            chat_id=self.admin_chat_id,
+                            message_id=admin_msg_id,
+                            text=m.text,
+                            parse_mode="HTML"
+                        )
+                    elif m.caption is not None:
+                        await self.bot.edit_message_caption(
+                            chat_id=self.admin_chat_id,
+                            message_id=admin_msg_id,
+                            caption=m.caption,
+                            parse_mode="HTML"
+                        )
+                except TelegramBadRequest as e:
+                    logger.warning(f"User edit → admin failed: {e}")
+                except Exception as e:
+                    logger.warning(f"User edit → admin error: {e}")
 
         # ── 5. Закрытие тикета (callback) ───────────────────────────────────
         @self.user_router.callback_query(lambda c: c.data == "ticket_close")
@@ -1924,7 +1998,7 @@ class FreeBotInstance:
             await self.dp.start_polling(
                 self.bot,
                 drop_pending_updates=True,
-                allowed_updates=["message", "callback_query", "my_chat_member"]
+                allowed_updates=["message", "edited_message", "callback_query", "my_chat_member"]
             )
         finally:
             self.is_running = False
