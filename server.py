@@ -1805,17 +1805,41 @@ async def get_all_bots(x_admin_token: str = Header(None)):
 
 @app.post("/api/admin/bot/action")
 async def admin_bot_action(d: dict, x_admin_token: str = Header(None)):
-    if not verify_admin_token(x_admin_token): raise HTTPException(403)
+    if not verify_admin_token(x_admin_token): 
+        raise HTTPException(403)
+    
     bid = d.get('bot_id')
     action = d.get('action') # 'start', 'stop', 'delete'
+    
+    if not bid:
+        raise HTTPException(400, "bot_id is required")
     
     if action == 'stop':
         await pm.stop_bot(bid)
         await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "IDLE"})
+        
     elif action == 'start':
         res = await db.get("bots", params={"id": f"eq.{bid}"})
         if res.status_code == 200 and res.json():
-            await start_bot_process(res.json()[0])
+            bot_data = res.json()[0]
+            
+            # Собираем полный конфиг для запуска (как это делает основной сервер)
+            inner_cfg = bot_data.get("config") or {}
+            merged = {**inner_cfg, **bot_data}
+            
+            # Важно пробросить флаг бесплатного плана, чтобы PM понял, какой скрипт запускать
+            merged['is_free_plan'] = bot_data.get('is_free_plan', False)
+            
+            # Запускаем через правильный метод менеджера
+            success = await pm.start_bot(bid, merged)
+            
+            if success is True:
+                await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "RUNNING"})
+            else:
+                return {"status": "error", "message": "Failed to start bot process"}
+        else:
+            raise HTTPException(404, "Bot not found in database")
+            
     elif action == 'delete':
         await pm.stop_bot(bid)
         await db.delete("bots", params={"id": f"eq.{bid}"})
@@ -1904,12 +1928,32 @@ async def create_temp_access(request: Request):
 
 @app.post("/api/admin/bots/start")
 async def admin_start_bot_direct(request: Request, x_admin_token: str = Header(None)):
-    if not verify_admin_token(x_admin_token): raise HTTPException(401)
+    if not verify_admin_token(x_admin_token): 
+        raise HTTPException(401)
+        
     data = await request.json()
     bot_data = data.get("bot")
-    success = await start_bot_process(bot_data)
-    return {"status": "started" if success else "failed"}
+    
+    if not bot_data or "id" not in bot_data:
+        return {"status": "failed", "error": "No bot data provided"}
 
+    bid = bot_data.get("id")
+    
+    # Собираем конфиг так же, как в предыдущем исправлении
+    inner_cfg = bot_data.get("config") or {}
+    merged = {**inner_cfg, **bot_data}
+    
+    # Пробрасываем тип плана для корректного выбора скрипта (free_bot_core или основной)
+    merged['is_free_plan'] = bot_data.get('is_free_plan', False)
+    
+    # Запускаем через системный менеджер процессов
+    success = await pm.start_bot(bid, merged)
+    
+    # Если запуск прошел успешно, обновляем статус в базе
+    if success is True:
+        await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "RUNNING"})
+        
+    return {"status": "started" if success is True else "failed"}
 @app.get("/api/admin/system-logs")
 async def get_admin_logs(x_admin_token: str = Header(None)):
     if not verify_admin_token(x_admin_token): raise HTTPException(403)
