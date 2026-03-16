@@ -1658,13 +1658,20 @@ class FreeBotInstance:
             if m.text and (m.text.startswith("/") or m.text.startswith("!")):
                 return
             admin_msg_id = m.message_id
-            # Ищем, кому было скопировано это сообщение
+            # Получаем target_id из msg_map (сохраняется при отправке админом)
             target_id = self.msg_map.get(admin_msg_id)
+            # Ищем user_msg_id: ключ в user_to_admin_map где value == admin_msg_id
             user_msg_id = next(
                 (umid for (uid, umid), amid in self.user_to_admin_map.items()
-                 if amid == admin_msg_id and uid == target_id),
+                 if amid == admin_msg_id),
                 None
             )
+            if not target_id and user_msg_id:
+                target_id = next(
+                    (uid for (uid, umid) in self.user_to_admin_map
+                     if umid == user_msg_id and self.user_to_admin_map.get((uid, umid)) == admin_msg_id),
+                    None
+                )
             if target_id and user_msg_id:
                 try:
                     if m.text:
