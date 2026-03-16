@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BotConfig, BotStatus } from '../types';
+import { BotConfig, BotStatus, BotStaffAdmin, StaffSettings } from '../types';
 import { api } from '../services/apiService';
 import BotConsole from './BotConsole';
 import BotStatsView from './BotStatsView';
@@ -12,7 +12,8 @@ import {
   AppWindow, Palette, AlignLeft, AlignCenter, AlignRight,
   Type, MousePointerClick, Link2, TextCursorInput, Minus,
   MoveVertical, Check, ChevronUp, Copy, Eye, EyeOff,
-  Calendar, AlertTriangle, RefreshCw, ToggleLeft, ToggleRight
+  Calendar, AlertTriangle, RefreshCw, ToggleLeft, ToggleRight,
+  UserPlus, Shield, ArrowLeftRight, Clock, TrendingUp, Award
 } from 'lucide-react';
 
 interface BotEditorProps {
@@ -133,6 +134,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
     { id: 'settings',   label: 'Основные',     icon: Settings,  show: true          },
     { id: 'interface',  label: 'Интерфейс',    icon: Ticket,    show: isSupportBot  },
     { id: 'logic',      label: 'Логика',       icon: Zap,       show: isSupportBot  },
+    { id: 'staff',      label: 'Персонал',     icon: Users,     show: isSupportBot  },
     { id: 'ai',         label: 'ИИ-Ассистент', icon: Brain,     show: isSupportBot  },
     { id: 'miniapps',   label: 'Мини-апп',     icon: AppWindow, show: isSupportBot  },
     { id: 'stats',      label: 'Аналитика',    icon: BarChart3, show: true          },
@@ -1322,6 +1324,9 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
       {/* ════════════════════════════════════════════
           ВКЛАДКА: ИИ-АССИСТЕНТ
       ════════════════════════════════════════════ */}
+      {activeTab === 'staff' && isSupportBot && (
+        <StaffTab bot={bot} onUpdate={handleLocalUpdate} isVK={isVK} />
+      )}
       {activeTab === 'ai' && isSupportBot && (
   <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
     {/* Баланс токенов */}
@@ -3286,6 +3291,374 @@ const ButtonFlowEditor: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => v
           </div>
         </div>
       )}
+    </div>
+  );
+};
+
+// ══════════════════════════════════════════════════════════════════════
+// STAFF TAB — Система администраторов поддержки
+// ══════════════════════════════════════════════════════════════════════
+const DEFAULT_STAFF_SETTINGS: StaffSettings = {
+  enabled: false,
+  notifyOnAssign: true,
+  showStaffList: false,
+  staffListButtonName: 'Список администрации',
+  allowUserSwitch: true,
+  assignMode: 'random',
+};
+
+function genStaffId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+const StaffTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isVK: boolean }> = ({ bot, onUpdate, isVK }) => {
+  const staffSettings: StaffSettings = { ...DEFAULT_STAFF_SETTINGS, ...(bot.staffSettings || {}) };
+  const staffAdmins: BotStaffAdmin[] = bot.staffAdmins || [];
+
+  // Форма добавления нового стафф-админа
+  const [newAlias, setNewAlias]   = React.useState('');
+  const [newName, setNewName]     = React.useState('');
+  const [newTgId, setNewTgId]     = React.useState('');
+  const [addError, setAddError]   = React.useState('');
+
+  // Редактируемый ID (inline)
+  const [editingId, setEditingId] = React.useState<string | null>(null);
+  const [editBuf, setEditBuf]     = React.useState<Partial<BotStaffAdmin>>({});
+
+  // Стата — развёрнутый айди
+  const [expandedStat, setExpandedStat] = React.useState<string | null>(null);
+
+  const upd = (patch: Partial<BotConfig>) => onUpdate({ ...bot, ...patch });
+  const updSettings = (patch: Partial<StaffSettings>) =>
+    upd({ staffSettings: { ...staffSettings, ...patch } });
+  const updAdmins = (list: BotStaffAdmin[]) => upd({ staffAdmins: list });
+
+  const addAdmin = () => {
+    setAddError('');
+    const alias = newAlias.trim();
+    const name  = newName.trim();
+    const rawId = newTgId.trim();
+
+    if (!alias) { setAddError('Укажите псевдоним'); return; }
+    if (!name)  { setAddError('Укажите внутреннее имя'); return; }
+    if (!rawId || isNaN(Number(rawId))) { setAddError(`Укажите корректный ${isVK ? 'VK ID' : 'Telegram ID'}`); return; }
+
+    const numId = Number(rawId);
+    const alreadyExists = staffAdmins.some(a => isVK ? a.vk_id === numId : a.tg_id === numId);
+    if (alreadyExists) { setAddError('Этот ID уже добавлен'); return; }
+
+    const newAdmin: BotStaffAdmin = {
+      id: genStaffId(),
+      alias,
+      name,
+      active: true,
+      ...(isVK ? { vk_id: numId } : { tg_id: numId }),
+      stats: { ticketsAccepted: 0, ticketsClosed: 0, messagesSent: 0, avgResponseMs: 0 },
+    };
+    updAdmins([...staffAdmins, newAdmin]);
+    setNewAlias(''); setNewName(''); setNewTgId('');
+  };
+
+  const removeAdmin = (id: string) => updAdmins(staffAdmins.filter(a => a.id !== id));
+
+  const toggleActive = (id: string) =>
+    updAdmins(staffAdmins.map(a => a.id === id ? { ...a, active: !a.active } : a));
+
+  const startEdit = (a: BotStaffAdmin) => { setEditingId(a.id); setEditBuf({ alias: a.alias, name: a.name, tg_id: a.tg_id, vk_id: a.vk_id }); };
+  const saveEdit = (id: string) => {
+    updAdmins(staffAdmins.map(a => a.id === id ? { ...a, ...editBuf } : a));
+    setEditingId(null); setEditBuf({});
+  };
+
+  const fmtMs = (ms: number) => {
+    if (!ms) return '—';
+    if (ms < 60000) return `${Math.round(ms / 1000)}с`;
+    return `${Math.round(ms / 60000)}м`;
+  };
+
+  const Toggle: React.FC<{ value: boolean; onChange: (v: boolean) => void; label: string; sub?: string }> = ({ value, onChange, label, sub }) => (
+    <div className="flex items-start justify-between gap-4">
+      <div>
+        <p className="text-sm font-semibold text-white">{label}</p>
+        {sub && <p className="text-xs text-zinc-500 mt-0.5">{sub}</p>}
+      </div>
+      <button onClick={() => onChange(!value)} className="shrink-0 mt-0.5">
+        {value
+          ? <ToggleRight className="w-7 h-7 text-blue-500" />
+          : <ToggleLeft  className="w-7 h-7 text-zinc-600" />}
+      </button>
+    </div>
+  );
+
+  const inputCls = "w-full bg-[#0d0d0d] border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500 transition-colors";
+
+  return (
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+
+      {/* ── Главный тумблер ── */}
+      <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-6">
+        <div className="flex items-center gap-3 mb-2">
+          <Shield className="w-5 h-5 text-indigo-400" />
+          <h2 className="text-base font-black text-white">Система администраторов</h2>
+          {staffSettings.enabled && (
+            <span className="ml-auto text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-400 border border-indigo-500/20">
+              Активна
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-zinc-500 leading-relaxed -mt-2">
+          Когда функция включена — каждое новое обращение автоматически закрепляется за одним из активных администраторов.
+          Если она выключена, бот работает как раньше.
+        </p>
+
+        <Toggle
+          value={staffSettings.enabled}
+          onChange={v => updSettings({ enabled: v })}
+          label="Включить систему администраторов"
+          sub="Тикеты будут распределяться между добавленными администраторами"
+        />
+
+        {staffSettings.enabled && (
+          <>
+            <div className="border-t border-zinc-800 pt-6 space-y-5">
+
+              <Toggle
+                value={staffSettings.notifyOnAssign}
+                onChange={v => updSettings({ notifyOnAssign: v })}
+                label='Уведомлять пользователя об ответственном'
+                sub='Пользователь получит сообщение: "Вас принял: [псевдоним]"'
+              />
+
+              <Toggle
+                value={staffSettings.allowUserSwitch}
+                onChange={v => updSettings({ allowUserSwitch: v })}
+                label="Кнопка «Сменить админа»"
+                sub="Пользователь может попросить другого администратора (случайный выбор)"
+              />
+
+              <Toggle
+                value={staffSettings.showStaffList}
+                onChange={v => updSettings({ showStaffList: v })}
+                label="Показывать список администрации"
+                sub="Добавит кнопку в меню пользователя для выбора конкретного администратора"
+              />
+
+              {staffSettings.showStaffList && (
+                <div className="pl-4 border-l-2 border-indigo-500/30 space-y-2">
+                  <label className="text-xs font-semibold text-zinc-400">Название кнопки</label>
+                  <input
+                    className={inputCls}
+                    value={staffSettings.staffListButtonName}
+                    onChange={e => updSettings({ staffListButtonName: e.target.value })}
+                    placeholder="Список администрации"
+                  />
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-zinc-400 flex items-center gap-1.5">
+                  <ArrowLeftRight className="w-3.5 h-3.5" /> Режим назначения
+                </label>
+                <div className="flex gap-2">
+                  {([['random', 'Случайный', 'Рандомный активный администратор'],
+                     ['least',  'По нагрузке', 'Тому у кого меньше открытых тикетов']] as const).map(([val, label, hint]) => (
+                    <button
+                      key={val}
+                      onClick={() => updSettings({ assignMode: val })}
+                      className={`flex-1 py-2.5 px-3 rounded-xl border text-xs font-bold transition-all ${
+                        staffSettings.assignMode === val
+                          ? 'border-indigo-500 bg-indigo-500/10 text-indigo-300'
+                          : 'border-zinc-700 text-zinc-500 hover:border-zinc-600'
+                      }`}
+                    >
+                      <div>{label}</div>
+                      <div className="text-[10px] font-normal opacity-70 mt-0.5">{hint}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </section>
+
+      {/* ── Список администраторов ── */}
+      <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-5">
+        <div className="flex items-center gap-3">
+          <Users className="w-5 h-5 text-indigo-400" />
+          <h2 className="text-base font-black text-white">Администраторы</h2>
+          <span className="ml-auto text-xs font-bold text-zinc-500">{staffAdmins.length} чел.</span>
+        </div>
+
+        {!staffSettings.enabled && (
+          <div className="flex items-center gap-2 text-xs text-amber-400/80 bg-amber-500/5 border border-amber-500/10 rounded-xl px-4 py-3">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            Включите систему администраторов выше, чтобы они начали получать тикеты
+          </div>
+        )}
+
+        {/* Форма добавления */}
+        <div className="bg-[#0d0d0d] border border-zinc-800 rounded-2xl p-5 space-y-3">
+          <p className="text-xs font-black uppercase tracking-widest text-zinc-500 flex items-center gap-1.5">
+            <UserPlus className="w-3.5 h-3.5" /> Добавить администратора
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <input
+              className={inputCls}
+              placeholder="Имя в панели (Иван)"
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+            />
+            <input
+              className={inputCls}
+              placeholder="Псевдоним для юзеров (Иван П.)"
+              value={newAlias}
+              onChange={e => setNewAlias(e.target.value)}
+            />
+            <input
+              className={inputCls}
+              placeholder={isVK ? 'VK ID (123456)' : 'Telegram ID (123456)'}
+              value={newTgId}
+              onChange={e => setNewTgId(e.target.value.replace(/\D/g, ''))}
+            />
+          </div>
+          {addError && <p className="text-xs text-red-400">{addError}</p>}
+          <button
+            onClick={addAdmin}
+            className="w-full py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black transition-colors flex items-center justify-center gap-2"
+          >
+            <Plus className="w-3.5 h-3.5" /> Добавить
+          </button>
+        </div>
+
+        {/* Список */}
+        {staffAdmins.length === 0 ? (
+          <div className="text-center py-10 text-zinc-600 text-sm">
+            Нет администраторов. Добавьте первого выше.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {staffAdmins.map(admin => (
+              <div key={admin.id} className={`border rounded-2xl transition-all ${admin.active ? 'border-zinc-700 bg-[#0d0d0d]' : 'border-zinc-800 bg-[#0a0a0a] opacity-60'}`}>
+
+                {/* Основная строка */}
+                <div className="flex items-center gap-3 p-4">
+                  {/* Аватар-заглушка */}
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center font-black text-sm shrink-0 ${admin.active ? 'bg-indigo-500/20 text-indigo-400' : 'bg-zinc-800 text-zinc-600'}`}>
+                    {admin.alias.charAt(0).toUpperCase()}
+                  </div>
+
+                  {editingId === admin.id ? (
+                    /* ── Режим редактирования ── */
+                    <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <input className={inputCls} value={editBuf.name || ''} onChange={e => setEditBuf(b => ({ ...b, name: e.target.value }))} placeholder="Имя в панели" />
+                      <input className={inputCls} value={editBuf.alias || ''} onChange={e => setEditBuf(b => ({ ...b, alias: e.target.value }))} placeholder="Псевдоним" />
+                      <input className={inputCls}
+                        value={String(isVK ? (editBuf.vk_id ?? '') : (editBuf.tg_id ?? ''))}
+                        onChange={e => {
+                          const n = Number(e.target.value);
+                          setEditBuf(b => isVK ? { ...b, vk_id: n } : { ...b, tg_id: n });
+                        }}
+                        placeholder={isVK ? 'VK ID' : 'Telegram ID'}
+                      />
+                    </div>
+                  ) : (
+                    /* ── Отображение ── */
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-white truncate">{admin.name}</span>
+                        <span className="text-xs text-zinc-500">·</span>
+                        <span className="text-xs text-indigo-400 truncate">@{admin.alias}</span>
+                      </div>
+                      <div className="text-[11px] text-zinc-600 mt-0.5">
+                        {isVK ? `VK: ${admin.vk_id}` : `TG: ${admin.tg_id}`}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Кнопки действий */}
+                  <div className="flex items-center gap-1 shrink-0">
+                    {editingId === admin.id ? (
+                      <>
+                        <button onClick={() => saveEdit(admin.id)} className="p-1.5 rounded-lg bg-green-500/10 text-green-400 hover:bg-green-500/20 transition-colors"><Check className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => setEditingId(null)} className="p-1.5 rounded-lg bg-zinc-800 text-zinc-400 hover:bg-zinc-700 transition-colors"><X className="w-3.5 h-3.5" /></button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => setExpandedStat(expandedStat === admin.id ? null : admin.id)}
+                          className="p-1.5 rounded-lg bg-zinc-800 text-zinc-400 hover:text-indigo-400 transition-colors"
+                          title="Статистика"
+                        >
+                          <TrendingUp className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={() => startEdit(admin)} className="p-1.5 rounded-lg bg-zinc-800 text-zinc-400 hover:text-blue-400 transition-colors" title="Редактировать">
+                          <Settings className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => toggleActive(admin.id)}
+                          className={`p-1.5 rounded-lg transition-colors ${admin.active ? 'bg-green-500/10 text-green-400 hover:bg-red-500/10 hover:text-red-400' : 'bg-zinc-800 text-zinc-600 hover:bg-green-500/10 hover:text-green-400'}`}
+                          title={admin.active ? 'Деактивировать' : 'Активировать'}
+                        >
+                          {admin.active ? <Check className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />}
+                        </button>
+                        <button onClick={() => removeAdmin(admin.id)} className="p-1.5 rounded-lg bg-zinc-800 text-zinc-500 hover:bg-red-500/10 hover:text-red-400 transition-colors" title="Удалить">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Блок статистики (раскрывается) */}
+                {expandedStat === admin.id && admin.stats && (
+                  <div className="border-t border-zinc-800 px-4 pb-4 pt-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {[
+                      { icon: Ticket,       label: 'Принято',        value: admin.stats.ticketsAccepted },
+                      { icon: Check,        label: 'Закрыто',        value: admin.stats.ticketsClosed   },
+                      { icon: MessageSquare, label: 'Сообщений',     value: admin.stats.messagesSent    },
+                      { icon: Clock,        label: 'Сред. ответ',    value: fmtMs(admin.stats.avgResponseMs) },
+                    ].map(({ icon: Icon, label, value }) => (
+                      <div key={label} className="bg-[#111] border border-zinc-800 rounded-xl px-3 py-2.5 text-center">
+                        <Icon className="w-3.5 h-3.5 text-indigo-400 mx-auto mb-1" />
+                        <div className="text-sm font-black text-white">{value}</div>
+                        <div className="text-[10px] text-zinc-600 mt-0.5">{label}</div>
+                      </div>
+                    ))}
+                    <p className="col-span-full text-[10px] text-zinc-600 text-center">
+                      Статистика обновляется в реальном времени через бота. Команда: <code className="text-zinc-500">/stat {isVK ? admin.vk_id : admin.tg_id}</code>
+                    </p>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* ── Справка по командам ── */}
+      {staffSettings.enabled && (
+        <section className="bg-[#111] border border-zinc-800 p-8 rounded-[2.5rem] space-y-4">
+          <div className="flex items-center gap-3 mb-1">
+            <Award className="w-5 h-5 text-indigo-400" />
+            <h2 className="text-base font-black text-white">Команды для администраторов</h2>
+          </div>
+          <div className="space-y-2">
+            {[
+              ['/give <id или псевдоним>', 'Передать текущий тикет другому администратору (в топике/реплае)'],
+              ['/stat <id или псевдоним>', 'Посмотреть статистику конкретного администратора'],
+              ['/stat', 'Посмотреть свою статистику (если пишет сам администратор)'],
+              [isVK ? '«Сменить админа»' : '«Сменить админа»', 'Кнопка у пользователя — переназначает случайного активного администратора'],
+            ].map(([cmd, desc]) => (
+              <div key={cmd} className="flex items-start gap-3 bg-[#0d0d0d] rounded-xl px-4 py-3">
+                <code className="text-xs font-mono text-indigo-300 shrink-0 mt-0.5">{cmd}</code>
+                <span className="text-xs text-zinc-500">{desc}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
     </div>
   );
 };
