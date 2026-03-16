@@ -969,6 +969,129 @@ class BotInstance:
             await self.license_checker_logic()
             await asyncio.sleep(120)
 
+    # ══════════════════════════════════════════════════════════════════
+    # СТАФФ-СИСТЕМА
+    # ══════════════════════════════════════════════════════════════════
+
+    def _get_active_staff(self) -> list:
+        """Возвращает список активных стафф-администраторов."""
+        return [a for a in self.staff_admins if a.get('active', True) and a.get('tg_id')]
+
+    def _assign_staff(self) -> dict | None:
+        """Назначить администратора согласно режиму (random / least)."""
+        active = self._get_active_staff()
+        if not active:
+            return None
+        if self.staff_assign_mode == 'least':
+            # Тот у кого меньше всего принятых тикетов
+            return min(active, key=lambda a: a.get('stats', {}).get('ticketsAccepted', 0))
+        # random
+        import random as _rnd
+        return _rnd.choice(active)
+
+    def _find_staff_by_arg(self, arg: str) -> dict | None:
+        """Ищет стафф-admin по ID (числу) или псевдониму."""
+        arg = arg.strip().lstrip('@')
+        for a in self.staff_admins:
+            if str(a.get('tg_id', '')) == arg:
+                return a
+            if a.get('alias', '').lower() == arg.lower():
+                return a
+            if a.get('name', '').lower() == arg.lower():
+                return a
+        return None
+
+    def _get_user_staff(self, user: dict) -> dict | None:
+        """Возвращает текущего назначенного стафф-admin пользователя."""
+        sid = user.get('assigned_staff_id')
+        if not sid:
+            return None
+        return next((a for a in self.staff_admins if a.get('id') == sid), None)
+
+    async def _post_staff_stat(self, staff_id: str, event: str, value: int = 1):
+        """Отправляет обновление статистики на сервер."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.post(
+                    f"{self.sb_url.replace('/rest/v1', '')}/api/bots/{self.bot_id}/staff/stat",
+                    json={"staff_id": staff_id, "event": event, "value": value},
+                    headers={"apikey": self.sb_key}
+                )
+        except Exception as e:
+            logger.warning(f"[STAFF] Не удалось обновить стату: {e}")
+
+    async def _assign_staff_to_user(self, user: dict, staff: dict, m=None):
+        """Привязывает стафф-admin к пользователю, уведомляет обе стороны."""
+        uid = user['id']
+        old_staff_id = user.get('assigned_staff_id')
+
+        user['assigned_staff_id'] = staff['id']
+        user['assigned_staff_alias'] = staff.get('alias', staff.get('name', '?'))
+        user['assigned_staff_tg'] = staff.get('tg_id')
+        # Засекаем время назначения для расчёта avg response
+        user['_staff_assigned_at'] = int(time.time() * 1000)
+
+        # Уведомляем пользователя
+        if self.staff_notify:
+            try:
+                await self.bot.send_message(
+                    uid,
+                    f"👤 <b>Ваше обращение принял:</b> {staff.get('alias', staff.get('name'))}",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+        # Уведомляем нового стафф-admin в личку
+        try:
+            thread_id = user.get('last_topic_id')
+            topic_link = f"\nТопик: #{thread_id}" if thread_id else ""
+            user_name = user.get('first_name', f"User#{uid}")
+            username  = f" (@{user.get('username')})" if user.get('username') else ""
+            await self.bot.send_message(
+                staff['tg_id'],
+                f"📨 <b>Новое обращение!</b>\n"
+                f"Пользователь: <b>{user_name}{username}</b> (<code>{uid}</code>){topic_link}",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+        # Статистика: принято
+        asyncio.create_task(self._post_staff_stat(staff['id'], 'accepted'))
+
+        # Если был старый и он другой — обновляем его стату (закрытие не считаем, просто логируем)
+        if old_staff_id and old_staff_id != staff['id']:
+            logger.info(f"[STAFF] Тикет {uid} перешёл от {old_staff_id} к {staff['id']}")
+
+    async def _staff_keyboard_for_user(self, user: dict):
+        """Строит ReplyKeyboardMarkup с кнопкой смены админа и (опционально) списком."""
+        from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+        buttons = []
+        if self.staff_allow_switch:
+            buttons.append([KeyboardButton(text="🔄 Сменить админа")])
+        if self.staff_show_list:
+            buttons.append([KeyboardButton(text=self.staff_list_btn_name)])
+        if not buttons:
+            return None
+        return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=False)
+
+    async def _handle_staff_list_request(self, uid: int):
+        """Отправляет пользователю inline-список активных администраторов."""
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        active = self._get_active_staff()
+        if not active:
+            await self.bot.send_message(uid, "😔 В данный момент нет доступных администраторов.", parse_mode="HTML")
+            return
+        buttons = []
+        for a in active:
+            buttons.append([InlineKeyboardButton(
+                text=f"👤 {a.get('alias', a.get('name', '?'))}",
+                callback_data=f"choose_staff:{a['id']}"
+            )])
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await self.bot.send_message(uid, "👥 <b>Выберите администратора:</b>", reply_markup=kb, parse_mode="HTML")
+
     def apply_config(self, data: dict):
         """Парсинг конфигурации с приоритетом новых полей"""
         raw_cfg = data.get('config', {}) if isinstance(data.get('config'), dict) else {}
@@ -999,6 +1122,17 @@ class BotInstance:
         self.auto_ban_limit = int(self.settings.get('autoBanThreshold', 3))
         self.users_list = full_cfg.get('connectedUsers', [])
         self.license_expires_at = full_cfg.get('license_expires_at', 0)
+
+        # ── Стафф-система (администраторы поддержки) ──
+        staff_cfg = full_cfg.get('staffSettings', {}) or {}
+        self.staff_enabled        = staff_cfg.get('enabled', False)
+        self.staff_notify         = staff_cfg.get('notifyOnAssign', True)
+        self.staff_show_list      = staff_cfg.get('showStaffList', False)
+        self.staff_list_btn_name  = staff_cfg.get('staffListButtonName', 'Список администрации')
+        self.staff_allow_switch   = staff_cfg.get('allowUserSwitch', True)
+        self.staff_assign_mode    = staff_cfg.get('assignMode', 'random')
+        # Список стафф-админов: [{id, tg_id, alias, name, active, stats}]
+        self.staff_admins: list = full_cfg.get('staffAdmins', []) or []
 
         # ── ИИ-конфиг (ПОДПРАВЛЕННЫЙ) ──
         ai_cfg = full_cfg.get('ai', {}) or {}
@@ -1859,10 +1993,29 @@ class BotInstance:
             
     async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = "", is_ai_request: bool = False):
         if not self.admin_chat_id: return
+
+        # ── Стафф-система: назначаем администратора при первом сообщении/тикете ──
+        if self.staff_enabled and is_first and not user.get('assigned_staff_id'):
+            staff = self._assign_staff()
+            if staff:
+                await self._assign_staff_to_user(user, staff, m)
+                # Добавляем кнопки "Сменить админа" / "Список администрации" к клавиатуре пользователя
+                kb = await self._staff_keyboard_for_user(user)
+                if kb:
+                    try:
+                        await self.bot.send_message(user['id'], "ℹ️ Выберите действие:", reply_markup=kb, parse_mode="HTML")
+                    except Exception:
+                        pass
+
+        # Добавляем имя назначенного стафф-admin в заголовок для панели
+        if self.staff_enabled and user.get('assigned_staff_alias'):
+            staff_note = f"\n🧑‍💼 Администратор: <b>{user['assigned_staff_alias']}</b>"
+        else:
+            staff_note = ""
         
         force_new_topic = self.topic_per_req and (btn_text != "" or is_first)
         thread_id = await self.resolve_thread(user, force_new=force_new_topic)
-        header_text = format_admin_header(m, self.settings, is_first, btn_text)
+        header_text = format_admin_header(m, self.settings, is_first, btn_text) + staff_note
 
         if is_ai_request:
             header_text = header_text.rstrip('\n') + "\n<b>[ИИ-запрос · не отвечать]</b>\n"
@@ -1873,6 +2026,10 @@ class BotInstance:
                 thread_id = await self.resolve_thread(user, force_new=True)
 
             await self._send_content_to_admin(m, thread_id, header_text, user)
+
+            # Статистика: считаем входящее сообщение для стаффера
+            if self.staff_enabled and user.get('assigned_staff_id'):
+                asyncio.create_task(self._post_staff_stat(user['assigned_staff_id'], 'message'))
             
         except TelegramBadRequest as e:
             if "message thread not found" in e.message:
@@ -2106,6 +2263,25 @@ class BotInstance:
             )
             return True
 
+        # 📊 СТАТИСТИКА СТАФФ-АДМИНИСТРАТОРА
+        elif command == "stat" and self.staff_enabled:
+            # /stat — своя статистика (если отправитель — стафф-admin)
+            # /stat <id|псевдоним> — статистика конкретного
+            sender_id = m.from_user.id
+            if len(cmd_parts) >= 2:
+                target_staff = self._find_staff_by_arg(cmd_parts[1])
+                if not target_staff:
+                    await m.reply(f"❌ Администратор <code>{cmd_parts[1]}</code> не найден.")
+                    return True
+            else:
+                # Ищем по Telegram ID отправителя
+                target_staff = next((a for a in self.staff_admins if a.get('tg_id') == sender_id), None)
+                if not target_staff:
+                    await m.reply("❌ Ваш Telegram ID не найден среди администраторов.\nИспользуйте: /stat <code>ID</code> или /stat <code>псевдоним</code>")
+                    return True
+            await m.reply(await self._format_staff_stat(target_staff))
+            return True
+
         # 📢 РАССЫЛКА
         elif command == "broadcast":
             if m.reply_to_message:
@@ -2316,7 +2492,52 @@ class BotInstance:
             await m.reply(f"✅ Приоритет установлен: {pinfo['prefix']} <b>{pinfo['label']}</b>\nПользователь уведомлён.")
             return True
 
+        # ── СТАФФ: /give <id|псевдоним> — передать тикет другому администратору ──
+        if command == "give":
+            if not self.staff_enabled:
+                return False
+            if len(cmd_parts) < 2:
+                await m.reply(
+                    "🔄 <b>Передача тикета:</b>\n\n"
+                    "/give <code>ID</code> или /give <code>псевдоним</code>\n\n"
+                    "<i>Используйте в топике пользователя или с реплаем на его сообщение.</i>"
+                )
+                return True
+            new_staff = self._find_staff_by_arg(cmd_parts[1])
+            if not new_staff:
+                await m.reply(f"❌ Администратор <code>{cmd_parts[1]}</code> не найден.\nПроверьте ID или псевдоним.")
+                return True
+            if not new_staff.get('active'):
+                await m.reply(f"⚠️ Администратор <b>{new_staff.get('alias', new_staff.get('name'))}</b> сейчас неактивен.")
+                return True
+            await self._assign_staff_to_user(target_user, new_staff)
+            await self._save_to_db(headers)
+            await m.reply(
+                f"✅ Тикет передан администратору <b>{new_staff.get('alias', new_staff.get('name'))}</b>.\n"
+                f"Пользователь уведомлён."
+            )
+            return True
+
         return False
+
+    async def _format_staff_stat(self, staff: dict) -> str:
+        """Форматирует статистику стафф-администратора."""
+        st = staff.get('stats', {})
+        accepted  = st.get('ticketsAccepted', 0)
+        closed    = st.get('ticketsClosed', 0)
+        msgs      = st.get('messagesSent', 0)
+        avg_ms    = st.get('avgResponseMs', 0)
+        if avg_ms < 60000:
+            avg_str = f"{round(avg_ms / 1000)}с" if avg_ms else "—"
+        else:
+            avg_str = f"{round(avg_ms / 60000)}м"
+        return (
+            f"📊 <b>Статистика: {staff.get('alias', staff.get('name', '?'))}</b>\n\n"
+            f"🎫 Принято тикетов: <b>{accepted}</b>\n"
+            f"✅ Закрыто тикетов: <b>{closed}</b>\n"
+            f"💬 Отправлено сообщений: <b>{msgs}</b>\n"
+            f"⏱ Среднее время ответа: <b>{avg_str}</b>"
+        )
 
     async def _save_to_db(self, headers):
         """
@@ -2731,8 +2952,42 @@ class BotInstance:
                             )
                         except Exception:
                             pass
+
+                    # Стафф: закрытие тикета
+                    if self.staff_enabled and user.get('assigned_staff_id'):
+                        asyncio.create_task(self._post_staff_stat(user['assigned_staff_id'], 'closed'))
+                        # Считаем время ответа
+                        assigned_at = user.get('_staff_assigned_at')
+                        if assigned_at:
+                            elapsed_ms = int(time.time() * 1000) - assigned_at
+                            asyncio.create_task(self._post_staff_stat(user['assigned_staff_id'], 'response_ms', elapsed_ms))
+                        user.pop('assigned_staff_id', None)
+                        user.pop('assigned_staff_alias', None)
+                        user.pop('assigned_staff_tg', None)
+                        user.pop('_staff_assigned_at', None)
                     
                     await m.answer("Обращение закрыто.", reply_markup=self.get_main_keyboard())
+                    return
+
+                # ── СТАФФ: кнопка "Сменить админа" ──
+                if self.staff_enabled and self.staff_allow_switch and m.text and m.text.strip() == "🔄 Сменить админа":
+                    active = self._get_active_staff()
+                    # Исключаем текущего
+                    current_id = user.get('assigned_staff_id')
+                    candidates = [a for a in active if a.get('id') != current_id]
+                    if not candidates:
+                        await m.answer("😔 Других доступных администраторов нет.", parse_mode="HTML")
+                    else:
+                        import random as _rnd
+                        new_staff = _rnd.choice(candidates)
+                        await self._assign_staff_to_user(user, new_staff, m)
+                        await self.sync_queue.put(("sync_state", None))
+                        await m.answer(f"✅ Обращение передано администратору: <b>{new_staff.get('alias', new_staff.get('name'))}</b>", parse_mode="HTML")
+                    return
+
+                # ── СТАФФ: кнопка "Список администрации" ──
+                if self.staff_enabled and self.staff_show_list and m.text and m.text.strip() == self.staff_list_btn_name:
+                    await self._handle_staff_list_request(uid)
                     return
 
                 # Если тикет открыт и это НЕ кнопка закрытия — пересылаем админу и выходим
@@ -2750,6 +3005,25 @@ class BotInstance:
                     user.pop('_flow_nodes', None)
                     self.clear_ai_context(uid)
                     await m.answer("Главное меню:", reply_markup=self.get_main_keyboard())
+                    return
+
+                # ── А1) СТАФФ: кнопки вне тикетного режима ──
+                if self.staff_enabled and self.staff_allow_switch and clean_text == "🔄 Сменить админа":
+                    active = self._get_active_staff()
+                    current_id = user.get('assigned_staff_id')
+                    candidates = [a for a in active if a.get('id') != current_id]
+                    if not candidates:
+                        await m.answer("😔 Других доступных администраторов нет.")
+                    else:
+                        import random as _rnd
+                        new_staff = _rnd.choice(candidates)
+                        await self._assign_staff_to_user(user, new_staff, m)
+                        await self.sync_queue.put(("sync_state", None))
+                        await m.answer(f"✅ Администратор изменён: <b>{new_staff.get('alias', new_staff.get('name'))}</b>", parse_mode="HTML")
+                    return
+
+                if self.staff_enabled and self.staff_show_list and clean_text == self.staff_list_btn_name:
+                    await self._handle_staff_list_request(uid)
                     return
 
                 # ── Б) Кнопка ИИ-ассистента из клавиатуры ──
@@ -3006,6 +3280,36 @@ class BotInstance:
                     reply_markup=self.get_main_keyboard(),
                     parse_mode="HTML"
                 )
+            except Exception:
+                pass
+
+        # ── СТАФФ: выбор конкретного администратора из inline-списка ──
+        @self.router.callback_query(lambda c: c.data and c.data.startswith("choose_staff:"))
+        async def on_choose_staff(cb: CallbackQuery):
+            uid_cb   = cb.from_user.id
+            staff_id = cb.data.split(":", 1)[1]
+            user_cb  = next((u for u in self.users_list if u['id'] == uid_cb), None)
+            if not user_cb:
+                await cb.answer("Сессия не найдена.", show_alert=True)
+                return
+
+            staff = next((a for a in self.staff_admins if a.get('id') == staff_id), None)
+            if not staff:
+                await cb.answer("Администратор не найден.", show_alert=True)
+                return
+            if not staff.get('active'):
+                await cb.answer("Этот администратор сейчас недоступен.", show_alert=True)
+                return
+
+            await self._assign_staff_to_user(user_cb, staff, None)
+            await self.sync_queue.put(("sync_state", None))
+
+            try:
+                await cb.message.delete()
+            except Exception:
+                pass
+            try:
+                await cb.answer(f"✅ Обращение принял: {staff.get('alias', staff.get('name'))}")
             except Exception:
                 pass
 
