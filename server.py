@@ -758,8 +758,8 @@ async def get_user_bots(user_id: str):
             return []
         
         bots = res.json()
-        # VK free-plan боты не попадают в Pro-панель — у них своя /api/free/vk/bots/{user_id}
-        bots = [b for b in bots if not (b.get('platform') == 'vk' and b.get('is_free_plan') is True)]
+        # Free-plan боты не попадают в Pro-панель — у них своя /api/free/*
+        bots = [b for b in bots if not (b.get('is_free_plan') is True)]
         
         for bot in bots:
             # 1. Безопасно достаем конфиг
@@ -856,6 +856,11 @@ async def save_bot(b: dict):
         if old_r.status_code != 200:
             logger.error(f"❌ Supabase error: {old_r.text}")
             raise HTTPException(old_r.status_code, "Ошибка связи с БД")
+
+        # ── ЗАЩИТА: free-plan боты нельзя сохранять через Pro-эндпоинт ──
+        if old_r.json() and old_r.json()[0].get("is_free_plan") is True:
+            raise HTTPException(403, "Free-plan боты управляются через /api/free/*")
+        # ── конец защиты ──
 
         bots = old_r.json()
         
@@ -1077,6 +1082,11 @@ async def start_handler(req: dict):
     bot_data = r.json()[0]
     owner_id = bot_data.get('owner_id')
 
+    # ── ЗАЩИТА: free-plan боты нельзя запускать через Pro-эндпоинт ──
+    if bot_data.get("is_free_plan") is True:
+        raise HTTPException(403, "Free-plan боты управляются через /api/free/*")
+    # ── конец защиты ──
+
     # 2. ПРОВЕРКА НА БАН: Проверяем статус пользователя в таблице users
     u_res = await db.get("users", params={"id": f"eq.{owner_id}"})
     if u_res.status_code == 200 and u_res.json():
@@ -1166,6 +1176,12 @@ async def get_bot_status(bid: str):
 
 @app.delete("/api/bots/delete/{uid}/{bid}")
 async def delete_handler(uid: str, bid: str):
+    # ── ЗАЩИТА: free-plan боты нельзя удалять через Pro-эндпоинт ──
+    r = await db.get("bots", params={"id": f"eq.{bid}"})
+    if r.status_code == 200 and r.json():
+        if r.json()[0].get("is_free_plan") is True:
+            raise HTTPException(403, "Free-plan боты управляются через /api/free/*")
+    # ── конец защиты ──
     await pm.stop_bot(bid)
     await db.delete("bots", params={"id": f"eq.{bid}", "owner_id": f"eq.{uid}"})
     return {"status": "deleted"}
