@@ -188,6 +188,46 @@ export const api = {
     });
     return response.ok ? await response.json() : null;
   },
+
+  // ── СТАФФ-СИСТЕМА ──────────────────────────────────────────────────
+
+  /** Получить статистику всех стафф-администраторов бота */
+  getStaffStats: async (botId: string): Promise<{ staffAdmins: any[] }> => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/bots/${botId}/staff/stat`, { method: 'GET' });
+      return response.ok ? await response.json() : { staffAdmins: [] };
+    } catch { return { staffAdmins: [] }; }
+  },
+
+  /** Получить статистику конкретного стафф-администратора */
+  getStaffAdminStat: async (botId: string, staffId: string): Promise<any | null> => {
+    try {
+      const response = await fetchWithTimeout(
+        `${getApiBase()}/bots/${botId}/staff/stat?staff_id=${encodeURIComponent(staffId)}`,
+        { method: 'GET' }
+      );
+      return response.ok ? await response.json() : null;
+    } catch { return null; }
+  },
+
+  /** Обновить статистику стафф-администратора (вызывается из бота, но может пригодиться для ручного сброса) */
+  updateStaffStat: async (
+    botId: string,
+    staffId: string,
+    event: 'accepted' | 'closed' | 'message' | 'response_ms',
+    value = 1
+  ): Promise<boolean> => {
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/bots/${botId}/staff/stat`, {
+        method: 'POST',
+        body: JSON.stringify({ staff_id: staffId, event, value })
+      });
+      return response.ok;
+    } catch { return false; }
+  },
+
+  // ── конец СТАФФ-СИСТЕМЫ ────────────────────────────────────────────
+
   // --- ADMIN API ---
 adminLogin: async (login: string, pass: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/login`, {
