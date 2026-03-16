@@ -1307,8 +1307,8 @@ class FreeBotInstance:
                 except Exception:
                     err_c += 1
             except Exception as e:
-                logger.debug(f"broadcast send error for {user['id']}: {e}")
-                err_c += 1
+                    logger.error(f"broadcast send error for {user['id']}: {e}")
+                    err_c += 1
 
         self._broadcast_increment()
         new_today = self._broadcast_today_count()
