@@ -88,6 +88,8 @@ export interface BotConfig {
   welcomePhoto?: string;
   welcomeInline?: { text: string; url: string }[];
   channels?: string[];
+  staffAdmins?: BotStaffAdmin[];
+  staffSettings?: StaffSettings;
   ai?: {
     mode?: 'off' | 'all' | 'button' | 'command';
     enabled?: boolean;
@@ -120,6 +122,30 @@ export interface BotConfig {
     vkConfirmCode?: string;
     vkSecretKey?: string;
   };
+}
+
+export interface BotStaffAdmin {
+  id: string;           // UUID внутри системы
+  tg_id?: number;       // Telegram ID (для TG-ботов)
+  vk_id?: number;       // VK ID (для VK-ботов)
+  alias: string;        // Псевдоним, показываемый пользователям
+  name: string;         // Внутреннее имя для панели
+  active: boolean;      // Включён ли сейчас
+  stats?: {
+    ticketsAccepted: number;
+    ticketsClosed: number;
+    messagesSent: number;
+    avgResponseMs: number;   // среднее время первого ответа в мс
+  };
+}
+
+export interface StaffSettings {
+  enabled: boolean;                  // главный тумблер
+  notifyOnAssign: boolean;           // "Вас принял: Иван"
+  showStaffList: boolean;            // кнопка "Список администрации"
+  staffListButtonName: string;       // название кнопки
+  allowUserSwitch: boolean;          // кнопка "Сменить админа"
+  assignMode: 'random' | 'least';   // random = случайный, least = у кого меньше тикетов
 }
 
 export interface User {
