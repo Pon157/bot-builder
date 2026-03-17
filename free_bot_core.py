@@ -1282,7 +1282,7 @@ class FreeBotInstance:
     # РАССЫЛКА
     # ─────────────────────────────────────────────────────────────────────────
 
-async def _do_broadcast(self, m: Message, active_users: list, source_msg_id: int):
+    async def _do_broadcast(self, m: Message, active_users: list, source_msg_id: int):
         # ВАЖНО: Все строки ниже должны иметь отступ в 8 пробелов от края файла
         # (если сама функция находится внутри класса)
         sent_c, err_c = 0, 0
