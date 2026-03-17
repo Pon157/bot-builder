@@ -447,19 +447,25 @@ class FreeBotInstance:
             "Content-Type":  "application/json",
         }
 
-        self.bot    = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-        self.dp     = Dispatcher()
+        self.bot = Bot(
+            token=self.token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+        )
+
+        self.dp = Dispatcher()
 
         self.admin_router = Router()
         self.user_router  = Router()
 
-        self.msg_map:            Dict[int, int]  = {}
-        self.user_to_admin_map:  Dict[tuple, int] = {}  # (user_id, user_msg_id) → admin_msg_id
-        self.flood_cache:        Dict[int, float] = {}
-        self.broadcast_cache:    Dict[int, str]   = {}
-        self.media_group_buffer: Dict[str, dict]  = {}
-        self.is_running   = True
-        self.config       = config_data
+        self.msg_map: Dict[int, int] = {}
+        self.user_to_admin_map: Dict[tuple, int] = {}
+        self.flood_cache: Dict[int, float] = {}
+        self.broadcast_cache: Dict[int, str] = {}
+        self.media_group_buffer: Dict[str, dict] = {}
+
+        self.is_running = True
+        self.config = config_data
+
         self._broadcast_day: Dict = {"date": "", "count": 0}
         self._last_push: float = 0.0
 
@@ -467,6 +473,24 @@ class FreeBotInstance:
         self.stats_data = {}
 
         self.apply_config(config_data)
+
+        # ✅ подключаем роутеры
+        self.dp.include_router(self.admin_router)
+        self.dp.include_router(self.user_router)
+
+  
+    async def run_instance(self):
+        try:
+            logger.info(f"[START] Бот {self.bot_id} запускается")
+
+            await self.dp.start_polling(self.bot)
+
+        except Exception as e:
+            logger.error(f"[RUN ERROR]: {e}", exc_info=True)
+
+
+    def apply_config(self, config_data: dict):
+        pass
 
     # ─────────────────────────────────────────────────────────────────────────
     # ПАРСИНГ КОНФИГА
