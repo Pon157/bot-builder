@@ -436,91 +436,37 @@ def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_
 
 class FreeBotInstance:
     def __init__(self, config_data: dict):
-        # 1. Основные данные
         self.bot_id = config_data.get("id")
-        self.token = config_data.get("token")
+        self.token  = config_data.get("token")
 
-        # 2. Настройки Supabase (как ты и просил, берем из окружения)
         self.sb_url = os.getenv("SUPABASE_URL", "").rstrip("/")
         self.sb_key = os.getenv("SUPABASE_KEY", "")
         self.headers = {
-            "apikey": self.sb_key,
+            "apikey":        self.sb_key,
             "Authorization": f"Bearer {self.sb_key}",
-            "Content-Type": "application/json",
+            "Content-Type":  "application/json",
         }
 
-        # 3. Инициализация Bot и Dispatcher
-        self.bot = Bot(
-            token=self.token,
-            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-        )
-        self.dp = Dispatcher()
+        self.bot    = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        self.dp     = Dispatcher()
 
-        # 4. Роутеры
         self.admin_router = Router()
-        self.user_router = Router()
+        self.user_router  = Router()
 
-        # 5. Кэши и маппинги
-        self.msg_map: Dict[int, int] = {}
-        self.user_to_admin_map: Dict[tuple, int] = {}
-        self.flood_cache: Dict[int, float] = {}
-        self.broadcast_cache: Dict[int, str] = {}
-        self.media_group_buffer: Dict[str, dict] = {}
-
-        self.is_running = True
-        self.config = config_data
-
+        self.msg_map:            Dict[int, int]  = {}
+        self.user_to_admin_map:  Dict[tuple, int] = {}  # (user_id, user_msg_id) → admin_msg_id
+        self.flood_cache:        Dict[int, float] = {}
+        self.broadcast_cache:    Dict[int, str]   = {}
+        self.media_group_buffer: Dict[str, dict]  = {}
+        self.is_running   = True
+        self.config       = config_data
         self._broadcast_day: Dict = {"date": "", "count": 0}
         self._last_push: float = 0.0
 
         self.users_list = []
         self.stats_data = {}
 
-        # 6. Применяем конфиг и подключаем роутеры
         self.apply_config(config_data)
-        self._setup_routers()
-
-    def _setup_routers(self):
-        """
-        Безопасное подключение роутеров. 
-        Проверяем, не подключены ли они уже, чтобы избежать RuntimeError.
-        """
-        if self.admin_router.parent_router is None:
-            self.dp.include_router(self.admin_router)
-            logger.debug(f"[INIT] Admin router attached for bot {self.bot_id}")
-        
-        if self.user_router.parent_router is None:
-            self.dp.include_router(self.user_router)
-            logger.debug(f"[INIT] User router attached for bot {self.bot_id}")
-
-    def apply_config(self, config_data: dict):
-        """Метод для обновления конфигурации бота"""
-        # Здесь логика обновления параметров, если нужно
-        self.config = config_data
-        pass
-
-    async def run_instance(self):
-        """Запуск основного цикла опроса (polling)"""
-        try:
-            logger.info(f"🚀 [START] Бот {self.bot_id} начинает работу")
-
-            # Перед стартом удаляем вебхуки и старые апдейты (чистим очередь)
-            await self.bot.delete_webhook(drop_pending_updates=True)
-
-            # Запуск поллинга
-            await self.dp.start_polling(self.bot)
-
-        except Exception as e:
-            logger.error(f"❌ [RUN ERROR] Бот {self.bot_id}: {e}", exc_info=True)
-        finally:
-            # Закрываем сессию бота при выходе
-            await self.bot.session.close()
-
-    async def stop_instance(self):
-        """Метод для мягкой остановки бота"""
-        self.is_running = False
-        await self.dp.stop_polling()
-        logger.info(f"🛑 [STOP] Бот {self.bot_id} остановлен")
 
     # ─────────────────────────────────────────────────────────────────────────
     # ПАРСИНГ КОНФИГА
@@ -1337,82 +1283,103 @@ class FreeBotInstance:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def _do_broadcast(self, m: Message, active_users: list, source_msg_id: int):
-        # Все, что находится внутри функции, должно иметь +4 пробела от края def
-        sent_c, err_c = 0, 0
+    sent_c, err_c = 0, 0
+    total_to_send = len(active_users)
+    
+    logger.info(f"--- [START BROADCAST] ID: {self.bot_id} | Users: {total_to_send} ---")
 
-        status_msg = await m.reply(
-            f"🚀 <b>Рассылаю {len(active_users)} получателям...</b>"
-        )
+    status_msg = await m.reply(
+        f"🚀 <b>Рассылаю {total_to_send} получателям...</b>"
+    )
 
-        # Определяем источник
-        src = m.reply_to_message if m.reply_to_message and m.reply_to_message.message_id == source_msg_id else m
+    # 1. ДЕТАЛЬНЫЙ ДЕБАГ ИСТОЧНИКА
+    # Проверяем, откуда бот пытается взять контент
+    reply = m.reply_to_message
+    src = reply if reply and reply.message_id == source_msg_id else m
 
-        # 🔍 ДЕБАГ ИСТОЧНИКА
-        logger.info(f"[BROADCAST] START users={len(active_users)}")
-        
-        async def _send_to(chat_id: int):
-            # Вложенная функция — еще +4 пробела (итого 8)
-            logger.debug(f"[SEND] -> {chat_id}")
+    logger.info(f"[DEBUG SRC] source_msg_id (expected): {source_msg_id}")
+    logger.info(f"[DEBUG SRC] actual src message_id: {src.message_id}")
+    logger.info(f"[DEBUG SRC] content types: text={bool(src.text)}, photo={bool(src.photo)}, video={bool(src.video)}")
 
-            if src.photo:
-                await self.bot.send_photo(chat_id, src.photo[-1].file_id, caption=src.caption, parse_mode="HTML")
-            elif src.video:
-                await self.bot.send_video(chat_id, src.video.file_id, caption=src.caption, parse_mode="HTML")
-            elif src.document:
-                await self.bot.send_document(chat_id, src.document.file_id, caption=src.caption, parse_mode="HTML")
-            elif src.audio:
-                await self.bot.send_audio(chat_id, src.audio.file_id, caption=src.caption, parse_mode="HTML")
-            elif src.voice:
-                await self.bot.send_voice(chat_id, src.voice.file_id, caption=src.caption, parse_mode="HTML")
-            elif src.video_note:
-                await self.bot.send_video_note(chat_id, src.video_note.file_id)
-            elif src.sticker:
-                await self.bot.send_sticker(chat_id, src.sticker.file_id)
-            elif src.animation:
-                await self.bot.send_animation(chat_id, src.animation.file_id, caption=src.caption, parse_mode="HTML")
-            elif src.text:
-                try:
-                    await self.bot.send_message(chat_id, src.text, parse_mode="HTML", disable_web_page_preview=True)
-                except Exception:
-                    await self.bot.send_message(chat_id, src.text)
-            else:
-                await self.bot.copy_message(chat_id, m.chat.id, source_msg_id)
+    async def _send_to(chat_id: int):
+        # Добавляем логирование перед каждой отправкой
+        if src.photo:
+            await self.bot.send_photo(chat_id, src.photo[-1].file_id, caption=src.caption, parse_mode="HTML")
+        elif src.video:
+            await self.bot.send_video(chat_id, src.video.file_id, caption=src.caption, parse_mode="HTML")
+        elif src.document:
+            await self.bot.send_document(chat_id, src.document.file_id, caption=src.caption, parse_mode="HTML")
+        elif src.audio:
+            await self.bot.send_audio(chat_id, src.audio.file_id, caption=src.caption, parse_mode="HTML")
+        elif src.voice:
+            await self.bot.send_voice(chat_id, src.voice.file_id, caption=src.caption, parse_mode="HTML")
+        elif src.video_note:
+            await self.bot.send_video_note(chat_id, src.video_note.file_id)
+        elif src.sticker:
+            await self.bot.send_sticker(chat_id, src.sticker.file_id)
+        elif src.animation:
+            await self.bot.send_animation(chat_id, src.animation.file_id, caption=src.caption, parse_mode="HTML")
+        elif src.text:
+            await self.bot.send_message(chat_id, src.text, parse_mode="HTML")
+        else:
+            # Если бот не нашел контента в объекте, используем copy_message
+            logger.info(f"[DEBUG SEND] Fallback to copy_message for {chat_id}")
+            await self.bot.copy_message(chat_id, m.chat.id, source_msg_id)
 
-        # 🚀 ОСНОВНОЙ ЦИКЛ (на уровне 4 пробелов)
-        for user in active_users:
-            chat_id = int(user["id"])
-            try:
-                await _send_to(chat_id)
-                sent_c += 1
-                await asyncio.sleep(0.05)
-            except TelegramForbiddenError:
-                err_c += 1
-                user["errors"] = user.get("errors", 0) + 1
-                if user["errors"] >= 3: user["is_active"] = False
-            except TelegramRetryAfter as e:
-                await asyncio.sleep(e.retry_after + 1)
-                try:
-                    await _send_to(chat_id)
-                    sent_c += 1
-                except: err_c += 1
-            except Exception:
-                err_c += 1
+    # 2. ПРОВЕРКА СПИСКА
+    if not active_users:
+        logger.error("[ERROR] active_users is EMPTY. Nothing to broadcast.")
 
-        # 📊 ФИНАЛ
-        self._broadcast_increment()
-        new_today = self._broadcast_today_count()
-        await self._save_to_db()
-
+    # 3. ЦИКЛ С ЛОГАМИ
+    for user in active_users:
+        u_id = user.get("id")
+        if not u_id:
+            logger.warning(f"[SKIP] User without ID: {user}")
+            continue
+            
         try:
-            await status_msg.edit_text(
-                f"✅ <b>Рассылка завершена!</b>\n\n"
-                f"👤 Доставлено: <b>{sent_c}</b>\n"
-                f"🚫 Ошибки: <b>{err_c}</b>\n"
-                f"📊 Рассылок сегодня: <b>{new_today}</b>"
-            )
+            await _send_to(int(u_id))
+            sent_c += 1
+            # Логируем каждые 10 успешных, чтобы не забивать диск
+            if sent_c % 10 == 0:
+                logger.info(f"[PROGRESS] {sent_c}/{total_to_send} sent successfully.")
+            
+            await asyncio.sleep(0.05) # Чуть увеличил для стабильности
+
+        except TelegramForbiddenError:
+            logger.warning(f"[BLOCK] User {u_id} blocked the bot.")
+            user["is_active"] = False
+            err_c += 1
+        except TelegramRetryAfter as e:
+            logger.error(f"[FLOOD] Sleeping for {e.retry_after}s on user {u_id}")
+            await asyncio.sleep(e.retry_after + 1)
+            try:
+                await _send_to(int(u_id))
+                sent_c += 1
+            except Exception as ex:
+                logger.error(f"[RETRY FAIL] {u_id}: {ex}")
+                err_c += 1
         except Exception as e:
-            logger.error(f"[STATUS EDIT ERROR]: {e}")
-      
+            logger.error(f"[FATAL ERROR] Failed to send to {u_id}: {type(e).__name__}: {e}")
+            err_c += 1
+
+    # 4. ИТОГИ В ЛОГ
+    logger.info(f"--- [FINISH BROADCAST] Sent: {sent_c} | Errors: {err_c} ---")
+
+    self._broadcast_increment()
+    new_today = self._broadcast_today_count()
+    await self._save_to_db()
+    
+    try:
+        await status_msg.edit_text(
+            f"✅ <b>Рассылка завершена!</b>\n\n"
+            f"👤 Доставлено: <b>{sent_c}</b>\n"
+            f"🚫 Ошибки: <b>{err_c}</b>\n"
+            f"📊 Рассылок сегодня: <b>{new_today}</b>"
+        )
+    except Exception as e:
+        logger.error(f"[DEBUG] Could not edit status message: {e}")
+
     # ─────────────────────────────────────────────────────────────────────────
     # ЗАГРУЗКА КОНФИГА ПРИ СТАРТЕ
     # ─────────────────────────────────────────────────────────────────────────
