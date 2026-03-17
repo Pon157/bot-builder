@@ -1306,7 +1306,7 @@ class FreeBotInstance:
     # РАССЫЛКА
     # ─────────────────────────────────────────────────────────────────────────
 
-async def _do_broadcast(self, m: Message, active_users: list, source_msg_id: int):
+    async def _do_broadcast(self, m: Message, active_users: list, source_msg_id: int):
     sent_c, err_c = 0, 0
 
     status_msg = await m.reply(
