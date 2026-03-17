@@ -134,7 +134,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
     { id: 'settings',   label: 'Основные',     icon: Settings,  show: true          },
     { id: 'interface',  label: 'Интерфейс',    icon: Ticket,    show: isSupportBot  },
     { id: 'logic',      label: 'Логика',       icon: Zap,       show: isSupportBot  },
-    { id: 'staff',      label: 'Персонал',     icon: Users,     show: isSupportBot  },
+    { id: 'staff',      label: 'Персонал (soon)',     icon: Users,     show: isSupportBot  },
     { id: 'ai',         label: 'ИИ-Ассистент', icon: Brain,     show: isSupportBot  },
     { id: 'miniapps',   label: 'Мини-апп',     icon: AppWindow, show: isSupportBot  },
     { id: 'stats',      label: 'Аналитика',    icon: BarChart3, show: true          },
