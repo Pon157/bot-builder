@@ -39,17 +39,12 @@ from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, Teleg
 from dotenv import load_dotenv
 load_dotenv()
 
+
 logging.basicConfig(
-    level=logging.DEBUG, 
+    level=logging.INFO, # Включаем самый детальный уровень
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-
-# Выключаем слишком подробный дебаг сетевых библиотек
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-# Оставляем только дебаг самого бота и aiogram
-logging.getLogger("aiogram").setLevel(logging.DEBUG)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
