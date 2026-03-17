@@ -1307,7 +1307,7 @@ class FreeBotInstance:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def _do_broadcast(self, m: Message, active_users: list, source_msg_id: int):
-    sent_c, err_c = 0, 0
+      sent_c, err_c = 0, 0
 
     status_msg = await m.reply(
         f"🚀 <b>Рассылаю {len(active_users)} получателям...</b>"
