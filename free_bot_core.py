@@ -28,7 +28,7 @@ from typing import Dict, Optional, List, Any, Callable
 from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
 from aiogram.enums import ParseMode, ChatMemberStatus
 from aiogram.filters import CommandStart, Command, ChatMemberUpdatedFilter
-from aiogram.types import (
+fфrom aiogram.types import (
     Message, ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,
     ReplyKeyboardRemove, ChatMemberUpdated
@@ -1131,22 +1131,30 @@ class FreeBotInstance:
         cmd_parts = m.text.split()
         command   = cmd_parts[0][1:].lower()
 
-        # --- БЛОК СИНХРОНИЗАЦИИ (чтобы бот видел всех 50+ юзеров) ---
+        # --- БЛОК СИНХРОНИЗАЦИИ С ОТДЕЛЬНЫМ УВЕДОМЛЕНИЕМ ---
         if command in ("stats", "broadcast"):
+            # 1. Отправляем промежуточное сообщение
+            sync_msg = await m.reply("🔄 <i>Синхронизация с базой данных Supabase...</i>")
+            
             try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    # Запрашиваем актуальный конфиг бота из Supabase
+                async with httpx.AsyncClient(timeout=15) as client:
                     res = await client.get(
                         f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}&select=config",
                         headers=self.headers
                     )
                     if res.status_code == 200 and res.json():
                         db_config = res.json()[0].get("config") or {}
-                        # Обновляем список пользователей в памяти бота
+                        # Обновляем список пользователей
                         self.users_list = db_config.get("connectedUsers", [])
-                        logging.info(f"[SYNC] База обновлена перед командой {command}. Найдено: {len(self.users_list)}")
+                        logging.info(f"[SYNC] Успешно. Найдено юзеров: {len(self.users_list)}")
+                        
+                        # Обновляем сообщение, чтобы админ видел успех
+                        await sync_msg.edit_text(f"✅ Данные синхронизированы.\n👥 В базе найдено: <b>{len(self.users_list)}</b> пользователей.")
+                    else:
+                        await sync_msg.edit_text("⚠️ Ошибка: База вернула пустой ответ или неверный код.")
             except Exception as e:
-                logging.error(f"Ошибка синхронизации в admin_logic: {e}")
+                logging.error(f"Ошибка синхронизации: {e}")
+                await sync_msg.edit_text(f"❌ Ошибка при подключении к БД: {str(e)}")
 
         # 1. КОМАНДА СТАТИСТИКИ
         if command == "stats":
@@ -1154,11 +1162,12 @@ class FreeBotInstance:
             banned = sum(1 for u in self.users_list if u.get("is_banned"))
             active = sum(1 for u in self.users_list if u.get("is_active", True) and not u.get("is_banned"))
             bc_day = self._broadcast_today_count()
+            
             await m.reply(
-                f"📊 <b>Статистика бота (LIVE)</b>\n\n"
-                f"👥 Всего в базе: <b>{total}</b>\n"
+                f"📊 <b>Детальная статистика</b>\n\n"
+                f"👥 Всего (из БД): <b>{total}</b>\n"
                 f"✅ Активных: <b>{active}</b>\n"
-                f"🚫 Заблокировано: <b>{banned}</b>\n"
+                f"🚫 В бане: <b>{banned}</b>\n"
                 f"📢 Рассылок сегодня: <b>{bc_day}</b>"
             )
             return True
@@ -1172,11 +1181,13 @@ class FreeBotInstance:
             active_users = [u for u in self.users_list if not u.get("is_banned") and u.get("is_active", True)]
             
             if not active_users:
-                await m.reply(f"❌ Нет активных пользователей. (Всего в базе: {len(self.users_list)})")
+                await m.reply(f"❌ Нет активных целей для рассылки.")
                 return True
 
             if m.reply_to_message:
                 source_msg_id = m.reply_to_message.message_id
+                # Добавляем инфо-сообщение перед началом
+                await m.reply(f"🚀 Запуск моментальной рассылки на <b>{len(active_users)}</b> чел...")
                 await self._do_broadcast(m, active_users, source_msg_id)
             else:
                 self.broadcast_cache[m.chat.id] = {
@@ -1184,43 +1195,28 @@ class FreeBotInstance:
                     "active_users": active_users
                 }
                 await m.reply(
-                    f"📢 <b>Режим рассылки</b>\n"
-                    f"Найдено получателей в БД: <b>{len(active_users)}</b>\n\n"
-                    f"Пришлите следующим сообщением то, что хотите разослать.\n\n"
-                    f"<i>Поддерживаются: текст, фото, видео, документы, стикеры и любые медиа</i>"
+                    f"📢 <b>Режим рассылки подготовлен</b>\n"
+                    f"Будет отправлено: <b>{len(active_users)}</b> пользователям.\n\n"
+                    f"Отправьте сообщение (текст/фото/видео), которое нужно разослать."
                 )
             return True
 
-        # --- ПОИСК ЦЕЛЕВОГО ПОЛЬЗОВАТЕЛЯ ДЛЯ BAN/WARN/WHOIS ---
+        # --- ПОИСК ЮЗЕРА ДЛЯ BAN/WARN/WHOIS ---
         target_user = None
+        # (Используем обновленный self.users_list после синхронизации выше)
         if m.message_thread_id:
-            target_user = next(
-                (u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None
-            )
+            target_user = next((u for u in self.users_list if u.get("last_topic_id") == m.message_thread_id), None)
+        
         if not target_user and m.reply_to_message:
             uid_from_map = self.msg_map.get(m.reply_to_message.message_id)
             if uid_from_map:
-                target_user = next(
-                    (u for u in self.users_list if str(u["id"]) == str(uid_from_map)), None
-                )
+                target_user = next((u for u in self.users_list if str(u["id"]) == str(uid_from_map)), None)
+        
         if not target_user and len(cmd_parts) > 1:
             try:
-                direct_id = int(cmd_parts[1])
-                target_user = next(
-                    (u for u in self.users_list if int(u["id"]) == direct_id), None
-                )
-                if not target_user and command in ("ban", "unban"):
-                    target_user = {
-                        "id": direct_id, "first_name": f"User#{direct_id}",
-                        "username": None, "is_banned": False,
-                        "warns": 0, "joined_at": int(time.time()), "last_seen": int(time.time()),
-                    }
-                    self.users_list.append(target_user)
-                elif not target_user:
-                    await m.reply(f"Пользователь <code>{direct_id}</code> не найден.")
-                    return True
-            except ValueError:
-                pass
+                did = int(cmd_parts[1])
+                target_user = next((u for u in self.users_list if int(u["id"]) == did), None)
+            except: pass
 
         if not target_user:
             return False
