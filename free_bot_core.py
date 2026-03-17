@@ -39,12 +39,12 @@ from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, Teleg
 from dotenv import load_dotenv
 load_dotenv()
 
-
 logging.basicConfig(
-    level=logging.INFO, # Включаем самый детальный уровень
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
+logger = logging.getLogger("FreeBotCore")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
