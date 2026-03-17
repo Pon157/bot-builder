@@ -1282,103 +1282,102 @@ class FreeBotInstance:
     # РАССЫЛКА
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def _do_broadcast(self, m: Message, active_users: list, source_msg_id: int):
-    sent_c, err_c = 0, 0
-    total_to_send = len(active_users)
-    
-    logger.info(f"--- [START BROADCAST] ID: {self.bot_id} | Users: {total_to_send} ---")
+async def _do_broadcast(self, m: Message, active_users: list, source_msg_id: int):
+        # ВАЖНО: Все строки ниже должны иметь отступ в 8 пробелов от края файла
+        # (если сама функция находится внутри класса)
+        sent_c, err_c = 0, 0
+        total_to_send = len(active_users)
+        
+        logger.info(f"--- [START BROADCAST] Bot: {self.bot_id} | Target: {total_to_send} users ---")
 
-    status_msg = await m.reply(
-        f"🚀 <b>Рассылаю {total_to_send} получателям...</b>"
-    )
+        status_msg = await m.reply(
+            f"🚀 <b>Рассылка запущена...</b>\nЦель: {total_to_send} пользователей."
+        )
 
-    # 1. ДЕТАЛЬНЫЙ ДЕБАГ ИСТОЧНИКА
-    # Проверяем, откуда бот пытается взять контент
-    reply = m.reply_to_message
-    src = reply if reply and reply.message_id == source_msg_id else m
+        # 1. ОПРЕДЕЛЯЕМ ИСТОЧНИК КОНТЕНТА
+        reply = m.reply_to_message
+        src = reply if reply and reply.message_id == source_msg_id else m
 
-    logger.info(f"[DEBUG SRC] source_msg_id (expected): {source_msg_id}")
-    logger.info(f"[DEBUG SRC] actual src message_id: {src.message_id}")
-    logger.info(f"[DEBUG SRC] content types: text={bool(src.text)}, photo={bool(src.photo)}, video={bool(src.video)}")
+        # ЛОГИРУЕМ: Что именно бот "видит" в сообщении
+        logger.info(f"[DEBUG SRC] source_msg_id: {source_msg_id} | actual_id: {src.message_id}")
+        logger.info(f"[DEBUG SRC] text: {bool(src.text)}, photo: {bool(src.photo)}, video: {bool(src.video)}")
 
-    async def _send_to(chat_id: int):
-        # Добавляем логирование перед каждой отправкой
-        if src.photo:
-            await self.bot.send_photo(chat_id, src.photo[-1].file_id, caption=src.caption, parse_mode="HTML")
-        elif src.video:
-            await self.bot.send_video(chat_id, src.video.file_id, caption=src.caption, parse_mode="HTML")
-        elif src.document:
-            await self.bot.send_document(chat_id, src.document.file_id, caption=src.caption, parse_mode="HTML")
-        elif src.audio:
-            await self.bot.send_audio(chat_id, src.audio.file_id, caption=src.caption, parse_mode="HTML")
-        elif src.voice:
-            await self.bot.send_voice(chat_id, src.voice.file_id, caption=src.caption, parse_mode="HTML")
-        elif src.video_note:
-            await self.bot.send_video_note(chat_id, src.video_note.file_id)
-        elif src.sticker:
-            await self.bot.send_sticker(chat_id, src.sticker.file_id)
-        elif src.animation:
-            await self.bot.send_animation(chat_id, src.animation.file_id, caption=src.caption, parse_mode="HTML")
-        elif src.text:
-            await self.bot.send_message(chat_id, src.text, parse_mode="HTML")
-        else:
-            # Если бот не нашел контента в объекте, используем copy_message
-            logger.info(f"[DEBUG SEND] Fallback to copy_message for {chat_id}")
-            await self.bot.copy_message(chat_id, m.chat.id, source_msg_id)
+        async def _send_to(chat_id: int):
+            # Вложенная функция: еще +4 пробела отступа
+            if src.photo:
+                await self.bot.send_photo(chat_id, src.photo[-1].file_id, caption=src.caption, parse_mode="HTML")
+            elif src.video:
+                await self.bot.send_video(chat_id, src.video.file_id, caption=src.caption, parse_mode="HTML")
+            elif src.document:
+                await self.bot.send_document(chat_id, src.document.file_id, caption=src.caption, parse_mode="HTML")
+            elif src.audio:
+                await self.bot.send_audio(chat_id, src.audio.file_id, caption=src.caption, parse_mode="HTML")
+            elif src.voice:
+                await self.bot.send_voice(chat_id, src.voice.file_id, caption=src.caption, parse_mode="HTML")
+            elif src.video_note:
+                await self.bot.send_video_note(chat_id, src.video_note.file_id)
+            elif src.sticker:
+                await self.bot.send_sticker(chat_id, src.sticker.file_id)
+            elif src.animation:
+                await self.bot.send_animation(chat_id, src.animation.file_id, caption=src.caption, parse_mode="HTML")
+            elif src.text:
+                await self.bot.send_message(chat_id, src.text, parse_mode="HTML", disable_web_page_preview=True)
+            else:
+                # Если всё остальное не подошло, пробуем копирование
+                logger.debug(f"[DEBUG] Using copy_message for {chat_id}")
+                await self.bot.copy_message(chat_id, m.chat.id, source_msg_id)
 
-    # 2. ПРОВЕРКА СПИСКА
-    if not active_users:
-        logger.error("[ERROR] active_users is EMPTY. Nothing to broadcast.")
+        # 2. ОСНОВНОЙ ЦИКЛ
+        if not active_users:
+            logger.error("[ERROR] active_users list is empty!")
 
-    # 3. ЦИКЛ С ЛОГАМИ
-    for user in active_users:
-        u_id = user.get("id")
-        if not u_id:
-            logger.warning(f"[SKIP] User without ID: {user}")
-            continue
-            
-        try:
-            await _send_to(int(u_id))
-            sent_c += 1
-            # Логируем каждые 10 успешных, чтобы не забивать диск
-            if sent_c % 10 == 0:
-                logger.info(f"[PROGRESS] {sent_c}/{total_to_send} sent successfully.")
-            
-            await asyncio.sleep(0.05) # Чуть увеличил для стабильности
+        for user in active_users:
+            u_id = user.get("id")
+            if not u_id:
+                continue
 
-        except TelegramForbiddenError:
-            logger.warning(f"[BLOCK] User {u_id} blocked the bot.")
-            user["is_active"] = False
-            err_c += 1
-        except TelegramRetryAfter as e:
-            logger.error(f"[FLOOD] Sleeping for {e.retry_after}s on user {u_id}")
-            await asyncio.sleep(e.retry_after + 1)
             try:
                 await _send_to(int(u_id))
                 sent_c += 1
-            except Exception as ex:
-                logger.error(f"[RETRY FAIL] {u_id}: {ex}")
+                
+                # Обновляем статус каждые 30 сообщений для визуала
+                if sent_c % 30 == 0:
+                    await status_msg.edit_text(f"⏳ <b>Рассылка в процессе...</b>\nУспешно: {sent_c}\nОшибок: {err_c}")
+                
+                await asyncio.sleep(0.05) # Безопасный интервал
+
+            except TelegramForbiddenError:
+                logger.warning(f"[BLOCK] User {u_id} blocked bot")
+                user["is_active"] = False
                 err_c += 1
+            except TelegramRetryAfter as e:
+                logger.error(f"[FLOOD] Wait {e.retry_after}s")
+                await asyncio.sleep(e.retry_after + 1)
+                try:
+                    await _send_to(int(u_id))
+                    sent_c += 1
+                except:
+                    err_c += 1
+            except Exception as e:
+                logger.error(f"[SEND_ERR] User {u_id}: {type(e).__name__} | {e}")
+                err_c += 1
+
+        # 3. ФИНАЛИЗАЦИЯ
+        logger.info(f"--- [FINISHED] Sent: {sent_c}, Errors: {err_c} ---")
+        
+        self._broadcast_increment()
+        new_today = self._broadcast_today_count()
+        await self._save_to_db()
+
+        try:
+            await status_msg.edit_text(
+                f"✅ <b>Рассылка завершена!</b>\n\n"
+                f"👤 Доставлено: <b>{sent_c}</b>\n"
+                f"🚫 Ошибки: <b>{err_c}</b>\n"
+                f"📊 Рассылок сегодня: <b>{new_today}</b>"
+            )
         except Exception as e:
-            logger.error(f"[FATAL ERROR] Failed to send to {u_id}: {type(e).__name__}: {e}")
-            err_c += 1
-
-    # 4. ИТОГИ В ЛОГ
-    logger.info(f"--- [FINISH BROADCAST] Sent: {sent_c} | Errors: {err_c} ---")
-
-    self._broadcast_increment()
-    new_today = self._broadcast_today_count()
-    await self._save_to_db()
-    
-    try:
-        await status_msg.edit_text(
-            f"✅ <b>Рассылка завершена!</b>\n\n"
-            f"👤 Доставлено: <b>{sent_c}</b>\n"
-            f"🚫 Ошибки: <b>{err_c}</b>\n"
-            f"📊 Рассылок сегодня: <b>{new_today}</b>"
-        )
-    except Exception as e:
-        logger.error(f"[DEBUG] Could not edit status message: {e}")
+            logger.error(f"Status update error: {e}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # ЗАГРУЗКА КОНФИГА ПРИ СТАРТЕ
