@@ -1283,21 +1283,21 @@ class FreeBotInstance:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def _do_broadcast(self, m: Message, active_users: list, source_msg_id: int):
-    sent_c, err_c = 0, 0
+      sent_c, err_c = 0, 0
 
-    status_msg = await m.reply(
-        f"🚀 <b>Рассылаю {len(active_users)} получателям...</b>"
-    )
+      status_msg = await m.reply(
+          f"🚀 <b>Рассылаю {len(active_users)} получателям...</b>"
+      )
 
-    # Определяем источник
-    src = m.reply_to_message if m.reply_to_message and m.reply_to_message.message_id == source_msg_id else m
+      # Определяем источник
+      src = m.reply_to_message if m.reply_to_message and m.reply_to_message.message_id == source_msg_id else m
 
-    # 🔍 ДЕБАГ ИСТОЧНИКА
-    logger.info(f"[BROADCAST] START users={len(active_users)}")
-    logger.info(f"[BROADCAST] source_msg_id={source_msg_id}")
-    logger.info(f"[BROADCAST] src_id={src.message_id}")
-    logger.info(f"[BROADCAST] text={getattr(src, 'text', None)}")
-    logger.info(f"[BROADCAST] caption={getattr(src, 'caption', None)}")
+      # 🔍 ДЕБАГ ИСТОЧНИКА
+      logger.info(f"[BROADCAST] START users={len(active_users)}")
+      logger.info(f"[BROADCAST] source_msg_id={source_msg_id}")
+      logger.info(f"[BROADCAST] src_id={src.message_id}")
+      logger.info(f"[BROADCAST] text={getattr(src, 'text', None)}")
+      logger.info(f"[BROADCAST] caption={getattr(src, 'caption', None)}")
 
     async def _send_to(chat_id: int):
         logger.debug(f"[SEND] -> {chat_id}")
@@ -1374,7 +1374,7 @@ class FreeBotInstance:
             logger.warning(f"[SEND] fallback copy_message -> {chat_id}")
             await self.bot.copy_message(chat_id, m.chat.id, source_msg_id)
 
-    # ОСНОВНОЙ ЦИКЛ
+    # 🚀 ОСНОВНОЙ ЦИКЛ
     for user in active_users:
         chat_id = int(user["id"])
 
@@ -1415,7 +1415,7 @@ class FreeBotInstance:
             logger.error(f"[ERROR] {chat_id}: {type(e).__name__} | {e}")
             err_c += 1
 
-    # финал
+    # 📊 финал
     self._broadcast_increment()
     new_today = self._broadcast_today_count()
     await self._save_to_db()
