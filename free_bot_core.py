@@ -1131,28 +1131,50 @@ class FreeBotInstance:
         cmd_parts = m.text.split()
         command   = cmd_parts[0][1:].lower()
 
+        # --- БЛОК СИНХРОНИЗАЦИИ (чтобы бот видел всех 50+ юзеров) ---
+        if command in ("stats", "broadcast"):
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    # Запрашиваем актуальный конфиг бота из Supabase
+                    res = await client.get(
+                        f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}&select=config",
+                        headers=self.headers
+                    )
+                    if res.status_code == 200 and res.json():
+                        db_config = res.json()[0].get("config") or {}
+                        # Обновляем список пользователей в памяти бота
+                        self.users_list = db_config.get("connectedUsers", [])
+                        logging.info(f"[SYNC] База обновлена перед командой {command}. Найдено: {len(self.users_list)}")
+            except Exception as e:
+                logging.error(f"Ошибка синхронизации в admin_logic: {e}")
+
+        # 1. КОМАНДА СТАТИСТИКИ
         if command == "stats":
             total  = len(self.users_list)
             banned = sum(1 for u in self.users_list if u.get("is_banned"))
             active = sum(1 for u in self.users_list if u.get("is_active", True) and not u.get("is_banned"))
             bc_day = self._broadcast_today_count()
             await m.reply(
-                f"📊 <b>Статистика бота</b>\n\n"
-                f"👥 Всего пользователей: <b>{total}</b>\n"
+                f"📊 <b>Статистика бота (LIVE)</b>\n\n"
+                f"👥 Всего в базе: <b>{total}</b>\n"
                 f"✅ Активных: <b>{active}</b>\n"
                 f"🚫 Заблокировано: <b>{banned}</b>\n"
                 f"📢 Рассылок сегодня: <b>{bc_day}</b>"
             )
             return True
 
+        # 2. КОМАНДА РАССЫЛКИ
         elif command == "broadcast":
             if not self.is_admin(m.from_user.id):
                 await m.reply("🚫 У вас нет прав для рассылки.")
                 return True
+            
             active_users = [u for u in self.users_list if not u.get("is_banned") and u.get("is_active", True)]
+            
             if not active_users:
-                await m.reply("Нет активных пользователей для рассылки.")
+                await m.reply(f"❌ Нет активных пользователей. (Всего в базе: {len(self.users_list)})")
                 return True
+
             if m.reply_to_message:
                 source_msg_id = m.reply_to_message.message_id
                 await self._do_broadcast(m, active_users, source_msg_id)
@@ -1163,11 +1185,13 @@ class FreeBotInstance:
                 }
                 await m.reply(
                     f"📢 <b>Режим рассылки</b>\n"
+                    f"Найдено получателей в БД: <b>{len(active_users)}</b>\n\n"
                     f"Пришлите следующим сообщением то, что хотите разослать.\n\n"
                     f"<i>Поддерживаются: текст, фото, видео, документы, стикеры и любые медиа</i>"
                 )
             return True
 
+        # --- ПОИСК ЦЕЛЕВОГО ПОЛЬЗОВАТЕЛЯ ДЛЯ BAN/WARN/WHOIS ---
         target_user = None
         if m.message_thread_id:
             target_user = next(
@@ -1177,7 +1201,7 @@ class FreeBotInstance:
             uid_from_map = self.msg_map.get(m.reply_to_message.message_id)
             if uid_from_map:
                 target_user = next(
-                    (u for u in self.users_list if int(u["id"]) == int(uid_from_map)), None
+                    (u for u in self.users_list if str(u["id"]) == str(uid_from_map)), None
                 )
         if not target_user and len(cmd_parts) > 1:
             try:
@@ -1201,9 +1225,10 @@ class FreeBotInstance:
         if not target_user:
             return False
 
-        uid       = target_user["id"]
+        uid = target_user["id"]
         ban_limit = self.settings.get("autoBanThreshold", 3)
 
+        # 3. КОМАНДА WHOIS
         if command == "whois":
             uname     = target_user.get("username")
             name_line = target_user.get("first_name", "—")
@@ -1221,8 +1246,8 @@ class FreeBotInstance:
             )
             return True
 
+        # 4. КОМАНДА BAN
         elif command == "ban":
-            # Защита: нельзя забанить администратора
             if uid in self.admin_ids:
                 await m.reply("⛔ <b>Нельзя забанить администратора бота.</b>")
                 return True
@@ -1236,6 +1261,7 @@ class FreeBotInstance:
             await m.reply(f"✅ Пользователь <code>{uid}</code> заблокирован.")
             return True
 
+        # 5. КОМАНДА UNBAN
         elif command == "unban":
             target_user["is_banned"] = False
             target_user["warns"]     = 0
@@ -1248,8 +1274,8 @@ class FreeBotInstance:
             await m.reply(f"✅ Пользователь <code>{uid}</code> разблокирован.")
             return True
 
+        # 6. КОМАНДА WARN
         elif command == "warn":
-            # Защита: нельзя выдать варн администратору
             if uid in self.admin_ids:
                 await m.reply("⛔ <b>Нельзя выдать варн администратору бота.</b>")
                 return True
@@ -1270,6 +1296,7 @@ class FreeBotInstance:
             await m.reply(msg)
             return True
 
+        # 7. КОМАНДА UNWARN
         elif command == "unwarn":
             target_user["warns"] = max(0, target_user.get("warns", 0) - 1)
             await self._save_to_db()
