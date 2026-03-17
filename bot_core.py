@@ -17,7 +17,8 @@ from aiogram.filters import CommandStart, Command, ChatMemberUpdatedFilter
 from aiogram.types import (
     Message, ReplyKeyboardMarkup, KeyboardButton, 
     InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,
-    ReplyKeyboardRemove, ForumTopicCreated, ChatMemberUpdated
+    ReplyKeyboardRemove, ForumTopicCreated, ChatMemberUpdated,
+    MessageReactionUpdated
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
