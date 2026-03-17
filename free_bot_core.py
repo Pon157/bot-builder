@@ -1131,10 +1131,9 @@ class FreeBotInstance:
         cmd_parts = m.text.split()
         command   = cmd_parts[0][1:].lower()
 
-        # --- БЛОК СИНХРОНИЗАЦИИ С ОТДЕЛЬНЫМ УВЕДОМЛЕНИЕМ ---
+        # --- БЛОК СИНХРОНИЗАЦИИ ---
         if command in ("stats", "broadcast"):
-            # 1. Отправляем промежуточное сообщение
-            sync_msg = await m.reply("🔄 <i>Синхронизация с базой данных Supabase...</i>")
+            sync_msg = await m.reply("🔄 <i>Синхронизация с базой данных...</i>")
             
             try:
                 async with httpx.AsyncClient(timeout=15) as client:
@@ -1144,29 +1143,28 @@ class FreeBotInstance:
                     )
                     if res.status_code == 200 and res.json():
                         db_config = res.json()[0].get("config") or {}
-                        # Обновляем список пользователей
                         self.users_list = db_config.get("connectedUsers", [])
                         logging.info(f"[SYNC] Успешно. Найдено юзеров: {len(self.users_list)}")
                         
-                        # Обновляем сообщение, чтобы админ видел успех
                         await sync_msg.edit_text(f"✅ Данные синхронизированы.\n👥 В базе найдено: <b>{len(self.users_list)}</b> пользователей.")
                     else:
-                        await sync_msg.edit_text("⚠️ Ошибка: База вернула пустой ответ или неверный код.")
+                        await sync_msg.edit_text("⚠️ Ошибка: База вернула пустой ответ.")
             except Exception as e:
                 logging.error(f"Ошибка синхронизации: {e}")
-                await sync_msg.edit_text(f"❌ Ошибка при подключении к БД: {str(e)}")
+                await sync_msg.edit_text(f"❌ Ошибка подключения: {str(e)}")
 
         # 1. КОМАНДА СТАТИСТИКИ
         if command == "stats":
             total  = len(self.users_list)
             banned = sum(1 for u in self.users_list if u.get("is_banned"))
-            active = sum(1 for u in self.users_list if u.get("is_active", True) and not u.get("is_banned"))
+            # Считаем активными всех, кто не в бане
+            active = sum(1 for u in self.users_list if not u.get("is_banned"))
             bc_day = self._broadcast_today_count()
             
             await m.reply(
                 f"📊 <b>Детальная статистика</b>\n\n"
-                f"👥 Всего (из БД): <b>{total}</b>\n"
-                f"✅ Активных: <b>{active}</b>\n"
+                f"👥 Всего в БД: <b>{total}</b>\n"
+                f"✅ Будет отправлено (не в бане): <b>{active}</b>\n"
                 f"🚫 В бане: <b>{banned}</b>\n"
                 f"📢 Рассылок сегодня: <b>{bc_day}</b>"
             )
@@ -1175,18 +1173,18 @@ class FreeBotInstance:
         # 2. КОМАНДА РАССЫЛКИ
         elif command == "broadcast":
             if not self.is_admin(m.from_user.id):
-                await m.reply("🚫 У вас нет прав для рассылки.")
+                await m.reply("🚫 У вас нет прав.")
                 return True
             
-            active_users = [u for u in self.users_list if not u.get("is_banned") and u.get("is_active", True)]
+            # УБРАЛИ ПРОВЕРКУ is_active, оставляем только проверку на бан
+            active_users = [u for u in self.users_list if not u.get("is_banned")]
             
             if not active_users:
-                await m.reply(f"❌ Нет активных целей для рассылки.")
+                await m.reply(f"❌ Нет пользователей для рассылки (все в бане или список пуст).")
                 return True
 
             if m.reply_to_message:
                 source_msg_id = m.reply_to_message.message_id
-                # Добавляем инфо-сообщение перед началом
                 await m.reply(f"🚀 Запуск моментальной рассылки на <b>{len(active_users)}</b> чел...")
                 await self._do_broadcast(m, active_users, source_msg_id)
             else:
@@ -1196,8 +1194,8 @@ class FreeBotInstance:
                 }
                 await m.reply(
                     f"📢 <b>Режим рассылки подготовлен</b>\n"
-                    f"Будет отправлено: <b>{len(active_users)}</b> пользователям.\n\n"
-                    f"Отправьте сообщение (текст/фото/видео), которое нужно разослать."
+                    f"Получателей: <b>{len(active_users)}</b>\n\n"
+                    f"Пришлите сообщение для рассылки."
                 )
             return True
 
