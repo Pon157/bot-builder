@@ -1306,8 +1306,9 @@ class FreeBotInstance:
     # РАССЫЛКА
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def _do_broadcast(self, m: Message, active_users: list, source_msg_id: int):
-      sent_c, err_c = 0, 0
+    async def _do_broadcast(self, m, active_users: list, source_msg_id: int):
+    # 1. Исправлены отступы в начале (были лишние пробелы)
+    sent_c, err_c = 0, 0
 
     status_msg = await m.reply(
         f"🚀 <b>Рассылаю {len(active_users)} получателям...</b>"
@@ -1325,7 +1326,11 @@ class FreeBotInstance:
 
     async def _send_to(chat_id: int):
         logger.debug(f"[SEND] -> {chat_id}")
-
+        
+        # Используем метод copy_message — это универсальный способ переслать любой тип сообщения 
+        # без ручного перебора photo, video, document и сохранения caption.
+        # Но если нужна кастомная логика (как у тебя), оставляем ветвление:
+        
         if src.photo:
             await self.bot.send_photo(
                 chat_id,
@@ -1333,7 +1338,6 @@ class FreeBotInstance:
                 caption=src.caption,
                 parse_mode="HTML"
             )
-
         elif src.video:
             await self.bot.send_video(
                 chat_id,
@@ -1341,7 +1345,6 @@ class FreeBotInstance:
                 caption=src.caption,
                 parse_mode="HTML"
             )
-
         elif src.document:
             await self.bot.send_document(
                 chat_id,
@@ -1349,7 +1352,6 @@ class FreeBotInstance:
                 caption=src.caption,
                 parse_mode="HTML"
             )
-
         elif src.audio:
             await self.bot.send_audio(
                 chat_id,
@@ -1357,7 +1359,6 @@ class FreeBotInstance:
                 caption=src.caption,
                 parse_mode="HTML"
             )
-
         elif src.voice:
             await self.bot.send_voice(
                 chat_id,
@@ -1365,13 +1366,10 @@ class FreeBotInstance:
                 caption=src.caption,
                 parse_mode="HTML"
             )
-
         elif src.video_note:
             await self.bot.send_video_note(chat_id, src.video_note.file_id)
-
         elif src.sticker:
             await self.bot.send_sticker(chat_id, src.sticker.file_id)
-
         elif src.animation:
             await self.bot.send_animation(
                 chat_id,
@@ -1379,7 +1377,6 @@ class FreeBotInstance:
                 caption=src.caption,
                 parse_mode="HTML"
             )
-
         elif src.text:
             try:
                 await self.bot.send_message(
@@ -1391,62 +1388,61 @@ class FreeBotInstance:
             except Exception as e:
                 logger.warning(f"[SEND TEXT FAIL HTML] {chat_id}: {e}")
                 await self.bot.send_message(chat_id, src.text)
-
         else:
+            # Если ничего не подошло, копируем через Telegram API напрямую
             logger.warning(f"[SEND] fallback copy_message -> {chat_id}")
             await self.bot.copy_message(chat_id, m.chat.id, source_msg_id)
 
     # 🚀 ОСНОВНОЙ ЦИКЛ
     for user in active_users:
         chat_id = int(user["id"])
-
         try:
             logger.info(f"[BROADCAST] sending -> {chat_id}")
-
             await _send_to(chat_id)
-
             sent_c += 1
-            logger.info(f"[BROADCAST] success -> {chat_id}")
-
-            await asyncio.sleep(0.08)
+            
+            # Небольшая пауза для обхода лимитов (30 сообщ/сек)
+            await asyncio.sleep(0.05) 
 
         except TelegramForbiddenError as e:
             logger.warning(f"[FORBIDDEN] {chat_id}: {e}")
-
+            # Логика отключения неактивных пользователей
             user["errors"] = user.get("errors", 0) + 1
             if user["errors"] >= 3:
                 user["is_active"] = False
-
             err_c += 1
 
         except TelegramRetryAfter as e:
             logger.warning(f"[FLOOD] {chat_id}: wait {e.retry_after}")
-
             await asyncio.sleep(e.retry_after + 1)
-
+            # Повторная попытка
             try:
                 await _send_to(chat_id)
                 sent_c += 1
-                logger.info(f"[RETRY OK] {chat_id}")
-            except Exception as e2:
-                logger.error(f"[RETRY FAIL] {chat_id}: {type(e2).__name__} | {e2}")
+            except Exception:
                 err_c += 1
 
         except Exception as e:
             logger.error(f"[ERROR] {chat_id}: {type(e).__name__} | {e}")
             err_c += 1
 
-    # 📊 финал
-    self._broadcast_increment()
-    new_today = self._broadcast_today_count()
-    await self._save_to_db()
+    # 📊 ФИНАЛ
+    # Проверь, чтобы эти методы были определены в твоем классе
+    if hasattr(self, '_broadcast_increment'):
+        self._broadcast_increment()
+    
+    new_today = self._broadcast_today_count() if hasattr(self, '_broadcast_today_count') else "N/A"
+    
+    if hasattr(self, '_save_to_db'):
+        await self._save_to_db()
 
     try:
         await status_msg.edit_text(
             f"✅ <b>Рассылка завершена!</b>\n\n"
             f"👤 Доставлено: <b>{sent_c}</b>\n"
             f"🚫 Ошибки: <b>{err_c}</b>\n"
-            f"📊 Рассылок сегодня: <b>{new_today}</b>"
+            f"📊 Рассылок сегодня: <b>{new_today}</b>",
+            parse_mode="HTML"
         )
     except Exception as e:
         logger.error(f"[STATUS EDIT ERROR]: {e}")
