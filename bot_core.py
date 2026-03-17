@@ -2865,6 +2865,49 @@ class BotInstance:
                 except Exception as e:
                     logger.warning(f"User edit → admin error: {e}")
 
+        # 3в. Зеркалирование реакций между юзером и админом
+        @self.router.message_reaction()
+        async def mirror_reactions(reaction: MessageReactionUpdated):
+            chat_id = reaction.chat.id
+            msg_id = reaction.message_id
+            
+            # Сценарий А: Реакцию поставили в админ-чате
+            if self.admin_chat_id and chat_id == self.admin_chat_id:
+                # Ищем ID пользователя по сообщению
+                target_user_id = self.msg_map.get(msg_id)
+                if not target_user_id:
+                    # Запасной поиск
+                    target_user_id = next((uid for (uid, umid), amid in self.user_to_admin_map.items() if amid == msg_id), None)
+                
+                if target_user_id:
+                    # Ищем ID сообщения на стороне пользователя
+                    user_msg_id = next((umid for (uid, umid), amid in self.user_to_admin_map.items() if amid == msg_id and uid == target_user_id), None)
+                    if user_msg_id:
+                        try:
+                            await self.bot.set_message_reaction(
+                                chat_id=target_user_id, 
+                                message_id=user_msg_id, 
+                                reaction=reaction.new_reaction
+                            )
+                        except Exception as e:
+                            logger.warning(f"Ошибка переноса реакции пользователю {target_user_id}: {e}")
+
+            # Сценарий Б: Реакцию поставил обычный пользователь
+            else:
+                user_id = chat_id
+                # Ищем ID сообщения на стороне админа
+                admin_msg_id = self.user_to_admin_map.get((user_id, msg_id))
+                
+                if admin_msg_id and self.admin_chat_id:
+                    try:
+                        await self.bot.set_message_reaction(
+                            chat_id=self.admin_chat_id, 
+                            message_id=admin_msg_id, 
+                            reaction=reaction.new_reaction
+                        )
+                    except Exception as e:
+                        logger.warning(f"Ошибка переноса реакции админу от {user_id}: {e}")
+
         # 4. Сообщения от обычных пользователей
         @self.router.message()
         async def user_input_router(m: Message):
@@ -3359,7 +3402,7 @@ class BotInstance:
             await self.dp.start_polling(
                 self.bot,
                 drop_pending_updates=True,
-                allowed_updates=["message", "edited_message", "callback_query", "my_chat_member"]
+                allowed_updates=["message", "edited_message", "callback_query", "my_chat_member", "message_reaction"]
             )
         finally:
             self.is_running = False
