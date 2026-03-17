@@ -28,7 +28,7 @@ from typing import Dict, Optional, List, Any, Callable
 from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
 from aiogram.enums import ParseMode, ChatMemberStatus
 from aiogram.filters import CommandStart, Command, ChatMemberUpdatedFilter
-fфrom aiogram.types import (
+from aiogram.types import (
     Message, ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,
     ReplyKeyboardRemove, ChatMemberUpdated
