@@ -436,27 +436,31 @@ def format_admin_header(m: Message, settings: dict, is_first: bool = False, btn_
 
 class FreeBotInstance:
     def __init__(self, config_data: dict):
+        # 1. Основные данные
         self.bot_id = config_data.get("id")
-        self.token  = config_data.get("token")
+        self.token = config_data.get("token")
 
+        # 2. Настройки Supabase (как ты и просил, берем из окружения)
         self.sb_url = os.getenv("SUPABASE_URL", "").rstrip("/")
         self.sb_key = os.getenv("SUPABASE_KEY", "")
         self.headers = {
-            "apikey":        self.sb_key,
+            "apikey": self.sb_key,
             "Authorization": f"Bearer {self.sb_key}",
-            "Content-Type":  "application/json",
+            "Content-Type": "application/json",
         }
 
+        # 3. Инициализация Bot и Dispatcher
         self.bot = Bot(
             token=self.token,
             default=DefaultBotProperties(parse_mode=ParseMode.HTML)
         )
-
         self.dp = Dispatcher()
 
+        # 4. Роутеры
         self.admin_router = Router()
-        self.user_router  = Router()
+        self.user_router = Router()
 
+        # 5. Кэши и маппинги
         self.msg_map: Dict[int, int] = {}
         self.user_to_admin_map: Dict[tuple, int] = {}
         self.flood_cache: Dict[int, float] = {}
@@ -472,25 +476,51 @@ class FreeBotInstance:
         self.users_list = []
         self.stats_data = {}
 
+        # 6. Применяем конфиг и подключаем роутеры
         self.apply_config(config_data)
+        self._setup_routers()
 
-        # ✅ подключаем роутеры
-        self.dp.include_router(self.admin_router)
-        self.dp.include_router(self.user_router)
+    def _setup_routers(self):
+        """
+        Безопасное подключение роутеров. 
+        Проверяем, не подключены ли они уже, чтобы избежать RuntimeError.
+        """
+        if self.admin_router.parent_router is None:
+            self.dp.include_router(self.admin_router)
+            logger.debug(f"[INIT] Admin router attached for bot {self.bot_id}")
+        
+        if self.user_router.parent_router is None:
+            self.dp.include_router(self.user_router)
+            logger.debug(f"[INIT] User router attached for bot {self.bot_id}")
 
-  
+    def apply_config(self, config_data: dict):
+        """Метод для обновления конфигурации бота"""
+        # Здесь логика обновления параметров, если нужно
+        self.config = config_data
+        pass
+
     async def run_instance(self):
+        """Запуск основного цикла опроса (polling)"""
         try:
-            logger.info(f"[START] Бот {self.bot_id} запускается")
+            logger.info(f"🚀 [START] Бот {self.bot_id} начинает работу")
 
+            # Перед стартом удаляем вебхуки и старые апдейты (чистим очередь)
+            await self.bot.delete_webhook(drop_pending_updates=True)
+
+            # Запуск поллинга
             await self.dp.start_polling(self.bot)
 
         except Exception as e:
-            logger.error(f"[RUN ERROR]: {e}", exc_info=True)
+            logger.error(f"❌ [RUN ERROR] Бот {self.bot_id}: {e}", exc_info=True)
+        finally:
+            # Закрываем сессию бота при выходе
+            await self.bot.session.close()
 
-
-    def apply_config(self, config_data: dict):
-        pass
+    async def stop_instance(self):
+        """Метод для мягкой остановки бота"""
+        self.is_running = False
+        await self.dp.stop_polling()
+        logger.info(f"🛑 [STOP] Бот {self.bot_id} остановлен")
 
     # ─────────────────────────────────────────────────────────────────────────
     # ПАРСИНГ КОНФИГА
