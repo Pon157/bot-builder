@@ -556,24 +556,15 @@ def mod_access(func):
 
 def authorized_chat_only(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # Если это не сообщение (например, редактирование), пропускаем
-        if not update.effective_chat:
-            return await func(update, context)
-            
         chat = update.effective_chat
-        
-        # Проверка только для групп
-        if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        if chat and chat.type in [ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL]:
             if not await is_authorized_chat(chat.id):
                 try:
                     await context.bot.leave_chat(chat.id)
-                except:
+                except Exception:
                     pass
-                return # Выходим и не выполняем функцию
-                
-        # Во всех остальных случаях (ЛС или авторизованная группа) — работаем
+                return
         return await func(update, context)
-    
     wrapper.__name__ = func.__name__
     return wrapper
 
@@ -1634,8 +1625,59 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "СИСТЕМА РАБОТАЕТ\nДоступные команды: ..."
-    await update.message.reply_text(text)
+    user = update.effective_user
+    chat = update.effective_chat
+    is_mod = await can_moderate(context, chat.id if chat else 0, user.id)
+
+    if not is_mod:
+        await update.message.reply_text(
+            "🛡️ <b>Guard Bot</b>\nБот для защиты чатов от спама и рейдов.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    text = (
+        "🛡️ <b>Guard Bot v2.1</b>\n\n"
+        "<b>🔨 Модерация:</b>\n"
+        "/ban — бан (ответ или /ban [id] [причина])\n"
+        "/unban [id] — разбан\n"
+        "/kick — кик\n"
+        "/mute [время] [причина] — мут (10m, 2h, 3d)\n"
+        "/unmute — снять мут\n"
+        "/warn [причина] — предупреждение\n"
+        "/unwarn — сброс предупреждений\n"
+        "/shadowban — теневой бан (ответ или /shadowban [id])\n"
+        "/unshadowban — снять теневой бан (ответ или /unshadowban [id])\n"
+        "/purge [n] — удалить n сообщений\n\n"
+        "<b>🔒 Защита:</b>\n"
+        "/lockdown [время] — lockdown чата\n"
+        "/unlock — снять lockdown\n"
+        "/slowmode [сек] — медленный режим\n\n"
+        "<b>⚙️ Настройки:</b>\n"
+        "/settings — показать настройки\n"
+        "/set [параметр] [on|off]\n"
+        "/setwelcome [текст] — приветствие ({user})\n"
+        "/addfilter [слово] [delete|warn|mute|ban]\n"
+        "/filters | /delfilter [id]\n"
+        "/addwl [домен] — whitelist ссылок\n\n"
+        "<b>📊 Информация:</b>\n"
+        "/userinfo (ответ или /userinfo [id])\n"
+        "/logs [n] | /stats\n\n"
+        "<b>⚡ Параметры /set:</b>\n"
+        "<code>antiflood antispam antiduplicate\n"
+        "antilinks antiforward captcha antiraid</code>\n\n"
+        "<b>ℹ️ Доступ к командам:</b>\n"
+        "Telegram-администраторы чата + персонал бота"
+    )
+    if user.id == OWNER_ID:
+        text += (
+            "\n\n<b>👑 Системные (только owner бота):</b>\n"
+            "/addstaff [id] [trusted|moderator] [username]\n"
+            "/removestaff [id] | /liststaff\n"
+            "/authchat | /deauthchat"
+        )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
 
 # ══════════════════════════════════════════════════════
 #  КОНТРОЛЬ ДОБАВЛЕНИЯ БОТА
@@ -1688,8 +1730,22 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════
-#  ЗАПУСК
+#  ОТЛАДКА И ЗАПУСК
 # ══════════════════════════════════════════════════════
+
+async def debug_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Глобальный логгер входящих обновлений в консоль"""
+    print(f"\n--- [DEBUG] ПРИШЕЛ АПДЕЙТ ---")
+    if update.message:
+        print(f"Текст: {update.message.text}")
+        print(f"От кого (ID): {update.effective_user.id}")
+        print(f"Чат (ID): {update.effective_chat.id}")
+        print(f"Тип чата: {update.effective_chat.type}")
+    elif update.callback_query:
+        print(f"Кнопка: {update.callback_query.data}")
+    else:
+        print(f"Тип апдейта: {type(update)}")
+    print(f"-----------------------------\n")
 
 def main():
     if not BOT_TOKEN:
@@ -1699,78 +1755,86 @@ def main():
         logger.error("OWNER_ID не задан в .env!")
         return
 
-    async def post_init(app: Application):
+    async def post_init(application: Application):
         await init_db()
         logger.info(f"Guard Bot v2.1 запущен. Owner: {OWNER_ID}")
-        if app.job_queue is None:
-            logger.warning(
-                "JobQueue недоступен! Таймауты капчи и авто-снятие lockdown не будут работать.\n"
-                "Установите: pip install 'python-telegram-bot[job-queue]'"
-            )
+        
+        # Проверка JobQueue
+        if application.job_queue is None:
+            logger.warning("JobQueue недоступен! Капча и таймауты не будут работать.")
+        
+        # Уведомление владельцу в ЛС
         try:
-            await app.bot.send_message(
+            await application.bot.send_message(
                 OWNER_ID,
-                "🟢 <b>Guard Bot v2.1 запущен</b>\n\n"
-                "Система защиты активирована.\n/help — команды.",
+                "🟢 <b>Guard Bot v2.1 запущен</b>\nСистема готова. Напишите /help в ЛС для проверки.",
                 parse_mode=ParseMode.HTML
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Не удалось отправить старт-сообщение OWNER_ID: {e}")
 
+    # Создание приложения
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
-    # Системные
-    app.add_handler(CommandHandler("start",       cmd_start))
-    app.add_handler(CommandHandler("help",        cmd_help))
-    app.add_handler(CommandHandler("addstaff",    cmd_addstaff))
+    # 1. ДЕБАГ-ХЕНДЛЕР (Группа -1 гарантирует, что он сработает ПЕРВЫМ)
+    app.add_handler(TypeHandler(Update, debug_all), group=-1)
+
+    # 2. КОМАНДЫ (Регистрируем ДО текстовых сообщений)
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("addstaff", cmd_addstaff))
     app.add_handler(CommandHandler("removestaff", cmd_removestaff))
-    app.add_handler(CommandHandler("liststaff",   cmd_liststaff))
-    app.add_handler(CommandHandler("authchat",    cmd_authchat))
-    app.add_handler(CommandHandler("deauthchat",  cmd_deauthchat))
+    app.add_handler(CommandHandler("liststaff", cmd_liststaff))
+    app.add_handler(CommandHandler("authchat", cmd_authchat))
+    app.add_handler(CommandHandler("deauthchat", cmd_deauthchat))
+    
     # Модерация
-    app.add_handler(CommandHandler("ban",         cmd_ban))
-    app.add_handler(CommandHandler("unban",       cmd_unban))
-    app.add_handler(CommandHandler("kick",        cmd_kick))
-    app.add_handler(CommandHandler("mute",        cmd_mute))
-    app.add_handler(CommandHandler("unmute",      cmd_unmute))
-    app.add_handler(CommandHandler("warn",        cmd_warn))
-    app.add_handler(CommandHandler("unwarn",      cmd_unwarn))
-    app.add_handler(CommandHandler("shadowban",   cmd_shadowban))
+    app.add_handler(CommandHandler("ban", cmd_ban))
+    app.add_handler(CommandHandler("unban", cmd_unban))
+    app.add_handler(CommandHandler("kick", cmd_kick))
+    app.add_handler(CommandHandler("mute", cmd_mute))
+    app.add_handler(CommandHandler("unmute", cmd_unmute))
+    app.add_handler(CommandHandler("warn", cmd_warn))
+    app.add_handler(CommandHandler("unwarn", cmd_unwarn))
+    app.add_handler(CommandHandler("shadowban", cmd_shadowban))
     app.add_handler(CommandHandler("unshadowban", cmd_unshadowban))
-    app.add_handler(CommandHandler("purge",       cmd_purge))
-    # Защита
-    app.add_handler(CommandHandler("lockdown",    cmd_lockdown))
-    app.add_handler(CommandHandler("unlock",      cmd_unlock))
-    app.add_handler(CommandHandler("slowmode",    cmd_slowmode))
-    # Настройки
-    app.add_handler(CommandHandler("settings",    cmd_settings))
-    app.add_handler(CommandHandler("set",         cmd_set))
-    app.add_handler(CommandHandler("setwelcome",  cmd_setwelcome))
-    app.add_handler(CommandHandler("addfilter",   cmd_addfilter))
-    app.add_handler(CommandHandler("filters",     cmd_filters))
-    app.add_handler(CommandHandler("delfilter",   cmd_delfilter))
-    app.add_handler(CommandHandler("addwl",       cmd_addwl))
-    # Информация
-    app.add_handler(CommandHandler("userinfo",    cmd_userinfo))
-    app.add_handler(CommandHandler("logs",        cmd_logs))
-    app.add_handler(CommandHandler("stats",       cmd_stats))
-    # Сообщения
+    app.add_handler(CommandHandler("purge", cmd_purge))
+    
+    # Защита и Настройки
+    app.add_handler(CommandHandler("lockdown", cmd_lockdown))
+    app.add_handler(CommandHandler("unlock", cmd_unlock))
+    app.add_handler(CommandHandler("slowmode", cmd_slowmode))
+    app.add_handler(CommandHandler("settings", cmd_settings))
+    app.add_handler(CommandHandler("set", cmd_set))
+    app.add_handler(CommandHandler("setwelcome", cmd_setwelcome))
+    app.add_handler(CommandHandler("addfilter", cmd_addfilter))
+    app.add_handler(CommandHandler("filters", cmd_filters))
+    app.add_handler(CommandHandler("delfilter", cmd_delfilter))
+    app.add_handler(CommandHandler("addwl", cmd_addwl))
+    
+    # Инфо
+    app.add_handler(CommandHandler("userinfo", cmd_userinfo))
+    app.add_handler(CommandHandler("logs", cmd_logs))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+
+    # 3. ОБРАБОТКА ТЕКСТА (Только если это НЕ команда)
     app.add_handler(MessageHandler(
-        (filters.TEXT | filters.CAPTION | filters.FORWARDED) & ~filters.COMMAND, 
+        (filters.TEXT | filters.CAPTION | filters.FORWARDED) & ~filters.COMMAND,
         handle_message
     ))
-    # Новые участники
+
+    # 4. ПРОЧИЕ ОБРАБОТЧИКИ
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_member))
-    # Капча
     app.add_handler(CallbackQueryHandler(captcha_callback, pattern=r"^captcha:"))
-    # Статус бота
     app.add_handler(ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
-    # Ошибки
+    
+    # Логирование ошибок
     app.add_error_handler(error_handler)
 
+    # ЗАПУСК
     logger.info("Запуск polling...")
-    app.run_polling(drop_pending_updates=True)
-
+    # Ставим False, чтобы не пропустить команду, если ты её отправил прямо сейчас
+    app.run_polling(drop_pending_updates=False)
 
 if __name__ == "__main__":
     main()
