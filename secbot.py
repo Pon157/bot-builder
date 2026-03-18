@@ -1813,6 +1813,20 @@ def main():
     logger.info("Запуск polling...")
     app.run_polling(drop_pending_updates=True)
 
+from telegram.ext import TypeHandler
+
+async def debug_all(update, context):
+    print(f"--- ПРИШЕЛ АПДЕЙТ ---")
+    if update.message:
+        print(f"Текст: {update.message.text}")
+        print(f"От кого: {update.effective_user.id}")
+        print(f"Тип чата: {update.effective_chat.type}")
+    else:
+        print(f"Тип апдейта: {type(update)}")
+
+# Добавь это ПЕРВЫМ среди всех handlers
+app.add_handler(TypeHandler(Update, debug_all), group=-1)
+
 
 if __name__ == "__main__":
     main()
