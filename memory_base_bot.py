@@ -31,6 +31,7 @@ FLOW DVR:
   SUPABASE_URL, SUPABASE_KEY
   BOTS_API_URL            — https://dialogengine.webtm.ru
   ADMIN_TOKEN             — секрет для API остановки
+  DVR_CHANNELS            — список ID каналов для сканирования (через запятую)
 ================================================================================
 """
 
@@ -92,6 +93,13 @@ ADMIN_TOKEN  = os.getenv("ADMIN_TOKEN", "")
 ADMIN_CHAT_ID      = int(os.getenv("ADMIN_CHECK_CHAT_ID") or os.getenv("ADMIN_CHAT_ID") or "0")
 MB_CHECK_TOPIC_ID  = int(os.getenv("MB_CHECK_TOPIC_ID", "2"))
 DVR_ADMIN_TOPIC_ID = int(os.getenv("DVR_ADMIN_TOPIC_ID", "4"))
+
+# --- НОВЫЕ ПЕРЕМЕННЫЕ ДЛЯ КАНАЛОВ ---
+DVR_CHANNELS_STR   = os.getenv("DVR_CHANNELS", "-1002425442667,-1003557961834,-1003313849660")
+DVR_CHANNELS       = [int(x.strip()) for x in DVR_CHANNELS_STR.split(",") if x.strip()]
+
+# Юзернеймы, которые точно не нужно проверять (без @)
+IGNORED_USERNAMES  = {"dvrsecretbot"}
 
 QUEUE_POLL_INTERVAL      = 5.0   # базовый интервал поллинга очереди
 QUEUE_IDLE_INTERVAL_MAX  = 20.0  # максимальный интервал когда очередь пуста
@@ -387,10 +395,14 @@ async def handle_dvr(app: Client, text: str):
 
     text_lower = text.lower()
     mentioned_usernames = set(re.findall(r'@(\w+)', text_lower))
-    logger.info(f"[DVR] @usernames в тексте: {mentioned_usernames}")
+    
+    # --- Отсеиваем игнорируемые юзернеймы ---
+    mentioned_usernames = {u for u in mentioned_usernames if u not in IGNORED_USERNAMES}
+    
+    logger.info(f"[DVR] @usernames в тексте после фильтрации: {mentioned_usernames}")
 
     if not mentioned_usernames:
-        logger.info("[DVR] нет @username в тексте — выходим")
+        logger.info("[DVR] нет целевых @username в тексте — выходим")
         return
 
     # Резолвим username каждого бота
@@ -629,6 +641,19 @@ class MemoryBaseBotService:
 
         logger.info(f"[*] MemoryBase Bot (Pyrogram) запускается")
         logger.info(f"[*] Чат={ADMIN_CHAT_ID} | MB топик={MB_CHECK_TOPIC_ID} | DVR топик={DVR_ADMIN_TOPIC_ID}")
+
+        # ── НОВЫЙ ХЕНДЛЕР: Мониторинг сторонних DVR-каналов ──────────────────
+        @self.app.on_message(filters.chat(DVR_CHANNELS))
+        async def on_dvr_channel_post(client: Client, msg: Message):
+            text = (msg.text or msg.caption or "").strip()
+            if not text:
+                return
+                
+            logger.info(f"[DVR CHANNELS] Пост из канала {msg.chat.title} ({msg.chat.id}): {text[:80]!r}")
+            
+            # Если в тексте есть @, передаем в существующую логику DVR
+            if "@" in text:
+                await handle_dvr(self.app, text)
 
         # ── Единый хендлер для всего нашего чата ─────────────────────────────
         # Pyrogram 2.0.106 в user-режиме не передаёт message_thread_id для топиков
