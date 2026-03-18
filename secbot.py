@@ -1634,59 +1634,8 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    chat = update.effective_chat
-    is_mod = await can_moderate(context, chat.id if chat else 0, user.id)
-
-    if not is_mod:
-        await update.message.reply_text(
-            "🛡️ <b>Guard Bot</b>\nБот для защиты чатов от спама и рейдов.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    text = (
-        "🛡️ <b>Guard Bot v2.1</b>\n\n"
-        "<b>🔨 Модерация:</b>\n"
-        "/ban — бан (ответ или /ban [id] [причина])\n"
-        "/unban [id] — разбан\n"
-        "/kick — кик\n"
-        "/mute [время] [причина] — мут (10m, 2h, 3d)\n"
-        "/unmute — снять мут\n"
-        "/warn [причина] — предупреждение\n"
-        "/unwarn — сброс предупреждений\n"
-        "/shadowban — теневой бан (ответ или /shadowban [id])\n"
-        "/unshadowban — снять теневой бан (ответ или /unshadowban [id])\n"
-        "/purge [n] — удалить n сообщений\n\n"
-        "<b>🔒 Защита:</b>\n"
-        "/lockdown [время] — lockdown чата\n"
-        "/unlock — снять lockdown\n"
-        "/slowmode [сек] — медленный режим\n\n"
-        "<b>⚙️ Настройки:</b>\n"
-        "/settings — показать настройки\n"
-        "/set [параметр] [on|off]\n"
-        "/setwelcome [текст] — приветствие ({user})\n"
-        "/addfilter [слово] [delete|warn|mute|ban]\n"
-        "/filters | /delfilter [id]\n"
-        "/addwl [домен] — whitelist ссылок\n\n"
-        "<b>📊 Информация:</b>\n"
-        "/userinfo (ответ или /userinfo [id])\n"
-        "/logs [n] | /stats\n\n"
-        "<b>⚡ Параметры /set:</b>\n"
-        "<code>antiflood antispam antiduplicate\n"
-        "antilinks antiforward captcha antiraid</code>\n\n"
-        "<b>ℹ️ Доступ к командам:</b>\n"
-        "Telegram-администраторы чата + персонал бота"
-    )
-    if user.id == OWNER_ID:
-        text += (
-            "\n\n<b>👑 Системные (только owner бота):</b>\n"
-            "/addstaff [id] [trusted|moderator] [username]\n"
-            "/removestaff [id] | /liststaff\n"
-            "/authchat | /deauthchat"
-        )
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-
+    text = "СИСТЕМА РАБОТАЕТ\nДоступные команды: ..."
+    await update.message.reply_text(text)
 
 # ══════════════════════════════════════════════════════
 #  КОНТРОЛЬ ДОБАВЛЕНИЯ БОТА
