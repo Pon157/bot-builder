@@ -667,7 +667,7 @@ async def _captcha_timeout(context: ContextTypes.DEFAULT_TYPE):
 #  ОСНОВНОЙ ОБРАБОТЧИК СООБЩЕНИЙ
 # ══════════════════════════════════════════════════════
 
-@authorized_chat_only
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message or update.edited_message
     if not msg: return
@@ -839,7 +839,6 @@ async def _auto_ban(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user: User
 #  НОВЫЕ УЧАСТНИКИ
 # ══════════════════════════════════════════════════════
 
-@authorized_chat_only
 async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg or not msg.new_chat_members: return
@@ -1036,7 +1035,7 @@ async def cmd_deauthchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  КОМАНДЫ МОДЕРАЦИИ  (Telegram-админ чата ИЛИ staff бота)
 # ══════════════════════════════════════════════════════
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat; user = update.effective_user
@@ -1076,7 +1075,7 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Не удалось. Проверьте права бота.")
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat; user = update.effective_user
@@ -1097,7 +1096,7 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await log_action(chat.id, "unban", tid, str(tid), user.id)
     await update.message.reply_text(f"✅ <code>{tid}</code> разблокирован.", parse_mode=ParseMode.HTML)
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat; user = update.effective_user
@@ -1119,7 +1118,7 @@ async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except TelegramError as e:
         await update.message.reply_text(f"❌ {e}")
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat; user = update.effective_user
@@ -1162,7 +1161,7 @@ async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Длительность: {format_duration(duration)}\nПричина: {reason}"
     )
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat; user = update.effective_user
@@ -1178,7 +1177,7 @@ async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await log_action(chat.id, "unmute", target.id, target.full_name, user.id)
     await update.message.reply_text(f"🔊 {user_mention(target)} размучен.", parse_mode=ParseMode.HTML)
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat; user = update.effective_user
@@ -1205,7 +1204,7 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"[{wc}/{WARNS_LIMIT}] Причина: {reason}"
         )
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -1216,7 +1215,7 @@ async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await clear_warnings(chat.id, target.id)
     await update.message.reply_text(f"✅ Предупреждения {user_mention(target)} сброшены.", parse_mode=ParseMode.HTML)
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_shadowban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Теневой бан — сообщения тихо удаляются. Ответ на сообщение или /shadowban [id]"""
@@ -1247,7 +1246,7 @@ async def cmd_shadowban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML
     )
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_unshadowban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Снять теневой бан. Ответ на сообщение или /unshadowban [id]"""
@@ -1280,7 +1279,7 @@ async def cmd_unshadowban(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"ℹ️ Пользователь <code>{target_id}</code> не в shadowban.", parse_mode=ParseMode.HTML
         )
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Удалить N сообщений. Ответьте на первое сообщение."""
@@ -1319,7 +1318,7 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  ЗАЩИТА ЧАТА
 # ══════════════════════════════════════════════════════
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_slowmode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -1348,7 +1347,7 @@ async def cmd_slowmode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ {e}")
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_lockdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat; user = update.effective_user
@@ -1389,7 +1388,7 @@ async def cmd_lockdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     _jq(context, _auto_unlock, duration, name=f"unlock_{chat.id}")
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -1412,7 +1411,7 @@ async def cmd_unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  НАСТРОЙКИ ЧАТА
 # ══════════════════════════════════════════════════════
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -1431,7 +1430,7 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat   = update.effective_chat
@@ -1450,7 +1449,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await set_chat_setting(chat.id, key, value)
     await update.message.reply_text(f"✅ {key} = {'on ✅' if value else 'off ❌'}")
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -1460,7 +1459,7 @@ async def cmd_setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await set_chat_setting(chat.id, "welcome_text", " ".join(context.args))
     await update.message.reply_text(f"✅ Приветствие сохранено:\n{' '.join(context.args)}")
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_addfilter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat; user = update.effective_user
@@ -1474,7 +1473,6 @@ async def cmd_addfilter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await add_word_filter(chat.id, word, action, user.id)
     await update.message.reply_text(f"✅ Фильтр: <code>{_esc(word)}</code> → {action}", parse_mode=ParseMode.HTML)
 
-@authorized_chat_only
 @mod_access
 async def cmd_filters(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -1488,7 +1486,7 @@ async def cmd_filters(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("\nУдалить: /delfilter [id]")
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_delfilter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -1503,7 +1501,7 @@ async def cmd_delfilter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await remove_word_filter(chat.id, f_id)
     await update.message.reply_text(f"✅ Фильтр #{f_id} удалён.")
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_addwl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat; user = update.effective_user
@@ -1519,7 +1517,7 @@ async def cmd_addwl(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  ИНФОРМАЦИЯ
 # ══════════════════════════════════════════════════════
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -1562,7 +1560,7 @@ async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat  = update.effective_chat
@@ -1587,7 +1585,7 @@ async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"• [{at}] <b>{action}</b> → {_esc(target or '—')} | {_esc(reason or '—')}")
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
-@authorized_chat_only
+
 @mod_access
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
