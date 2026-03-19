@@ -761,6 +761,6 @@ if __name__ == "__main__":
         asyncio.run(generate_session_string())
     else:
         async def _startup_and_run():
-    await init_pg_pool()
-    await main()
-asyncio.run(_startup_and_run())
+            await init_pg_pool()
+            await main()
+        asyncio.run(_startup_and_run())
