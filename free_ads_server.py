@@ -50,7 +50,7 @@ def _hash(pwd: str) -> str:
 
 async def _get_agent(agent_id: str):
     r = await _db().get("ad_agents", params={"id": f"eq.{agent_id}"})
-    rows = r.json()
+    rows = r
     return rows[0] if rows else None
 
 async def _verify_agent_token(token: str) -> Optional[dict]:
@@ -141,10 +141,10 @@ async def free_create_bot(d: dict):
     }
 
     r = await db.post("bots", json=bot_data, headers={"Prefer": "return=representation"})
-    if r.status_code not in (200, 201):
+    if not r:
         raise HTTPException(500, f"Ошибка БД: {r.text}")
 
-    return r.json()[0] if isinstance(r.json(), list) else r.json()
+    return r[0] if r else {}
 
 
 @router.put("/api/free/bots/{bot_id}/config")
@@ -166,10 +166,10 @@ async def free_update_bot_config(bot_id: str, d: dict):
         "owner_id": f"eq.{user_id}",
         "is_free_plan": "eq.true"
     })
-    if not r.json():
+    if not r:
         raise HTTPException(404, "Free-бот не найден или нет прав")
 
-    existing_bot = r.json()[0]
+    existing_bot = r[0]
     existing_cfg = existing_bot.get("config") or {}
 
     # Входящий config-объект
@@ -274,7 +274,7 @@ async def free_update_bot_config(bot_id: str, d: dict):
         json=patch_payload,
         headers={"Prefer": "return=representation"})
 
-    result = patch_r.json()
+    result = patch_r
     if not result:
         raise HTTPException(500, "Ошибка сохранения в БД")
 
@@ -286,7 +286,7 @@ async def free_get_user_bots(user_id: str):
     db = _db()
     # Возвращаем только TG-ботов (VK обслуживаются через /api/free/vk/bots/{user_id})
     all_bots = await db.get("bots", params={"owner_id": f"eq.{user_id}", "is_free_plan": "eq.true"})
-    bots = [b for b in (all_bots.json() or []) if b.get("platform") != "vk"]
+    bots = [b for b in (all_bots or []) if b.get("platform") != "vk"]
     return bots
 
 
@@ -299,9 +299,9 @@ async def free_bot_stats(bot_id: str, user_id: str):
     """
     db = _db()
     r = await db.get("bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}"})
-    if not r.json():
+    if not r:
         raise HTTPException(404, "Бот не найден")
-    bot = r.json()[0]
+    bot = r[0]
     cfg = bot.get("config") or {}
 
     # stats всегда живёт внутри config — только оттуда читаем
@@ -433,10 +433,10 @@ async def free_vk_create_bot(d: dict):
     }
 
     r = await db.post("bots", json=bot_data, headers={"Prefer": "return=representation"})
-    if r.status_code not in (200, 201):
+    if not r:
         raise HTTPException(500, f"Ошибка БД: {r.text}")
 
-    return r.json()[0] if isinstance(r.json(), list) else r.json()
+    return r[0] if r else {}
 
 
 @router.put("/api/free/vk/bots/{bot_id}/config")
@@ -457,10 +457,10 @@ async def free_vk_update_bot_config(bot_id: str, d: dict):
         "is_free_plan": "eq.true",
         "platform":     "eq.vk",
     })
-    if not r.json():
+    if not r:
         raise HTTPException(404, "VK Free-бот не найден или нет прав")
 
-    existing_bot = r.json()[0]
+    existing_bot = r[0]
     existing_cfg = existing_bot.get("config") or {}
 
     inc = d.get("config") or {}
@@ -563,7 +563,7 @@ async def free_vk_update_bot_config(bot_id: str, d: dict):
         json=patch_payload,
         headers={"Prefer": "return=representation"})
 
-    result = patch_r.json()
+    result = patch_r
     if not result:
         raise HTTPException(500, "Ошибка сохранения в БД")
 
@@ -579,7 +579,7 @@ async def free_vk_get_user_bots(user_id: str):
         "is_free_plan": "eq.true",
         "platform":     "eq.vk",
     })
-    return r.json() or []
+    return r or []
 
 
 @router.get("/api/free/vk/bots/{bot_id}/stats")
@@ -587,9 +587,9 @@ async def free_vk_bot_stats(bot_id: str, user_id: str):
     """Аналитика VK-бота."""
     db = _db()
     r  = await db.get("bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}"})
-    if not r.json():
+    if not r:
         raise HTTPException(404, "VK-бот не найден")
-    bot = r.json()[0]
+    bot = r[0]
     cfg = bot.get("config") or {}
 
     cfg_stats = cfg.get("stats") or {}
@@ -652,16 +652,16 @@ async def free_vk_start_bot(bot_id: str):
     except Exception as e:
         _logger().error(f"DB timeout при запуске VK бота {bot_id}: {e}")
         raise HTTPException(503, "Ошибка соединения с БД, попробуйте снова")
-    if not r.json():
+    if not r:
         raise HTTPException(404, "Бот не найден")
 
-    bot_data = r.json()[0]
+    bot_data = r[0]
 
     owner_id = bot_data.get("owner_id")
     if owner_id:
         try:
             u_r = await db.get("users", params={"id": f"eq.{owner_id}"})
-            if u_r.json() and u_r.json()[0].get("is_banned"):
+            if u_r and u_r[0].get("is_banned"):
                 raise HTTPException(403, "Ваш аккаунт заблокирован")
         except HTTPException:
             raise
@@ -726,7 +726,7 @@ async def free_vk_delete_bot(user_id: str, bot_id: str):
         "id":       f"eq.{bot_id}",
         "owner_id": f"eq.{user_id}",
     })
-    if not r.json():
+    if not r:
         raise HTTPException(404, "VK-бот не найден или нет прав")
 
     await db.delete("bots", params={"id": f"eq.{bot_id}"})
@@ -746,7 +746,7 @@ async def ads_register(d: dict):
 
     db = _db()
     check = await db.get("ad_agents", params={"email": f"eq.{email}"})
-    if check.json():
+    if check:
         raise HTTPException(409, "Email уже зарегистрирован")
 
     agent_id = f"ag_{secrets.token_hex(6)}"
@@ -760,7 +760,7 @@ async def ads_register(d: dict):
         "created_at":    now_ms
     }
     r = await db.post("ad_agents", json=agent, headers={"Prefer": "return=representation"})
-    if r.status_code not in (200, 201):
+    if not r:
         raise HTTPException(500, "Ошибка регистрации")
 
     token = _make_agent_token(agent_id)
@@ -779,11 +779,11 @@ async def ads_send_code(d: dict):
 
     if code_type == "REGISTER":
         check = await db.get("ad_agents", params={"email": f"eq.{email}"})
-        if check.json():
+        if check:
             raise HTTPException(409, "Email уже зарегистрирован")
     elif code_type == "RESET":
         check = await db.get("ad_agents", params={"email": f"eq.{email}"})
-        if not check.json():
+        if not check:
             return {"ok": True}
     else:
         raise HTTPException(400, f"Неверный тип кода: {code_type}")
@@ -843,11 +843,11 @@ async def ads_register_verify(d: dict):
         "type":  "eq.REGISTER",  "used": "eq.false",
         "expires_at": f"gt.{now_ms}"
     })
-    if not code_r.json():
+    if not code_r:
         raise HTTPException(400, "Неверный или истёкший код. Запросите новый.")
 
     check = await db.get("ad_agents", params={"email": f"eq.{email}"})
-    if check.json():
+    if check:
         raise HTTPException(409, "Email уже зарегистрирован")
 
     agent_id = f"ag_{secrets.token_hex(6)}"
@@ -860,7 +860,7 @@ async def ads_register_verify(d: dict):
         "created_at":    now_ms,
     }
     r = await db.post("ad_agents", json=agent, headers={"Prefer": "return=representation"})
-    if r.status_code not in (200, 201):
+    if not r:
         raise HTTPException(500, "Ошибка регистрации")
 
     await db.patch("ad_email_codes",
@@ -877,7 +877,7 @@ async def ads_login(d: dict):
     pwd   = d.get("password", "").strip()
     db    = _db()
     r     = await db.get("ad_agents", params={"email": f"eq.{email}", "password_hash": f"eq.{_hash(pwd)}"})
-    rows  = r.json()
+    rows = r
     if not rows:
         raise HTTPException(401, "Неверный email или пароль")
     agent = rows[0]
@@ -913,7 +913,7 @@ async def ads_reset_password(d: dict):
         "type":  "eq.RESET",    "used": "eq.false",
         "expires_at": f"gt.{now_ms}"
     })
-    if not code_r.json():
+    if not code_r:
         raise HTTPException(400, "Неверный или истёкший код. Запросите новый.")
 
     r = await db.patch("ad_agents",
@@ -921,7 +921,7 @@ async def ads_reset_password(d: dict):
         json={"password_hash": _hash(new_password)},
         headers={"Prefer": "return=representation"}
     )
-    if not r.json():
+    if not r:
         raise HTTPException(404, "Агент не найден")
 
     await db.patch("ad_email_codes",
@@ -952,16 +952,16 @@ async def ads_dashboard(authorization: str = Header(...)):
 
     posts_r = await db.get("ad_posts",
         params={"agent_id": f"eq.{agent['id']}", "order": "created_at.desc", "limit": "50"})
-    posts   = posts_r.json() or []
+    posts   = posts_r or []
 
     tx_r  = await db.get("ad_transactions",
         params={"agent_id": f"eq.{agent['id']}", "order": "created_at.desc", "limit": "50"})
-    txs   = tx_r.json() or []
+    txs   = tx_r or []
 
     # Грузим все free-боты с config — аудитория хранится в config.connectedUsers,
     # а НЕ в таблице users (там только владельцы ботов, их мало).
     bots_r       = await db.get("bots", params={"is_free_plan": "eq.true", "select": "id,status,config"})
-    all_bots     = bots_r.json() or []
+    all_bots     = bots_r or []
 
     total_users  = 0
     running_bots = 0
@@ -1019,9 +1019,9 @@ async def ads_create_post(d: dict, authorization: str = Header(...)):
         "created_at":       now_ms,
     }
     r = await db.post("ad_posts", json=post, headers={"Prefer": "return=representation"})
-    if r.status_code not in (200, 201):
+    if not r:
         raise HTTPException(500, f"Ошибка БД: {r.text}")
-    return r.json()[0] if isinstance(r.json(), list) else r.json()
+    return r[0] if r else {}
 
 
 @router.post("/api/ads/posts/{post_id}/buy-impressions")
@@ -1034,9 +1034,9 @@ async def ads_buy_impressions(post_id: str, d: dict, authorization: str = Header
     db = _db()
 
     post_r = await db.get("ad_posts", params={"id": f"eq.{post_id}", "agent_id": f"eq.{agent['id']}"})
-    if not post_r.json():
+    if not post_r:
         raise HTTPException(404, "Пост не найден")
-    post = post_r.json()[0]
+    post = post_r[0]
     if post["status"] not in ("approved", "active"):
         raise HTTPException(422, f"Пост должен быть одобрен (статус: {post['status']}). Дождитесь модерации.")
 
@@ -1047,7 +1047,7 @@ async def ads_buy_impressions(post_id: str, d: dict, authorization: str = Header
             "p_post_id":     post_id,
             "p_impressions": impressions
         })
-        result = rpc_r.json() if hasattr(rpc_r, 'json') else rpc_r
+        result = rpc_r.json() if hasattr(rpc_r, "json") else (rpc_r if rpc_r is not None else {})
         if isinstance(result, dict) and result.get("ok") is False:
             raise HTTPException(402, result.get("error", "Ошибка покупки"))
         rpc_ok = True
@@ -1085,12 +1085,12 @@ async def ads_buy_impressions(post_id: str, d: dict, authorization: str = Header
             headers={"Prefer": "return=representation"}
         )
         _logger().info(f"✅ Пост {post_id} активирован после покупки {impressions} показов")
-        post_data = activate_r.json()
+        post_data = activate_r
         if isinstance(post_data, list) and post_data:
             return post_data[0]
 
     updated = await db.get("ad_posts", params={"id": f"eq.{post_id}"})
-    return updated.json()[0] if updated.json() else {"ok": True}
+    return updated[0] if updated else {"ok": True}
 
 
 @router.get("/api/ads/posts/{post_id}")
@@ -1098,9 +1098,9 @@ async def ads_get_post(post_id: str, authorization: str = Header(...)):
     agent = await _auth_agent(authorization)
     db    = _db()
     r     = await db.get("ad_posts", params={"id": f"eq.{post_id}", "agent_id": f"eq.{agent['id']}"})
-    if not r.json():
+    if not r:
         raise HTTPException(404, "Пост не найден")
-    return r.json()[0]
+    return r[0]
 
 
 @router.get("/api/ads/balance")
@@ -1194,10 +1194,10 @@ async def ads_create_payment(d: dict, authorization: str = Header(...)):
                 headers={"Idempotence-Key": idempotency, "Content-Type": "application/json"},
                 json=payload
             )
-        if r.status_code not in (200, 201):
+        if not r:
             raise HTTPException(502, "Ошибка создания платежа в ЮКассе")
 
-        resp     = r.json()
+        resp = r
         conf_url = resp.get("confirmation", {}).get("confirmation_url", "")
         if not conf_url:
             raise HTTPException(502, "ЮКасса не вернула confirmation_url")
@@ -1229,7 +1229,7 @@ async def admin_get_ad_posts(status: str = "pending", x_admin_token: str = Heade
     if status != "all":
         params["status"] = f"eq.{status}"
     r = await db.get("ad_posts", params=params)
-    return r.json() or []
+    return r or []
 
 
 @router.post("/api/admin/ads/posts/{post_id}/approve")
@@ -1239,16 +1239,16 @@ async def admin_approve_post(post_id: str, x_admin_token: str = Header(...)):
     db     = _db()
     now_ms = int(time.time() * 1000)
     post_r = await db.get("ad_posts", params={"id": f"eq.{post_id}"})
-    if not post_r.json():
+    if not post_r:
         raise HTTPException(404, "Пост не найден")
-    post       = post_r.json()[0]
+    post       = post_r[0]
     new_status = "active" if (post.get("impressions_paid", 0) or 0) > 0 else "approved"
     r = await db.patch("ad_posts",
         params={"id": f"eq.{post_id}"},
         json={"status": new_status, "approved_at": now_ms},
         headers={"Prefer": "return=representation"}
     )
-    return r.json()
+    return r
 
 
 @router.post("/api/admin/ads/posts/{post_id}/reject")
@@ -1261,7 +1261,7 @@ async def admin_reject_post(post_id: str, d: dict, x_admin_token: str = Header(.
         json={"status": "rejected", "reject_reason": d.get("reason", "Не соответствует правилам")},
         headers={"Prefer": "return=representation"}
     )
-    return r.json()
+    return r
 
 
 @router.get("/api/admin/ads/stats")
@@ -1272,8 +1272,8 @@ async def admin_ads_stats(x_admin_token: str = Header(...)):
     agents_r = await db.get("ad_agents", params={"select": "id,email,balance_rub,created_at,is_banned"})
     posts_r  = await db.get("ad_posts",  params={"select": "id,status,impressions_paid,impressions_used,price_per_imp,agent_id"})
 
-    agents = agents_r.json() or []
-    posts  = posts_r.json()  or []
+    agents = agents_r or []
+    posts  = posts_r  or []
 
     total_impressions_sold = sum(p.get("impressions_paid", 0) for p in posts)
     total_impressions_used = sum(p.get("impressions_used", 0) for p in posts)
@@ -1313,7 +1313,7 @@ async def get_active_ad(bot_id: str = ""):
         "select": "id,text,media_url",
         "order":  "id.asc",
     })
-    posts = r.json() or []
+    posts = r or []
     if not posts:
         return {"ad": None}
 
@@ -1353,7 +1353,7 @@ async def free_link_pro(d: dict):
 
     db = _db()
     pro_r = await db.get("users", params={"id": f"eq.{pro_id}", "plan": "eq.pro"})
-    if not pro_r.json():
+    if not pro_r:
         raise HTTPException(404, "Pro аккаунт не найден")
 
     r = await db.patch("users",
@@ -1368,10 +1368,10 @@ async def free_link_pro(d: dict):
 async def free_user_info(user_id: str):
     db = _db()
     r  = await db.get("users", params={"id": f"eq.{user_id}"})
-    if not r.json():
+    if not r:
         raise HTTPException(404, "Пользователь не найден")
 
-    user = r.json()[0]
+    user = r[0]
     plan = user.get("plan", "free")
 
     result = {
@@ -1384,8 +1384,8 @@ async def free_user_info(user_id: str):
 
     if user.get("linked_pro_user_id"):
         pro_r = await db.get("users", params={"id": f"eq.{user['linked_pro_user_id']}"})
-        if pro_r.json():
-            pro = pro_r.json()[0]
+        if pro_r:
+            pro = pro_r[0]
             result["pro_account"] = {
                 "id":       pro["id"],
                 "email":    pro["email"],
@@ -1416,16 +1416,16 @@ async def start_free_bot(bot_id: str):
     except Exception as e:
         _logger().error(f"DB timeout при старте бота {bot_id}: {e}")
         raise HTTPException(503, "Ошибка соединения с БД, попробуйте снова")
-    if not r.json():
+    if not r:
         raise HTTPException(404, "Бот не найден")
 
-    bot_data = r.json()[0]
+    bot_data = r[0]
 
     owner_id = bot_data.get("owner_id")
     if owner_id:
         try:
             u_r = await db.get("users", params={"id": f"eq.{owner_id}"})
-            if u_r.json() and u_r.json()[0].get("is_banned"):
+            if u_r and u_r[0].get("is_banned"):
                 raise HTTPException(403, "Ваш аккаунт заблокирован")
         except HTTPException:
             raise
@@ -1451,7 +1451,7 @@ async def start_free_bot(bot_id: str):
         await asyncio.sleep(3)
         try:
             check = await db.get("bots", params={"id": f"eq.{bot_id}", "select": "status"})
-            current_status = check.json()[0].get("status") if check.json() else "RUNNING"
+            current_status = check[0].get("status") if check else "RUNNING"
         except Exception:
             current_status = "RUNNING"
 
@@ -1479,9 +1479,9 @@ async def free_bot_conflict_info(bot_id: str, user_id: str):
     """
     db = _db()
     r = await db.get("bots", params={"id": f"eq.{bot_id}", "owner_id": f"eq.{user_id}"})
-    if not r.json():
+    if not r:
         raise HTTPException(404, "Бот не найден")
-    bot = r.json()[0]
+    bot = r[0]
     status = bot.get("status", "IDLE")
     if status == "CONFLICT":
         return {
