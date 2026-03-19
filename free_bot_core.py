@@ -140,93 +140,83 @@ class MemoryBaseMiddleware(BaseMiddleware):
             # Знаем статус, он свежий и пользователь чист — пропускаем без запроса
             return await handler(event, data)
 
-        # ── Проверяем актуальный статус в Supabase ──────────────────────────
+        # ── Проверяем актуальный статус через DBAdapter ────────────────────
         # Только если: новый пользователь / кэш устарел / пользователь был заблокирован
         try:
-            sb_url = self.bi.sb_url
-            h = self.bi.headers
-            async with httpx.AsyncClient(timeout=5) as _c:
-                _r = await _c.get(
-                    f"{sb_url}/rest/v1/memory_base_cache",
-                    headers=h,
-                    params={"user_id": f"eq.{user_id}", "select": "status,reasons,expires_at"}
-                )
-                if _r.status_code == 200:
-                    _rows = _r.json()
-                    if _rows:
-                        _cache_row = _rows[0]
-                        _status  = _cache_row.get('status', 'not_found')
-                        _reasons = _cache_row.get('reasons', [])
-                        logger.info(f"[MB] uid={user_id} supabase status={_status} reasons={_reasons}")
+            _rows = await self.bi.db.get("memory_base_cache", {
+                "user_id": f"eq.{user_id}", "select": "status,reasons,expires_at"
+            })
+            if _rows:
+                _cache_row = _rows[0]
+                _status  = _cache_row.get('status', 'not_found')
+                _reasons = _cache_row.get('reasons', [])
+                logger.info(f"[MB] uid={user_id} supabase status={_status} reasons={_reasons}")
 
-                        if _status == 'in_base':
-                            _block_reasons = settings.get('memoryBaseBlockReasons', [])
-                            _should_block  = (not _block_reasons or any(r in _block_reasons for r in _reasons))
-                            if _should_block:
+                if _status == 'in_base':
+                    _block_reasons = settings.get('memoryBaseBlockReasons', [])
+                    _should_block  = (not _block_reasons or any(r in _block_reasons for r in _reasons))
+                    if _should_block:
+                        if user_rec:
+                            user_rec['mb_restricted'] = True
+                            user_rec['mb_reasons']    = _reasons
+                        if isinstance(event, Message):
+                            await event.answer(
+                                "🚫 <b>Доступ ограничен.</b>\n\n"
+                                "Вы находитесь в антиспам-базе "
+                                "<a href=\"https://t.me/MemoryBaseBot\">MemoryBase</a>.\n"
+                                "Для восстановления доступа обратитесь к владельцу бота."
+                            )
+                        elif isinstance(event, CallbackQuery):
+                            await event.answer("🚫 Доступ ограничен (MemoryBase).", show_alert=True)
+                        _already_notified = user_rec.get('mb_notified', False) if user_rec else False
+                        if self.bi.admin_chat_id and not _already_notified:
+                            try:
+                                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                                _rh = {"scammer":"Мошенник ⛔️","bad_admin":"Плохой админ ❌",
+                                       "bad_owner":"Плохой владелец ❌","bad_behavior":"Нарушитель 🐔",
+                                       "spammer":"Спамер 🚫","raider":"Рейдер 💥"}
+                                _rt = ", ".join(_rh.get(r,r) for r in _reasons if not r.startswith("other:"))
+                                _ot = [r.replace("other:","") for r in _reasons if r.startswith("other:")]
+                                if _ot: _rt += (", " if _rt else "") + ", ".join(_ot)
+                                _nm = user_tg.full_name or f"User {user_id}"
+                                _un = f" (@{user_tg.username})" if user_tg.username else ""
+                                _is_start = isinstance(event, Message) and bool(getattr(event, 'text', '') or '') and (event.text or '').strip().startswith("/start")
+                                _act = "написал /start" if _is_start else "написал сообщение"
+                                _kb = InlineKeyboardMarkup(inline_keyboard=[[
+                                    InlineKeyboardButton(text="✅ Разрешить доступ", callback_data=f"mb_unban_{user_id}")
+                                ]])
+                                await self.bi.bot.send_message(
+                                    self.bi.admin_chat_id,
+                                    f"🔴 <b>MemoryBase: пользователь в базе</b>\n\n"
+                                    f"👤 {_nm}{_un}\n🆔 <code>{user_id}</code>\n"
+                                    f"📌 <b>Причина(ы):</b> {_rt or '—'}\n\n"
+                                    f"Пользователь {_act} и был заблокирован.\n"
+                                    f"Если хотите разрешить ему писать — нажмите кнопку ниже 👇",
+                                    reply_markup=_kb,
+                                )
                                 if user_rec:
-                                    user_rec['mb_restricted'] = True
-                                    user_rec['mb_reasons']    = _reasons
-                                if isinstance(event, Message):
-                                    await event.answer(
-                                        "🚫 <b>Доступ ограничен.</b>\n\n"
-                                        "Вы находитесь в антиспам-базе "
-                                        "<a href=\"https://t.me/MemoryBaseBot\">MemoryBase</a>.\n"
-                                        "Для восстановления доступа обратитесь к владельцу бота."
-                                    )
-                                elif isinstance(event, CallbackQuery):
-                                    await event.answer("🚫 Доступ ограничен (MemoryBase).", show_alert=True)
-                                _already_notified = user_rec.get('mb_notified', False) if user_rec else False
-                                if self.bi.admin_chat_id and not _already_notified:
-                                    try:
-                                        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-                                        _rh = {"scammer":"Мошенник ⛔️","bad_admin":"Плохой админ ❌",
-                                               "bad_owner":"Плохой владелец ❌","bad_behavior":"Нарушитель 🐔",
-                                               "spammer":"Спамер 🚫","raider":"Рейдер 💥"}
-                                        _rt = ", ".join(_rh.get(r,r) for r in _reasons if not r.startswith("other:"))
-                                        _ot = [r.replace("other:","") for r in _reasons if r.startswith("other:")]
-                                        if _ot: _rt += (", " if _rt else "") + ", ".join(_ot)
-                                        _nm = user_tg.full_name or f"User {user_id}"
-                                        _un = f" (@{user_tg.username})" if user_tg.username else ""
-                                        _is_start = isinstance(event, Message) and bool(getattr(event, 'text', '') or '') and (event.text or '').strip().startswith("/start")
-                                        _act = "написал /start" if _is_start else "написал сообщение"
-                                        _kb = InlineKeyboardMarkup(inline_keyboard=[[
-                                            InlineKeyboardButton(text="✅ Разрешить доступ", callback_data=f"mb_unban_{user_id}")
-                                        ]])
-                                        await self.bi.bot.send_message(
-                                            self.bi.admin_chat_id,
-                                            f"🔴 <b>MemoryBase: пользователь в базе</b>\n\n"
-                                            f"👤 {_nm}{_un}\n🆔 <code>{user_id}</code>\n"
-                                            f"📌 <b>Причина(ы):</b> {_rt or '—'}\n\n"
-                                            f"Пользователь {_act} и был заблокирован.\n"
-                                            f"Если хотите разрешить ему писать — нажмите кнопку ниже 👇",
-                                            reply_markup=_kb,
-                                        )
-                                        if user_rec:
-                                            user_rec['mb_notified'] = True
-                                            await self.bi.sync_queue.put(("sync_state", None))
-                                    except Exception as _ne:
-                                        logger.warning(f"[MB] admin notify error: {_ne}")
-                                return  # БЛОКИРУЕМ
-                        else:
-                            # Статус clean/not_found — снимаем локальный флаг если был
-                            if user_rec and user_rec.get('mb_restricted'):
-                                user_rec['mb_restricted'] = False
-                                user_rec['mb_reasons']    = []
-                            # Обновляем метку — при следующем сообщении не будем ходить в Supabase
-                            if user_rec:
-                                user_rec['last_mb_check'] = int(time.time())
-                        # Запись есть — проверяем нужна ли перепроверка (раз в 24ч)
-                        if time.time() - last_mb_check < 86400:
-                            return await handler(event, data)
-                        # Иначе — ставим в очередь на перепроверку
-                    else:
-                        # Записи нет — первичная проверка
-                        logger.info(f"[MB] uid={user_id} no cache row — queuing check")
+                                    user_rec['mb_notified'] = True
+                                    await self.bi.sync_queue.put(("sync_state", None))
+                            except Exception as _ne:
+                                logger.warning(f"[MB] admin notify error: {_ne}")
+                        return  # БЛОКИРУЕМ
                 else:
-                    logger.warning(f"[MB] supabase check failed {_r.status_code} — пропускаем")
+                    # Статус clean/not_found — снимаем локальный флаг если был
+                    if user_rec and user_rec.get('mb_restricted'):
+                        user_rec['mb_restricted'] = False
+                        user_rec['mb_reasons']    = []
+                    # Обновляем метку — при следующем сообщении не будем ходить в Supabase
+                    if user_rec:
+                        user_rec['last_mb_check'] = int(time.time())
+                # Запись есть — проверяем нужна ли перепроверка (раз в 24ч)
+                if time.time() - last_mb_check < 86400:
                     return await handler(event, data)
+                # Иначе — ставим в очередь на перепроверку
+            else:
+                # Записей нет — первичная проверка
+                logger.info(f"[MB] uid={user_id} no cache row — queuing check")
         except Exception as _e:
-            logger.warning(f"[MB] supabase pre-check error: {_e} — пропускаем")
+            logger.warning(f"[MB] db pre-check error: {_e} — пропускаем")
             return await handler(event, data)
 
         # Уведомляем пользователя что идёт проверка
@@ -260,32 +250,20 @@ class MemoryBaseMiddleware(BaseMiddleware):
             import logging as _log
             _log.getLogger("MB").info(f"[MB] _check_and_restrict started for user_id={user_id}")
             # ── ШАГ 1: Ставим задачу в очередь для чекер-бота ─────────────
-            async with httpx.AsyncClient(timeout=10) as client:
-                rq = await client.get(
-                    f"{sb_url}/rest/v1/mb_check_queue",
-                    headers=headers,
-                    params={
-                        "user_id": f"eq.{user_id}",
-                        "status":  "in.(pending,processing)",
-                        "select":  "id"
-                    }
-                )
-                logger.info(f"[MB] queue check status={rq.status_code} existing={rq.json()}")
-                if rq.status_code == 200 and not rq.json():
-                    ins = await client.post(
-                        f"{sb_url}/rest/v1/mb_check_queue",
-                        headers={**headers, "Content-Type": "application/json",
-                                 "Prefer": "return=representation"},
-                        json={
-                            "user_id":    user_id,
-                            "username":   user_tg.username or "",
-                            "status":     "pending",
-                            "created_at": datetime.utcnow().isoformat(),
-                        }
-                    )
-                    logger.info(f"[MB] queue insert status={ins.status_code} body={ins.text[:200]}")
-                else:
-                    logger.info(f"[MB] task already in queue for user={user_id}, waiting...")
+            existing = await self.bi.db.get("mb_check_queue", {
+                "user_id": f"eq.{user_id}", "status": "in.(pending,processing)", "select": "id"
+            })
+            logger.info(f"[MB] queue check existing={existing}")
+            if not existing:
+                ins = await self.bi.db.post("mb_check_queue", {
+                    "user_id":    user_id,
+                    "username":   user_tg.username or "",
+                    "status":     "pending",
+                    "created_at": datetime.utcnow().isoformat(),
+                })
+                logger.info(f"[MB] queue insert result={ins}")
+            else:
+                logger.info(f"[MB] task already in queue for user={user_id}, waiting...")
 
             # ── ШАГ 2: Поллим кэш до 30 сек ─────────────────────────────
             import time as _time
@@ -293,17 +271,12 @@ class MemoryBaseMiddleware(BaseMiddleware):
             row = None
             while _time.time() < deadline:
                 await asyncio.sleep(3)  # было 2, уменьшает число запросов при ожидании
-                async with httpx.AsyncClient(timeout=8) as client:
-                    r = await client.get(
-                        f"{sb_url}/rest/v1/memory_base_cache",
-                        headers=headers,
-                        params={"user_id": f"eq.{user_id}", "select": "*"}
-                    )
-                    if r.status_code == 200 and r.json():
-                        row = r.json()[0]
-                        logger.info(f"[MB] cache hit for user={user_id}: {row.get('status')}")
-                        break
-                    logger.debug(f"[MB] cache miss for user={user_id}, retrying...")
+                cache_rows = await self.bi.db.get("memory_base_cache", {"user_id": f"eq.{user_id}", "select": "*"})
+                if cache_rows:
+                    row = cache_rows[0]
+                    logger.info(f"[MB] cache hit for user={user_id}: {row.get('status')}")
+                    break
+                logger.debug(f"[MB] cache miss for user={user_id}, retrying...")
 
             if row is None:
                 if user_rec:
@@ -964,28 +937,19 @@ class FreeBotInstance:
 
     async def _do_push(self):
         try:
-            async with httpx.AsyncClient(timeout=8) as client:
-                res = await client.get(
-                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}&select=config",
-                    headers=self.headers
-                )
-                if res.status_code != 200 or not res.json():
-                    logger.warning(f"_do_push: не смогли прочитать конфиг бота {self.bot_id}")
-                    return
-                remote_cfg = res.json()[0].get("config") or {}
-                new_cfg = {
-                    **remote_cfg,
-                    "connectedUsers": self.users_list,
-                    "stats":          self.stats_data,
-                }
-                patch_res = await client.patch(
-                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                    json={"config": new_cfg},
-                    headers={**self.headers, "Content-Type": "application/json",
-                            "Prefer": "return=minimal"}
-                )
-                if patch_res.status_code not in (200, 201, 204):
-                    logger.error(f"_do_push patch failed: {patch_res.status_code} {patch_res.text[:200]}")
+            rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}", "select": "config"})
+            if not rows:
+                logger.warning(f"_do_push: не смогли прочитать конфиг бота {self.bot_id}")
+                return
+            remote_cfg = rows[0].get("config") or {}
+            new_cfg = {
+                **remote_cfg,
+                "connectedUsers": self.users_list,
+                "stats":          self.stats_data,
+            }
+            ok = await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"config": new_cfg})
+            if not ok:
+                logger.error(f"_do_push patch failed for {self.bot_id}")
         except Exception as e:
             logger.debug(f"_do_push error (non-fatal): {e}")
 
@@ -1002,35 +966,26 @@ class FreeBotInstance:
             return
         while True:
             try:
-                async with httpx.AsyncClient(timeout=8) as c:
-                    r = await c.get(
-                        f"{self.sb_url}/rest/v1/dvr_events",
-                        headers={"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"},
-                        params={"bot_id": f"eq.{self.bot_id}", "status": "eq.pending", "select": "*"}
-                    )
-                    if r.status_code == 200 and r.json():
-                        for ev in r.json():
-                            try:
-                                bot_username = ev.get("bot_username", "")
-                                await self.bot.send_message(
-                                    self.admin_chat_id,
-                                    f"🚨 <b>Система безопасности Dialoge Engine</b>\n\n"
-                                    f"Обнаружена рейдерская атака на вашего бота"
-                                    f"{f' <b>@{bot_username}</b>' if bot_username else ''}.\n\n"
-                                    f"✅ Бот был автоматически <b>остановлен</b> для защиты.\n\n"
-                                    f"Восстановите работу на: "
-                                    f"<a href=\"https://dialogengine.webtm.ru\">dialogengine.webtm.ru</a>"
-                                )
-                                await c.patch(
-                                    f"{self.sb_url}/rest/v1/dvr_events",
-                                    headers={"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}",
-                                             "Content-Type": "application/json", "Prefer": "return=minimal"},
-                                    params={"id": f"eq.{ev['id']}"},
-                                    json={"status": "done"}
-                                )
-                                logger.info(f"[DVR] ✅ Notify sent to {self.admin_chat_id}")
-                            except Exception as e:
-                                logger.warning(f"[DVR] notify error: {e}")
+                dvr_rows = await self.db.get("dvr_events", {
+                    "bot_id": f"eq.{self.bot_id}", "status": "eq.pending", "select": "*"
+                })
+                if dvr_rows:
+                    for ev in dvr_rows:
+                        try:
+                            bot_username = ev.get("bot_username", "")
+                            await self.bot.send_message(
+                                self.admin_chat_id,
+                                f"🚨 <b>Система безопасности Dialoge Engine</b>\n\n"
+                                f"Обнаружена рейдерская атака на вашего бота"
+                                f"{f' <b>@{bot_username}</b>' if bot_username else ''}.\n\n"
+                                f"✅ Бот был автоматически <b>остановлен</b> для защиты.\n\n"
+                                f"Восстановите работу на: "
+                                f"<a href=\"https://dialogengine.webtm.ru\">dialogengine.webtm.ru</a>"
+                            )
+                            await self.db.patch("dvr_events", {"id": f"eq.{ev['id']}"}, {"status": "done"})
+                            logger.info(f"[DVR] ✅ Notify sent to {self.admin_chat_id}")
+                        except Exception as e:
+                            logger.warning(f"[DVR] notify error: {e}")
             except Exception as e:
                 logger.warning(f"[DVR] worker error: {e}")
             await asyncio.sleep(30)  # DVR-события редкие, 5с — расточительство ресурсов
@@ -1039,21 +994,17 @@ class FreeBotInstance:
         await asyncio.sleep(30)
         while self.is_running:
             try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    res = await client.get(
-                        f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                        headers=self.headers
+                rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
+                if rows:
+                    row = rows[0]
+                    remote_cfg = row.get("config", {}) or {}
+                    self.reload_config_from_remote(remote_cfg)
+                    logger.debug(
+                        f"[{self.bot_id}] Config reloaded: "
+                        f"buttons={len(self.buttons)}, triggers={len(self.triggers)}, "
+                        f"forwardAll={self.forward_all}, "
+                        f"inlineButtons={len(self.inline_buttons)}"
                     )
-                    if res.status_code == 200 and res.json():
-                        row = res.json()[0]
-                        remote_cfg = row.get("config", {}) or {}
-                        self.reload_config_from_remote(remote_cfg)
-                        logger.debug(
-                            f"[{self.bot_id}] Config reloaded: "
-                            f"buttons={len(self.buttons)}, triggers={len(self.triggers)}, "
-                            f"forwardAll={self.forward_all}, "
-                            f"inlineButtons={len(self.inline_buttons)}"
-                        )
             except Exception as e:
                 logger.error(f"config_sync_loop error: {e}")
             await asyncio.sleep(30)
@@ -1127,19 +1078,14 @@ class FreeBotInstance:
             sync_msg = await m.reply("🔄 <i>Синхронизация с базой данных...</i>")
             
             try:
-                async with httpx.AsyncClient(timeout=15) as client:
-                    res = await client.get(
-                        f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}&select=config",
-                        headers=self.headers
-                    )
-                    if res.status_code == 200 and res.json():
-                        db_config = res.json()[0].get("config") or {}
-                        self.users_list = db_config.get("connectedUsers", [])
-                        logging.info(f"[SYNC] Успешно. Найдено юзеров: {len(self.users_list)}")
-                        
-                        await sync_msg.edit_text(f"✅ Данные синхронизированы.\n👥 В базе найдено: <b>{len(self.users_list)}</b> пользователей.")
-                    else:
-                        await sync_msg.edit_text("⚠️ Ошибка: База вернула пустой ответ.")
+                rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}", "select": "config"})
+                if rows:
+                    db_config = rows[0].get("config") or {}
+                    self.users_list = db_config.get("connectedUsers", [])
+                    logging.info(f"[SYNC] Успешно. Найдено юзеров: {len(self.users_list)}")
+                    await sync_msg.edit_text(f"✅ Данные синхронизированы.\n👥 В базе найдено: <b>{len(self.users_list)}</b> пользователей.")
+                else:
+                    await sync_msg.edit_text("⚠️ Ошибка: База вернула пустой ответ.")
             except Exception as e:
                 logging.error(f"Ошибка синхронизации: {e}")
                 await sync_msg.edit_text(f"❌ Ошибка подключения: {str(e)}")
@@ -1397,34 +1343,30 @@ class FreeBotInstance:
 
     async def sync_database_logic(self):
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.get(
-                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                    headers=self.headers
+            rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
+            if rows:
+                row = rows[0]
+                self.apply_config(row)
+
+                cleaned = 0
+                for u in self.users_list:
+                    if u.get("_in_ticket"):
+                        u.pop("_in_ticket", None)
+                        u.pop("_ticket_close_label", None)
+                        cleaned += 1
+                if cleaned:
+                    logger.info(f"[{self.bot_id}] Сброшено {cleaned} тикетов при старте")
+
+                logger.info(
+                    f"✅ [{self.bot_id}] Конфиг загружен: "
+                    f"кнопок={len(self.buttons)}, триггеров={len(self.triggers)}, "
+                    f"users={len(self.users_list)}, "
+                    f"admin_chat={self.admin_chat_id}, "
+                    f"forwardAll={self.forward_all}, "
+                    f"useTopics={self.use_topics}, "
+                    f"topicPerRequest={self.topic_per_req}, "
+                    f"inlineButtons={len(self.inline_buttons)}"
                 )
-                if res.status_code == 200 and res.json():
-                    row = res.json()[0]
-                    self.apply_config(row)
-
-                    cleaned = 0
-                    for u in self.users_list:
-                        if u.get("_in_ticket"):
-                            u.pop("_in_ticket", None)
-                            u.pop("_ticket_close_label", None)
-                            cleaned += 1
-                    if cleaned:
-                        logger.info(f"[{self.bot_id}] Сброшено {cleaned} тикетов при старте")
-
-                    logger.info(
-                        f"✅ [{self.bot_id}] Конфиг загружен: "
-                        f"кнопок={len(self.buttons)}, триггеров={len(self.triggers)}, "
-                        f"users={len(self.users_list)}, "
-                        f"admin_chat={self.admin_chat_id}, "
-                        f"forwardAll={self.forward_all}, "
-                        f"useTopics={self.use_topics}, "
-                        f"topicPerRequest={self.topic_per_req}, "
-                        f"inlineButtons={len(self.inline_buttons)}"
-                    )
         except Exception as e:
             logger.error(f"sync_database_logic error: {e}")
 
@@ -1586,19 +1528,8 @@ class FreeBotInstance:
             # ── Удаляем запись из memory_base_cache в Supabase ──
             # Иначе при следующем сообщении middleware снова заблокирует
             try:
-                async with httpx.AsyncClient(timeout=8) as _uc:
-                    _del = await _uc.patch(
-                        f"{self.sb_url}/rest/v1/memory_base_cache",
-                        headers={
-                            "apikey": self.headers.get("apikey", ""),
-                            "Authorization": self.headers.get("Authorization", ""),
-                            "Content-Type": "application/json",
-                            "Prefer": "return=minimal"
-                        },
-                        params={"user_id": f"eq.{target_uid}"},
-                        json={"status": "clean", "reasons": []}
-                    )
-                    logger.info(f"[MB] cache unban → clean for uid={target_uid} status={_del.status_code}")
+                ok = await self.db.patch("memory_base_cache", {"user_id": f"eq.{target_uid}"}, {"status": "clean", "reasons": []})
+                logger.info(f"[MB] cache unban → clean for uid={target_uid} ok={ok}")
             except Exception as _de:
                 logger.warning(f"[MB] cache delete error: {_de}")
 
