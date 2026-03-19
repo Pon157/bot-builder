@@ -221,7 +221,21 @@ class DBAdapter:
 
         async with pool.acquire() as conn:
             rows = await conn.fetch(sql, *values)
-        return [dict(r) for r in rows]
+
+        # --- МАГИЯ ПАРСИНГА JSON ---
+        results = []
+        for r in rows:
+            row_dict = dict(r)
+            for k, v in row_dict.items():
+                # Если значение - строка и похоже на JSON (словарь или массив)
+                if isinstance(v, str) and (v.strip().startswith('{') or v.strip().startswith('[')):
+                    try:
+                        row_dict[k] = json.loads(v)
+                    except json.JSONDecodeError:
+                        pass # Если это просто текст, оставляем как есть
+            results.append(row_dict)
+
+        return results
 
     async def _pg_post(self, table: str, data: dict) -> dict:
         pool = await get_pg_pool()
@@ -242,7 +256,20 @@ class DBAdapter:
 
         async with pool.acquire() as conn:
             row = await conn.fetchrow(sql, *vals)
-        return dict(row) if row else {}
+
+        if not row:
+            return {}
+
+        # --- МАГИЯ ПАРСИНГА ДЛЯ POST ---
+        row_dict = dict(row)
+        for k, v in row_dict.items():
+            if isinstance(v, str) and (v.strip().startswith('{') or v.strip().startswith('[')):
+                try:
+                    row_dict[k] = json.loads(v)
+                except json.JSONDecodeError:
+                    pass
+
+        return row_dict
 
     async def _pg_patch(self, table: str, filter_params: dict, data: dict) -> bool:
         pool = await get_pg_pool()
