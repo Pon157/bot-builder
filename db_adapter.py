@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 
 import asyncpg
 import httpx
@@ -31,7 +32,12 @@ DB_HOST = os.getenv("DB_HOST")
 DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASS = os.getenv("DB_PASSWORD")
-DB_PORT = int(os.getenv("DB_PORT", "5432"))
+
+# Если задан DB_PGBOUNCER_PORT — подключаемся через PgBouncer (рекомендуется).
+# Иначе используем DB_PORT (прямое подключение к PostgreSQL).
+_pgbouncer_port = os.getenv("DB_PGBOUNCER_PORT")
+DB_PORT = int(_pgbouncer_port if _pgbouncer_port else os.getenv("DB_PORT", "5432"))
+_via_pgbouncer = bool(_pgbouncer_port)
 
 SB_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SB_KEY = os.getenv("SUPABASE_KEY", "")
@@ -62,9 +68,9 @@ async def init_pg_pool(min_size: int = 0, max_size: int = 1) -> asyncpg.Pool | N
     """
     Создаёт пул подключений к PostgreSQL. Вызывать при старте приложения.
 
-    min_size=0 (по умолчанию) — соединение НЕ открывается при инициализации пула,
-    только при первом реальном запросе. Это критично когда 40+ ботов стартуют
-    одновременно — они не штурмуют PostgreSQL при запуске.
+    min_size=0 — соединение НЕ открывается при инициализации, только при первом запросе.
+    При ошибке "too many clients" — повторяет попытку с backoff (до 5 раз),
+    вместо того чтобы сразу навсегда уйти на Supabase.
 
     Размер пула:
       • bot/free_bot/vkbot/etc — min=0, max=1  (по умолчанию)
@@ -72,28 +78,41 @@ async def init_pg_pool(min_size: int = 0, max_size: int = 1) -> asyncpg.Pool | N
     """
     global _pg_pool, _pg_available
     if _pg_pool is not None:
-        return _pg_pool  # уже инициализирован — не создаём повторно
+        return _pg_pool
     if not _pg_available:
         logger.info("[DBAdapter] PostgreSQL не настроен (нет DB_HOST/DB_NAME/DB_USER/DB_PASSWORD) — используем Supabase")
         return None
-    try:
-        _pg_pool = await asyncpg.create_pool(
-            host=DB_HOST,
-            port=DB_PORT,
-            database=DB_NAME,
-            user=DB_USER,
-            password=DB_PASS,
-            min_size=min_size,
-            max_size=max_size,
-            command_timeout=10,
-            init=_setup_pg_conn,
-        )
-        logger.info(f"✅ [DBAdapter] PostgreSQL пул создан ({DB_HOST}:{DB_PORT}/{DB_NAME}, min={min_size}, max={max_size})")
-        return _pg_pool
-    except Exception as e:
-        logger.error(f"❌ [DBAdapter] Не удалось создать PostgreSQL пул: {e} — переходим на Supabase")
-        _pg_available = False
-        return None
+
+    retries = 5
+    for attempt in range(1, retries + 1):
+        try:
+            _pg_pool = await asyncpg.create_pool(
+                host=DB_HOST,
+                port=DB_PORT,
+                database=DB_NAME,
+                user=DB_USER,
+                password=DB_PASS,
+                min_size=min_size,
+                max_size=max_size,
+                command_timeout=10,
+                init=_setup_pg_conn,
+                # PgBouncer в transaction mode не поддерживает prepared statements
+                statement_cache_size=0 if _via_pgbouncer else 100,
+            )
+            mode_str = f"via PgBouncer :{DB_PORT}" if _via_pgbouncer else f"direct :{DB_PORT}"
+            logger.info(f"✅ [DBAdapter] PostgreSQL пул создан ({DB_HOST}/{DB_NAME}, {mode_str}, min={min_size}, max={max_size})")
+            return _pg_pool
+        except Exception as e:
+            err = str(e)
+            is_overload = "too many clients" in err or "connection slots" in err
+            if is_overload and attempt < retries:
+                wait = attempt * 3  # 3, 6, 9, 12 сек
+                logger.warning(f"⚠️ [DBAdapter] PostgreSQL перегружен (попытка {attempt}/{retries}), повтор через {wait}с: {e}")
+                await asyncio.sleep(wait)
+            else:
+                logger.error(f"❌ [DBAdapter] Не удалось создать PostgreSQL пул: {e} — переходим на Supabase")
+                _pg_available = False
+                return None
 
 
 async def get_pg_pool() -> asyncpg.Pool | None:
@@ -117,23 +136,32 @@ _SB_OPS = {
 }
 
 def _cast_value(val_str: str) -> object:
-    """Умное приведение типов: строка -> bool / int / float / str."""
+    """Умное приведение типов: строка -> bool / int / float / datetime / str."""
     if val_str == "true":
         return True
     if val_str == "false":
         return False
     if val_str == "null":
         return None
-    
+
+    # ISO datetime: YYYY-MM-DDThh:mm:ss или YYYY-MM-DD
+    if len(val_str) >= 10 and val_str[4:5] == "-" and val_str[7:8] == "-":
+        try:
+            # С timezone-offset или 'Z'
+            s = val_str.replace("Z", "+00:00")
+            return datetime.fromisoformat(s)
+        except ValueError:
+            pass
+
     # Проверка на целое число (вкл. отрицательные)
     if val_str.isdigit() or (val_str.startswith('-') and val_str[1:].isdigit()):
         return int(val_str)
-    
+
     # Проверка на число с плавающей точкой
     try:
         return float(val_str)
     except ValueError:
-        return val_str # Оставляем строкой, если это текст
+        return val_str  # Оставляем строкой, если это текст
 
 
 def _parse_sb_params(params: dict, start_idx: int = 1):
