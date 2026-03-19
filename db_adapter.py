@@ -221,22 +221,22 @@ class DBAdapter:
 
         async with pool.acquire() as conn:
             rows = await conn.fetch(sql, *values)
-
-        # --- МАГИЯ ПАРСИНГА JSON ---
-        results = []
+        
+        # --- ФИКС ОШИБКИ 'str' object is not a mapping ---
+        parsed_rows = []
         for r in rows:
             row_dict = dict(r)
-            for k, v in row_dict.items():
-                # Если значение - строка и похоже на JSON (словарь или массив)
-                if isinstance(v, str) and (v.strip().startswith('{') or v.strip().startswith('[')):
+            for key, value in row_dict.items():
+                # Если это строка, которая выглядит как JSON (начинается с { или [)
+                if isinstance(value, str) and value.strip().startswith(('{', '[')):
                     try:
-                        row_dict[k] = json.loads(v)
-                    except json.JSONDecodeError:
-                        pass # Если это просто текст, оставляем как есть
-            results.append(row_dict)
-
-        return results
-
+                        row_dict[key] = json.loads(value)
+                    except (json.JSONDecodeError, TypeError):
+                        continue # Оставляем как есть, если это просто текст
+            parsed_rows.append(row_dict)
+            
+        return parsed_rows
+      
     async def _pg_post(self, table: str, data: dict) -> dict:
         pool = await get_pg_pool()
         if pool is None:
