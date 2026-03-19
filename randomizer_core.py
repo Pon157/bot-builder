@@ -69,6 +69,8 @@ TOKEN  = _env_or_cfg("BOT_TOKEN") or _CFG_FILE.get("token", "")
 BOT_ID = _env_or_cfg("BOT_ID")    or _CFG_FILE.get("id", "")
 SB_URL = (_env_or_cfg("SUPABASE_URL") or "").rstrip("/")
 SB_KEY = _env_or_cfg("SUPABASE_KEY") or ""
+from db_adapter import DBAdapter, init_pg_pool
+_db_adapter = DBAdapter(SB_URL, SB_KEY)
 
 if not TOKEN:
     logger.critical("❌ BOT_TOKEN не задан (ни env, ни cfg_file)!")
@@ -1019,6 +1021,7 @@ async def time_monitor():
 # MAIN
 # ──────────────────────────────────────────────────────────────
 async def main():
+    await init_pg_pool()
     logger.info(f"▶️  Запуск RandomizerCore (bot_id={BOT_ID})")
     await load_config()
     asyncio.create_task(time_monitor())
