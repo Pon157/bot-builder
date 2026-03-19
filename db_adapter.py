@@ -37,7 +37,10 @@ DB_PASS = os.getenv("DB_PASSWORD")
 # Иначе используем DB_PORT (прямое подключение к PostgreSQL).
 _pgbouncer_port = os.getenv("DB_PGBOUNCER_PORT")
 DB_PORT = int(_pgbouncer_port if _pgbouncer_port else os.getenv("DB_PORT", "5432"))
-_via_pgbouncer = bool(_pgbouncer_port)
+# Отключаем statement cache если:
+# - явно указан DB_PGBOUNCER_PORT, или
+# - DB_DISABLE_STATEMENT_CACHE=1 (для случаев когда порт задан через DB_PORT)
+_via_pgbouncer = bool(_pgbouncer_port) or os.getenv("DB_DISABLE_STATEMENT_CACHE", "") == "1"
 
 SB_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SB_KEY = os.getenv("SUPABASE_KEY", "")
