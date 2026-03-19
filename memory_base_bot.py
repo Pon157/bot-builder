@@ -49,8 +49,8 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
 
-from dotenv import load_dotenv
-load_dotenv()
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv(usecwd=True) or find_dotenv())
 
 # Расшифровка токенов ботов (Fernet, ключ из ENCRYPTION_KEY)
 try:
