@@ -221,22 +221,25 @@ class DBAdapter:
 
         async with pool.acquire() as conn:
             rows = await conn.fetch(sql, *values)
-        
-        # --- ФИКС ОШИБКИ 'str' object is not a mapping ---
-        parsed_rows = []
+
+        results = []
         for r in rows:
             row_dict = dict(r)
-            for key, value in row_dict.items():
-                # Если это строка, которая выглядит как JSON (начинается с { или [)
-                if isinstance(value, str) and value.strip().startswith(('{', '[')):
-                    try:
-                        row_dict[key] = json.loads(value)
-                    except (json.JSONDecodeError, TypeError):
-                        continue # Оставляем как есть, если это просто текст
-            parsed_rows.append(row_dict)
-            
-        return parsed_rows
-      
+            for k, v in row_dict.items():
+                if isinstance(v, str):
+                    v_stripped = v.strip()
+                    # Проверяем, не является ли строка JSON-объектом или массивом
+                    if v_stripped.startswith(('{', '[')):
+                        try:
+                            row_dict[k] = json.loads(v_stripped)
+                            # Если после первого loads мы все еще имеем строку (двойная сериализация)
+                            if isinstance(row_dict[k], str) and row_dict[k].strip().startswith(('{', '[')):
+                                row_dict[k] = json.loads(row_dict[k])
+                        except Exception:
+                            pass
+            results.append(row_dict)
+        return results
+
     async def _pg_post(self, table: str, data: dict) -> dict:
         pool = await get_pg_pool()
         if pool is None:
@@ -256,9 +259,21 @@ class DBAdapter:
 
         async with pool.acquire() as conn:
             row = await conn.fetchrow(sql, *vals)
-
-        if not row:
-            return {}
+        
+        if not row: return {}
+        
+        row_dict = dict(row)
+        for k, v in row_dict.items():
+            if isinstance(v, str):
+                v_stripped = v.strip()
+                if v_stripped.startswith(('{', '[')):
+                    try:
+                        row_dict[k] = json.loads(v_stripped)
+                        if isinstance(row_dict[k], str) and row_dict[k].strip().startswith(('{', '[')):
+                            row_dict[k] = json.loads(row_dict[k])
+                    except Exception:
+                        pass
+        return row_dict
 
         # --- МАГИЯ ПАРСИНГА ДЛЯ POST ---
         row_dict = dict(row)
