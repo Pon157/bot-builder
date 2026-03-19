@@ -383,18 +383,13 @@ class FreeVKBotInstance:
     async def _save_media_to_db(self, user_id: int, media_type: str, file_id: str, source_url: str = ""):
         """Сохраняет загруженное медиа в таблицу bot_media."""
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                await client.post(
-                    f"{self.sb_url}/rest/v1/bot_media",
-                    json={
-                        "bot_id":     self.bot_id,
-                        "user_id":    user_id,
-                        "media_type": media_type,
-                        "file_id":    file_id,
-                        "source_url": source_url,
-                    },
-                    headers={**self.headers, "Prefer": "return=minimal"}
-                )
+            await self.db.post("bot_media", {
+                "bot_id":     self.bot_id,
+                "user_id":    user_id,
+                "media_type": media_type,
+                "file_id":    file_id,
+                "source_url": source_url,
+            })
         except Exception as e:
             logger.debug(f"_save_media_to_db: {e}")
 
@@ -599,34 +594,30 @@ class FreeVKBotInstance:
 
     async def sync_database_logic(self):
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.get(
-                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                    headers=self.headers
+            rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
+            if rows:
+                row = rows[0]
+                remote_cfg = row.get("config") or {}
+                if isinstance(remote_cfg, str):
+                    try:
+                        remote_cfg = json.loads(remote_cfg)
+                    except Exception:
+                        remote_cfg = {}
+                self.apply_config({**row, "config": remote_cfg})
+
+                # Сбрасываем тикеты при рестарте
+                for u in self.users_list:
+                    u.pop("_in_ticket", None)
+                    u.pop("_ticket_close_label", None)
+
+                logger.info(
+                    f"✅ [FREE VK] [{self.bot_id}] Конфиг загружен: "
+                    f"кнопок={len(self.buttons)}, триггеров={len(self.triggers)}, "
+                    f"users={len(self.users_list)}, "
+                    f"admin_chat={self.admin_chat_id}, "
+                    f"forwardAll={self.forward_all}, "
+                    f"inlineButtons={len(self.inline_buttons)}"
                 )
-                if res.status_code == 200 and res.json():
-                    row = res.json()[0]
-                    remote_cfg = row.get("config") or {}
-                    if isinstance(remote_cfg, str):
-                        try:
-                            remote_cfg = json.loads(remote_cfg)
-                        except Exception:
-                            remote_cfg = {}
-                    self.apply_config({**row, "config": remote_cfg})
-
-                    # Сбрасываем тикеты при рестарте
-                    for u in self.users_list:
-                        u.pop("_in_ticket", None)
-                        u.pop("_ticket_close_label", None)
-
-                    logger.info(
-                        f"✅ [FREE VK] [{self.bot_id}] Конфиг загружен: "
-                        f"кнопок={len(self.buttons)}, триггеров={len(self.triggers)}, "
-                        f"users={len(self.users_list)}, "
-                        f"admin_chat={self.admin_chat_id}, "
-                        f"forwardAll={self.forward_all}, "
-                        f"inlineButtons={len(self.inline_buttons)}"
-                    )
         except Exception as e:
             logger.error(f"sync_database_logic FreeVK error: {e}")
 
@@ -643,22 +634,15 @@ class FreeVKBotInstance:
 
                     if action == "log_message":
                         try:
-                            await client.post(
-                                f"{self.sb_url}/rest/v1/bot_messages",
-                                json=payload,
-                                headers=self.headers
-                            )
+                            await self.db.post("bot_messages", payload)
                         except Exception:
                             pass
 
                     elif action == "sync_state":
                         try:
-                            res = await client.get(
-                                f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                                headers=self.headers
-                            )
-                            if res.status_code == 200 and res.json():
-                                remote_data   = res.json()[0]
+                            rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
+                            if rows:
+                                remote_data   = rows[0]
                                 remote_config = remote_data.get("config", {}) or {}
 
                                 new_config = {
@@ -669,11 +653,7 @@ class FreeVKBotInstance:
                                     "vk_group_id":    self.admin_chat_id,
                                     "vkGroupId":      self.admin_chat_id,
                                 }
-                                await client.patch(
-                                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                                    json={"config": new_config},
-                                    headers=self.headers
-                                )
+                                await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"config": new_config})
 
                                 # Горячая перезагрузка конфига (кнопки/настройки)
                                 saved_users = self.users_list
@@ -978,24 +958,16 @@ class FreeVKBotInstance:
         self.admin_chat_id = peer_id
 
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                res = await client.get(
-                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                    headers=self.headers
-                )
-                if res.status_code == 200 and res.json():
-                    remote_cfg = res.json()[0].get("config", {}) or {}
-                    new_cfg    = {
-                        **remote_cfg,
-                        "adminChatId":  peer_id,
-                        "vk_group_id":  peer_id,
-                        "vkGroupId":    peer_id,
-                    }
-                    await client.patch(
-                        f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                        json={"config": new_cfg},
-                        headers=self.headers
-                    )
+            rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
+            if rows:
+                remote_cfg = rows[0].get("config", {}) or {}
+                new_cfg = {
+                    **remote_cfg,
+                    "adminChatId":  peer_id,
+                    "vk_group_id":  peer_id,
+                    "vkGroupId":    peer_id,
+                }
+                await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"config": new_cfg})
             logger.info(f"✅ [FREE VK] [{self.bot_id}] peer_id={peer_id} сохранён в БД")
         except Exception as e:
             logger.error(f"❌ FreeVK bind_peer_id error: {e}")
