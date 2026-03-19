@@ -231,76 +231,75 @@ class MemoryBaseMiddleware(BaseMiddleware):
                 "memory_base_cache",
                 {"user_id": f"eq.{user_id}", "select": "status,reasons,expires_at"},
             )
-            if True:
-                if _rows:
-                    _cache_row = _rows[0]
-                        _status  = _cache_row.get('status', 'not_found')
-                        _reasons = _cache_row.get('reasons', [])
-                    logger.info(f"[MB] uid={user_id} supabase status={_status} reasons={_reasons}")
+            if _rows:
+                _cache_row = _rows[0]
+                _status  = _cache_row.get('status', 'not_found')
+                _reasons = _cache_row.get('reasons', [])
+                logger.info(f"[MB] uid={user_id} supabase status={_status} reasons={_reasons}")
 
-                        if _status == 'in_base':
-                            _block_reasons = settings.get('memoryBaseBlockReasons', [])
-                            _should_block  = (not _block_reasons or any(r in _block_reasons for r in _reasons))
-                            if _should_block:
+                if _status == 'in_base':
+                    _block_reasons = settings.get('memoryBaseBlockReasons', [])
+                    _should_block  = (not _block_reasons or any(r in _block_reasons for r in _reasons))
+                    if _should_block:
+                        if user_rec:
+                            user_rec['mb_restricted'] = True
+                            user_rec['mb_reasons']    = _reasons
+                        if isinstance(event, Message):
+                            await event.answer(
+                                "🚫 <b>Доступ ограничен.</b>\n\n"
+                                "Вы находитесь в антиспам-базе "
+                                "<a href=\"https://t.me/MemoryBaseBot\">MemoryBase</a>.\n"
+                                "Для восстановления доступа обратитесь к владельцу бота."
+                            )
+                        elif isinstance(event, CallbackQuery):
+                            await event.answer("🚫 Доступ ограничен (MemoryBase).", show_alert=True)
+                        # ── Уведомление в админ чат (один раз) ──────────
+                        _already_notified = user_rec.get('mb_notified', False) if user_rec else False
+                        if self.bi.admin_chat_id and not _already_notified:
+                            try:
+                                _rh = {"scammer":"Мошенник ⛔️","bad_admin":"Плохой админ ❌",
+                                       "bad_owner":"Плохой владелец ❌","bad_behavior":"Нарушитель 🐔",
+                                       "spammer":"Спамер 🚫","raider":"Рейдер 💥"}
+                                _rt = ", ".join(_rh.get(r,r) for r in _reasons if not r.startswith("other:"))
+                                _ot = [r.replace("other:","") for r in _reasons if r.startswith("other:")]
+                                if _ot: _rt += (", " if _rt else "") + ", ".join(_ot)
+                                _nm = user_tg.full_name or f"User {user_id}"
+                                _un = f" (@{user_tg.username})" if user_tg.username else ""
+                                _is_start = isinstance(event, Message) and bool(getattr(event, 'text', '') or '') and (event.text or '').strip().startswith("/start")
+                                _act = "написал /start" if _is_start else "написал сообщение"
+                                _kb = InlineKeyboardMarkup(inline_keyboard=[[
+                                    InlineKeyboardButton(text="✅ Разрешить доступ", callback_data=f"mb_unban_{user_id}")
+                                ]])
+                                await self.bi.bot.send_message(
+                                    self.bi.admin_chat_id,
+                                    f"🔴 <b>MemoryBase: пользователь в базе</b>\n\n"
+                                    f"👤 {_nm}{_un}\n🆔 <code>{user_id}</code>\n"
+                                    f"📌 <b>Причина(ы):</b> {_rt or '—'}\n\n"
+                                    f"Пользователь {_act} и был заблокирован.\n"
+                                    f"Если хотите разрешить ему писать — нажмите кнопку ниже 👇",
+                                    reply_markup=_kb,
+                                )
                                 if user_rec:
-                                    user_rec['mb_restricted'] = True
-                                    user_rec['mb_reasons']    = _reasons
-                                if isinstance(event, Message):
-                                    await event.answer(
-                                        "🚫 <b>Доступ ограничен.</b>\n\n"
-                                        "Вы находитесь в антиспам-базе "
-                                        "<a href=\"https://t.me/MemoryBaseBot\">MemoryBase</a>.\n"
-                                        "Для восстановления доступа обратитесь к владельцу бота."
-                                    )
-                                elif isinstance(event, CallbackQuery):
-                                    await event.answer("🚫 Доступ ограничен (MemoryBase).", show_alert=True)
-                                # ── Уведомление в админ чат (один раз) ──────────
-                                _already_notified = user_rec.get('mb_notified', False) if user_rec else False
-                                if self.bi.admin_chat_id and not _already_notified:
-                                    try:
-                                        _rh = {"scammer":"Мошенник ⛔️","bad_admin":"Плохой админ ❌",
-                                               "bad_owner":"Плохой владелец ❌","bad_behavior":"Нарушитель 🐔",
-                                               "spammer":"Спамер 🚫","raider":"Рейдер 💥"}
-                                        _rt = ", ".join(_rh.get(r,r) for r in _reasons if not r.startswith("other:"))
-                                        _ot = [r.replace("other:","") for r in _reasons if r.startswith("other:")]
-                                        if _ot: _rt += (", " if _rt else "") + ", ".join(_ot)
-                                        _nm = user_tg.full_name or f"User {user_id}"
-                                        _un = f" (@{user_tg.username})" if user_tg.username else ""
-                                        _is_start = isinstance(event, Message) and bool(getattr(event, 'text', '') or '') and (event.text or '').strip().startswith("/start")
-                                        _act = "написал /start" if _is_start else "написал сообщение"
-                                        _kb = InlineKeyboardMarkup(inline_keyboard=[[
-                                            InlineKeyboardButton(text="✅ Разрешить доступ", callback_data=f"mb_unban_{user_id}")
-                                        ]])
-                                        await self.bi.bot.send_message(
-                                            self.bi.admin_chat_id,
-                                            f"🔴 <b>MemoryBase: пользователь в базе</b>\n\n"
-                                            f"👤 {_nm}{_un}\n🆔 <code>{user_id}</code>\n"
-                                            f"📌 <b>Причина(ы):</b> {_rt or '—'}\n\n"
-                                            f"Пользователь {_act} и был заблокирован.\n"
-                                            f"Если хотите разрешить ему писать — нажмите кнопку ниже 👇",
-                                            reply_markup=_kb,
-                                        )
-                                        if user_rec:
-                                            user_rec['mb_notified'] = True
-                                            await self.bi.sync_queue.put(("sync_state", None))
-                                    except Exception as _ne:
-                                        logger.warning(f"[MB] admin notify error: {_ne}")
-                                return  # БЛОКИРУЕМ
-                        else:
-                            # Статус clean/not_found — снимаем локальный флаг если был
-                            if user_rec and user_rec.get('mb_restricted'):
-                                user_rec['mb_restricted'] = False
-                                user_rec['mb_reasons']    = []
-                            # Обновляем метку — при следующем сообщении не будем ходить в Supabase
-                            if user_rec:
-                                user_rec['last_mb_check'] = int(time.time())
-                        # Запись есть, статус не in_base — пропускаем если last_mb_check достаточно свежий
-                        if time.time() - last_mb_check < 86400:
-                            return await handler(event, data)
-                        # Иначе — ставим в очередь на перепроверку (могло устареть)
-                    else:
-                        # Записей в кэше вообще нет — нужна первичная проверка
-                        logger.info(f"[MB] uid={user_id} no cache row — queuing check")
+                                    user_rec['mb_notified'] = True
+                                    await self.bi.sync_queue.put(("sync_state", None))
+                            except Exception as _ne:
+                                logger.warning(f"[MB] admin notify error: {_ne}")
+                        return  # БЛОКИРУЕМ
+                else:
+                    # Статус clean/not_found — снимаем локальный флаг если был
+                    if user_rec and user_rec.get('mb_restricted'):
+                        user_rec['mb_restricted'] = False
+                        user_rec['mb_reasons']    = []
+                    # Обновляем метку — при следующем сообщении не будем ходить в Supabase
+                    if user_rec:
+                        user_rec['last_mb_check'] = int(time.time())
+                # Запись есть, статус не in_base — пропускаем если last_mb_check достаточно свежий
+                if time.time() - last_mb_check < 86400:
+                    return await handler(event, data)
+                # Иначе — ставим в очередь на перепроверку (могло устареть)
+            else:
+                # Записей в кэше вообще нет — нужна первичная проверка
+                logger.info(f"[MB] uid={user_id} no cache row — queuing check")
         except Exception as _e:
             logger.warning(f"[MB] db pre-check error: {_e} — пропускаем")
             return await handler(event, data)
