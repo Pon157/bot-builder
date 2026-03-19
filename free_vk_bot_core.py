@@ -149,6 +149,7 @@ class FreeVKBotInstance:
 
         self.sb_url = os.getenv("SUPABASE_URL", "").rstrip("/")
         self.sb_key = os.getenv("SUPABASE_KEY", "")
+        self.db = DBAdapter(self.sb_url, self.sb_key)
         self.headers = {
             "apikey":        self.sb_key,
             "Authorization": f"Bearer {self.sb_key}",
