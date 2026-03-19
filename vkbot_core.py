@@ -4,6 +4,7 @@ import json
 import httpx
 import os
 import sys
+from db_adapter import DBAdapter, init_pg_pool
 import hashlib
 import time
 import re
@@ -2294,6 +2295,7 @@ class BotInstance:
             # Иначе — молчим (или можно дать fallback-текст если задан)
 
     async def run_instance(self):
+        await init_pg_pool()
         logger.info(f"[*] Бот VK {self.bot_id} запускается...")
         
         # Проверка токена
