@@ -266,38 +266,61 @@ async def lifespan(app: FastAPI):
     """Логика при старте и выключении сервера."""
     logger.info("--- Сервер запускается ---")
 
-    # Инициализируем пул PostgreSQL (приоритетная БД)
+    # Инициализируем пул PostgreSQL
     await init_pg_pool()
 
-    # Текущее время в мс для проверки лицензий при автостарте
+    # Текущее время в мс для проверки лицензий
     curr_ms = int(time.time() * 1000)
 
     try:
+        # Получаем активных ботов
         active_bots = await db.get("bots", {
-            "status":              "eq.RUNNING",
-            "license_expires_at":  f"gt.{curr_ms}",
+            "status":             "eq.RUNNING",
+            "license_expires_at": f"gt.{curr_ms}",
         })
+        
         logger.info(f"Найдено {len(active_bots)} активных ботов для автозапуска")
+        
         for b in active_bots:
-            inner_cfg = b.get("config") or {}
-            merged = {**inner_cfg, **b}
-            merged['is_free_plan'] = b.get('is_free_plan', False)
-            await pm.start_bot(b['id'], merged)
+            try:
+                # --- ЖЕСТКИЙ ФИКС 'str' object is not a mapping ---
+                inner_cfg = b.get("config") or {}
+                
+                # Если база вернула config как строку (тип TEXT в Postgres)
+                if isinstance(inner_cfg, str):
+                    inner_cfg = json.loads(inner_cfg)
+                
+                # Повторная проверка на двойную сериализацию (иногда бывает в PG)
+                if isinstance(inner_cfg, str):
+                    inner_cfg = json.loads(inner_cfg)
+
+                # Теперь мердж словарей пройдет успешно
+                merged = {**inner_cfg, **b}
+                merged['is_free_plan'] = b.get('is_free_plan', False)
+                
+                # Передаем управление в Process Manager
+                from process_manager import pm # Импорт внутри, если есть циклическая зависимость
+                await pm.start_bot(b['id'], merged)
+                
+            except Exception as bot_err:
+                logger.error(f"Ошибка при запуске конкретного бота {b.get('id')}: {bot_err}")
+                continue
+
     except Exception as e:
         logger.error(f"Критическая ошибка автозапуска: {e}")
     
-    yield  # В этой точке сервер начинает принимать запросы
+    yield  # Сервер начал работу
     
     logger.info("--- Сервер останавливается ---")
-    # Корректно завершаем процессы всех ботов
+    from process_manager import pm
     for bid in list(pm.procs.keys()):
         await pm.stop_bot(bid)
 
 
-# 1. Сначала инициализируем приложение
+# 2. Инициализация FastAPI
 app = FastAPI(lifespan=lifespan)
 
-# 2. Определяем класс защиты
+# 3. Middleware безопасности
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
@@ -305,9 +328,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        
+        # S_URL подставляется из конфига
+        s_url_clean = os.getenv("SUPABASE_URL", "").rstrip("/")
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            f"connect-src 'self' {S_URL} blob:; "
+            f"connect-src 'self' {s_url_clean} blob:; "
             "script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob: *; "
@@ -316,7 +342,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         )
         return response
 
-# 3. Добавляем Middleware (теперь переменная 'app' уже существует)
 app.add_middleware(SecurityHeadersMiddleware)
 
 app.add_middleware(
@@ -326,14 +351,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 4. Глобальный адаптер БД (PostgreSQL приоритет, Supabase fallback)
-db = DBAdapter(S_URL, S_KEY)
-
-def _make_db_client():
-    """Совместимость: возвращает тот же адаптер."""
-    return DBAdapter(S_URL, S_KEY)
-
-# Загрузка файлов
+# 4. Загрузка статики/файлов
 UPLOADS_DIR = os.getenv("UPLOADS_DIR", "/var/www/botengine/uploads")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
