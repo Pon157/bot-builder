@@ -422,12 +422,7 @@ class BotInstance:
                 "Content-Type": "application/json",
                 "Prefer": "return=minimal"
             }
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                await client.patch(
-                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                    headers=headers,
-                    json={"stats": st}
-                )
+            await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"stats": st})
         except Exception as e:
             logger.error(f"Error updating stats: {e}", exc_info=True)
 
@@ -439,13 +434,7 @@ class BotInstance:
                     logger.warning(f" [!] Лицензия {self.bot_id} истекла!")
                     self.license_expired = True 
                     
-                    async with httpx.AsyncClient() as client:
-                        headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
-                        await client.patch(
-                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                            json={"status": "IDLE"},
-                            headers=headers
-                        )
+                    await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"status": "IDLE"})
             else:
                 self.license_expired = False
         except Exception as e:
@@ -550,26 +539,17 @@ class BotInstance:
 
     async def sync_database_logic(self):
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                headers = {
-                    "apikey": self.sb_key,
-                    "Authorization": f"Bearer {self.sb_key}",
-                    "Content-Type": "application/json",
-                }
-                res = await client.get(
-                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                    headers=headers
-                )
-                if res.status_code == 200 and res.json():
-                    remote_data = res.json()[0]
-                    remote_config = remote_data.get("config") or {}
-                    if not isinstance(remote_config, dict):
-                        try:
-                            remote_config = json.loads(remote_config)
-                        except Exception:
-                            remote_config = {}
-                    self.apply_config({**remote_data, "config": remote_config})
-                    logger.info(f"✅ VK [{self.bot_id}] Конфиг загружен (кнопок: {len(self.buttons)}, триггеров: {len(self.triggers)})")
+            rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
+            if rows:
+                remote_data = rows[0]
+                remote_config = remote_data.get("config") or {}
+                if not isinstance(remote_config, dict):
+                    try:
+                        remote_config = json.loads(remote_config)
+                    except Exception:
+                        remote_config = {}
+                self.apply_config({**remote_data, "config": remote_config})
+                logger.info(f"✅ VK [{self.bot_id}] Конфиг загружен (кнопок: {len(self.buttons)}, триггеров: {len(self.triggers)})")
         except Exception as e:
             logger.error(f"sync_database_logic VK error: {e}")
 
@@ -653,13 +633,10 @@ class BotInstance:
                             self.sync_queue.task_done()
                             continue
         
-                        res = await client.get(
-                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                            headers=headers
-                        )
+                        rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
 
-                        if res.status_code == 200 and res.json():
-                            remote_data = res.json()[0]
+                        if rows:
+                            remote_data = rows[0]
                             remote_config = remote_data.get("config", {}) or {}
 
                             new_config = {
@@ -671,11 +648,7 @@ class BotInstance:
                                 "vkGroupId": self.vk_group_id,
                             }
 
-                            await client.patch(
-                                f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                                json={"config": new_config, "stats": self.stats_data},
-                                headers=headers
-                            )
+                            await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"config": new_config, "stats": self.stats_data})
 
                             # Обновляем только кнопки/триггеры/настройки из БД,
                             # НЕ трогая users_list и stats в памяти
@@ -1312,18 +1285,14 @@ class BotInstance:
             }
             async with httpx.AsyncClient(timeout=10) as client:
                 res = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
-                if res.status_code == 200 and res.json():
-                    remote_config = res.json()[0].get("config", {})
+                if rows_save:
+                    remote_config = rows_save[0].get("config", {})
                     new_config = {
                         **remote_config,
                         "connectedUsers": self.users_list,
                         "stats": self.stats_data
                     }
-                    await client.patch(
-                        f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                        json={"config": new_config, "stats": self.stats_data},
-                        headers=headers
-                    )
+                    await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"config": new_config, "stats": self.stats_data})
             await self.sync_queue.put(("sync_state", None))
         except Exception as e:
             logger.error(f"❌ VK _save_to_db error: {e}")
@@ -1751,16 +1720,9 @@ class BotInstance:
             "Prefer": "return=minimal"
         }
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                await client.patch(
-                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                    headers=headers,
-                    json={
-                        "vk_group_id": peer_id,
-                        "admin_chat_id": None,
-                        "config": cfg
-                    }
-                )
+            await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {
+                "vk_group_id": peer_id, "admin_chat_id": None, "config": cfg
+            })
             logger.info(f"✅ [{self.bot_id}] peer_id={peer_id} сохранён в БД")
         except Exception as e:
             logger.error(f"❌ Ошибка сохранения peer_id: {e}")
