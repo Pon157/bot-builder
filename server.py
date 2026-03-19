@@ -244,7 +244,7 @@ db = DBAdapter()
 async def lifespan(app: FastAPI):
     """Логика при старте и выключении сервера."""
     logger.info("--- Сервер запускается ---")
-    await init_pg_pool()
+    await init_pg_pool(min_size=2, max_size=5)
     curr_ms = int(time.time() * 1000)
 
     try:
@@ -581,7 +581,7 @@ async def get_referral_stats(user_id: str):
                 "referred_id": f"eq.{inv_id}",
                 "select": "amount"
             })
-            earned_from = sum(int(t.get("amount", 0)) for t in (tx_r.json() or []))
+            earned_from = sum(int(t.get("amount", 0)) for t in (tx_r or []))
         except Exception:
             earned_from = 0
         total_earnings += earned_from
@@ -1235,8 +1235,8 @@ async def get_bot_status(bid: str):
     status_val = "RUNNING" if is_running else "IDLE"
     try:
         r = await db.get("bots", params={"id": f"eq.{bid}", "select": "id,status"})
-        if r.json():
-            db_status = r.json()[0].get("status", "IDLE")
+        if r:
+            db_status = r[0].get("status", "IDLE")
             # Если процесс умер но в БД ещё RUNNING — обновляем
             if not is_running and db_status == "RUNNING":
                 await db.patch("bots", {"id": f"eq.{bid}"}, {"status": "IDLE"})
@@ -1526,10 +1526,10 @@ async def broadcast_msg(d: dict):
 
     for bid in bot_ids:
         r = await db.get("bots", params={"id": f"eq.{bid}"})
-        if not r.json():
+        if not r:
             continue
 
-        b_data   = r.json()[0]
+        b_data   = r[0]
         platform = (b_data.get('platform') or 'telegram').lower()
         token    = decrypt_val(b_data['token'])
         cfg      = b_data.get('config') or {}
@@ -1693,7 +1693,7 @@ async def get_all_users(x_admin_token: str = Header(None)):
     if not verify_admin_token(x_admin_token): raise HTTPException(403)
     # Получаем юзеров, сортируем по дате регистрации
     r = await db.get("users", {"select": "*", "order": "created_at.desc"})
-    return r.json()
+    return r
 
 @app.post("/api/admin/user/ban")
 async def admin_ban_user(d: dict, x_admin_token: str = Header(None)):
@@ -1720,7 +1720,7 @@ async def get_all_bots(x_admin_token: str = Header(None)):
     if not verify_admin_token(x_admin_token): raise HTTPException(403)
     # Тянем ботов с инфой о владельце через join
     r = await db.get("bots", {"select": "*, owner:users(email, username)", "order": "created_at.desc"})
-    return r.json()
+    return r
 
 @app.post("/api/admin/bot/action")
 async def admin_bot_action(d: dict, x_admin_token: str = Header(None)):
@@ -1739,8 +1739,8 @@ async def admin_bot_action(d: dict, x_admin_token: str = Header(None)):
         
     elif action == 'start':
         res = await db.get("bots", params={"id": f"eq.{bid}"})
-        if res.status_code == 200 and res.json():
-            bot_data = res.json()[0]
+        if res:
+            bot_data = res[0]
             
             # Собираем полный конфиг для запуска (как это делает основной сервер)
             inner_cfg = bot_data.get("config") or {}
@@ -1771,7 +1771,7 @@ async def admin_bot_action(d: dict, x_admin_token: str = Header(None)):
 async def get_all_keys(x_admin_token: str = Header(None)):
     if not verify_admin_token(x_admin_token): raise HTTPException(403)
     r = await db.get("issued_keys", {"order": "created_at.desc"})
-    return r.json()
+    return r
 
 @app.post("/api/admin/generate_key")
 async def generate_key(data: dict, x_admin_token: str = Header(None)):
@@ -1882,7 +1882,7 @@ async def get_admin_logs(x_admin_token: str = Header(None)):
         "order": "created_at.desc",
         "limit": 20
     })
-    return r.json()
+    return r
 
 @app.get("/api/admin/bot/{bot_id}")
 async def get_bot_for_admin(bot_id: str, x_admin_token: str = Header(None)):
@@ -2474,8 +2474,8 @@ async def submit_miniapp_form(request: Request):
         # Нам нужно узнать notify_chat_id и webhook_type
         r = await db.get("mini_apps", params={"id": f"eq.{app_id}", "select": "*", "limit": "1"})
         
-        if r.status_code == 200 and r.json():
-            app_row = r.json()[0]
+        if r:
+            app_row = r[0]
             webhook_type = app_row.get("webhook_type", "bot")
             notify_chat_id = app_row.get("notify_chat_id", "") # Тот самый ID из forms_bot
             
@@ -2585,10 +2585,10 @@ async def handle_form_submit(request: Request):
 
         # 1. Достаем настройки приложения из БД
         r = await db.get("mini_apps", params={"id": f"eq.{app_id}", "select": "*", "limit": "1"})
-        if r.status_code != 200 or not r.json():
+        if not r:
             return {"ok": False, "error": "Приложение не найдено"}
 
-        app_row = r.json()[0]
+        app_row = r[0]
         webhook_type = app_row.get("webhook_type")
         
         async with httpx.AsyncClient() as client:
@@ -4047,7 +4047,7 @@ async def get_balance(user_id: str):
 async def get_prices():
     """Возвращает актуальный прайслист из БД."""
     r = await db.get("service_prices", {"order": "price_rub.asc"})
-    return r.json() if r.status_code == 200 else []
+    return r
 
 # ─── ИНИЦИИРОВАТЬ ПОПОЛНЕНИЕ ─────────────────────────────────────────────────
 
@@ -4336,8 +4336,8 @@ async def buy_service(d: dict):
         tokens = int(meta.get("tokens", 0))
         if tokens > 0:
             ab_r = await db.get("ai_token_balances", params={"bot_id": f"eq.{target_id}"})
-            if ab_r.json():
-                curr_tok = ab_r.json()[0].get("tokens_balance", 0)
+            if ab_r:
+                curr_tok = ab_r[0].get("tokens_balance", 0)
                 await db.patch("ai_token_balances",
                                params={"bot_id": f"eq.{target_id}"},
                                json={"tokens_balance": curr_tok + tokens})
@@ -4350,8 +4350,8 @@ async def buy_service(d: dict):
         add_ms = days * 86_400_000
         ml_r   = await db.get("miniapp_licenses", params={"bot_id": f"eq.{target_id}"})
 
-        if ml_r.json():
-            curr_exp = ml_r.json()[0].get("expires_at") or now_ms
+        if ml_r:
+            curr_exp = ml_r[0].get("expires_at") or now_ms
             new_exp  = max(curr_exp, now_ms) + add_ms
             await db.patch("miniapp_licenses",
                            params={"bot_id": f"eq.{target_id}"},
