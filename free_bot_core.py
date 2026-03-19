@@ -925,37 +925,25 @@ class FreeBotInstance:
 
     async def _log_message(self, uid: int, name: str, text: str, is_admin: bool):
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                await client.post(
-                    "bot_messages" #NEW_DB,
-                    json={
-                        "bot_id":        self.bot_id,
-                        "user_id":       uid,
-                        "first_name":    name,
-                        "message_text":  text[:950] if text else "[Медиа]",
-                        "is_from_admin": is_admin,
-                    },
-                    headers={**self.headers, "Content-Type": "application/json",
-                            "Prefer": "return=minimal"}
-                )
+            await self.db.post("bot_messages", {
+                "bot_id":        self.bot_id,
+                "user_id":       uid,
+                "first_name":    name,
+                "message_text":  text[:950] if text else "[Медиа]",
+                "is_from_admin": is_admin,
+            })
         except Exception:
             pass
 
     async def _save_media_to_db(self, user_id: int, media_type: str, file_id: str):
         """Сохраняет file_id медиа от пользователя в таблицу bot_media."""
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                await client.post(
-                    f"{self.sb_url}/rest/v1/bot_media",
-                    json={
-                        "bot_id":     self.bot_id,
-                        "user_id":    user_id,
-                        "media_type": media_type,
-                        "file_id":    file_id,
-                    },
-                    headers={**self.headers, "Content-Type": "application/json",
-                            "Prefer": "return=minimal"}
-                )
+            await self.db.post("bot_media", {
+                "bot_id":     self.bot_id,
+                "user_id":    user_id,
+                "media_type": media_type,
+                "file_id":    file_id,
+            })
         except Exception:
             pass
 
