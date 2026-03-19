@@ -58,15 +58,17 @@ async def _setup_pg_conn(conn: asyncpg.Connection):
     )
 
 
-async def init_pg_pool(min_size: int = 1, max_size: int = 1) -> asyncpg.Pool | None:
+async def init_pg_pool(min_size: int = 0, max_size: int = 1) -> asyncpg.Pool | None:
     """
     Создаёт пул подключений к PostgreSQL. Вызывать при старте приложения.
 
-    Размер пула подбирается в зависимости от типа процесса:
-      • bot/free_bot/vkbot/etc — min=1, max=1  (по умолчанию)
-        Async-бот — один event loop, одно соединение достаточно.
-        При 100 ботах = 100 соединений. Масштабируется без ограничений.
-      • server — min=2, max=5 (явно передаётся при вызове)
+    min_size=0 (по умолчанию) — соединение НЕ открывается при инициализации пула,
+    только при первом реальном запросе. Это критично когда 40+ ботов стартуют
+    одновременно — они не штурмуют PostgreSQL при запуске.
+
+    Размер пула:
+      • bot/free_bot/vkbot/etc — min=0, max=1  (по умолчанию)
+      • server                 — min=1, max=5  (явно передаётся при вызове)
     """
     global _pg_pool, _pg_available
     if _pg_pool is not None:
