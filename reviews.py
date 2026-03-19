@@ -3,7 +3,7 @@ import asyncio
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from supabase import create_client, Client
+from db_adapter import DBAdapter, init_pg_pool
 from aiohttp import web
 import aiohttp_cors
 
@@ -16,7 +16,7 @@ BOT_TOKEN = os.getenv("REVIEW_BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_CHAT_ID")
 ADMIN_SECRET = os.getenv("ADMIN_SECRET") # Твой MRAKOTIK
 
-supabase: Client = create_client(SUB_URL, SUB_KEY)
+_db = DBAdapter(SUB_URL, SUB_KEY)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -48,7 +48,7 @@ async def handle_moderation(callback: types.CallbackQuery):
 
     try:
         # Обновляем статус в Supabase
-        supabase.table("reviews").update({"status": new_status}).eq("id", review_id).execute()
+        await _db.patch("reviews", {"id": f"eq.{review_id}"}, {"status": new_status})
         
         status_label = "✅ ОДОБРЕНО" if new_status == "approved" else "❌ УДАЛЕНО"
         
@@ -65,8 +65,8 @@ async def handle_moderation(callback: types.CallbackQuery):
 # --- API МЕТОДЫ ---
 async def get_approved_reviews(request):
     """Метод для лендинга (отдает только одобренное)"""
-    res = supabase.table("reviews").select("*").eq("status", "approved").order("created_at", desc=True).execute()
-    return web.json_response(res.data)
+    res = await _db.get("reviews", {"status": "eq.approved", "order": "created_at.desc"})
+    return web.json_response(res)
 
 async def post_new_review(request):
     """Метод для приема отзыва"""
@@ -76,15 +76,17 @@ async def post_new_review(request):
 
     data = await request.json()
     try:
-        res = supabase.table("reviews").insert({
+        res = await _db.post("reviews", {
             "author_name": data.get("name"),
             "author_role": data.get("role"),
             "review_text": data.get("text"),
             "rating": data.get("rating"),
-            "status": "pending"
-        }).execute()
+            "status": "pending",
+        })
 
-        review_id = res.data[0]["id"]
+        review_id = res["id"] if res else None
+        if not review_id:
+            return web.json_response({"error": "DB insert failed"}, status=500)
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="✅ Одобрить", callback_data=f"rev_approve:{review_id}"),
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"rev_reject:{review_id}")
@@ -97,6 +99,7 @@ async def post_new_review(request):
         return web.json_response({"error": str(e)}, status=500)
 
 async def main():
+    await init_pg_pool()
     app = web.Application()
     cors = aiohttp_cors.setup(app, defaults={"*": aiohttp_cors.ResourceOptions(allow_credentials=True, expose_headers="*", allow_headers="*")})
     
