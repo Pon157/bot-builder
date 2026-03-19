@@ -209,15 +209,11 @@ class DBAdapter:
         if columns == "*":
             col_clause = "*"
         else:
-            col_clause = ", ".join(
-                f'"{c.strip()}"' for c in columns.split(",") if c.strip()
-            )
+            col_clause = ", ".join(f'"{c.strip()}"' for c in columns.split(",") if c.strip())
 
         sql = f'SELECT {col_clause} FROM "{table}" WHERE {where}'
-        if order:
-            sql += f" {order}"
-        if limit:
-            sql += f" {limit}"
+        if order: sql += f" {order}"
+        if limit: sql += f" {limit}"
 
         async with pool.acquire() as conn:
             rows = await conn.fetch(sql, *values)
@@ -227,19 +223,22 @@ class DBAdapter:
             row_dict = dict(r)
             for k, v in row_dict.items():
                 if isinstance(v, str):
-                    v_stripped = v.strip()
-                    # Проверяем, не является ли строка JSON-объектом или массивом
-                    if v_stripped.startswith(('{', '[')):
+                    v_s = v.strip()
+                    if v_s.startswith(('{', '[')):
                         try:
-                            row_dict[k] = json.loads(v_stripped)
-                            # Если после первого loads мы все еще имеем строку (двойная сериализация)
-                            if isinstance(row_dict[k], str) and row_dict[k].strip().startswith(('{', '[')):
-                                row_dict[k] = json.loads(row_dict[k])
-                        except Exception:
-                            pass
+                            # Пытаемся распаковать, пока не станет словарем/списком
+                            tmp = json.loads(v_s)
+                            if isinstance(tmp, str) and tmp.strip().startswith(('{', '[')):
+                                tmp = json.loads(tmp)
+                            row_dict[k] = tmp
+                        except: pass
             results.append(row_dict)
+            
+        # ЛОГ ДЛЯ ОТЛАДКИ (потом удалим)
+        if results and isinstance(results, list):
+            logger.info(f"DEBUG: ПЕРВАЯ СТРОКА ТИП: {type(results[0])}")
+        
         return results
-
     async def _pg_post(self, table: str, data: dict) -> dict:
         pool = await get_pg_pool()
         if pool is None:
