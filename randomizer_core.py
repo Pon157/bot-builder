@@ -108,14 +108,13 @@ async def load_config() -> dict:
         for k in ("lotChannel", "adminIds", "welcomeMessage", "botLink", "lotteries", "users"):
             if k in _CFG_FILE and k not in _config:
                 _config[k] = _CFG_FILE[k]
-    if SB_URL and BOT_ID:
+    if BOT_ID:
         try:
-            async with httpx.AsyncClient(timeout=10) as c:
-                r = await c.get(f"{SB_URL}/rest/v1/bots?id=eq.{BOT_ID}", headers=_sb_headers())
-                if r.status_code == 200 and r.json():
-                    raw = r.json()[0].get("config") or {}
-                    db_cfg = raw if isinstance(raw, dict) else json.loads(raw)
-                    _config.update(db_cfg)
+            rows = await _db_adapter.get("bots", {"id": f"eq.{BOT_ID}"})
+            if rows:
+                raw = rows[0].get("config") or {}
+                db_cfg = raw if isinstance(raw, dict) else json.loads(raw)
+                _config.update(db_cfg)
         except Exception as _le:
             logger.warning(f"load_config DB error: {_le}")
     # Инициализируем обязательные поля
@@ -140,12 +139,7 @@ async def save_config():
     stats_val = _config.get("stats", {
         "totalUsers": 0, "blockedCount": 0, "totalLotteries": 0, "history": []
     })
-    async with httpx.AsyncClient(timeout=10) as c:
-        await c.patch(
-            f"{SB_URL}/rest/v1/bots?id=eq.{BOT_ID}",
-            headers=_sb_headers(),
-            json={"config": _config, "stats": stats_val}
-        )
+    await _db_adapter.patch("bots", {"id": f"eq.{BOT_ID}"}, {"config": _config, "stats": stats_val})
 
 def cfg() -> dict:
     return _config
