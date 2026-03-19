@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware 
 from cryptography.fernet import Fernet
 import psycopg2
+from db_adapter import DBAdapter, init_pg_pool, SB_URL as _SB_URL, SB_KEY as _SB_KEY
 
 # Импорт твоего сервиса почты (файл email_service.py должен быть рядом)
 try:
@@ -185,7 +186,13 @@ class BotManager:
             env = os.environ.copy()
             # ПРИНУДИТЕЛЬНО отключаем буферизацию Python, чтобы логи писались мгновенно
             env["PYTHONUNBUFFERED"] = "1" 
-            env.update({"SUPABASE_URL": S_URL, "SUPABASE_KEY": S_KEY, "BOT_ID": str(bid), "BOT_TOKEN": config.get("token", "")})
+            env.update({
+                "SUPABASE_URL": S_URL, "SUPABASE_KEY": S_KEY,
+                "DB_HOST": str(DB_HOST or ""), "DB_NAME": str(DB_NAME or ""),
+                "DB_USER": str(DB_USER or ""), "DB_PASSWORD": str(DB_PASS or ""),
+                "DB_PORT": str(DB_PORT),
+                "BOT_ID": str(bid), "BOT_TOKEN": config.get("token", ""),
+            })
             
             # 2. Запуск через PIPE, чтобы сервер мог перехватывать поток
             p = await asyncio.create_subprocess_exec(
@@ -257,35 +264,26 @@ pm = BotManager()
 async def lifespan(app: FastAPI):
     """Логика при старте и выключении сервера."""
     logger.info("--- Сервер запускается ---")
-    
+
+    # Инициализируем пул PostgreSQL (приоритетная БД)
+    await init_pg_pool()
+
     # Текущее время в мс для проверки лицензий при автостарте
     curr_ms = int(time.time() * 1000)
-    
-    async with httpx.AsyncClient(
-        base_url=f"{S_URL}/rest/v1/", 
-        headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}"}
-    ) as client:
-        try:
-            # Автостарт только тех ботов, у которых статус RUNNING И лицензия НЕ истекла
-            params = {
-                "status": "eq.RUNNING",
-                "license_expires_at": f"gt.{curr_ms}" # Больше текущего времени
-            }
-            r = await client.get("bots", params=params)
-            
-            if r.status_code == 200:
-                active_bots = r.json()
-                logger.info(f"Найдено {len(active_bots)} активных ботов для автозапуска")
-                for b in active_bots:
-                    inner_cfg = b.get("config") or {}
-                    merged = {**inner_cfg, **b}
-                    merged['is_free_plan'] = b.get('is_free_plan', False)
-                    await pm.start_bot(b['id'], merged)
-            else:
-                logger.error(f"Ошибка получения списка ботов: {r.status_code}")
-                
-        except Exception as e:
-            logger.error(f"Критическая ошибка автозапуска: {e}")
+
+    try:
+        active_bots = await db.get("bots", {
+            "status":              "eq.RUNNING",
+            "license_expires_at":  f"gt.{curr_ms}",
+        })
+        logger.info(f"Найдено {len(active_bots)} активных ботов для автозапуска")
+        for b in active_bots:
+            inner_cfg = b.get("config") or {}
+            merged = {**inner_cfg, **b}
+            merged['is_free_plan'] = b.get('is_free_plan', False)
+            await pm.start_bot(b['id'], merged)
+    except Exception as e:
+        logger.error(f"Критическая ошибка автозапуска: {e}")
     
     yield  # В этой точке сервер начинает принимать запросы
     
@@ -327,26 +325,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 4. Инициализируем глобальный клиент БД
-# Увеличиваем timeout и limits для стабильной работы
-db = httpx.AsyncClient(
-    base_url=f"{S_URL}/rest/v1/", 
-    headers={
-        "apikey": S_KEY, 
-        "Authorization": f"Bearer {S_KEY}", 
-        "Content-Type": "application/json"
-    },
-    timeout=httpx.Timeout(30.0, connect=10.0),
-    limits=httpx.Limits(max_keepalive_connections=5, max_connections=20, keepalive_expiry=30),
-)
+# 4. Глобальный адаптер БД (PostgreSQL приоритет, Supabase fallback)
+db = DBAdapter(S_URL, S_KEY)
 
 def _make_db_client():
-    """Создать свежий httpx клиент к Supabase (для случаев когда global db упал)."""
-    return httpx.AsyncClient(
-        base_url=f"{S_URL}/rest/v1/",
-        headers={"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}", "Content-Type": "application/json"},
-        timeout=httpx.Timeout(30.0, connect=10.0),
-    )
+    """Совместимость: возвращает тот же адаптер."""
+    return DBAdapter(S_URL, S_KEY)
 
 # Загрузка файлов
 UPLOADS_DIR = os.getenv("UPLOADS_DIR", "/var/www/botengine/uploads")
@@ -361,8 +345,7 @@ app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 async def login(d: dict):
     email = d['email'].lower()
     hpwd = hash_pwd(d['password'])
-    r = await db.get("users", params={"email": f"eq.{email}", "password": f"eq.{hpwd}"})
-    data = r.json()
+    data = await db.get("users", {"email": f"eq.{email}", "password": f"eq.{hpwd}"})
     if not data: 
         raise HTTPException(401, "Неверный логин или пароль")
     return data[0]
@@ -373,7 +356,7 @@ async def request_ver(d: dict):
     code = str(random.randint(100000, 999999))
     
     # Сохраняем код для регистрации
-    await db.post("temp_codes", json={
+    await db.post("temp_codes", {
         "email": email, "code": code, "type": "VERIFY"
     }, headers={"Prefer": "resolution=merge-duplicates"})
     
@@ -387,12 +370,12 @@ async def request_ver(d: dict):
 async def verify_reg(d: dict):
     email = d['email'].lower()
 
-    r = await db.get("temp_codes", params={
+    temp_rows = await db.get("temp_codes", {
         "email": f"eq.{email}",
         "code": f"eq.{d['code']}",
-        "type": "eq.VERIFY"
+        "type": "eq.VERIFY",
     })
-    if not r.json():
+    if not temp_rows:
         raise HTTPException(400, "Неверный код подтверждения")
 
     uid = f"u_{secrets.token_hex(4)}"
@@ -417,11 +400,10 @@ async def verify_reg(d: dict):
     referrer_old_balance = 0
 
     if ref_code_input:
-        ref_r = await db.get("users", params={
+        referrer_list = await db.get("users", {
             "referral_code": f"eq.{ref_code_input}",
-            "select": "id,username,balance"
+            "select": "id,username,balance",
         })
-        referrer_list = ref_r.json() if ref_r.status_code == 200 else []
         if referrer_list:
             referrer = referrer_list[0]
             referrer_id = referrer["id"]
@@ -432,18 +414,15 @@ async def verify_reg(d: dict):
         else:
             logger.warning(f"⚠️ Реферальный код '{ref_code_input}' не найден в БД")
 
-    await db.post("users", json=user_data)
-    await db.delete("temp_codes", params={"email": f"eq.{email}"})
+    await db.post("users", user_data)
+    await db.delete("temp_codes", {"email": f"eq.{email}"})
 
     # ── Начисляем бонус пригласившему ────────────────────────────────────
     # 1-9 приглашённых = 5₽, 10-19 = 10₽, 20+ = 15₽
     if referrer_id:
         try:
-            count_r = await db.get("users", params={
-                "referred_by": f"eq.{referrer_id}",
-                "select": "id"
-            })
-            total_invited = len(count_r.json() or [])
+            count_rows = await db.get("users", {"referred_by": f"eq.{referrer_id}", "select": "id"})
+            total_invited = len(count_rows or [])
 
             if total_invited < 10:
                 bonus = 5
@@ -454,13 +433,9 @@ async def verify_reg(d: dict):
 
             new_referrer_balance = referrer_old_balance + bonus
 
-            patch_r = await db.patch("users",
-                params={"id": f"eq.{referrer_id}"},
-                json={"balance": new_referrer_balance}
-            )
-            logger.info(f"💰 balance patch статус: {patch_r.status_code}")
+            await db.patch("users", {"id": f"eq.{referrer_id}"}, {"balance": new_referrer_balance})
 
-            await db.post("payment_transactions", json={
+            await db.post("payment_transactions", {
                 "user_id": referrer_id,
                 "type": "referral_bonus",
                 "amount": bonus,
@@ -480,21 +455,14 @@ async def forgot_p(d: dict):
     email = d['email'].lower()
     
     # Получаем данные пользователя
-    r = await db.get("users", params={"email": f"eq.{email}"})
-    u_data = r.json()
-    
-    # ЛОГ ДЛЯ ДЕБАГА (удалишь потом)
-    print(f"DEBUG: Поиск юзера {email}, результат: {u_data}")
-    
-    # Если список пустой, письмо не шлем
+    u_data = await db.get("users", {"email": f"eq.{email}"})
     if not u_data: 
         return True 
     
     code = str(random.randint(100000, 999999))
     
     # Сохраняем код в базу
-    await db.post("temp_codes", 
-                  json={"email": email, "code": code, "type": "RESET"}, 
+    await db.post("temp_codes", {"email": email, "code": code, "type": "RESET"}, 
                   headers={"Prefer": "resolution=merge-duplicates"})
     
     # ОТПРАВКА ПИСЬМА: Обязательно через run_in_threadpool
@@ -508,21 +476,16 @@ async def reset_p(d: dict):
     email = d['email'].lower()
     
     # Ищем код с типом RESET
-    r = await db.get("temp_codes", params={
-        "email": f"eq.{email}", 
-        "code": f"eq.{d['code']}", 
-        "type": "eq.RESET"
-    })
-    
-    if not r.json(): 
+    reset_rows = await db.get("temp_codes", {"email": f"eq.{email}", "code": f"eq.{d['code']}", "type": "eq.RESET"})
+    if not reset_rows:
         raise HTTPException(400, "Код недействителен или устарел")
     
     # Обновляем пароль
     new_hpwd = hash_pwd(d['newPassword'])
-    await db.patch("users", params={"email": f"eq.{email}"}, json={"password": new_hpwd})
+    await db.patch("users", {"email": f"eq.{email}"}, {"password": new_hpwd})
     
     # Удаляем код
-    await db.delete("temp_codes", params={"email": f"eq.{email}", "type": "eq.RESET"})
+    await db.delete("temp_codes", {"email": f"eq.{email}", "type": "eq.RESET"})
     
     return True
 
@@ -542,21 +505,21 @@ def _get_commission_percent(total_invited: int) -> int:
 async def _pay_referral_commission(buyer_id: str, payment_amount: float):
     """Начисляет комиссию рефереру при оплате. balance хранится как integer в БД."""
     try:
-        buyer_r = await db.get("users", params={"id": f"eq.{buyer_id}", "select": "id,username,referred_by"})
-        if not buyer_r.json():
+        buyer_list = await db.get("users", {"id": f"eq.{buyer_id}", "select": "id,username,referred_by"})
+        if not buyer_list:
             return
-        buyer = buyer_r.json()[0]
+        buyer = buyer_list[0]
         referrer_id = buyer.get("referred_by")
         if not referrer_id:
             return
 
-        referrer_r = await db.get("users", params={"id": f"eq.{referrer_id}", "select": "id,username,balance"})
-        if not referrer_r.json():
+        referrer_list = await db.get("users", {"id": f"eq.{referrer_id}", "select": "id,username,balance"})
+        if not referrer_list:
             return
-        referrer = referrer_r.json()[0]
+        referrer = referrer_list[0]
 
-        count_r = await db.get("users", params={"referred_by": f"eq.{referrer_id}", "select": "id"})
-        total_invited = len(count_r.json() or [])
+        count_list = await db.get("users", {"referred_by": f"eq.{referrer_id}", "select": "id"})
+        total_invited = len(count_list or [])
         commission_percent = _get_commission_percent(total_invited)
         commission = int(round(payment_amount * commission_percent / 100))
         if commission <= 0:
@@ -565,8 +528,8 @@ async def _pay_referral_commission(buyer_id: str, payment_amount: float):
         old_balance = int(referrer.get("balance") or 0)
         new_balance = old_balance + commission
 
-        await db.patch("users", params={"id": f"eq.{referrer_id}"}, json={"balance": new_balance})
-        await db.post("payment_transactions", json={
+        await db.patch("users", {"id": f"eq.{referrer_id}"}, {"balance": new_balance})
+        await db.post("payment_transactions", {
             "user_id": referrer_id,
             "type": "referral_commission",
             "amount": commission,
@@ -576,7 +539,7 @@ async def _pay_referral_commission(buyer_id: str, payment_amount: float):
             "status": "completed"
         })
         try:
-            await db.post("referral_earnings", json={
+            await db.post("referral_earnings", {
                 "referrer_id": referrer_id,
                 "referred_id": buyer_id,
                 "amount": commission,
@@ -593,26 +556,25 @@ async def _pay_referral_commission(buyer_id: str, payment_amount: float):
 
 @app.get("/api/referrals/referrer/{code}")
 async def get_referrer_by_code(code: str):
-    r = await db.get("users", params={"referral_code": f"eq.{code}", "select": "id,username"})
-    if not r.json():
+    ref_rows = await db.get("users", {"referral_code": f"eq.{code}", "select": "id,username"})
+    if not ref_rows:
         raise HTTPException(404, "Реферальный код не найден")
-    return r.json()[0]
+    return ref_rows[0]
 
 
 @app.get("/api/referrals/stats/{user_id}")
 async def get_referral_stats(user_id: str):
-    u_r = await db.get("users", params={"id": f"eq.{user_id}", "select": "id,username,referral_code"})
-    if not u_r.json():
+    u_rows = await db.get("users", {"id": f"eq.{user_id}", "select": "id,username,referral_code"})
+    if not u_rows:
         raise HTTPException(404, "Пользователь не найден")
 
-    user_data = u_r.json()[0]
+    user_data = u_rows[0]
     ref_code = user_data.get("referral_code")
     if not ref_code:
         ref_code = secrets.token_hex(4).upper()
-        await db.patch("users", params={"id": f"eq.{user_id}"}, json={"referral_code": ref_code})
+        await db.patch("users", {"id": f"eq.{user_id}"}, {"referral_code": ref_code})
 
-    invited_r = await db.get("users", params={"referred_by": f"eq.{user_id}", "select": "id,username,created_at"})
-    invited_users = invited_r.json() if invited_r.status_code == 200 else []
+    invited_users = await db.get("users", {"referred_by": f"eq.{user_id}", "select": "id,username,created_at"}) or []
     total_invited = len(invited_users)
     commission_percent = _get_commission_percent(total_invited)
 
@@ -656,9 +618,8 @@ async def get_referral_stats(user_id: str):
 async def get_user_data(user_id: str):
     """Возвращает данные пользователя. Если не найден — создаем заглушку, чтобы фронт не падал."""
     try:
-        res = await db.get("users", params={"id": f"eq.{user_id}"})
-        data = res.json()
-        if res.status_code == 200 and len(data) > 0:
+        data = await db.get("users", {"id": f"eq.{user_id}"})
+        if data:
             return data[0]
         
         # Если юзера нет в БД, отдаем минимальный объект, чтобы редактор открылся
@@ -679,12 +640,11 @@ async def get_bot_stats_api(bot_id: str):
     (чтобы не обнулить накопленные данные при мерже).
     """
     try:
-        res = await db.get("bots", params={"id": f"eq.{bot_id}"})
-        
-        if res.status_code != 200 or not res.json():
+        rows = await db.get("bots", {"id": f"eq.{bot_id}"})
+        if not rows:
             return {"stats": {"history": [], "totalMessages": 0}}
 
-        bot_data = res.json()[0]
+        bot_data = rows[0]
         
         def safe_dict(val):
             if isinstance(val, dict): return val
@@ -762,11 +722,9 @@ async def get_bot_stats_api(bot_id: str):
 @app.get("/api/bots/{user_id}")
 async def get_user_bots(user_id: str):
     try:
-        res = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
-        if res.status_code != 200:
+        bots = await db.get("bots", {"owner_id": f"eq.{user_id}"})
+        if bots is None:
             return []
-        
-        bots = res.json()
         # Free-plan боты не попадают в Pro-панель — у них своя /api/free/*
         bots = [b for b in bots if not (b.get('is_free_plan') is True)]
         
@@ -861,17 +819,14 @@ async def save_bot(b: dict):
             raise HTTPException(400, "ID бота потерян")
 
         # 1. Получаем текущее состояние из БД
-        old_r = await db.get("bots", params={"id": f"eq.{bid}"})
-        if old_r.status_code != 200:
-            logger.error(f"❌ Supabase error: {old_r.text}")
-            raise HTTPException(old_r.status_code, "Ошибка связи с БД")
+        bots = await db.get("bots", {"id": f"eq.{bid}"})
+        if bots is None:
+            raise HTTPException(500, "Ошибка связи с БД")
 
         # ── ЗАЩИТА: free-plan боты нельзя сохранять через Pro-эндпоинт ──
-        if old_r.json() and old_r.json()[0].get("is_free_plan") is True:
+        if bots and bots[0].get("is_free_plan") is True:
             raise HTTPException(403, "Free-plan боты управляются через /api/free/*")
         # ── конец защиты ──
-
-        bots = old_r.json()
         
         # --- ЛОГИКА СОЗДАНИЯ (UPSERT), если бота нет в базе ---
         if not bots:
@@ -907,9 +862,9 @@ async def save_bot(b: dict):
                 "admin_chat_id": None,
                 "vk_group_id": None
             }
-            ins_res = await db.post("bots", json=upsert_payload)
-            if ins_res.status_code not in [200, 201, 204]:
-                 raise HTTPException(ins_res.status_code, f"Ошибка создания: {ins_res.text}")
+            ins_res = await db.post("bots", upsert_payload)
+            if not ins_res:
+                raise HTTPException(500, "Ошибка создания бота в БД")
             return {**upsert_payload, "id": bid}
 
         # --- ЛОГИКА ОБНОВЛЕНИЯ СУЩЕСТВУЮЩЕГО БОТА ---
@@ -1073,11 +1028,9 @@ async def save_bot(b: dict):
 
         # 7. ОТПРАВКА В БАЗУ ДАННЫХ
         logger.info(f"💾 Saving bot {bid} ({platform}). DB Payload: TG={new_admin_id}, VK={new_vk_id}")
-        res = await db.patch("bots", params={"id": f"eq.{bid}"}, json=db_payload)
-        
-        if res.status_code not in [200, 201, 204]:
-            logger.error(f"❌ Patch error: {res.text}")
-            raise HTTPException(res.status_code, f"Ошибка сохранения в БД: {res.text}")
+        ok = await db.patch("bots", {"id": f"eq.{bid}"}, db_payload)
+        if not ok:
+            raise HTTPException(500, "Ошибка сохранения в БД")
 
         # 8. ВОЗВРАТ АКТУАЛЬНЫХ ДАННЫХ
         return {
@@ -1125,10 +1078,10 @@ async def update_staff_stat(bid: str, req: dict):
             raise HTTPException(400, "staff_id и event обязательны")
 
         # Получаем текущий конфиг бота
-        r = await db.get("bots", params={"id": f"eq.{bid}"})
-        if r.status_code != 200 or not r.json():
+        r_list = await db.get("bots", {"id": f"eq.{bid}"})
+        if not r_list:
             raise HTTPException(404, "Бот не найден")
-        bot_data   = r.json()[0]
+        bot_data = r_list[0]
         cfg        = bot_data.get("config", {}) or {}
         staff_list = cfg.get("staffAdmins", [])
 
@@ -1158,9 +1111,9 @@ async def update_staff_stat(bid: str, req: dict):
             raise HTTPException(404, f"Администратор {staff_id} не найден в боте {bid}")
 
         cfg["staffAdmins"] = staff_list
-        patch_r = await db.patch("bots", params={"id": f"eq.{bid}"}, json={"config": cfg})
-        if patch_r.status_code not in [200, 201, 204]:
-            raise HTTPException(500, f"Ошибка записи в БД: {patch_r.text}")
+        ok = await db.patch("bots", {"id": f"eq.{bid}"}, {"config": cfg})
+        if not ok:
+            raise HTTPException(500, "Ошибка записи в БД")
 
         return {"ok": True, "staff_id": staff_id, "event": event}
     except HTTPException:
@@ -1174,10 +1127,10 @@ async def update_staff_stat(bid: str, req: dict):
 async def get_staff_stat(bid: str, staff_id: str = ""):
     """Получить статистику одного или всех стафф-администраторов бота."""
     try:
-        r = await db.get("bots", params={"id": f"eq.{bid}"})
-        if r.status_code != 200 or not r.json():
+        r_list = await db.get("bots", {"id": f"eq.{bid}"})
+        if not r_list:
             raise HTTPException(404, "Бот не найден")
-        cfg        = r.json()[0].get("config", {}) or {}
+        cfg = r_list[0].get("config", {}) or {}
         staff_list = cfg.get("staffAdmins", [])
         if staff_id:
             found = next((a for a in staff_list if a.get("id") == staff_id), None)
@@ -1198,14 +1151,14 @@ async def start_handler(req: dict):
     # 1. Получаем данные бота и сразу данные владельца через join (если позволяет БД)
     # Или делаем два запроса для надежности
     try:
-        r = await db.get("bots", params={"id": f"eq.{bid}"})
+        bot_list = await db.get("bots", {"id": f"eq.{bid}"})
     except Exception as e:
         logger.error(f"DB timeout при старте бота {bid}: {e}")
         raise HTTPException(503, "Ошибка соединения с БД, попробуйте снова")
-    if not r.json(): 
+    if not bot_list:
         raise HTTPException(404, "Бот не найден")
-    
-    bot_data = r.json()[0]
+
+    bot_data = bot_list[0]
     owner_id = bot_data.get('owner_id')
 
     # ── ЗАЩИТА: free-plan боты нельзя запускать через Pro-эндпоинт ──
@@ -1214,9 +1167,9 @@ async def start_handler(req: dict):
     # ── конец защиты ──
 
     # 2. ПРОВЕРКА НА БАН: Проверяем статус пользователя в таблице users
-    u_res = await db.get("users", params={"id": f"eq.{owner_id}"})
-    if u_res.status_code == 200 and u_res.json():
-        user_data = u_res.json()[0]
+    u_list = await db.get("users", {"id": f"eq.{owner_id}"})
+    if u_list:
+        user_data = u_list[0]
         if user_data.get("is_banned") is True:
             # Если пользователь забанен, принудительно ставим боту статус BANNED
             await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "BANNED"})
@@ -1229,7 +1182,7 @@ async def start_handler(req: dict):
     # Явно проставляем флаг free_plan, чтобы BotManager мог выбрать нужный core-файл
     merged['is_free_plan'] = bot_data.get('is_free_plan', False)
     if await pm.start_bot(bid, merged) is True:
-        await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "RUNNING"})
+        await db.patch("bots", {"id": f"eq.{bid}"}, {"status": "RUNNING"})
         logger.info(f"🚀 Бот {bid} успешно запущен")
         return {"status": "success"}
     
@@ -1238,7 +1191,7 @@ async def start_handler(req: dict):
 @app.post("/api/bots/stop/{bid}")
 async def stop_handler(bid: str):
     await pm.stop_bot(bid)
-    await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "IDLE"})
+    await db.patch("bots", {"id": f"eq.{bid}"}, {"status": "IDLE"})
     return True
 
 
@@ -1247,10 +1200,10 @@ async def dvr_notify_handler(bid: str, x_admin_token: str = Header(None)):
     if x_admin_token != A_SECRET:
         raise HTTPException(401, "Admin only")
     try:
-        r = await db.get("bots", params={"id": f"eq.{bid}", "select": "config,name,admin_chat_id"})
-        if r.status_code != 200 or not r.json():
+        bot_rows = await db.get("bots", {"id": f"eq.{bid}", "select": "config,name,admin_chat_id"})
+        if not bot_rows:
             raise HTTPException(404, "Bot not found")
-        bot_data = r.json()[0]
+        bot_data = bot_rows[0]
         cfg = bot_data.get("config") or {}
         raw_token = decrypt_val(cfg.get("token", ""))
         admin_chat_id = bot_data.get("admin_chat_id") or cfg.get("admin_chat_id") or cfg.get("adminChatId")
@@ -1294,7 +1247,7 @@ async def get_bot_status(bid: str):
             db_status = r.json()[0].get("status", "IDLE")
             # Если процесс умер но в БД ещё RUNNING — обновляем
             if not is_running and db_status == "RUNNING":
-                await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "IDLE"})
+                await db.patch("bots", {"id": f"eq.{bid}"}, {"status": "IDLE"})
             status_val = "RUNNING" if is_running else db_status
     except Exception:
         pass
@@ -1303,13 +1256,12 @@ async def get_bot_status(bid: str):
 @app.delete("/api/bots/delete/{uid}/{bid}")
 async def delete_handler(uid: str, bid: str):
     # ── ЗАЩИТА: free-plan боты нельзя удалять через Pro-эндпоинт ──
-    r = await db.get("bots", params={"id": f"eq.{bid}"})
-    if r.status_code == 200 and r.json():
-        if r.json()[0].get("is_free_plan") is True:
-            raise HTTPException(403, "Free-plan боты управляются через /api/free/*")
+    r_rows = await db.get("bots", {"id": f"eq.{bid}"})
+    if r_rows and r_rows[0].get("is_free_plan") is True:
+        raise HTTPException(403, "Free-plan боты управляются через /api/free/*")
     # ── конец защиты ──
     await pm.stop_bot(bid)
-    await db.delete("bots", params={"id": f"eq.{bid}", "owner_id": f"eq.{uid}"})
+    await db.delete("bots", {"id": f"eq.{bid}", "owner_id": f"eq.{uid}"})
     return {"status": "deleted"}
 
 @app.get("/api/bots/logs/{bid}")
@@ -1335,7 +1287,7 @@ async def gen_key(d: dict, x_admin_token: str = Header(None)):
         payload = {"key": key, "months": d.get('months', 1), "days": d.get('days', 0),
                    "used": False, "key_type": "license", "tokens": 0}
 
-    await db.post("issued_keys", json=payload)
+    await db.post("issued_keys", payload)
     return {"key": key, "key_type": key_type}
 
 @app.post("/api/license/activate")
@@ -1344,21 +1296,21 @@ async def activate_lic(req: dict):
     bid = req.get('botId')
     
     # Ищем ключ
-    rk = await db.get("issued_keys", params={"key": f"eq.{key_code}", "used": "eq.false"})
-    if not rk.json(): return {"status": "error", "message": "Ключ недействителен или уже активирован"}
+    rk_rows = await db.get("issued_keys", {"key": f"eq.{key_code}", "used": "eq.false"})
+    if not rk_rows: return {"status": "error", "message": "Ключ недействителен или уже активирован"}
     
-    k_data = rk.json()[0]
+    k_data = rk_rows[0]
     # Считаем время
     added_ms = (k_data['months'] * 30 * 86400000) + (k_data['days'] * 86400000)
     
     # Обновляем срок бота
-    rb = await db.get("bots", params={"id": f"eq.{bid}"})
+    rb_rows = await db.get("bots", {"id": f"eq.{bid}"})
     curr_time = int(time.time() * 1000)
-    old_expiry = rb.json()[0].get("license_expires_at") or 0
+    old_expiry = rb_rows[0].get("license_expires_at") if rb_rows else 0
     new_expiry = max(old_expiry, curr_time) + added_ms
     
-    await db.patch("bots", params={"id": f"eq.{bid}"}, json={"license_expires_at": new_expiry})
-    await db.patch("issued_keys", params={"key": f"eq.{key_code}"}, json={"used": True, "used_by_bot": bid})
+    await db.patch("bots", {"id": f"eq.{bid}"}, {"license_expires_at": new_expiry})
+    await db.patch("issued_keys", {"key": f"eq.{key_code}"}, {"used": True, "used_by_bot": bid})
     
     return {"status": "ok", "new_expiry": new_expiry}
 
@@ -1388,11 +1340,9 @@ async def gen_ai_key(d: dict, x_admin_token: str = Header(None)):
     }
     
     # ВНИМАНИЕ: меняем таблицу на ai_token_keys
-    res = await db.post("ai_token_keys", json=payload)
-    
-    if res.status_code not in [200, 201]:
-        logger.error(f"Ошибка БД (ai_token_keys): {res.text}")
-        raise HTTPException(500, f"Ошибка сохранения: {res.text}")
+    res = await db.post("ai_token_keys", payload)
+    if not res:
+        raise HTTPException(500, "Ошибка сохранения ключа в БД")
 
     return {"key": key, "tokens": tokens}
 
@@ -1401,8 +1351,7 @@ async def get_ai_keys(x_admin_token: str = Header(None)):
     if x_admin_token != A_SECRET: raise HTTPException(401)
     
     # Запрашиваем данные из новой таблицы
-    res = await db.get("ai_token_keys?select=*&order=created_at.desc")
-    return res.json()
+    return await db.get("ai_token_keys", {"order": "created_at.desc"}) or []
     
 @app.post("/api/ai/activate-tokens")
 async def activate_ai_tokens(req: dict):
@@ -1414,12 +1363,7 @@ async def activate_ai_tokens(req: dict):
         return {"status": "error", "message": "Ключ и botId обязательны"}
 
     # 1. Ищем ключ в ПРАВИЛЬНОЙ таблице (ai_token_keys), которую ты создал миграцией
-    rk = await db.get("ai_token_keys", params={
-        "key": f"eq.{key_code}",
-        "used": "eq.false"
-    })
-    
-    keys_found = rk.json()
+    keys_found = await db.get("ai_token_keys", {"key": f"eq.{key_code}", "used": "eq.false"})
     if not keys_found:
         return {"status": "error", "message": "Ключ недействителен или уже использован"}
 
@@ -1430,13 +1374,12 @@ async def activate_ai_tokens(req: dict):
         return {"status": "error", "message": "Ключ содержит 0 токенов"}
 
     # 2. Проверяем, существует ли бот
-    rb = await db.get("bots", params={"id": f"eq.{bid}"})
-    if not rb.json():
+    rb_rows = await db.get("bots", {"id": f"eq.{bid}"})
+    if not rb_rows:
         return {"status": "error", "message": "Бот не найден"}
 
     # 3. Обновляем или создаем баланс в ai_token_balances
-    bal_r = await db.get("ai_token_balances", params={"bot_id": f"eq.{bid}"})
-    balances = bal_r.json()
+    balances = await db.get("ai_token_balances", {"bot_id": f"eq.{bid}"})
     
     if balances:
         # Если запись уже есть — плюсуем к текущему
@@ -1444,17 +1387,10 @@ async def activate_ai_tokens(req: dict):
         new_total = cur.get("tokens_total", 0) + tokens
         new_balance = cur.get("tokens_balance", 0) + tokens
         
-        await db.patch("ai_token_balances",
-            params={"bot_id": f"eq.{bid}"},
-            json={
-                "tokens_total": new_total, 
-                "tokens_balance": new_balance,
-                "updated_at": datetime.now().isoformat()
-            }
-        )
+        await db.patch("ai_token_balances", {"bot_id": f"eq.{bid}"}, {"tokens_total": new_total, "tokens_balance": new_balance, "updated_at": datetime.now().isoformat()})
     else:
         # Если записи нет — создаем новую
-        await db.post("ai_token_balances", json={
+        await db.post("ai_token_balances", {
             "bot_id": bid,
             "tokens_total": tokens,
             "tokens_used": 0,
@@ -1463,13 +1399,7 @@ async def activate_ai_tokens(req: dict):
         })
 
     # 4. Помечаем ключ использованным в таблице ai_token_keys
-    await db.patch("ai_token_keys",
-        params={"key": f"eq.{key_code}"},
-        json={
-            "used": True, 
-            "used_by_bot": bid
-        }
-    )
+    await db.patch("ai_token_keys", {"key": f"eq.{key_code}"}, {"used": True, "used_by_bot": bid})
 
     return {
         "status": "ok", 
@@ -1480,9 +1410,9 @@ async def activate_ai_tokens(req: dict):
 @app.get("/api/ai/balance/{bot_id}")
 async def get_ai_balance(bot_id: str):
     """Текущий баланс AI-токенов для бота."""
-    r = await db.get("ai_token_balances", params={"bot_id": f"eq.{bot_id}"})
-    if r.json():
-        d = r.json()[0]
+    ai_rows = await db.get("ai_token_balances", {"bot_id": f"eq.{bot_id}"})
+    if ai_rows:
+        d = ai_rows[0]
         return {
             "bot_id": bot_id,
             "tokens_total":   d.get("tokens_total", 0),
@@ -1494,12 +1424,7 @@ async def get_ai_balance(bot_id: str):
 @app.get("/api/ai/usage/{bot_id}")
 async def get_ai_usage(bot_id: str):
     """Лог расхода AI-токенов бота (последние 100 записей)."""
-    r = await db.get("ai_token_usage_log", params={
-        "bot_id": f"eq.{bot_id}",
-        "order": "created_at.desc",
-        "limit": "100"
-    })
-    return r.json() if r.status_code == 200 else []
+    return await db.get("ai_token_usage_log", {"bot_id": f"eq.{bot_id}", "order": "created_at.desc", "limit": "100"}) or []
 
 @app.post("/api/ai/preview")
 async def ai_preview_chat(req: dict):
@@ -1518,10 +1443,8 @@ async def ai_preview_chat(req: dict):
         raise HTTPException(400, "message is required")
 
     # Проверяем баланс токенов бота
-    bal_r = await db.get("ai_token_balances", params={"bot_id": f"eq.{bot_id}"})
-    balance = 0
-    if bal_r.json():
-        balance = bal_r.json()[0].get("tokens_balance", 0)
+    bal_rows = await db.get("ai_token_balances", {"bot_id": f"eq.{bot_id}"})
+    balance = bal_rows[0].get("tokens_balance", 0) if bal_rows else 0
     if balance <= 0:
         return {"reply": "⚠️ AI-токены закончились. Активируйте ключ в разделе ИИ-ассистент."}
 
@@ -1559,12 +1482,7 @@ async def ai_preview_chat(req: dict):
                             "apikey": S_KEY, "Authorization": f"Bearer {S_KEY}",
                             "Content-Type": "application/json"
                         }
-                        async with _httpx.AsyncClient(timeout=5) as db_client:
-                            await db_client.post(
-                                f"{S_URL}/rest/v1/rpc/deduct_ai_tokens",
-                                headers=headers_db,
-                                json={"p_bot_id": bot_id, "p_amount": total_tokens}
-                            )
+                        await db.rpc("deduct_ai_tokens", {"p_bot_id": bot_id, "p_amount": total_tokens})
                     except Exception:
                         pass
 
@@ -1745,14 +1663,14 @@ async def get_admin_dashboard(x_admin_token: str = Header(None)):
 
     try:
         # 1. Считаем пользователей
-        u_req = await db.get("users", params={"select": "count"})
+        u_req = await db.get("users", {"select": "count"})
         # Supabase возвращает count в заголовке Content-Range, если запросить с head/count, 
         # но через простой get JSON вернет весь список. 
         # Для оптимизации лучше использовать count=exact, но пока загрузим списки (если база небольшая)
         
-        users = (await db.get("users")).json()
-        bots = (await db.get("bots")).json()
-        keys = (await db.get("issued_keys")).json()
+        users = await db.get("users") or []
+        bots  = await db.get("bots")  or []
+        keys  = await db.get("issued_keys") or []
         
         # Считаем сообщения за сегодня для статистики
         today_start = datetime.now().replace(hour=0, minute=0, second=0).isoformat()
@@ -1782,7 +1700,7 @@ async def get_admin_dashboard(x_admin_token: str = Header(None)):
 async def get_all_users(x_admin_token: str = Header(None)):
     if not verify_admin_token(x_admin_token): raise HTTPException(403)
     # Получаем юзеров, сортируем по дате регистрации
-    r = await db.get("users", params={"select": "*", "order": "created_at.desc"})
+    r = await db.get("users", {"select": "*", "order": "created_at.desc"})
     return r.json()
 
 @app.post("/api/admin/user/ban")
@@ -1792,14 +1710,14 @@ async def admin_ban_user(d: dict, x_admin_token: str = Header(None)):
     is_banned = d.get('is_banned', True) # True = забанить, False = разбанить
     
     # Обновляем юзера
-    await db.patch("users", params={"id": f"eq.{uid}"}, json={"is_banned": is_banned})
+    await db.patch("users", {"id": f"eq.{uid}"}, {"is_banned": is_banned})
     
     if is_banned:
         # Стопаем всех ботов
-        bots = await db.get("bots", params={"owner_id": f"eq.{uid}"})
-        for b in bots.json():
+        bots_list = await db.get("bots", {"owner_id": f"eq.{uid}"})
+        for b in bots_list:
             await pm.stop_bot(b['id'])
-            await db.patch("bots", params={"id": f"eq.{b['id']}"}, json={"status": "BANNED"})
+            await db.patch("bots", {"id": f"eq.{b['id']}"}, {"status": "BANNED"})
     
     return {"status": "success", "banned": is_banned}
 
@@ -1809,7 +1727,7 @@ async def admin_ban_user(d: dict, x_admin_token: str = Header(None)):
 async def get_all_bots(x_admin_token: str = Header(None)):
     if not verify_admin_token(x_admin_token): raise HTTPException(403)
     # Тянем ботов с инфой о владельце через join
-    r = await db.get("bots", params={"select": "*, owner:users(email, username)", "order": "created_at.desc"})
+    r = await db.get("bots", {"select": "*, owner:users(email, username)", "order": "created_at.desc"})
     return r.json()
 
 @app.post("/api/admin/bot/action")
@@ -1825,7 +1743,7 @@ async def admin_bot_action(d: dict, x_admin_token: str = Header(None)):
     
     if action == 'stop':
         await pm.stop_bot(bid)
-        await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "IDLE"})
+        await db.patch("bots", {"id": f"eq.{bid}"}, {"status": "IDLE"})
         
     elif action == 'start':
         res = await db.get("bots", params={"id": f"eq.{bid}"})
@@ -1843,7 +1761,7 @@ async def admin_bot_action(d: dict, x_admin_token: str = Header(None)):
             success = await pm.start_bot(bid, merged)
             
             if success is True:
-                await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "RUNNING"})
+                await db.patch("bots", {"id": f"eq.{bid}"}, {"status": "RUNNING"})
             else:
                 return {"status": "error", "message": "Failed to start bot process"}
         else:
@@ -1851,7 +1769,7 @@ async def admin_bot_action(d: dict, x_admin_token: str = Header(None)):
             
     elif action == 'delete':
         await pm.stop_bot(bid)
-        await db.delete("bots", params={"id": f"eq.{bid}"})
+        await db.delete("bots", {"id": f"eq.{bid}"})
     
     return {"status": "ok", "action": action}
 
@@ -1860,7 +1778,7 @@ async def admin_bot_action(d: dict, x_admin_token: str = Header(None)):
 @app.get("/api/admin/keys")
 async def get_all_keys(x_admin_token: str = Header(None)):
     if not verify_admin_token(x_admin_token): raise HTTPException(403)
-    r = await db.get("issued_keys", params={"order": "created_at.desc"})
+    r = await db.get("issued_keys", {"order": "created_at.desc"})
     return r.json()
 
 @app.post("/api/admin/generate_key")
@@ -1880,8 +1798,7 @@ async def generate_key(data: dict, x_admin_token: str = Header(None)):
     # 3. Ищем ID бота в таблице public.bots по колонке 'name'
     # Используем ilike для поиска без учета регистра (чтобы 'Бот' и 'бот' работали одинаково)
     try:
-        bot_res = await db.get("bots", params={"name": f"ilike.{bot_name_input.strip()}"})
-        bots_found = bot_res.json()
+        bots_found = await db.get("bots", {"name": f"ilike.{bot_name_input.strip()}"})
         
         if not bots_found or len(bots_found) == 0:
             logger.warning(f"⚠️ Бот с именем '{bot_name_input}' не найден в таблице bots")
@@ -1909,9 +1826,8 @@ async def generate_key(data: dict, x_admin_token: str = Header(None)):
         "created_at": datetime.now().isoformat()
     }
 
-    res = await db.post("keys", json=payload)
-    
-    if res.status_code in [200, 201]:
+    res = await db.post("keys", payload)
+    if res:
         logger.info(f"✅ Ключ {new_key} создан для {real_name} (ID: {target_bot_id})")
         return {
             "status": "success", 
@@ -1960,7 +1876,7 @@ async def admin_start_bot_direct(request: Request, x_admin_token: str = Header(N
     
     # Если запуск прошел успешно, обновляем статус в базе
     if success is True:
-        await db.patch("bots", params={"id": f"eq.{bid}"}, json={"status": "RUNNING"})
+        await db.patch("bots", {"id": f"eq.{bid}"}, {"status": "RUNNING"})
         
     return {"status": "started" if success is True else "failed"}
 @app.get("/api/admin/system-logs")
@@ -1969,7 +1885,7 @@ async def get_admin_logs(x_admin_token: str = Header(None)):
     
     # Берем последние 20 сообщений из bot_messages как "Логи системы"
     # join не обязателен, но полезен
-    r = await db.get("bot_messages", params={
+    r = await db.get("bot_messages", {
         "select": "*, bots(name)",
         "order": "created_at.desc",
         "limit": 20
@@ -1980,11 +1896,11 @@ async def get_admin_logs(x_admin_token: str = Header(None)):
 async def get_bot_for_admin(bot_id: str, x_admin_token: str = Header(None)):
     if not verify_admin_token(x_admin_token): raise HTTPException(403)
     
-    r = await db.get("bots", params={"id": f"eq.{bot_id}"})
-    if not r.json():
+    bot_rows = await db.get("bots", {"id": f"eq.{bot_id}"})
+    if not bot_rows:
         raise HTTPException(404, "Bot not found")
-        
-    bot_data = r.json()[0]
+
+    bot_data = bot_rows[0]
     # Мержим конфиг
     full_bot = {**bot_data, **(bot_data.get("config") or {})}
     # Токен отдаем как есть (зашифрованным), Editor его не показывает, но использует для save
@@ -2010,10 +1926,9 @@ async def verify_access_key(data: dict):
         "is_used": "eq.false"
     }
     
-    res = await db.get("keys", params=params)
-    keys_found = res.json()
+    keys_found = await db.get("keys", params)
 
-    if res.status_code == 200 and len(keys_found) > 0:
+    if keys_found:
         found_key = keys_found[0]
         # Проверяем, привязан ли ключ именно к этому боту (регистронезависимо)
         key_target = str(found_key.get("bot_id", "")).lower()
@@ -2022,9 +1937,8 @@ async def verify_access_key(data: dict):
             key_id = found_key.get("id")
 
             # 2. ПОМЕЧАЕМ КАК ИСПОЛЬЗОВАННЫЙ
-            update_res = await db.patch("keys", params={"id": f"eq.{key_id}"}, json={"is_used": True})
-            
-            if update_res.status_code in [200, 204]:
+            ok = await db.patch("keys", {"id": f"eq.{key_id}"}, {"is_used": True})
+            if ok:
                 logger.info(f"✅ Ключ {input_key} активирован для {requested_bot}")
                 return {"ok": True}
         else:
@@ -2101,11 +2015,9 @@ async def create_bot_endpoint(d: dict):
             "vk_group_id": None
         }
 
-        res = await db.post("bots", json=payload)
-        
-        if res.status_code not in [200, 201, 204]:
-            logger.error(f"❌ Ошибка Supabase: {res.text}")
-            raise HTTPException(res.status_code, f"DB Error: {res.text}")
+        res = await db.post("bots", payload)
+        if not res:
+            raise HTTPException(500, "DB Error: не удалось создать бота")
 
         logger.info(f"✅ Бот {bot_id} успешно создан ({_plat})")
         return {**payload, "token": token, "adminIds": _ai, "channelId": d.get("channelId",""), "lotChannel": d.get("lotChannel",""), "botLink": d.get("botLink","")}
@@ -2139,11 +2051,11 @@ async def vk_bind_peer(d: dict):
         peer_id = int(peer_id)
 
         # Проверяем, что бот принадлежит этому пользователю
-        res = await db.get("bots", params={"id": f"eq.{bot_id}"})
-        if not res.json():
+        bot_rows = await db.get("bots", {"id": f"eq.{bot_id}"})
+        if not bot_rows:
             raise HTTPException(404, "Бот не найден")
-        
-        bot_data = res.json()[0]
+
+        bot_data = bot_rows[0]
         if owner_id and bot_data.get("owner_id") != owner_id:
             raise HTTPException(403, "Нет доступа к этому боту")
 
@@ -2159,18 +2071,9 @@ async def vk_bind_peer(d: dict):
         cfg["adminChatId"]   = peer_id
 
         # Записываем и в колонку vk_group_id, и внутрь config
-        patch_res = await db.patch(
-            "bots",
-            params={"id": f"eq.{bot_id}"},
-            json={
-                "vk_group_id": peer_id,
-                "admin_chat_id": None,
-                "config": cfg
-            }
-        )
-
-        if patch_res.status_code not in [200, 201, 204]:
-            raise HTTPException(500, f"Ошибка БД: {patch_res.text}")
+        ok = await db.patch("bots", {"id": f"eq.{bot_id}"}, {"vk_group_id": peer_id, "admin_chat_id": None, "config": cfg})
+        if not ok:
+            raise HTTPException(500, "Ошибка БД при vk-bind")
 
         logger.info(f"🔗 Бот {bot_id} привязан к VK peer_id={peer_id}")
         return {"status": "ok", "bot_id": bot_id, "peer_id": peer_id}
@@ -2220,7 +2123,7 @@ async def proxy_submit_review(request: Request):
             response = await client.post(
                 bot_reviews_url,
                 json=data,
-                headers={"x-admin-token": os.getenv("ADMIN_SECRET")}
+                headers={"X-Admin-Secret": os.getenv("ADMIN_SECRET")}
             )
             return response.json()
         except Exception as e:
@@ -2264,13 +2167,8 @@ async def submit_application(request: Request):
     }
 
     try:
-        r = await db.post(
-            "job_applications",
-            json=record,
-            headers={"Prefer": "return=minimal"}
-        )
-        if r.status_code not in (200, 201):
-            logger.error(f"Supabase insert error: {r.status_code} {r.text}")
+        r = await db.post("job_applications", record)
+        if not r:
             raise HTTPException(status_code=500, detail="DB error")
     except HTTPException:
         raise
@@ -2290,13 +2188,7 @@ async def list_applications(x_admin_token: str = Header(None)):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     try:
-        r = await db.get(
-            "job_applications",
-            params={"order": "created_at.desc", "limit": "200"}
-        )
-        if r.status_code == 200:
-            return r.json()
-        return []
+        return await db.get("job_applications", {"order": "created_at.desc", "limit": "200"}) or []
     except Exception as e:
         logger.error(f"Applications list error: {e}")
         return []
@@ -2320,12 +2212,8 @@ async def update_application_status(
         status = "reviewed"
 
     try:
-        r = await db.patch(
-            f"job_applications?id=eq.{app_id}",
-            json={"status": status},
-            headers={"Prefer": "return=minimal"}
-        )
-        if r.status_code in (200, 204):
+        ok = await db.patch("job_applications", {"id": f"eq.{app_id}"}, {"status": status})
+        if ok:
             return {"ok": True}
         raise HTTPException(status_code=500, detail="DB error")
     except HTTPException:
@@ -2343,8 +2231,8 @@ async def delete_application(app_id: str, x_admin_token: str = Header(None)):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     try:
-        r = await db.delete(f"job_applications?id=eq.{app_id}")
-        if r.status_code in (200, 204):
+        ok = await db.delete("job_applications", {"id": f"eq.{app_id}"})
+        if ok:
             return {"ok": True}
         raise HTTPException(status_code=500, detail="DB error")
     except HTTPException:
@@ -2373,17 +2261,16 @@ async def gen_miniapp_key(d: dict, x_admin_token: str = Header(None)):
         "used": False,
         "created_at": datetime.utcnow().isoformat() + "Z",
     }
-    res = await db.post("miniapp_keys", json=payload)
-    if res.status_code not in [200, 201]:
-        raise HTTPException(500, f"DB error: {res.text}")
+    res = await db.post("miniapp_keys", payload)
+    if not res:
+        raise HTTPException(500, "DB error: не удалось создать ключ")
     return {"key": key, "months": months, "price_rub": price_rub}
 
 @app.get("/api/admin/miniapp-keys")
 async def get_miniapp_keys(x_admin_token: str = Header(None)):
     if x_admin_token != A_SECRET:
         raise HTTPException(401)
-    res = await db.get("miniapp_keys?select=*&order=created_at.desc")
-    return res.json()
+    return await db.get("miniapp_keys", {"order": "created_at.desc"}) or []
 
 @app.post("/api/miniapps/activate")
 async def activate_miniapp(req: dict):
@@ -2395,10 +2282,8 @@ async def activate_miniapp(req: dict):
         return {"status": "error", "message": "Ключ и botId обязательны"}
 
     # 1. Проверяем ключ
-    rk = await db.get("miniapp_keys", params={"key": f"eq.{key_code}", "used": "eq.false"})
-    keys_found = rk.json()
-    
-    if not keys_found or not isinstance(keys_found, list):
+    keys_found = await db.get("miniapp_keys", {"key": f"eq.{key_code}", "used": "eq.false"})
+    if not keys_found:
         return {"status": "error", "message": "Ключ недействителен или уже использован"}
     
     k_data = keys_found[0]
@@ -2406,8 +2291,7 @@ async def activate_miniapp(req: dict):
     added_ms = months * 30 * 86400 * 1000
 
     # 2. Проверяем существующую лицензию
-    lic_r = await db.get("miniapp_licenses", params={"bot_id": f"eq.{bot_id}"})
-    lics = lic_r.json()
+    lics = await db.get("miniapp_licenses", {"bot_id": f"eq.{bot_id}"})
     curr_time = int(time.time() * 1000)
 
     # Безопасная проверка: lics должен быть списком и не быть пустым
@@ -2421,21 +2305,18 @@ async def activate_miniapp(req: dict):
             
         new_expiry = max(cur_expiry, curr_time) + added_ms
         
-        await db.patch("miniapp_licenses", 
-                       params={"bot_id": f"eq.{bot_id}"},
-                       json={"expires_at": new_expiry, "active": True})
+        await db.patch("miniapp_licenses", {"bot_id": f"eq.{bot_id}"}, {"expires_at": new_expiry, "active": True})
     else:
         # Лицензии нет, создаем новую
         new_expiry = curr_time + added_ms
-        await db.post("miniapp_licenses", json={
+        await db.post("miniapp_licenses", {
             "bot_id": bot_id, 
             "expires_at": new_expiry, 
             "active": True
         })
 
     # 3. Помечаем ключ как использованный
-    await db.patch("miniapp_keys", params={"key": f"eq.{key_code}"},
-                   json={"used": True, "used_by_bot": bot_id})
+    await db.patch("miniapp_keys", {"key": f"eq.{key_code}"}, {"used": True, "used_by_bot": bot_id})
 
     logger.info(f"✅ MiniApp ключ активирован: {key_code} → бот {bot_id}, до {new_expiry}")
     return {"status": "ok", "expires_at": new_expiry, "months_added": months}
@@ -2444,8 +2325,7 @@ async def activate_miniapp(req: dict):
 async def get_miniapp_license(bot_id: str):
     """Проверяет активность лицензии мини-апп для бота."""
     try:
-        r = await db.get("miniapp_licenses", params={"bot_id": f"eq.{bot_id}", "limit": "1"})
-        lics = r.json()
+        lics = await db.get("miniapp_licenses", {"bot_id": f"eq.{bot_id}", "limit": "1"})
         if not lics:
             return {"active": False, "expires_at": 0}
         lic = lics[0]
@@ -2453,8 +2333,7 @@ async def get_miniapp_license(bot_id: str):
         active = expires_at > int(time.time() * 1000)
         # Обновляем флаг active в БД если истекла
         if not active and lic.get("active"):
-            await db.patch("miniapp_licenses", params={"bot_id": f"eq.{bot_id}"},
-                           json={"active": False})
+            await db.patch("miniapp_licenses", {"bot_id": f"eq.{bot_id}"}, {"active": False})
         return {"active": active, "expires_at": expires_at}
     except Exception as e:
         logger.error(f"miniapp license check error: {e}")
@@ -2464,14 +2343,8 @@ async def get_miniapp_license(bot_id: str):
 async def list_miniapps_by_bot(bot_id: str):
     """Получить все мини-приложения конкретного бота (для редактора)."""
     try:
-        r = await db.get("mini_apps", params={
-            "bot_id": f"eq.{bot_id}",
-            "select": "*",
-            "order": "updated_at.desc",
-            "limit": "50",
-        })
-        if r.status_code == 200:
-            apps = r.json()
+        apps = await db.get("mini_apps", {"bot_id": f"eq.{bot_id}", "select": "*", "order": "updated_at.desc", "limit": "50"})
+        if apps is not None:
             for a in apps:
                 a["formWebhook"]   = a.pop("form_webhook", "") or ""
                 a["sheetsUrl"]     = a.pop("sheets_url", "") or ""
@@ -2524,16 +2397,9 @@ async def save_miniapp(request: Request):
 
     try:
         # ВАЖНО: Добавляем ?on_conflict=id, иначе Supabase не поймет, что нужно обновлять
-        r = await db.post(
-            "mini_apps?on_conflict=id", 
-            json=record,
-            headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
-        )
-        
-        # 204 No Content возвращается при return=minimal, это признак успеха
-        if r.status_code not in (200, 201, 204):
-            logger.error(f"Miniapp save error: {r.status_code} {r.text}")
-            raise HTTPException(status_code=500, detail=f"DB error: {r.text}")
+        r = await db.post("mini_apps", record)
+        if r is None:
+            raise HTTPException(status_code=500, detail="DB error saving miniapp")
             
     except HTTPException:
         raise
@@ -2552,18 +2418,7 @@ async def save_miniapp(request: Request):
 async def list_miniapps(owner_id: str):
     """Получить все мини-приложения пользователя."""
     try:
-        r = await db.get(
-            "mini_apps",
-            params={
-                "owner_id": f"eq.{owner_id}",
-                "select":   "id,title,updated_at",
-                "order":    "updated_at.desc",
-                "limit":    "50",
-            }
-        )
-        if r.status_code == 200:
-            return r.json()
-        return []
+        return await db.get("mini_apps", {"owner_id": f"eq.{owner_id}", "select": "id,title,updated_at", "order": "updated_at.desc", "limit": "50"}) or []
     except Exception as e:
         logger.error(f"Miniapp list error: {e}")
         return []
@@ -2571,12 +2426,8 @@ async def list_miniapps(owner_id: str):
 async def get_miniapp(app_id: str):
     """Публичный endpoint для рендера мини-приложения."""
     try:
-        r = await db.get(
-            "mini_apps",
-            params={"id": f"eq.{app_id}", "select": "*", "limit": "1"}
-        )
-        if r.status_code == 200:
-            results = r.json()
+        results = await db.get("mini_apps", {"id": f"eq.{app_id}", "select": "*", "limit": "1"})
+        if results is not None:
             if results:
                 app_data = results[0]
                 # Нормализуем поля для рендерера
@@ -2720,13 +2571,9 @@ async def delete_miniapp(app_id: str, request: Request):
 
     try:
         # Проверка владельца прямо в запросе к БД
-        r = await db.delete(
-            f"mini_apps?id=eq.{app_id}&owner_id=eq.{owner_id}"
-        )
-        if r.status_code in (200, 204):
+        ok = await db.delete("mini_apps", {"id": f"eq.{app_id}", "owner_id": f"eq.{owner_id}"})
+        if ok:
             return {"ok": True}
-        
-        logger.warning(f"Delete failed: {r.status_code} {r.text}")
         raise HTTPException(status_code=403, detail="Forbidden or not found")
     except HTTPException:
         raise
@@ -2850,46 +2697,35 @@ def send_chat_verification_email(to_email: str, code: str, site_name: str) -> bo
 # ==============================================================================
 
 async def _sb_get(table: str, params: dict) -> list:
+    """Получить список строк (первичная БД → Supabase fallback)."""
     try:
-        # Глобальный клиент 'db' уже содержит S_URL и нужные заголовки
-        r = await db.get(table, params=params)
-        if r.status_code == 200:
-            return r.json()
-        logger.error(f"Supabase GET [{table}] error: {r.text}")
-        return []
+        return await db.get(table, params) or []
     except Exception as e:
-        logger.error(f"Supabase GET exception [{table}]: {e}")
+        logger.error(f"DB GET [{table}] error: {e}")
         return []
 
 async def _sb_post(table: str, data: dict) -> dict | None:
+    """Вставить строку (первичная БД → Supabase fallback)."""
     try:
-        # Prefer: return=representation заставляет Supabase вернуть созданный объект
-        r = await db.post(table, json=data, headers={"Prefer": "return=representation"})
-        if r.status_code in (200, 201):
-            d = r.json()
-            return d[0] if isinstance(d, list) and d else d if isinstance(d, dict) else None
-        logger.error(f"Supabase POST [{table}] error: {r.text}")
-        return None
+        return await db.post(table, data) or None
     except Exception as e:
-        logger.error(f"Supabase POST exception [{table}]: {e}")
+        logger.error(f"DB POST [{table}] error: {e}")
         return None
 
 async def _sb_patch(table: str, params: dict, data: dict) -> bool:
+    """Обновить строки (первичная БД → Supabase fallback)."""
     try:
-        r = await db.patch(table, params=params, json=data)
-        if r.status_code not in (200, 204):
-            logger.error(f"Supabase PATCH [{table}] error: {r.text}")
-        return r.status_code in (200, 204)
+        return await db.patch(table, params, data)
     except Exception as e:
-        logger.error(f"Supabase PATCH exception [{table}]: {e}")
+        logger.error(f"DB PATCH [{table}] error: {e}")
         return False
 
 async def _sb_delete(table: str, params: dict) -> bool:
+    """Удалить строки (первичная БД → Supabase fallback)."""
     try:
-        r = await db.delete(table, params=params)
-        return r.status_code in (200, 204)
+        return await db.delete(table, params)
     except Exception as e:
-        logger.error(f"Supabase DELETE exception [{table}]: {e}")
+        logger.error(f"DB DELETE [{table}] error: {e}")
         return False
 
 # ─── Создать сайт ──────────────────────────────────────────────────────────────
@@ -4187,36 +4023,29 @@ else:
 # ─── ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: RPC-вызов к Supabase ──────────────────────────
 
 async def _rpc(func_name: str, params: dict):
-    """Вызывает Supabase RPC-функцию и возвращает результат."""
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(
-            f"{S_URL}/rest/v1/rpc/{func_name}",
-            headers={
-                "apikey": S_KEY,
-                "Authorization": f"Bearer {S_KEY}",
-                "Content-Type": "application/json"
-            },
-            json=params
-        )
-    return r
+    """Вызывает RPC-функцию (первичная БД → Supabase fallback)."""
+    result = await db.rpc(func_name, params)
+    # Оборачиваем для обратной совместимости с кодом, ожидающим .status_code
+    class _RpcResult:
+        def __init__(self, data):
+            self._data = data
+            self.status_code = 200 if data is not None else 500
+        def json(self):
+            return self._data
+    return _RpcResult(result)
 
 # ─── ПОЛУЧИТЬ БАЛАНС ─────────────────────────────────────────────────────────
 
 @app.get("/api/payments/balance/{user_id}")
 async def get_balance(user_id: str):
     """Возвращает текущий баланс и историю транзакций пользователя."""
-    r = await db.get("users", params={"id": f"eq.{user_id}", "select": "id,balance"})
-    if not r.json():
+    bal_rows = await db.get("users", {"id": f"eq.{user_id}", "select": "id,balance"})
+    if not bal_rows:
         raise HTTPException(404, "Пользователь не найден")
 
-    balance = r.json()[0].get("balance", 0)
+    balance = bal_rows[0].get("balance", 0)
 
-    tx_r = await db.get("payment_transactions", params={
-        "user_id": f"eq.{user_id}",
-        "order":   "created_at.desc",
-        "limit":   "30"
-    })
-    transactions = tx_r.json() if tx_r.status_code == 200 else []
+    transactions = await db.get("payment_transactions", {"user_id": f"eq.{user_id}", "order": "created_at.desc", "limit": "30"}) or []
 
     return {"balance": float(balance), "transactions": transactions}
 
@@ -4225,7 +4054,7 @@ async def get_balance(user_id: str):
 @app.get("/api/payments/prices")
 async def get_prices():
     """Возвращает актуальный прайслист из БД."""
-    r = await db.get("service_prices", params={"order": "price_rub.asc"})
+    r = await db.get("service_prices", {"order": "price_rub.asc"})
     return r.json() if r.status_code == 200 else []
 
 # ─── ИНИЦИИРОВАТЬ ПОПОЛНЕНИЕ ─────────────────────────────────────────────────
@@ -4250,8 +4079,8 @@ async def initiate_topup(d: dict):
         raise HTTPException(500, "ЮKassa не настроена в .env")
 
     # Проверяем пользователя
-    u_r = await db.get("users", params={"id": f"eq.{user_id}"})
-    if not u_r.json():
+    u_rows = await db.get("users", {"id": f"eq.{user_id}"})
+    if not u_rows:
         raise HTTPException(404, "Пользователь не найден")
 
     # Идемпотентный ключ — чтобы не создать дубль если запрос повторится
@@ -4284,7 +4113,7 @@ async def initiate_topup(d: dict):
     payment_url = payment.confirmation.confirmation_url
 
     # Сохраняем pending-транзакцию
-    await db.post("payment_transactions", json={
+    await db.post("payment_transactions", {
         "user_id":     user_id,
         "type":        "topup",
         "amount":      amount,
@@ -4311,13 +4140,10 @@ async def check_payment_status(payment_id: str):
         raise HTTPException(500, "ЮKassa не настроена")
 
     # Сначала пробуем найти транзакцию по yk_payment_id (как присылает ЮKassa)
-    tx_r = await db.get("payment_transactions", params={"yk_payment_id": f"eq.{payment_id}"})
-    tx_data = tx_r.json()
+    tx_data = await db.get("payment_transactions", {"yk_payment_id": f"eq.{payment_id}"})
 
-    # Если не нашли, пробуем найти по внутреннему id (UUID)
     if not tx_data:
-        tx_r = await db.get("payment_transactions", params={"id": f"eq.{payment_id}"})
-        tx_data = tx_r.json()
+        tx_data = await db.get("payment_transactions", {"id": f"eq.{payment_id}"})
 
     if not tx_data:
         logger.error(f"❌ Транзакция {payment_id} не найдена в базе!")
@@ -4423,11 +4249,8 @@ async def yookassa_callback(request: Request):
         return {"ok": True}
 
     # Ищем pending-транзакцию (защита от дублей)
-    tx_r = await db.get("payment_transactions", params={
-        "yk_payment_id": f"eq.{payment_id}",
-        "status":        "eq.pending"
-    })
-    if not tx_r.json():
+    tx_data_cb = await db.get("payment_transactions", {"yk_payment_id": f"eq.{payment_id}", "status": "eq.pending"})
+    if not tx_data_cb:
         logger.warning(f"⚠️ Транзакция {payment_id} не найдена или уже обработана")
         return {"ok": True}
 
@@ -4468,11 +4291,11 @@ async def buy_service(d: dict):
         raise HTTPException(400, "user_id и service_key обязательны")
 
     # Прайс из БД
-    p_r = await db.get("service_prices", params={"service_key": f"eq.{service_key}"})
-    if not p_r.json():
+    p_rows = await db.get("service_prices", {"service_key": f"eq.{service_key}"})
+    if not p_rows:
         raise HTTPException(404, f"Услуга '{service_key}' не найдена")
 
-    price_row = p_r.json()[0]
+    price_row = p_rows[0]
     price     = float(price_row["price_rub"])
     meta      = price_row.get("meta") or {}
     label     = price_row["label"]
@@ -4510,11 +4333,11 @@ async def buy_service(d: dict):
     if service_type == "bot_license" and target_id:
         days   = int(meta.get("days", 30))
         add_ms = days * 86_400_000
-        bot_r  = await db.get("bots", params={"id": f"eq.{target_id}"})
-        if bot_r.json():
-            curr_exp = bot_r.json()[0].get("license_expires_at") or now_ms
+        bot_r_rows = await db.get("bots", {"id": f"eq.{target_id}"})
+        if bot_r_rows:
+            curr_exp = bot_r_rows[0].get("license_expires_at") or now_ms
             new_exp  = max(curr_exp, now_ms) + add_ms
-            await db.patch("bots", params={"id": f"eq.{target_id}"}, json={"license_expires_at": new_exp})
+            await db.patch("bots", {"id": f"eq.{target_id}"}, {"license_expires_at": new_exp})
             logger.info(f"✅ Лицензия бота {target_id} продлена на {days} дней")
 
     elif service_type == "ai_tokens" and target_id:
@@ -4527,8 +4350,7 @@ async def buy_service(d: dict):
                                params={"bot_id": f"eq.{target_id}"},
                                json={"tokens_balance": curr_tok + tokens})
             else:
-                await db.post("ai_token_balances",
-                              json={"bot_id": target_id, "tokens_balance": tokens})
+                await db.post("ai_token_balances", {"bot_id": target_id, "tokens_balance": tokens})
             logger.info(f"✅ Боту {target_id} начислено {tokens} AI-токенов")
 
     elif service_type == "miniapp" and target_id:
@@ -4544,12 +4366,10 @@ async def buy_service(d: dict):
                            json={"expires_at": new_exp, "active": True})  # поле active, не is_active
         else:
             new_exp = now_ms + add_ms
-            await db.post("miniapp_licenses",
-                          json={"bot_id": target_id, "expires_at": new_exp, "active": True})
+            await db.post("miniapp_licenses", {"bot_id": target_id, "expires_at": new_exp, "active": True})
 
         # Синхронизируем в bots.license_expires_at — фронтенд читает отсюда при reload
-        await db.patch("bots", params={"id": f"eq.{target_id}"},
-                       json={"license_expires_at": new_exp})
+        await db.patch("bots", {"id": f"eq.{target_id}"}, {"license_expires_at": new_exp})
         logger.info(f"✅ MiniApp лицензия бота {target_id} до {new_exp}")
 
     elif service_type == "chatsite" and target_id:
@@ -4557,26 +4377,18 @@ async def buy_service(d: dict):
         days   = int(meta.get("days", 30))
         add_ms = days * 86_400_000
 
-        existing = await db.get("chat_site_keys", params={
-            "site_id":   f"eq.{target_id}",
-            "is_active": "eq.true",
-            "order":     "expires_at.desc",
-            "limit":     "1"
-        })
-        existing_list = existing.json() if existing.status_code == 200 else []
+        existing_list = await db.get("chat_site_keys", {"site_id": f"eq.{target_id}", "is_active": "eq.true", "order": "expires_at.desc", "limit": "1"}) or []
 
         if existing_list:
             curr_exp = existing_list[0].get("expires_at") or now_ms
             new_exp  = max(curr_exp, now_ms) + add_ms
-            await db.patch("chat_site_keys",
-                           params={"id": f"eq.{existing_list[0]['id']}"},
-                           json={"expires_at": new_exp, "is_active": True})
+            await db.patch("chat_site_keys", {"id": f"eq.{existing_list[0]['id']}"}, {"expires_at": new_exp, "is_active": True})
         else:
             import secrets as _secrets
             raw = _secrets.token_hex(6).upper()
             key_code = f"CHAT-{raw[:4]}-{raw[4:8]}-{raw[8:12]}"
             new_exp  = now_ms + add_ms
-            await db.post("chat_site_keys", json={
+            await db.post("chat_site_keys", {
                 "id":           f"cky_{uuid.uuid4().hex[:8]}",
                 "key_code":     key_code,
                 "site_id":      target_id,
@@ -4624,13 +4436,9 @@ async def mb_check_user(req: dict, authorization: str = Header(None)):
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(
-                f"{S_URL}/rest/v1/memory_base_cache",
-                headers=_cs_h(),
-                params={"user_id": f"eq.{user_id}", "select": "*"}
-            )
-            if r.status_code == 200 and r.json():
-                row = r.json()[0]
+            mb_rows = await db.get("memory_base_cache", {"user_id": f"eq.{user_id}", "select": "*"})
+            if mb_rows:
+                row = mb_rows[0]
                 return {
                     "status":   row.get("status", "unknown"),
                     "reasons":  row.get("reasons", []),
@@ -4669,13 +4477,9 @@ async def mb_save_result(req: dict, authorization: str = Header(None)):
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(
-                f"{S_URL}/rest/v1/memory_base_cache",
-                headers={**_cs_h(), "Prefer": "resolution=merge-duplicates,return=minimal"},
-                json=payload
-            )
-            if r.status_code not in [200, 201, 204]:
-                raise HTTPException(500, f"DB error: {r.text}")
+            ok = await db.post("memory_base_cache", payload)
+            if ok is None:
+                raise HTTPException(500, "DB error: memory_base_cache")
         return {"ok": True}
     except HTTPException:
         raise
