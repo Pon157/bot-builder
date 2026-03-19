@@ -356,7 +356,7 @@ class BotInstance:
         
         self.license_expired = False 
         
-        self.sb_url = os.getenv("SUPABASE_URL")
+        self.sb_url = os.getenv("SUPABASE_URL") or os.getenv("DB_HOST", "")
         self.sb_key = os.getenv("SUPABASE_KEY")
 
         if not self.sb_url:
@@ -645,7 +645,7 @@ class BotInstance:
 
                     if action == "log_message":
                         if self.sb_url.startswith("http"):
-                            await client.post(f"{self.sb_url}/rest/v1/bot_messages", json=payload, headers=headers)
+                            await self.db.post("bot_messages", payload)
 
                     elif action == "sync_state":
                         if not self.sb_url or not self.sb_url.startswith("http"):
@@ -733,11 +733,8 @@ class BotInstance:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}", "Content-Type": "application/json"}
-                await client.post(f"{self.sb_url}/rest/v1/rpc/deduct_ai_tokens", headers=headers,
-                                  json={"p_bot_id": self.bot_id, "p_amount": total})
-                await client.post(f"{self.sb_url}/rest/v1/ai_token_usage_log",
-                                  headers={**headers, "Prefer": "return=minimal"},
-                                  json={"bot_id": self.bot_id, "user_id": user_id,
+                await self.db.rpc("deduct_ai_tokens", {"p_bot_id": self.bot_id, "p_amount": total})
+                await self.db.post("ai_token_usage_log", {"bot_id": self.bot_id, "user_id": user_id,
                                         "prompt_tokens": usage.get("prompt_tokens", 0),
                                         "response_tokens": usage.get("completion_tokens", 0),
                                         "total_tokens": total, "model": self.ai_model})
@@ -748,7 +745,7 @@ class BotInstance:
         try:
             async with httpx.AsyncClient(timeout=5) as client:
                 headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
-                r = await client.get(f"{self.sb_url}/rest/v1/ai_token_balances?bot_id=eq.{self.bot_id}", headers=headers)
+                r = await self.db.get("ai_token_balances", {"bot_id": f"eq.{self.bot_id}"})
                 if r.status_code == 200 and r.json():
                     return r.json()[0].get("tokens_balance", 0)
         except Exception:
@@ -1313,7 +1310,7 @@ class BotInstance:
                 "Content-Type": "application/json"
             }
             async with httpx.AsyncClient(timeout=10) as client:
-                res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
+                res = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
                 if res.status_code == 200 and res.json():
                     remote_config = res.json()[0].get("config", {})
                     new_config = {
