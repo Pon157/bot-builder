@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # ДОБАВИЛИ ЭТУ СТРОКУ:
 from starlette.middleware.base import BaseHTTPMiddleware 
 from cryptography.fernet import Fernet
+import psycopg2
 
 # Импорт твоего сервиса почты (файл email_service.py должен быть рядом)
 try:
@@ -99,8 +100,16 @@ def init_env():
 init_env()
 
 # Переменные окружения
+# Переменные для Supabase (старые)
 S_URL = os.getenv("SUPABASE_URL", "").rstrip('/')
 S_KEY = os.getenv("SUPABASE_KEY", "")
+
+# Переменные для новой БД Timeweb (новые)
+DB_HOST = os.getenv("DB_HOST")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASS = os.getenv("DB_PASSWORD")
+
 A_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
 # Читаем токен из .env (как ты просил запомнить)
 E_KEY = os.getenv("ENCRYPTION_KEY")
