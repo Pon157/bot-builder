@@ -10,18 +10,24 @@ import secrets
 import random
 import hashlib
 import uuid
+import re
+import shutil
 from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
-# ДОБАВИЛИ Request СЮДА:
-from fastapi import FastAPI, HTTPException, Header, Request 
+
+# FastAPI и сопутствующие
+from fastapi import FastAPI, HTTPException, Header, Request, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
-# ДОБАВИЛИ ЭТУ СТРОКУ:
 from starlette.middleware.base import BaseHTTPMiddleware 
+from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
+
+# Безопасность и БД
 from cryptography.fernet import Fernet
 import psycopg2
 from db_adapter import DBAdapter, init_pg_pool, SB_URL as _SB_URL, SB_KEY as _SB_KEY
 
-# Импорт твоего сервиса почты (файл email_service.py должен быть рядом)
+# Импорт сервиса почты
 try:
     from email_service import EmailService
 except ImportError:
@@ -31,26 +37,18 @@ except ImportError:
         @staticmethod
         def send_password_reset(e, c): return True
 
-# Импорты aiogram 3.x для массовой рассылки
+# Импорты aiogram 3.x
 from aiogram import Bot
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError
 
-from starlette.concurrency import run_in_threadpool
+from datetime import datetime, timedelta
 
-from datetime import datetime, timedelta  # <--- Добавь это в начало файла
-
-from fastapi.staticfiles import StaticFiles
-from fastapi import UploadFile, File
-import shutil
-
-from fastapi import UploadFile, File, Form
-from fastapi import Query
-
+# ==========================================
+# 0. КОНСТАНТЫ И ГЕНЕРАТОРЫ
+# ==========================================
 MAX_FILE_SIZE = 25 * 1024 * 1024
-
-import secrets
 
 def _gen_id(prefix: str) -> str:
     """Генерирует случайный ID, например csm_8f2d1a3b9c0e"""
@@ -58,13 +56,12 @@ def _gen_id(prefix: str) -> str:
 
 def _slug(name: str) -> str:
     """Генерирует URL-безопасный slug из имени сайта."""
-    import re
     s = name.lower().strip()
-    s = re.sub(r'[а-яёa-z0-9]+', lambda m: m.group(0), s)  # keep alphanum
+    s = re.sub(r'[а-яёa-z0-9]+', lambda m: m.group(0), s)
     s = re.sub(r'[^a-zа-яё0-9\s-]', '', s)
     s = re.sub(r'\s+', '-', s)
     s = re.sub(r'-+', '-', s).strip('-')
-    # transliterate basic cyrillic
+    # Транслитерация
     tr = {'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'yo','ж':'zh','з':'z',
           'и':'i','й':'j','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r',
           'с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts','ч':'ch','ш':'sh','щ':'sch',
@@ -74,7 +71,6 @@ def _slug(name: str) -> str:
     result = re.sub(r'-+', '-', result).strip('-')
     if not result:
         result = secrets.token_hex(4)
-    # append random suffix to avoid collisions
     suffix = secrets.token_hex(3)
     return f"{result[:24]}-{suffix}"
 
@@ -85,7 +81,7 @@ def _cs_h():
         "Authorization": f"Bearer {S_KEY}",
         "Content-Type": "application/json"
     }
-    
+
 # ==========================================
 # 1. ИНИЦИАЛИЗАЦИЯ И БЕЗОПАСНОСТЬ
 # ==========================================
@@ -100,49 +96,37 @@ def init_env():
 
 init_env()
 
-# Переменные окружения
-# Переменные для Supabase (старые)
 S_URL = os.getenv("SUPABASE_URL", "").rstrip('/')
 S_KEY = os.getenv("SUPABASE_KEY", "")
-
-# Переменные для новой БД Timeweb (новые)
 DB_HOST = os.getenv("DB_HOST")
 DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASS = os.getenv("DB_PASSWORD")
 DB_PORT = os.getenv("DB_PORT", "5432")
 
-A_SECRET = os.getenv("ADMIN_SECRET", "MRAKOTIK")
-# Читаем токен из .env (как ты просил запомнить)
 E_KEY = os.getenv("ENCRYPTION_KEY")
-A_SECRET = os.getenv("ADMIN_TOKEN")
+# Приоритет токену из .env согласно твоим правилам
+A_SECRET = os.getenv("ADMIN_TOKEN") or os.getenv("ADMIN_SECRET", "MRAKOTIK")
 
 if not E_KEY:
-    # Генерируем временный, если забыл добавить в .env, но лучше прописать!
     E_KEY = Fernet.generate_key().decode()
     print(f"⚠️ ВНИМАНИЕ: ENCRYPTION_KEY не найден. Использую временный: {E_KEY}")
 
 cipher = Fernet(E_KEY.encode())
-
-# Токен выделенного бота для форм (пользователи добавляют его в чат)
 FORM_BOT_TOKEN = os.getenv("FORM_BOT_TOKEN", "")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("DialogEngineServer")
 
-# --- Функции защиты данных ---
 def hash_pwd(password: str) -> str:
-    """Создает необратимый хеш пароля с солью."""
     salt = "dialog_engine_secure_2026_salt" 
     return hashlib.sha256((password + salt).encode()).hexdigest()
 
 def encrypt_val(val: str) -> str:
-    """Шифрует строку (например, токен бота)."""
     if not val: return ""
     return cipher.encrypt(val.encode()).decode()
 
 def decrypt_val(val: str) -> str:
-    """Расшифровывает строку. Если строка не зашифрована, вернет как есть."""
     if not val: return ""
     try:
         return cipher.decrypt(val.encode()).decode()
@@ -158,14 +142,14 @@ class BotManager:
         self.log_paths: Dict[str, str] = {}
 
     async def start_bot(self, bid: str, config: dict):
-        """Запуск процесса бота с 'живым' пробросом логов в консоль и файл."""
+        """Запуск процесса бота с 'живым' пробросом логов."""
         await self.stop_bot(bid)
         
         os.makedirs("active_bots", exist_ok=True)
         cfg_path = f"active_bots/cfg_{bid}.json"
         log_path = f"active_bots/bot_{bid}.log"
         
-        # Расшифровываем токен (согласно твоим правилам хранения в .env)
+        # Расшифровываем токен перед записью в конфиг процесса
         raw_token = decrypt_val(config.get('token', ''))
         config['token'] = raw_token
         
@@ -174,28 +158,25 @@ class BotManager:
         
         self.log_paths[bid] = log_path
         platform = config.get('platform', 'telegram').lower()
+        
         _CORE = {'vk': 'vkbot_core.py', 'poster': 'poster_core.py', 'randomizer': 'randomizer_core.py'}
         _FREE_CORE = {'vk': 'free_vk_bot_core.py'}
-        # TG free -> free_bot_core.py, VK free -> free_vk_bot_core.py
+        
         if config.get('is_free_plan', False):
             bot_file = _FREE_CORE.get(platform, 'free_bot_core.py')
         else:
             bot_file = _CORE.get(platform, 'bot_core.py')
         
         try:
-            # 1. Подготовка окружения
             env = os.environ.copy()
-            # ПРИНУДИТЕЛЬНО отключаем буферизацию Python, чтобы логи писались мгновенно
             env["PYTHONUNBUFFERED"] = "1" 
             env.update({
-                "SUPABASE_URL": S_URL, "SUPABASE_KEY": S_KEY,
                 "DB_HOST": str(DB_HOST or ""), "DB_NAME": str(DB_NAME or ""),
                 "DB_USER": str(DB_USER or ""), "DB_PASSWORD": str(DB_PASS or ""),
                 "DB_PORT": str(DB_PORT),
                 "BOT_ID": str(bid), "BOT_TOKEN": config.get("token", ""),
             })
             
-            # 2. Запуск через PIPE, чтобы сервер мог перехватывать поток
             p = await asyncio.create_subprocess_exec(
                 sys.executable, bot_file, cfg_path,
                 stdout=asyncio.subprocess.PIPE,
@@ -204,17 +185,14 @@ class BotManager:
             )
             self.procs[bid] = p
 
-            # 3. Фоновая задача для записи в файл И вывода в PM2 сервера
             async def log_reader(stream, file_path, prefix):
                 with open(file_path, "a", encoding="utf-8") as f:
                     while True:
                         line = await stream.readline()
                         if not line: break
                         msg = line.decode('utf-8', errors='replace')
-                        # Пишем в лог-файл для фронтенда
                         f.write(msg)
                         f.flush()
-                        # Дублируем в консоль PM2 (увидишь через pm2 logs bot-api)
                         print(f"[{prefix}] {msg.strip()}", flush=True)
 
             asyncio.create_task(log_reader(p.stdout, log_path, f"STDOUT_{bid}"))
@@ -241,7 +219,6 @@ class BotManager:
             
             self.procs.pop(bot_id, None)
             
-        # Удаляем конфиг, чтобы не плодить мусор
         cfg_path = f"active_bots/cfg_{bot_id}.json"
         if os.path.exists(cfg_path):
             try: os.remove(cfg_path)
@@ -256,8 +233,8 @@ class BotManager:
                 return "".join(f.readlines()[-150:])
         except: return "Ошибка чтения логов."
 
+# Инициализируем объекты до lifespan
 pm = BotManager()
-
 db = DBAdapter()
 
 # ==========================================
@@ -267,17 +244,12 @@ db = DBAdapter()
 async def lifespan(app: FastAPI):
     """Логика при старте и выключении сервера."""
     logger.info("--- Сервер запускается ---")
-
-    # Инициализируем пул PostgreSQL
     await init_pg_pool()
-
-    # Текущее время в мс для проверки лицензий
     curr_ms = int(time.time() * 1000)
 
     try:
-        # Получаем активных ботов
         active_bots = await db.get("bots", {
-            "status":             "eq.RUNNING",
+            "status": "eq.RUNNING",
             "license_expires_at": f"gt.{curr_ms}",
         })
         
@@ -285,44 +257,41 @@ async def lifespan(app: FastAPI):
         
         for b in active_bots:
             try:
-                # --- ЖЕСТКИЙ ФИКС 'str' object is not a mapping ---
+                # Фикс типов данных из БД
                 inner_cfg = b.get("config") or {}
-                
-                # Если база вернула config как строку (тип TEXT в Postgres)
                 if isinstance(inner_cfg, str):
+                    # Проверка на обрезку текста в БД (10KB)
+                    if len(inner_cfg) >= 10240:
+                        logger.error(f"❌ Бот {b.get('id')}: Конфиг обрезан базой! Проверьте длину.")
+                        continue
                     inner_cfg = json.loads(inner_cfg)
                 
-                # Повторная проверка на двойную сериализацию (иногда бывает в PG)
-                if isinstance(inner_cfg, str):
+                if isinstance(inner_cfg, str): # Двойной фикс сериализации
                     inner_cfg = json.loads(inner_cfg)
 
-                # Теперь мердж словарей пройдет успешно
                 merged = {**inner_cfg, **b}
                 merged['is_free_plan'] = b.get('is_free_plan', False)
                 
-                # Передаем управление в Process Manager
-                from process_manager import pm # Импорт внутри, если есть циклическая зависимость
+                # Используем локальный pm, определенный выше
                 await pm.start_bot(b['id'], merged)
                 
             except Exception as bot_err:
-                logger.error(f"Ошибка при запуске конкретного бота {b.get('id')}: {bot_err}")
-                continue
+                logger.error(f"Ошибка при автозапуске бота {b.get('id')}: {bot_err}")
 
     except Exception as e:
         logger.error(f"Критическая ошибка автозапуска: {e}")
     
-    yield  # Сервер начал работу
+    yield 
     
     logger.info("--- Сервер останавливается ---")
-    from process_manager import pm
     for bid in list(pm.procs.keys()):
         await pm.stop_bot(bid)
 
 
-# 2. Инициализация FastAPI
+# 4. Инициализация FastAPI
 app = FastAPI(lifespan=lifespan)
 
-# 3. Middleware безопасности
+# 5. Middleware безопасности
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
@@ -331,7 +300,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         
-        # S_URL подставляется из конфига
         s_url_clean = os.getenv("SUPABASE_URL", "").rstrip("/")
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
@@ -345,7 +313,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -353,10 +320,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 4. Загрузка статики/файлов
+# 6. Загрузка статики/файлов
 UPLOADS_DIR = os.getenv("UPLOADS_DIR", "/var/www/botengine/uploads")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
+
+@app.get("/")
+async def root():
+    return {"status": "online", "engine": "DialogEngine 2026", "timestamp": datetime.now().isoformat()}
 
 # ==========================================
 # 4. ЭНДПОИНТЫ АВТОРИЗАЦИИ
