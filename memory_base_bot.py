@@ -87,6 +87,8 @@ API_ID       = int(os.getenv("PYROGRAM_API_ID", "0"))
 API_HASH     = os.getenv("PYROGRAM_API_HASH", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+from db_adapter import DBAdapter, init_pg_pool
+_db = DBAdapter(SUPABASE_URL, SUPABASE_KEY)
 BOTS_API_URL = os.getenv("BOTS_API_URL", "https://dialogengine.webtm.ru")
 ADMIN_TOKEN  = os.getenv("ADMIN_TOKEN", "")
 
@@ -125,8 +127,7 @@ _pending_lock = asyncio.Lock()
 
 def _sb_h() -> dict:
     return {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
     }
 
@@ -759,4 +760,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--gen-session":
         asyncio.run(generate_session_string())
     else:
-        asyncio.run(main())
+        async def _startup_and_run():
+    await init_pg_pool()
+    await main()
+asyncio.run(_startup_and_run())
