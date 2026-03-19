@@ -38,6 +38,7 @@ from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, Teleg
 
 from dotenv import load_dotenv
 load_dotenv()
+from db_adapter import DBAdapter, init_pg_pool
 
 logging.basicConfig(
     level=logging.INFO,
@@ -441,6 +442,8 @@ class FreeBotInstance:
 
         self.sb_url = os.getenv("SUPABASE_URL", "").rstrip("/")
         self.sb_key = os.getenv("SUPABASE_KEY", "")
+        # Новая БД (первичная) + Supabase (резерв)
+        self.db = DBAdapter(self.sb_url, self.sb_key)
         self.headers = {
             "apikey":        self.sb_key,
             "Authorization": f"Bearer {self.sb_key}",
@@ -924,7 +927,7 @@ class FreeBotInstance:
         try:
             async with httpx.AsyncClient(timeout=5) as client:
                 await client.post(
-                    f"{self.sb_url}/rest/v1/bot_messages",
+                    "bot_messages" #NEW_DB,
                     json={
                         "bot_id":        self.bot_id,
                         "user_id":       uid,
@@ -2054,6 +2057,7 @@ class FreeBotInstance:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def run_instance(self):
+        await init_pg_pool()
         logger.info(f"[FREE] Бот {self.bot_id} стартует...")
 
         await self.sync_database_logic()
