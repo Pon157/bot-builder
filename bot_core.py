@@ -25,6 +25,7 @@ from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, Teleg
 
 from dotenv import load_dotenv
 load_dotenv()
+from db_adapter import DBAdapter, init_pg_pool
 
 class LicenseMiddleware(BaseMiddleware):
     def __init__(self, bot_instance):
@@ -226,22 +227,16 @@ class MemoryBaseMiddleware(BaseMiddleware):
         # ── Проверяем актуальный статус в Supabase ──────────────────────────
         # Только если: новый пользователь / кэш устарел / пользователь был заблокирован
         try:
-            sb_url = self.bi.sb_url
-            sb_key = self.bi.sb_key
-            h = {"apikey": sb_key, "Authorization": f"Bearer {sb_key}"}
-            async with httpx.AsyncClient(timeout=5) as _c:
-                _r = await _c.get(
-                    f"{sb_url}/rest/v1/memory_base_cache",
-                    headers=h,
-                    params={"user_id": f"eq.{user_id}", "select": "status,reasons,expires_at"}
-                )
-                if _r.status_code == 200:
-                    _rows = _r.json()
-                    if _rows:
-                        _cache_row = _rows[0]
+            _rows = await self.bi.db.get(
+                "memory_base_cache",
+                {"user_id": f"eq.{user_id}", "select": "status,reasons,expires_at"},
+            )
+            if True:
+                if _rows:
+                    _cache_row = _rows[0]
                         _status  = _cache_row.get('status', 'not_found')
                         _reasons = _cache_row.get('reasons', [])
-                        logger.info(f"[MB] uid={user_id} supabase status={_status} reasons={_reasons}")
+                    logger.info(f"[MB] uid={user_id} supabase status={_status} reasons={_reasons}")
 
                         if _status == 'in_base':
                             _block_reasons = settings.get('memoryBaseBlockReasons', [])
@@ -306,11 +301,8 @@ class MemoryBaseMiddleware(BaseMiddleware):
                     else:
                         # Записей в кэше вообще нет — нужна первичная проверка
                         logger.info(f"[MB] uid={user_id} no cache row — queuing check")
-                else:
-                    logger.warning(f"[MB] supabase check failed {_r.status_code} — пропускаем")
-                    return await handler(event, data)
         except Exception as _e:
-            logger.warning(f"[MB] supabase pre-check error: {_e} — пропускаем")
+            logger.warning(f"[MB] db pre-check error: {_e} — пропускаем")
             return await handler(event, data)
 
         # Уведомляем пользователя что идёт проверка
@@ -340,61 +332,41 @@ class MemoryBaseMiddleware(BaseMiddleware):
     async def _check_and_restrict(self, event: Any, user_tg, user_rec: Optional[dict], settings: dict):
         """Проверяет пользователя и ограничивает при необходимости."""
         user_id = user_tg.id
-        sb_url = self.bi.sb_url
-        sb_key = self.bi.sb_key
-        headers = {"apikey": sb_key, "Authorization": f"Bearer {sb_key}",
-                   "Content-Type": "application/json"}
+        _db = self.bi.db
 
         try:
             logger.info(f"[MB] _check_and_restrict started for user_id={user_id}")
 
             # ── ШАГ 1: Ставим задачу в очередь ──────────────────────────
-            async with httpx.AsyncClient(timeout=10) as client:
-                # Проверяем нет ли уже активной задачи
-                rq = await client.get(
-                    f"{sb_url}/rest/v1/mb_check_queue",
-                    headers=headers,
-                    params={
-                        "user_id": f"eq.{user_id}",
-                        "status":  "in.(pending,processing)",
-                        "select":  "id"
-                    }
-                )
-                logger.info(f"[MB] queue check status={rq.status_code} existing={rq.json()}")
-
-                if rq.status_code == 200 and not rq.json():
-                    # Нет активной задачи — вставляем новую
-                    ins = await client.post(
-                        f"{sb_url}/rest/v1/mb_check_queue",
-                        headers={**headers, "Prefer": "return=representation"},
-                        json={
-                            "user_id":    user_id,
-                            "username":   user_tg.username or "",
-                            "status":     "pending",
-                            "created_at": datetime.utcnow().isoformat(),
-                        }
-                    )
-                    logger.info(f"[MB] queue insert status={ins.status_code} body={ins.text[:200]}")
-                else:
-                    logger.info(f"[MB] task already in queue for user={user_id}, waiting...")
+            existing = await _db.get("mb_check_queue", {
+                "user_id": f"eq.{user_id}",
+                "status":  "in.(pending,processing)",
+                "select":  "id",
+            })
+            logger.info(f"[MB] queue check existing={existing}")
+            if not existing:
+                ins = await _db.post("mb_check_queue", {
+                    "user_id":    user_id,
+                    "username":   user_tg.username or "",
+                    "status":     "pending",
+                    "created_at": datetime.utcnow().isoformat(),
+                })
+                logger.info(f"[MB] queue insert result={bool(ins)}")
+            else:
+                logger.info(f"[MB] task already in queue for user={user_id}, waiting...")
 
             # ── ШАГ 2: Поллим кэш до 30 сек ─────────────────────────────
             import time as _time
             deadline = _time.time() + 30
             row = None
             while _time.time() < deadline:
-                await asyncio.sleep(3)  # было 2, уменьшает число запросов при ожидании
-                async with httpx.AsyncClient(timeout=8) as client:
-                    r = await client.get(
-                        f"{sb_url}/rest/v1/memory_base_cache",
-                        headers=headers,
-                        params={"user_id": f"eq.{user_id}", "select": "*"}
-                    )
-                    if r.status_code == 200 and r.json():
-                        row = r.json()[0]
-                        logger.info(f"[MB] cache hit for user={user_id}: {row.get('status')}")
-                        break
-                    logger.debug(f"[MB] cache miss for user={user_id}, retrying...")
+                await asyncio.sleep(3)
+                rows = await _db.get("memory_base_cache", {"user_id": f"eq.{user_id}"})
+                if rows:
+                    row = rows[0]
+                    logger.info(f"[MB] cache hit for user={user_id}: {row.get('status')}")
+                    break
+                logger.debug(f"[MB] cache miss for user={user_id}, retrying...")
 
             if row is None:
                 # Таймаут — пускаем, обновляем метку
@@ -855,8 +827,11 @@ class BotInstance:
         
         self.sb_url = os.getenv("SUPABASE_URL", "").rstrip('/')
         self.sb_key = os.getenv("SUPABASE_KEY", "")
-        
-        # Авторизационные заголовки для БД
+
+        # Новая БД (первичная) + Supabase (резерв)
+        self.db = DBAdapter(self.sb_url, self.sb_key)
+
+        # Авторизационные заголовки для прямых запросов к Supabase (legacy fallback)
         self.headers = {
             "apikey": self.sb_key,
             "Authorization": f"Bearer {self.sb_key}",
@@ -928,14 +903,9 @@ class BotInstance:
             self.config["stats"] = st 
 
             # 4. Отправка в БД
-            async with httpx.AsyncClient() as client:
-                resp = await client.patch(
-                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                    headers=self.headers,
-                    json={"stats": st}
-                )
-                if resp.status_code not in [200, 201, 204]:
-                    logger.error(f"⚠️ Ошибка записи статы в БД: {resp.text}")
+            ok = await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"stats": st})
+            if not ok:
+                logger.error("⚠️ Ошибка записи статы в БД")
 
         except Exception as e:
             logger.error(f"❌ Ошибка обновления статистики: {e}", exc_info=True)
@@ -951,13 +921,7 @@ class BotInstance:
                     logger.warning(f" [!] Лицензия {self.bot_id} истекла!")
                     self.license_expired = True 
                     
-                    async with httpx.AsyncClient() as client:
-                        headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
-                        await client.patch(
-                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                            json={"status": "IDLE"},
-                            headers=headers
-                        )
+                    await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"status": "IDLE"})
             else:
                 self.license_expired = False
         except Exception as e:
@@ -1251,45 +1215,24 @@ class BotInstance:
     async def _deduct_tokens(self, user_id: int, usage: dict, total: int):
         """Списывает токены с баланса бота в БД."""
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                headers = {
-                    "apikey": self.sb_key,
-                    "Authorization": f"Bearer {self.sb_key}",
-                    "Content-Type": "application/json"
-                }
-                # Атомарное обновление баланса через функцию БД
-                await client.post(
-                    f"{self.sb_url}/rest/v1/rpc/deduct_ai_tokens",
-                    headers=headers,
-                    json={"p_bot_id": self.bot_id, "p_amount": total}
-                )
-                # Лог расхода
-                await client.post(
-                    f"{self.sb_url}/rest/v1/ai_token_usage_log",
-                    headers={**headers, "Prefer": "return=minimal"},
-                    json={
-                        "bot_id": self.bot_id,
-                        "user_id": user_id,
-                        "prompt_tokens":   usage.get("prompt_tokens", 0),
-                        "response_tokens": usage.get("completion_tokens", 0),
-                        "total_tokens":    total,
-                        "model":           self.ai_model
-                    }
-                )
+            await self.db.rpc("deduct_ai_tokens", {"p_bot_id": self.bot_id, "p_amount": total})
+            await self.db.post("ai_token_usage_log", {
+                "bot_id":          self.bot_id,
+                "user_id":         user_id,
+                "prompt_tokens":   usage.get("prompt_tokens", 0),
+                "response_tokens": usage.get("completion_tokens", 0),
+                "total_tokens":    total,
+                "model":           self.ai_model,
+            })
         except Exception as e:
             logger.warning(f"Token deduct error: {e}")
 
     async def check_ai_tokens(self) -> int:
         """Возвращает остаток токенов бота. 0 если нет баланса."""
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                headers = {"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"}
-                r = await client.get(
-                    f"{self.sb_url}/rest/v1/ai_token_balances?bot_id=eq.{self.bot_id}",
-                    headers=headers
-                )
-                if r.status_code == 200 and r.json():
-                    return r.json()[0].get("tokens_balance", 0)
+            rows = await self.db.get("ai_token_balances", {"bot_id": f"eq.{self.bot_id}"})
+            if rows:
+                return rows[0].get("tokens_balance", 0)
         except Exception:
             pass
         return 0
@@ -1692,36 +1635,25 @@ class BotInstance:
             return
         while True:
             try:
-                async with httpx.AsyncClient(timeout=8) as c:
-                    r = await c.get(
-                        f"{self.sb_url}/rest/v1/dvr_events",
-                        headers={"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}"},
-                        params={"bot_id": f"eq.{self.bot_id}", "status": "eq.pending", "select": "*"}
-                    )
-                    if r.status_code == 200 and r.json():
-                        for ev in r.json():
-                            try:
-                                bot_username = ev.get("bot_username", "")
-                                await self.bot.send_message(
-                                    self.admin_chat_id,
-                                    f"🚨 <b>Система безопасности Dialoge Engine</b>\n\n"
-                                    f"Обнаружена рейдерская атака на вашего бота"
-                                    f"{f' <b>@{bot_username}</b>' if bot_username else ''}.\n\n"
-                                    f"✅ Бот был автоматически <b>остановлен</b> для защиты.\n\n"
-                                    f"Восстановите работу на: "
-                                    f"<a href=\"https://dialogengine.webtm.ru\">dialogengine.webtm.ru</a>"
-                                )
-                                # Помечаем как обработанное
-                                await c.patch(
-                                    f"{self.sb_url}/rest/v1/dvr_events",
-                                    headers={"apikey": self.sb_key, "Authorization": f"Bearer {self.sb_key}",
-                                             "Content-Type": "application/json", "Prefer": "return=minimal"},
-                                    params={"id": f"eq.{ev['id']}"},
-                                    json={"status": "done"}
-                                )
-                                logger.info(f"[DVR] ✅ Notify sent to {self.admin_chat_id}")
-                            except Exception as e:
-                                logger.warning(f"[DVR] notify error: {e}")
+                events = await self.db.get("dvr_events", {
+                    "bot_id": f"eq.{self.bot_id}", "status": "eq.pending"
+                })
+                for ev in events:
+                    try:
+                        bot_username = ev.get("bot_username", "")
+                        await self.bot.send_message(
+                            self.admin_chat_id,
+                            f"🚨 <b>Система безопасности Dialoge Engine</b>\n\n"
+                            f"Обнаружена рейдерская атака на вашего бота"
+                            f"{f' <b>@{bot_username}</b>' if bot_username else ''}.\n\n"
+                            f"✅ Бот был автоматически <b>остановлен</b> для защиты.\n\n"
+                            f"Восстановите работу на: "
+                            f"<a href=\"https://dialogengine.webtm.ru\">dialogengine.webtm.ru</a>"
+                        )
+                        await self.db.patch("dvr_events", {"id": f"eq.{ev['id']}"}, {"status": "done"})
+                        logger.info(f"[DVR] ✅ Notify sent to {self.admin_chat_id}")
+                    except Exception as e:
+                        logger.warning(f"[DVR] notify error: {e}")
             except Exception as e:
                 logger.warning(f"[DVR] worker error: {e}")
             await asyncio.sleep(30)  # DVR-события редкие, 5с — расточительство ресурсов
@@ -1733,35 +1665,22 @@ class BotInstance:
         _last_sync: float = 0.0
         _pending_sync: bool = False
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            headers = {
-                "apikey": self.sb_key,
-                "Authorization": f"Bearer {self.sb_key}",
-                "Content-Type": "application/json",
-                "Prefer": "return=minimal"
-            }
-
-            async def _do_sync_state():
+        async def _do_sync_state():
                 nonlocal _last_sync, _pending_sync
                 try:
-                    res = await client.get(
-                        f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                        headers=headers
-                    )
-                    if res.status_code == 200 and res.json():
-                        remote_data   = res.json()[0]
+                    rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
+                    if rows:
+                        remote_data   = rows[0]
                         remote_config = remote_data.get("config", {})
                         new_config = {
                             **remote_config,
                             "stats":          self.stats_data,
                             "connectedUsers": self.users_list,
                             "admin_chat_id":  self.admin_chat_id,
-                            "adminChatId":    self.admin_chat_id
+                            "adminChatId":    self.admin_chat_id,
                         }
-                        await client.patch(
-                            f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                            json={"config": new_config},
-                            headers=headers
+                        await self.db.patch(
+                            "bots", {"id": f"eq.{self.bot_id}"}, {"config": new_config}
                         )
                         saved_users = self.users_list
                         saved_stats = self.stats_data
@@ -1774,63 +1693,47 @@ class BotInstance:
                     _last_sync    = time.time()
                     _pending_sync = False
 
-            while self.is_running:
-                try:
-                    item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
-                    action, payload = item
+        while self.is_running:
+            try:
+                item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
+                action, payload = item
 
-                    if action == "log_message":
-                        # Лог — всегда немедленно
-                        await client.post(
-                            f"{self.sb_url}/rest/v1/bot_messages",
-                            json=payload, headers=headers
-                        )
+                if action == "log_message":
+                    # Лог — всегда немедленно
+                    await self.db.post("bot_messages", payload)
 
-                    elif action == "sync_state":
-                        now = time.time()
-                        if now - _last_sync >= SYNC_DEBOUNCE:
-                            # Прошло достаточно времени — пушим сразу
-                            await _do_sync_state()
-                        else:
-                            # Слишком рано — помечаем что нужен отложенный пуш
-                            _pending_sync = True
-
-                    self.sync_queue.task_done()
-
-                except asyncio.TimeoutError:
-                    # Используем timeout-паузу чтобы сбросить накопленный pending
-                    if _pending_sync and (time.time() - _last_sync >= SYNC_DEBOUNCE):
+                elif action == "sync_state":
+                    now = time.time()
+                    if now - _last_sync >= SYNC_DEBOUNCE:
                         await _do_sync_state()
-                    continue
-                except Exception as e:
-                    logger.error(f"Sync Worker Error: {e}")
-                    try: self.sync_queue.task_done()
-                    except: pass
+                    else:
+                        _pending_sync = True
+
+                self.sync_queue.task_done()
+
+            except asyncio.TimeoutError:
+                if _pending_sync and (time.time() - _last_sync >= SYNC_DEBOUNCE):
+                    await _do_sync_state()
+                continue
+            except Exception as e:
+                logger.error(f"Sync Worker Error: {e}")
+                try: self.sync_queue.task_done()
+                except: pass
 
     async def sync_database_logic(self):
         """Одноразовая синхронизация при старте: загружает актуальный конфиг из БД."""
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                headers = {
-                    "apikey": self.sb_key,
-                    "Authorization": f"Bearer {self.sb_key}",
-                    "Content-Type": "application/json",
-                    "Prefer": "return=minimal"
-                }
-                res = await client.get(
-                    f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}",
-                    headers=headers
-                )
-                if res.status_code == 200 and res.json():
-                    remote_data = res.json()[0]
-                    remote_config = remote_data.get("config") or {}
-                    if not isinstance(remote_config, dict):
-                        try:
-                            remote_config = json.loads(remote_config)
-                        except Exception:
-                            remote_config = {}
-                    self.apply_config({**remote_data, "config": remote_config})
-                    logger.info(f"✅ [{self.bot_id}] Конфиг загружен из БД (кнопок: {len(self.buttons)}, триггеров: {len(self.triggers)})")
+            rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
+            if rows:
+                remote_data   = rows[0]
+                remote_config = remote_data.get("config") or {}
+                if not isinstance(remote_config, dict):
+                    try:
+                        remote_config = json.loads(remote_config)
+                    except Exception:
+                        remote_config = {}
+                self.apply_config({**remote_data, "config": remote_config})
+                logger.info(f"✅ [{self.bot_id}] Конфиг загружен из БД (кнопок: {len(self.buttons)}, триггеров: {len(self.triggers)})")
         except Exception as e:
             logger.error(f"sync_database_logic error: {e}")
 
@@ -2540,28 +2443,20 @@ class BotInstance:
             f"⏱ Среднее время ответа: <b>{avg_str}</b>"
         )
 
-    async def _save_to_db(self, headers):
+    async def _save_to_db(self, headers=None):
         """
-        Вспомогательная функция для синхронизации состояния с Supabase и очередью.
+        Вспомогательная функция для синхронизации состояния с БД и очередью.
         """
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                # Сначала берем актуальный конфиг, чтобы не затереть другие поля
-                res = await client.get(f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", headers=headers)
-                if res.status_code == 200 and res.json():
-                    remote_config = res.json()[0].get("config", {})
-                    # Обновляем только список юзеров и статистику
-                    new_config = {
-                        **remote_config, 
-                        "connectedUsers": self.users_list, 
-                        "stats": self.stats_data
-                    }
-                    await client.patch(
-                        f"{self.sb_url}/rest/v1/bots?id=eq.{self.bot_id}", 
-                        json={"config": new_config}, 
-                        headers=headers
-                    )
-            # Сигнал локальной очереди на синхронизацию
+            rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
+            if rows:
+                remote_config = rows[0].get("config", {})
+                new_config = {
+                    **remote_config,
+                    "connectedUsers": self.users_list,
+                    "stats":          self.stats_data,
+                }
+                await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"config": new_config})
             await self.sync_queue.put(("sync_state", None))
         except Exception as e:
             logging.error(f"❌ Ошибка сохранения в БД: {e}")
@@ -2609,20 +2504,12 @@ class BotInstance:
             # ── КРИТИЧНО: удаляем запись из memory_base_cache в Supabase ──
             # Иначе при следующем сообщении middleware снова заблокирует
             try:
-                async with httpx.AsyncClient(timeout=8) as _uc:
-                    # Не удаляем — меняем статус на clean (разбан сохраняется навсегда)
-                    _del = await _uc.patch(
-                        f"{self.sb_url}/rest/v1/memory_base_cache",
-                        headers={
-                            "apikey": self.sb_key,
-                            "Authorization": f"Bearer {self.sb_key}",
-                            "Content-Type": "application/json",
-                            "Prefer": "return=minimal"
-                        },
-                        params={"user_id": f"eq.{target_uid}"},
-                        json={"status": "clean", "reasons": []}
-                    )
-                    logger.info(f"[MB] cache unban uid={target_uid} → clean, status={_del.status_code}")
+                ok = await self.db.patch(
+                    "memory_base_cache",
+                    {"user_id": f"eq.{target_uid}"},
+                    {"status": "clean", "reasons": []},
+                )
+                logger.info(f"[MB] cache unban uid={target_uid} → clean, ok={ok}")
             except Exception as _de:
                 logger.warning(f"[MB] cache delete error: {_de}")
 
@@ -3374,14 +3261,13 @@ class BotInstance:
         return ReplyKeyboardMarkup(keyboard=keyboard_rows, resize_keyboard=True)
 
     async def run_instance(self):
-        # 1. Принудительно ждем первой синхронизации базы и проверки лицензии
-        # Вместо create_task вызываем их напрямую через await ОДИН раз
+        # 1. Инициализируем пул PostgreSQL (приоритетная БД)
+        await init_pg_pool()
+
         logger.info(f"[*] Бот {self.bot_id} проверяет данные перед запуском...")
-        
         try:
-            # Выполняем ОДИН цикл проверки лицензии и базы ДО запуска поллинга
-            await self.license_checker_logic() # Проверка лицензии
-            await self.sync_database_logic()   # Загрузка настроек и кнопок
+            await self.license_checker_logic()
+            await self.sync_database_logic()
         except Exception as e:
             logger.error(f"Ошибка при первичной загрузке данных: {e}")
 
