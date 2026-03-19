@@ -33,6 +33,7 @@ import json
 import httpx
 import os
 import sys
+from db_adapter import DBAdapter, init_pg_pool
 import hashlib
 import re
 import time
@@ -1434,6 +1435,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     async def main():
+        await init_pg_pool()
         cfg_path = sys.argv[1]
         try:
             with open(cfg_path, "r", encoding="utf-8") as f:
