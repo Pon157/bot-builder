@@ -19,8 +19,9 @@ import re
 
 import asyncpg
 import httpx
-from dotenv import load_dotenv  
+from dotenv import load_dotenv
 
+# Загружаем переменные из .env прямо здесь, чтобы адаптер всегда их видел
 load_dotenv()
 
 logger = logging.getLogger("DBAdapter")
@@ -103,16 +104,29 @@ _SB_OPS = {
     "ilike": "ILIKE",
 }
 
+def _cast_value(val_str: str) -> object:
+    """Умное приведение типов: строка -> bool / int / float / str."""
+    if val_str == "true":
+        return True
+    if val_str == "false":
+        return False
+    if val_str == "null":
+        return None
+    
+    # Проверка на целое число (вкл. отрицательные)
+    if val_str.isdigit() or (val_str.startswith('-') and val_str[1:].isdigit()):
+        return int(val_str)
+    
+    # Проверка на число с плавающей точкой
+    try:
+        return float(val_str)
+    except ValueError:
+        return val_str # Оставляем строкой, если это текст
+
 
 def _parse_sb_params(params: dict, start_idx: int = 1):
     """
     Преобразует Supabase-стиль параметров в компоненты SQL-запроса.
-
-    Пример:
-        {"id": "eq.bot_abc", "status": "eq.RUNNING", "order": "created_at.desc", "limit": "10"}
-    →   WHERE id = $1 AND status = $2  ORDER BY created_at DESC  LIMIT 10
-
-    Возвращает: (columns_str, where_str, order_str, limit_str, values_list)
     """
     columns = params.get("select", "*")
     order   = params.get("order")
@@ -136,23 +150,15 @@ def _parse_sb_params(params: dict, start_idx: int = 1):
             v_str  = str_val
 
         if op_str in _SB_OPS:
-            # Приводим к нативным типам
-            if v_str == "true":
-                v: object = True
-            elif v_str == "false":
-                v = False
-            elif v_str == "null":
-                v = None
-            else:
-                v = v_str
-
+            v = _cast_value(v_str) # <--- ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ ЗДЕСЬ
             conditions.append(f'"{key}" {_SB_OPS[op_str]} ${idx}')
             values.append(v)
             idx += 1
 
         elif op_str == "in":
             # in.(a,b,c)
-            items = v_str.strip("()").split(",")
+            # <--- ТАКЖЕ ПРИМЕНЯЕМ КО ВСЕМ ЭЛЕМЕНТАМ СПИСКА
+            items = [_cast_value(i) for i in v_str.strip("()").split(",")] 
             placeholders = ", ".join(f"${i + idx}" for i in range(len(items)))
             conditions.append(f'"{key}" IN ({placeholders})')
             values.extend(items)
@@ -182,20 +188,6 @@ def _prepare_value(v) -> object:
 # ─── Главный класс ────────────────────────────────────────────────────────────
 
 class DBAdapter:
-    """
-    Двухуровневый адаптер.
-
-    Использование:
-        dba = DBAdapter()                          # глобальные .env
-        dba = DBAdapter(sb_url="...", sb_key="...") # явные ключи Supabase
-
-        rows   = await dba.get("bots", {"id": "eq.bot_1"})
-        row    = await dba.post("users", {"name": "Ivan"})
-        ok     = await dba.patch("bots", {"id": "eq.bot_1"}, {"status": "IDLE"})
-        ok     = await dba.delete("users", {"id": "eq.u_1"})
-        result = await dba.rpc("deduct_ai_tokens", {"p_bot_id": "bot_1", "p_amount": 100})
-    """
-
     def __init__(self, sb_url: str = None, sb_key: str = None):
         self.sb_url = (sb_url or SB_URL).rstrip("/")
         self.sb_key = sb_key or SB_KEY
@@ -263,7 +255,6 @@ class DBAdapter:
             set_parts.append(f'"{k}" = ${i}')
             set_vals.append(_prepare_value(v))
 
-        # WHERE плейсхолдеры начинаются с индекса len(set_vals)+1
         _, where, _, _, where_vals = _parse_sb_params(
             filter_params, start_idx=len(set_vals) + 1
         )
@@ -285,7 +276,6 @@ class DBAdapter:
         return True
 
     async def _pg_rpc(self, func: str, params: dict) -> object:
-        """Вызывает хранимую процедуру: SELECT func($1, $2, ...)"""
         pool = await get_pg_pool()
         if pool is None:
             raise RuntimeError("PG unavailable")
@@ -376,7 +366,6 @@ class DBAdapter:
     # ── Публичный API ─────────────────────────────────────────────────────────
 
     async def get(self, table: str, params: dict = None) -> list:
-        """Вернуть список строк. Primary: PostgreSQL. Fallback: Supabase."""
         params = params or {}
         if _pg_available:
             try:
@@ -386,7 +375,6 @@ class DBAdapter:
         return await self._sb_get(table, params)
 
     async def post(self, table: str, data: dict = None, json: dict = None, headers: dict = None) -> dict:
-        """Вставить строку и вернуть её. Primary: PostgreSQL. Fallback: Supabase."""
         payload = data or json or {}
         if _pg_available:
             try:
@@ -397,7 +385,6 @@ class DBAdapter:
 
     async def patch(self, table: str, params: dict = None, json: dict = None,
                     data: dict = None, headers: dict = None) -> bool:
-        """Обновить строки. Primary: PostgreSQL. Fallback: Supabase."""
         filter_p = params or {}
         payload  = json or data or {}
         if _pg_available:
@@ -408,7 +395,6 @@ class DBAdapter:
         return await self._sb_patch(table, filter_p, payload)
 
     async def delete(self, table: str, params: dict = None) -> bool:
-        """Удалить строки. Primary: PostgreSQL. Fallback: Supabase."""
         filter_p = params or {}
         if _pg_available:
             try:
@@ -418,7 +404,6 @@ class DBAdapter:
         return await self._sb_delete(table, filter_p)
 
     async def rpc(self, func: str, params: dict) -> object:
-        """Вызвать хранимую процедуру. Primary: PostgreSQL. Fallback: Supabase."""
         if _pg_available:
             try:
                 return await self._pg_rpc(func, params)
@@ -426,10 +411,9 @@ class DBAdapter:
                 logger.warning(f"[DBAdapter] PG rpc({func}) → fallback: {e}")
         return await self._sb_rpc(func, params)
 
-    # ── Совместимость с Supabase httpx-клиентом (для server.py helpers) ───────
+    # ── Совместимость с Supabase httpx-клиентом ───────────────────────────────
 
     async def raw_get(self, path: str, params: dict = None) -> httpx.Response:
-        """Прямой httpx-GET к Supabase REST (для обратной совместимости)."""
         async with httpx.AsyncClient(timeout=15) as c:
             return await c.get(
                 f"{self.sb_url}/rest/v1/{path}",
@@ -438,7 +422,6 @@ class DBAdapter:
             )
 
     async def raw_post(self, path: str, json_data: dict = None, extra_headers: dict = None) -> httpx.Response:
-        """Прямой httpx-POST к Supabase REST (для обратной совместимости)."""
         h = {**self._sb_h, **(extra_headers or {})}
         async with httpx.AsyncClient(timeout=15) as c:
             return await c.post(
@@ -452,9 +435,7 @@ class DBAdapter:
 
 _default_adapter: DBAdapter | None = None
 
-
 def get_adapter(sb_url: str = None, sb_key: str = None) -> DBAdapter:
-    """Вернуть (или создать) глобальный адаптер."""
     global _default_adapter
     if _default_adapter is None:
         _default_adapter = DBAdapter(sb_url, sb_key)
