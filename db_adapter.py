@@ -19,10 +19,10 @@ import re
 
 import asyncpg
 import httpx
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
-# Загружаем переменные из .env прямо здесь, чтобы адаптер всегда их видел
-load_dotenv()
+# Загружаем .env — ищем вверх по дереву директорий, чтобы найти его из любого cwd
+load_dotenv(find_dotenv(usecwd=True) or find_dotenv())
 
 logger = logging.getLogger("DBAdapter")
 
@@ -58,9 +58,19 @@ async def _setup_pg_conn(conn: asyncpg.Connection):
     )
 
 
-async def init_pg_pool() -> asyncpg.Pool | None:
-    """Создаёт пул подключений к PostgreSQL. Вызывать при старте приложения."""
+async def init_pg_pool(min_size: int = 1, max_size: int = 1) -> asyncpg.Pool | None:
+    """
+    Создаёт пул подключений к PostgreSQL. Вызывать при старте приложения.
+
+    Размер пула подбирается в зависимости от типа процесса:
+      • bot/free_bot/vkbot/etc — min=1, max=1  (по умолчанию)
+        Async-бот — один event loop, одно соединение достаточно.
+        При 100 ботах = 100 соединений. Масштабируется без ограничений.
+      • server — min=2, max=5 (явно передаётся при вызове)
+    """
     global _pg_pool, _pg_available
+    if _pg_pool is not None:
+        return _pg_pool  # уже инициализирован — не создаём повторно
     if not _pg_available:
         logger.info("[DBAdapter] PostgreSQL не настроен (нет DB_HOST/DB_NAME/DB_USER/DB_PASSWORD) — используем Supabase")
         return None
@@ -71,12 +81,12 @@ async def init_pg_pool() -> asyncpg.Pool | None:
             database=DB_NAME,
             user=DB_USER,
             password=DB_PASS,
-            min_size=2,
-            max_size=15,
+            min_size=min_size,
+            max_size=max_size,
             command_timeout=10,
             init=_setup_pg_conn,
         )
-        logger.info(f"✅ [DBAdapter] PostgreSQL пул создан ({DB_HOST}:{DB_PORT}/{DB_NAME})")
+        logger.info(f"✅ [DBAdapter] PostgreSQL пул создан ({DB_HOST}:{DB_PORT}/{DB_NAME}, min={min_size}, max={max_size})")
         return _pg_pool
     except Exception as e:
         logger.error(f"❌ [DBAdapter] Не удалось создать PostgreSQL пул: {e} — переходим на Supabase")
@@ -284,17 +294,6 @@ class DBAdapter:
                             row_dict[k] = json.loads(row_dict[k])
                     except Exception:
                         pass
-        return row_dict
-
-        # --- МАГИЯ ПАРСИНГА ДЛЯ POST ---
-        row_dict = dict(row)
-        for k, v in row_dict.items():
-            if isinstance(v, str) and (v.strip().startswith('{') or v.strip().startswith('[')):
-                try:
-                    row_dict[k] = json.loads(v)
-                except json.JSONDecodeError:
-                    pass
-
         return row_dict
 
     async def _pg_patch(self, table: str, filter_params: dict, data: dict) -> bool:
