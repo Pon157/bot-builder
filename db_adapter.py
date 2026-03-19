@@ -67,24 +67,23 @@ async def _setup_pg_conn(conn: asyncpg.Connection):
     )
 
 
-async def init_pg_pool(min_size: int = 0, max_size: int = 1) -> asyncpg.Pool | None:
+async def init_pg_pool(min_size: int = None, max_size: int = None) -> asyncpg.Pool | None:
     """
-    Создаёт пул подключений к PostgreSQL. Вызывать при старте приложения.
-
-    min_size=0 — соединение НЕ открывается при инициализации, только при первом запросе.
-    При ошибке "too many clients" — повторяет попытку с backoff (до 5 раз),
-    вместо того чтобы сразу навсегда уйти на Supabase.
-
-    Размер пула:
-      • bot/free_bot/vkbot/etc — min=0, max=1  (по умолчанию)
-      • server                 — min=1, max=5  (явно передаётся при вызове)
+    Создаёт пул подключений к PostgreSQL. 
+    Берет лимиты из .env (DB_MIN_SIZE, DB_MAX_SIZE), если они не переданы явно.
     """
     global _pg_pool, _pg_available
     if _pg_pool is not None:
         return _pg_pool
     if not _pg_available:
-        logger.info("[DBAdapter] PostgreSQL не настроен (нет DB_HOST/DB_NAME/DB_USER/DB_PASSWORD) — используем Supabase")
+        logger.info("[DBAdapter] PostgreSQL не настроен — используем Supabase")
         return None
+
+    # Читаем настройки из .env с дефолтными значениями (если в .env пусто)
+    if min_size is None:
+        min_size = int(os.getenv("DB_MIN_SIZE", "1"))
+    if max_size is None:
+        max_size = int(os.getenv("DB_MAX_SIZE", "5"))
 
     retries = 5
     for attempt in range(1, retries + 1):
@@ -99,21 +98,21 @@ async def init_pg_pool(min_size: int = 0, max_size: int = 1) -> asyncpg.Pool | N
                 max_size=max_size,
                 command_timeout=10,
                 init=_setup_pg_conn,
-                # PgBouncer в transaction mode не поддерживает prepared statements
+                # Отключаем кэш для PgBouncer, чтобы не было ошибок prepared statements
                 statement_cache_size=0 if _via_pgbouncer else 100,
             )
             mode_str = f"via PgBouncer :{DB_PORT}" if _via_pgbouncer else f"direct :{DB_PORT}"
-            logger.info(f"✅ [DBAdapter] PostgreSQL пул создан ({DB_HOST}/{DB_NAME}, {mode_str}, min={min_size}, max={max_size})")
+            logger.info(f"✅ [DBAdapter] Пул создан (min={min_size}, max={max_size}, {mode_str})")
             return _pg_pool
         except Exception as e:
             err = str(e)
             is_overload = "too many clients" in err or "connection slots" in err
             if is_overload and attempt < retries:
-                wait = attempt * 3  # 3, 6, 9, 12 сек
-                logger.warning(f"⚠️ [DBAdapter] PostgreSQL перегружен (попытка {attempt}/{retries}), повтор через {wait}с: {e}")
+                wait = attempt * 3
+                logger.warning(f"⚠️ [DBAdapter] БД перегружена (попытка {attempt}/{retries}), ждем {wait}с")
                 await asyncio.sleep(wait)
             else:
-                logger.error(f"❌ [DBAdapter] Не удалось создать PostgreSQL пул: {e} — переходим на Supabase")
+                logger.error(f"❌ [DBAdapter] Ошибка пула: {e} — переход на Supabase")
                 _pg_available = False
                 return None
 
