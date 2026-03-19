@@ -134,15 +134,9 @@ def _sb_h() -> dict:
 
 async def sb_get_pending() -> List[dict]:
     try:
-        async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.get(
-                f"{SUPABASE_URL}/rest/v1/mb_check_queue",
-                headers=_sb_h(),
-                params={"status": "eq.pending", "order": "created_at.asc",
-                        "limit": "5", "select": "*"}
-            )
-            if r.status_code == 200:
-                return r.json()
+        return await _db.get("mb_check_queue", {
+            "status": "eq.pending", "order": "created_at.asc", "limit": "5", "select": "*"
+        })
     except Exception as e:
         logger.error(f"[MB] sb_get_pending error: {e}")
     return []
@@ -150,15 +144,7 @@ async def sb_get_pending() -> List[dict]:
 
 async def sb_update_queue(row_id, upd: dict):
     try:
-        async with httpx.AsyncClient(timeout=5) as c:
-            r = await c.patch(
-                f"{SUPABASE_URL}/rest/v1/mb_check_queue",
-                headers={**_sb_h(), "Prefer": "return=minimal"},
-                params={"id": f"eq.{row_id}"},
-                json=upd
-            )
-            if r.status_code not in (200, 204):
-                logger.error(f"[MB] sb_update_queue {r.status_code}: {r.text[:200]}")
+        await _db.patch("mb_check_queue", {"id": f"eq.{row_id}"}, upd)
     except Exception as e:
         logger.error(f"[MB] sb_update_queue error: {e}")
 
@@ -176,33 +162,31 @@ async def sb_save_cache(user_id: int, username: str,
         "expires_at": expires,
     }
     try:
-        async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.post(
-                f"{SUPABASE_URL}/rest/v1/memory_base_cache",
-                headers={**_sb_h(), "Prefer": "resolution=merge-duplicates,return=minimal"},
-                json=payload
-            )
-            if r.status_code not in (200, 201, 204):
-                logger.error(f"[MB] sb_save_cache error {r.status_code}: {r.text}")
-            else:
-                logger.info(f"[MB] ✅ Cached uid={user_id} status={status} reasons={reasons}")
+        # Пробуем INSERT, при конфликте (уже есть запись) — UPDATE
+        result = await _db.post("memory_base_cache", payload)
+        if not result:
+            await _db.patch("memory_base_cache", {"user_id": f"eq.{user_id}"}, payload)
+        logger.info(f"[MB] ✅ Cached uid={user_id} status={status} reasons={reasons}")
     except Exception as e:
-        logger.error(f"[MB] sb_save_cache exception: {e}")
+        # Если INSERT упал на дубликат — пробуем PATCH
+        try:
+            await _db.patch("memory_base_cache", {"user_id": f"eq.{user_id}"}, payload)
+            logger.info(f"[MB] ✅ Cached (upsert) uid={user_id} status={status}")
+        except Exception as e2:
+            logger.error(f"[MB] sb_save_cache exception: {e2}")
 
 
 async def sb_reset_stale_processing():
     """Сбрасываем задачи зависшие в processing > 2 мин обратно в pending."""
     try:
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
-        async with httpx.AsyncClient(timeout=8) as c:
-            r = await c.patch(
-                f"{SUPABASE_URL}/rest/v1/mb_check_queue",
-                headers={**_sb_h(), "Prefer": "return=minimal"},
-                params={"status": "eq.processing", "updated_at": f"lt.{cutoff}"},
-                json={"status": "pending"}
-            )
-            if r.status_code in (200, 204):
-                logger.info("[MB] Stale tasks reset")
+        ok = await _db.patch(
+            "mb_check_queue",
+            {"status": "eq.processing", "updated_at": f"lt.{cutoff}"},
+            {"status": "pending"}
+        )
+        if ok:
+            logger.info("[MB] Stale tasks reset")
     except Exception as e:
         logger.warning(f"[MB] reset_stale error: {e}")
 
@@ -210,14 +194,7 @@ async def sb_reset_stale_processing():
 async def get_all_running_bots() -> List[dict]:
     """Возвращает все боты (RUNNING + IDLE) для DVR поиска по username."""
     try:
-        async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.get(
-                f"{SUPABASE_URL}/rest/v1/bots",
-                headers=_sb_h(),
-                params={"select": "id,name,config,status"}
-            )
-            if r.status_code == 200:
-                return r.json()
+        return await _db.get("bots", {"select": "id,name,config,status"})
     except Exception as e:
         logger.error(f"[DVR] get_all_bots error: {e}")
     return []
@@ -444,20 +421,12 @@ async def handle_dvr(app: Client, text: str):
 
         # 3. Пишем событие в dvr_events (для истории / фронтенда)
         try:
-            async with httpx.AsyncClient(timeout=8) as c:
-                r = await c.post(
-                    f"{SUPABASE_URL}/rest/v1/dvr_events",
-                    headers={**_sb_h(), "Prefer": "return=minimal"},
-                    json={
-                        "bot_id":       br["id"],
-                        "bot_username": uname,
-                        "status":       "done",
-                    }
-                )
-                if r.status_code in (200, 201, 204):
-                    logger.info(f"[DVR] dvr_event written (done) for @{uname}")
-                else:
-                    logger.warning(f"[DVR] dvr_event write failed: {r.status_code} {r.text[:100]}")
+            await _db.post("dvr_events", {
+                "bot_id":       br["id"],
+                "bot_username": uname,
+                "status":       "done",
+            })
+            logger.info(f"[DVR] dvr_event written (done) for @{uname}")
         except Exception as e:
             logger.warning(f"[DVR] dvr_event error for {br['id']}: {e}")
 
