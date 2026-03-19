@@ -222,23 +222,35 @@ class DBAdapter:
         for r in rows:
             row_dict = dict(r)
             for k, v in row_dict.items():
+                # Если asyncpg уже вернул dict (через кодеки), пропускаем
+                if isinstance(v, (dict, list)):
+                    continue
+                
+                # Если пришла строка, похожая на JSON
                 if isinstance(v, str):
                     v_s = v.strip()
                     if v_s.startswith(('{', '[')):
                         try:
-                            # Пытаемся распаковать, пока не станет словарем/списком
-                            tmp = json.loads(v_s)
-                            if isinstance(tmp, str) and tmp.strip().startswith(('{', '[')):
-                                tmp = json.loads(tmp)
-                            row_dict[k] = tmp
-                        except: pass
+                            # Парсим строго один раз
+                            parsed = json.loads(v_s)
+                            
+                            # Если внутри оказался еще один слой JSON-строки (бывает при двойной сериализации)
+                            if isinstance(parsed, str) and parsed.strip().startswith(('{', '[')):
+                                parsed = json.loads(parsed)
+                            
+                            row_dict[k] = parsed
+                        except json.JSONDecodeError as je:
+                            # Выводим конкретную ошибку и длину, чтобы понять, где обрыв
+                            logger.error(f"❌ Ошибка JSON в боте {row_dict.get('id', '???')} (поле {k}): {je}")
+                            logger.error(f"Длина проблемной строки: {len(v_s)} символов")
+                            # Оставляем строку как есть, чтобы основная логика поняла, что конфиг битый
+                        except Exception as e:
+                            logger.error(f"❌ Непредвиденная ошибка парсинга {k}: {e}")
+            
             results.append(row_dict)
             
-        # ЛОГ ДЛЯ ОТЛАДКИ (потом удалим)
-        if results and isinstance(results, list):
-            logger.info(f"DEBUG: ПЕРВАЯ СТРОКА ТИП: {type(results[0])}")
-        
         return results
+      
     async def _pg_post(self, table: str, data: dict) -> dict:
         pool = await get_pg_pool()
         if pool is None:
