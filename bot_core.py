@@ -22,6 +22,18 @@ from aiogram.types import (
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
+from aiogram.client.session.aiohttp import AiohttpSession
+try:
+    from aiohttp_socks import ProxyConnector as _ProxyConnector
+    _PROXY_URL = os.getenv("TG_PROXY_URL", "socks5://ZpqqLu:fsgQGg@45.93.68.226:8000")
+    def _make_session():
+        if _PROXY_URL:
+            return AiohttpSession(connector=_ProxyConnector.from_url(_PROXY_URL))
+        return None
+except ImportError:
+    def _make_session():
+        return None
+
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -838,7 +850,7 @@ class BotInstance:
         }
         
         # Берем токен из конфига/окружения
-        self.bot = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        self.bot = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML), session=_make_session() or AiohttpSession())
         self.dp = Dispatcher()
         self.router = Router()
         
