@@ -25,7 +25,7 @@ from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, Teleg
 from aiogram.client.session.aiohttp import AiohttpSession
 try:
     from aiohttp_socks import ProxyConnector as _ProxyConnector
-    _PROXY_URL = os.getenv("TG_PROXY_URL")
+    _PROXY_URL = os.getenv("TG_PROXY_URL", "socks5://ZpqqLu:fsgQGg@45.93.68.226:8000")
     def _make_session():
         if _PROXY_URL:
             return AiohttpSession(connector=_ProxyConnector.from_url(_PROXY_URL))
@@ -313,8 +313,8 @@ class MemoryBaseMiddleware(BaseMiddleware):
                 # Записей в кэше вообще нет — нужна первичная проверка
                 logger.info(f"[MB] uid={user_id} no cache row — queuing check")
         except Exception as _e:
-            logger.warning(f"[MB] db pre-check error: {_e} — пропускаем")
-            return await handler(event, data)
+            logger.warning(f"[MB] db pre-check error: {_e} — всё равно ставим в очередь")
+            # Не пропускаем — ставим в очередь на проверку несмотря на ошибку кэша
 
         # Уведомляем пользователя что идёт проверка
         wait_msg = None
@@ -360,7 +360,7 @@ class MemoryBaseMiddleware(BaseMiddleware):
                     "user_id":    user_id,
                     "username":   user_tg.username or "",
                     "status":     "pending",
-                    "created_at": datetime.utcnow().isoformat(),
+                    "created_at": datetime.now(timezone.utc),
                 })
                 logger.info(f"[MB] queue insert result={bool(ins)}")
             else:
