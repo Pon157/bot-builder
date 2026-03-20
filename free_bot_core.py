@@ -35,6 +35,18 @@ from aiogram.types import (
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
+from aiogram.client.session.aiohttp import AiohttpSession
+try:
+    from aiohttp_socks import ProxyConnector as _ProxyConnector
+    _PROXY_URL = os.getenv("TG_PROXY_URL")
+    def _make_session():
+        if _PROXY_URL:
+            return AiohttpSession(connector=_ProxyConnector.from_url(_PROXY_URL))
+        return None
+except ImportError:
+    def _make_session():
+        return None
+
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -423,7 +435,7 @@ class FreeBotInstance:
             "Content-Type":  "application/json",
         }
 
-        self.bot    = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        self.bot    = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML), session=_make_session() or AiohttpSession())
         self.dp     = Dispatcher()
 
         self.admin_router = Router()
