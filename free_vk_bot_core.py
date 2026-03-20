@@ -54,25 +54,9 @@ try:
 except ImportError:
     VKLink = None
 from vkbottle.exception_factory import VKAPIError
-from aiogram.client.session.aiohttp import AiohttpSession
-try:
-    import aiohttp as _aiohttp
-    from aiohttp_socks import ProxyConnector as _ProxyConnector
-    class _ProxySession(AiohttpSession):
-        def __init__(self, proxy_url: str):
-            super().__init__()
-            self._proxy_url = proxy_url
-        async def create_session(self) -> _aiohttp.ClientSession:
-            connector = _ProxyConnector.from_url(self._proxy_url)
-            return _aiohttp.ClientSession(connector=connector)
-    def _make_session():
-        _PROXY_URL = os.getenv("TG_PROXY_URL", "socks5://ZpqqLu:fsgQGg@45.93.68.226:8000")
-        if _PROXY_URL:
-            return _ProxySession(_PROXY_URL)
-        return None
-except ImportError:
-    def _make_session():
-        return None
+# VKBottle Bot does not support aiogram sessions - proxy not needed here
+def _make_session():
+    return None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -177,7 +161,7 @@ class FreeVKBotInstance:
             "Prefer":        "return=minimal",
         }
 
-        self.bot = Bot(token=self.token, session=_make_session() or AiohttpSession())
+        self.bot = Bot(token=self.token)
         self.bot.api.bot_instance_ref = self
 
         self.msg_map:     Dict[int, int]   = {}
