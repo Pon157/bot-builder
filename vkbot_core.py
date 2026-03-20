@@ -1,4 +1,16 @@
 import asyncio
+from aiogram.client.session.aiohttp import AiohttpSession
+try:
+    from aiohttp_socks import ProxyConnector as _ProxyConnector
+    _PROXY_URL = os.getenv("TG_PROXY_URL", "socks5://ZpqqLu:fsgQGg@45.93.68.226:8000")
+    def _make_session():
+        if _PROXY_URL:
+            return AiohttpSession(connector=_ProxyConnector.from_url(_PROXY_URL))
+        return None
+except ImportError:
+    def _make_session():
+        return None
+
 import logging
 import json
 import httpx
@@ -370,7 +382,7 @@ class BotInstance:
         self.sb_url = self.sb_url.rstrip('/')
         
         # Инициализация бота VK
-        self.bot = Bot(token=self.token)
+        self.bot = Bot(token=self.token, session=_make_session() or AiohttpSession())
         self.bot.api.bot_instance_ref = self
         
         self.msg_map = {} 
