@@ -457,36 +457,50 @@ async def handle_dvr(app: Client, text: str):
 class MemoryBaseBotService:
 
     def __init__(self):
+        # Прокси для обхода блокировок (РФ и др.)
+        # Задай в .env: PYROGRAM_PROXY_HOST, PYROGRAM_PROXY_PORT, PYROGRAM_PROXY_USER, PYROGRAM_PROXY_PASS
+        _proxy_host = os.getenv("PYROGRAM_PROXY_HOST", "")
+        _proxy_port = os.getenv("PYROGRAM_PROXY_PORT", "1080")
+        _proxy_user = os.getenv("PYROGRAM_PROXY_USER", "")
+        _proxy_pass = os.getenv("PYROGRAM_PROXY_PASS", "")
+        _proxy = None
+        if _proxy_host:
+            _proxy = {
+                "scheme": os.getenv("PYROGRAM_PROXY_SCHEME", "socks5"),
+                "hostname": _proxy_host,
+                "port": int(_proxy_port),
+            }
+            if _proxy_user:
+                _proxy["username"] = _proxy_user
+                _proxy["password"] = _proxy_pass
+            logger.info(f"[*] Прокси: {_proxy['scheme']}://{_proxy_host}:{_proxy_port}")
+
         # Если задан PYROGRAM_SESSION_STRING — используем готовую строку сессии
         # Если задан MEMORY_BASE_BOT_TOKEN — bot-режим
         # Иначе — интерактивная авторизация по номеру телефона (user-режим)
         session_string = os.getenv("PYROGRAM_SESSION_STRING", "")
+        client_kwargs = dict(api_id=API_ID, api_hash=API_HASH)
+        if _proxy:
+            client_kwargs["proxy"] = _proxy
+
         if session_string:
-            # Строка сессии — запускается без интерактива, удобно для сервера
             self.app = Client(
                 name="memory_base_checker",
-                api_id=API_ID,
-                api_hash=API_HASH,
                 session_string=session_string,
+                **client_kwargs,
             )
             logger.info("[*] Режим: user (session string)")
         elif BOT_TOKEN:
-            # Bot-режим — НЕ видит сообщения от других ботов без admin прав
             self.app = Client(
                 name="memory_base_checker",
                 bot_token=BOT_TOKEN,
-                api_id=API_ID,
-                api_hash=API_HASH,
+                **client_kwargs,
             )
             logger.info("[*] Режим: bot token")
         else:
-            # User-режим — интерактивный вход по номеру телефона
-            # Сессия сохранится в memory_base_checker.session
-            # После первого входа перезапускать не нужно
             self.app = Client(
                 name="memory_base_checker",
-                api_id=API_ID,
-                api_hash=API_HASH,
+                **client_kwargs,
             )
             logger.info("[*] Режим: user (интерактивный вход)")
         self.is_running = True
