@@ -46,7 +46,8 @@ SB_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SB_KEY = os.getenv("SUPABASE_KEY", "")
 
 _pg_pool: asyncpg.Pool | None = None
-_pg_available: bool = False
+_pg_available: bool = false
+
 
 # ─── Инициализация пула PostgreSQL ────────────────────────────────────────────
 
