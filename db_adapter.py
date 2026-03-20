@@ -48,7 +48,6 @@ SB_KEY = os.getenv("SUPABASE_KEY", "")
 _pg_pool: asyncpg.Pool | None = None
 _pg_available: bool = False
 
-
 # ─── Инициализация пула PostgreSQL ────────────────────────────────────────────
 
 async def _setup_pg_conn(conn: asyncpg.Connection):
