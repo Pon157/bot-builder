@@ -140,11 +140,11 @@ async def free_create_bot(d: dict):
         }
     }
 
-    r = await db.post("bots", json=bot_data, headers={"Prefer": "return=representation"})
+    r = await db.post("bots", bot_data)
     if not r:
-        raise HTTPException(500, f"Ошибка БД: {r.text}")
+        raise HTTPException(500, "Ошибка БД: не удалось создать бота")
 
-    return r[0] if r else {}
+    return r if isinstance(r, dict) else {}
 
 
 @router.put("/api/free/bots/{bot_id}/config")
@@ -432,11 +432,11 @@ async def free_vk_create_bot(d: dict):
         }
     }
 
-    r = await db.post("bots", json=bot_data, headers={"Prefer": "return=representation"})
+    r = await db.post("bots", bot_data)
     if not r:
-        raise HTTPException(500, f"Ошибка БД: {r.text}")
+        raise HTTPException(500, "Ошибка БД: не удалось создать бота")
 
-    return r[0] if r else {}
+    return r if isinstance(r, dict) else {}
 
 
 @router.put("/api/free/vk/bots/{bot_id}/config")
@@ -1018,10 +1018,10 @@ async def ads_create_post(d: dict, authorization: str = Header(...)):
         "price_per_imp":    PRICE_PER_IMP,
         "created_at":       now_ms,
     }
-    r = await db.post("ad_posts", json=post, headers={"Prefer": "return=representation"})
+    r = await db.post("ad_posts", post)
     if not r:
-        raise HTTPException(500, f"Ошибка БД: {r.text}")
-    return r[0] if r else {}
+        raise HTTPException(500, "Ошибка БД: не удалось создать пост")
+    return r if isinstance(r, dict) else {}
 
 
 @router.post("/api/ads/posts/{post_id}/buy-impressions")
