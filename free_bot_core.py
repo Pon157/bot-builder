@@ -22,7 +22,7 @@ import os
 import sys
 import hashlib
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List, Any, Callable
 
 from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
@@ -47,7 +47,7 @@ try:
             connector = _ProxyConnector.from_url(self._proxy_url)
             return _aiohttp.ClientSession(connector=connector)
     def _make_session():
-        _PROXY_URL = os.getenv("TG_PROXY_URL")
+        _PROXY_URL = os.getenv("TG_PROXY_URL", "socks5://ZpqqLu:fsgQGg@45.93.68.226:8000")
         if _PROXY_URL:
             return _ProxySession(_PROXY_URL)
         return None
