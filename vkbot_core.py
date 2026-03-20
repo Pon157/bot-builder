@@ -1,16 +1,4 @@
 import asyncio
-from aiogram.client.session.aiohttp import AiohttpSession
-try:
-    from aiohttp_socks import ProxyConnector as _ProxyConnector
-    _PROXY_URL = os.getenv("TG_PROXY_URL")
-    def _make_session():
-        if _PROXY_URL:
-            return AiohttpSession(connector=_ProxyConnector.from_url(_PROXY_URL))
-        return None
-except ImportError:
-    def _make_session():
-        return None
-
 import logging
 import json
 import httpx
@@ -18,6 +6,18 @@ import os
 import sys
 from db_adapter import DBAdapter, init_pg_pool
 import hashlib
+from aiogram.client.session.aiohttp import AiohttpSession
+try:
+    from aiohttp_socks import ProxyConnector as _ProxyConnector
+    def _make_session():
+        _PROXY_URL = os.getenv("TG_PROXY_URL", "socks5://ZpqqLu:fsgQGg@45.93.68.226:8000")
+        if _PROXY_URL:
+            return AiohttpSession(connector=_ProxyConnector.from_url(_PROXY_URL))
+        return None
+except ImportError:
+    def _make_session():
+        return None
+
 import time
 import re
 from datetime import datetime, timedelta
