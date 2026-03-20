@@ -1247,11 +1247,6 @@ async def get_bot_status(bid: str):
 
 @app.delete("/api/bots/delete/{uid}/{bid}")
 async def delete_handler(uid: str, bid: str):
-    # ── ЗАЩИТА: free-plan боты нельзя удалять через Pro-эндпоинт ──
-    r_rows = await db.get("bots", {"id": f"eq.{bid}"})
-    if r_rows and r_rows[0].get("is_free_plan") is True:
-        raise HTTPException(403, "Free-plan боты управляются через /api/free/*")
-    # ── конец защиты ──
     await pm.stop_bot(bid)
     await db.delete("bots", {"id": f"eq.{bid}", "owner_id": f"eq.{uid}"})
     return {"status": "deleted"}
