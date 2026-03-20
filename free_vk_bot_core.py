@@ -1,16 +1,4 @@
 """
-from aiogram.client.session.aiohttp import AiohttpSession
-try:
-    from aiohttp_socks import ProxyConnector as _ProxyConnector
-    _PROXY_URL = os.getenv("TG_PROXY_URL")
-    def _make_session():
-        if _PROXY_URL:
-            return AiohttpSession(connector=_ProxyConnector.from_url(_PROXY_URL))
-        return None
-except ImportError:
-    def _make_session():
-        return None
-
 free_vk_bot_core.py
 ================================================================================
 VK-бот для FREE-плана.
@@ -66,6 +54,17 @@ try:
 except ImportError:
     VKLink = None
 from vkbottle.exception_factory import VKAPIError
+from aiogram.client.session.aiohttp import AiohttpSession
+try:
+    from aiohttp_socks import ProxyConnector as _ProxyConnector
+    def _make_session():
+        _PROXY_URL = os.getenv("TG_PROXY_URL")
+        if _PROXY_URL:
+            return AiohttpSession(connector=_ProxyConnector.from_url(_PROXY_URL))
+        return None
+except ImportError:
+    def _make_session():
+        return None
 
 logging.basicConfig(
     level=logging.INFO,
