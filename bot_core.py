@@ -1931,32 +1931,34 @@ class BotInstance:
     async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = "", is_ai_request: bool = False):
         if not self.admin_chat_id: return
 
-        # ── Стафф-система: назначаем администратора при первом сообщении ИЛИ при открытии тикета кнопкой ──
-        # is_first = первое сообщение вообще; btn_text != "" = тикет открыт через кнопку-запрос
+        # ── 1. Создаём/находим топик ДО всего остального ──
+        # Важно: тема должна существовать до уведомления стаффера, чтобы в DM была правильная ссылка
+        force_new_topic = self.topic_per_req and (bool(btn_text) or is_first)
+        thread_id = await self.resolve_thread(user, force_new=force_new_topic)
+        # Если топики включены, но thread_id ещё нет — создаём
+        if not thread_id and self.use_topics:
+            thread_id = await self.resolve_thread(user, force_new=True)
+
+        # ── 2. Стафф-система: назначаем при первом сообщении ИЛИ при открытии тикета кнопкой ──
         is_ticket_open = is_first or bool(btn_text)
         if self.staff_enabled and is_ticket_open and not user.get('assigned_staff_id'):
             staff = self._assign_staff()
             if staff:
-                await self._assign_staff_to_user(user, staff, m)
+                # Передаём актуальный thread_id — стаффер получит ссылку на топик в DM
+                await self._assign_staff_to_user(user, staff, m, thread_id=thread_id)
 
-        # Добавляем имя назначенного стафф-admin в заголовок для панели
+        # ── 3. Добавляем имя назначенного стафф-admin в заголовок для панели ──
         if self.staff_enabled and user.get('assigned_staff_alias'):
             staff_note = f"\n🧑‍💼 Администратор: <b>{user['assigned_staff_alias']}</b>"
         else:
             staff_note = ""
-        
-        force_new_topic = self.topic_per_req and (btn_text != "" or is_first)
-        thread_id = await self.resolve_thread(user, force_new=force_new_topic)
+
         header_text = format_admin_header(m, self.settings, is_first, btn_text) + staff_note
 
         if is_ai_request:
             header_text = header_text.rstrip('\n') + "\n<b>[ИИ-запрос · не отвечать]</b>\n"
-        
-        try:
-            # Если по какой-то причине thread_id пустой, а топики включены - пробуем создать
-            if not thread_id and self.use_topics:
-                thread_id = await self.resolve_thread(user, force_new=True)
 
+        try:
             await self._send_content_to_admin(m, thread_id, header_text, user)
 
             # Статистика: считаем входящее сообщение для стаффера
@@ -2457,14 +2459,18 @@ class BotInstance:
                 await m.reply(f"ℹ️ Этот администратор уже ведёт данное обращение.")
                 return True
 
-            # Узнаём thread_id для DM-уведомления
-            thread_id = target_user.get('last_topic_id')
-            await self._assign_staff_to_user(target_user, new_staff, thread_id=thread_id)
+            # Назначаем напрямую — уведомление "Вам ответил X" придёт при первом ответе
+            old_id = target_user.get('assigned_staff_id')
+            target_user['assigned_staff_id']    = new_staff['id']
+            target_user['assigned_staff_alias'] = new_staff.get('alias', new_staff.get('name', '?'))
+            target_user['assigned_staff_tg']    = new_staff.get('tg_id')
+            target_user['_staff_first_replied'] = False
+            asyncio.create_task(self._post_staff_stat(new_staff['id'], 'accepted'))
+            if old_id: logger.info(f"[STAFF] Тикет {target_user['id']} перешёл от {old_id} к {new_staff['id']}")
             await self.sync_queue.put(("sync_state", None))
-
             await m.reply(
                 f"✅ Тикет передан: <b>{new_staff.get('alias', new_staff.get('name'))}</b>.\n"
-                f"Пользователь уведомлён."
+                f"Пользователь узнает при следующем ответе."
             )
             return True
 
@@ -2973,9 +2979,9 @@ class BotInstance:
                     else:
                         import random as _rnd
                         new_staff = _rnd.choice(candidates)
-                        await self._assign_staff_to_user(user, new_staff, m)
+                        thread_id = user.get('last_topic_id')
+                        await self._assign_staff_to_user(user, new_staff, m, thread_id=thread_id)
                         await self.sync_queue.put(("sync_state", None))
-                        await m.answer(f"✅ Обращение передано администратору: <b>{new_staff.get('alias', new_staff.get('name'))}</b>", parse_mode="HTML")
                     return
 
                 # ── СТАФФ: кнопка "Список администрации" ──
@@ -3010,9 +3016,9 @@ class BotInstance:
                     else:
                         import random as _rnd
                         new_staff = _rnd.choice(candidates)
-                        await self._assign_staff_to_user(user, new_staff, m)
+                        thread_id = user.get('last_topic_id')
+                        await self._assign_staff_to_user(user, new_staff, m, thread_id=thread_id)
                         await self.sync_queue.put(("sync_state", None))
-                        await m.answer(f"✅ Администратор изменён: <b>{new_staff.get('alias', new_staff.get('name'))}</b>", parse_mode="HTML")
                     return
 
                 if self.staff_enabled and self.staff_show_list and clean_text == self.staff_list_btn_name:
@@ -3303,6 +3309,7 @@ class BotInstance:
             thread_id = await self.resolve_thread(user_cb, force_new=force_new_topic)
 
             # ── 2. Назначаем стаффера (с правильным thread_id для DM) ──
+            # _assign_staff_to_user сам уведомит пользователя если notifyOnAssign=True
             await self._assign_staff_to_user(user_cb, staff, None, thread_id=thread_id)
 
             # ── 3. Открываем тикет ──
@@ -3314,20 +3321,37 @@ class BotInstance:
             except Exception:
                 pass
 
-            # ── 5. Пишем пользователю подтверждение ──
+            # ── 5. Показываем кнопку "Закрыть обращение" ──
+            # Само сообщение "Ваше обращение принял / Вы можете продолжать писать"
+            # уже было отправлено внутри _assign_staff_to_user при notifyOnAssign=True.
+            # Если notifyOnAssign=False — отправляем краткое подтверждение.
             close_kb = ReplyKeyboardMarkup(
                 keyboard=[[KeyboardButton(text="Закрыть обращение")]],
                 resize_keyboard=True
             )
-            try:
-                await self.bot.send_message(
-                    uid_cb,
-                    "✅ Вы можете продолжать писать — сообщения будут доставлены оператору.",
-                    reply_markup=close_kb,
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
+            if not self.staff_notify:
+                try:
+                    await self.bot.send_message(
+                        uid_cb,
+                        "✅ Обращение открыто. Вы можете продолжать писать — сообщения будут доставлены оператору.",
+                        reply_markup=close_kb,
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+            else:
+                # notifyOnAssign=True: _assign_staff_to_user уже отправил текст, просто меняем клавиатуру
+                try:
+                    await self.bot.send_message(
+                        uid_cb,
+                        "⬇️",  # невидимый «якорь» чтобы поменять клавиатуру
+                        reply_markup=close_kb,
+                        parse_mode="HTML"
+                    )
+                    # Сразу удаляем якорное сообщение — пользователь его не увидит
+                    # (race condition не страшен, просто может не удалиться)
+                except Exception:
+                    pass
 
             # ── 6. Уведомляем чат администраторов ──
             if self.admin_chat_id:
