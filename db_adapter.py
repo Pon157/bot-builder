@@ -47,6 +47,8 @@ SB_KEY = os.getenv("SUPABASE_KEY", "")
 
 _pg_pool: asyncpg.Pool | None = None
 _pg_available: bool = bool(DB_HOST and DB_NAME and DB_USER and DB_PASS)
+_pg_last_fail: float = 0.0          # время последней ошибки подключения
+_PG_RETRY_AFTER = 30.0              # через сколько секунд пробуем PG снова после ошибки
 
 
 # ─── Инициализация пула PostgreSQL ────────────────────────────────────────────
@@ -69,21 +71,17 @@ async def _setup_pg_conn(conn: asyncpg.Connection):
 
 async def init_pg_pool(min_size: int = 0, max_size: int = 1) -> asyncpg.Pool | None:
     """
-    Создаёт пул подключений к PostgreSQL. Вызывать при старте приложения.
+    Создаёт пул подключений к PostgreSQL.
 
     min_size=0 — соединение НЕ открывается при инициализации, только при первом запросе.
-    При ошибке "too many clients" — повторяет попытку с backoff (до 5 раз),
-    вместо того чтобы сразу навсегда уйти на Supabase.
-
-    Размер пула:
-      • bot/free_bot/vkbot/etc — min=0, max=1  (по умолчанию)
-      • server                 — min=1, max=5  (явно передаётся при вызове)
+    При ошибке "too many clients" — повторяет попытку с backoff (до 5 раз).
+    После других ошибок — временно отключает PG на _PG_RETRY_AFTER секунд (не навсегда!).
     """
-    global _pg_pool, _pg_available
+    global _pg_pool, _pg_available, _pg_last_fail
     if _pg_pool is not None:
         return _pg_pool
-    if not _pg_available:
-        logger.info("[DBAdapter] PostgreSQL не настроен (нет DB_HOST/DB_NAME/DB_USER/DB_PASSWORD) — используем Supabase")
+    if not bool(DB_HOST and DB_NAME and DB_USER and DB_PASS):
+        logger.info("[DBAdapter] PostgreSQL не настроен — используем Supabase")
         return None
 
     retries = 5
@@ -99,27 +97,49 @@ async def init_pg_pool(min_size: int = 0, max_size: int = 1) -> asyncpg.Pool | N
                 max_size=max_size,
                 command_timeout=10,
                 init=_setup_pg_conn,
-                # PgBouncer в transaction mode не поддерживает prepared statements
                 statement_cache_size=0 if _via_pgbouncer else 100,
             )
             mode_str = f"via PgBouncer :{DB_PORT}" if _via_pgbouncer else f"direct :{DB_PORT}"
             logger.info(f"✅ [DBAdapter] PostgreSQL пул создан ({DB_HOST}/{DB_NAME}, {mode_str}, min={min_size}, max={max_size})")
+            _pg_available = True
+            _pg_last_fail  = 0.0
             return _pg_pool
         except Exception as e:
             err = str(e)
             is_overload = "too many clients" in err or "connection slots" in err
             if is_overload and attempt < retries:
-                wait = attempt * 3  # 3, 6, 9, 12 сек
+                wait = attempt * 3
                 logger.warning(f"⚠️ [DBAdapter] PostgreSQL перегружен (попытка {attempt}/{retries}), повтор через {wait}с: {e}")
                 await asyncio.sleep(wait)
             else:
-                logger.error(f"❌ [DBAdapter] Не удалось создать PostgreSQL пул: {e} — переходим на Supabase")
+                logger.error(f"❌ [DBAdapter] Не удалось создать PostgreSQL пул: {e} — временный fallback на Supabase ({_PG_RETRY_AFTER}с)")
+                _pg_pool      = None
                 _pg_available = False
+                _pg_last_fail  = asyncio.get_event_loop().time()
                 return None
 
 
 async def get_pg_pool() -> asyncpg.Pool | None:
-    global _pg_pool
+    """Возвращает пул. Если PG временно отключён — пробует восстановить через _PG_RETRY_AFTER."""
+    global _pg_pool, _pg_available, _pg_last_fail
+
+    # Если пул жив — проверяем что он ещё работает (быстрая проверка без запроса)
+    if _pg_pool is not None:
+        if _pg_pool._closed:
+            logger.warning("[DBAdapter] PG пул закрыт — пересоздаём")
+            _pg_pool      = None
+            _pg_available = True   # пробуем заново
+        else:
+            return _pg_pool
+
+    # Если PG временно отключён — ждём _PG_RETRY_AFTER перед повтором
+    if not _pg_available:
+        now = asyncio.get_event_loop().time()
+        if _pg_last_fail and (now - _pg_last_fail) < _PG_RETRY_AFTER:
+            return None   # ещё рано
+        logger.info(f"[DBAdapter] Пробуем переподключиться к PostgreSQL...")
+        _pg_available = True  # разрешаем попытку
+
     if _pg_pool is None and _pg_available:
         await init_pg_pool()
     return _pg_pool
@@ -224,6 +244,35 @@ def _parse_sb_params(params: dict, start_idx: int = 1):
 def _prepare_value(v) -> object:
     """Передаём dict/list напрямую — asyncpg с JSONB кодеками сам сериализует."""
     return v
+
+
+def _short_err(e: Exception) -> str:
+    """Короткое сообщение об ошибке для лога (без трейсбека)."""
+    s = str(e)
+    return s[:120] if len(s) > 120 else s
+
+
+def _reset_pg_pool_on_error(e: Exception):
+    """
+    При connection-ошибке PG — сбрасываем пул чтобы следующий запрос попробовал переподключиться.
+    НЕ сбрасываем при ошибках данных (IntegrityError, SyntaxError и т.п.).
+    """
+    global _pg_pool, _pg_available, _pg_last_fail
+    err = str(e).lower()
+    is_conn_err = any(x in err for x in (
+        "connection", "timeout", "pool", "unavailable", "closed",
+        "too many clients", "connection slots", "ssl", "eof",
+        "broken pipe", "network", "reset by peer",
+    ))
+    if is_conn_err:
+        logger.warning(f"[DBAdapter] PG connection error — сбрасываем пул, повтор через {_PG_RETRY_AFTER}с")
+        _pg_pool      = None
+        _pg_available = False
+        try:
+            _pg_last_fail = asyncio.get_event_loop().time()
+        except RuntimeError:
+            import time as _t
+            _pg_last_fail = _t.time()
 
 
 # ─── Главный класс ────────────────────────────────────────────────────────────
@@ -450,48 +499,53 @@ class DBAdapter:
 
     async def get(self, table: str, params: dict = None) -> list:
         params = params or {}
-        if _pg_available:
+        if _pg_available or _pg_pool is not None:
             try:
                 return await self._pg_get(table, params)
             except Exception as e:
-                logger.warning(f"[DBAdapter] PG get({table}) → fallback: {e}")
+                _reset_pg_pool_on_error(e)
+                logger.warning(f"[DBAdapter] PG get({table}) → fallback: {_short_err(e)}")
         return await self._sb_get(table, params)
 
     async def post(self, table: str, data: dict = None, json: dict = None, headers: dict = None) -> dict:
         payload = data or json or {}
-        if _pg_available:
+        if _pg_available or _pg_pool is not None:
             try:
                 return await self._pg_post(table, payload)
             except Exception as e:
-                logger.warning(f"[DBAdapter] PG post({table}) → fallback: {e}")
+                _reset_pg_pool_on_error(e)
+                logger.warning(f"[DBAdapter] PG post({table}) → fallback: {_short_err(e)}")
         return await self._sb_post(table, payload)
 
     async def patch(self, table: str, params: dict = None, json: dict = None,
                     data: dict = None, headers: dict = None) -> bool:
         filter_p = params or {}
         payload  = json or data or {}
-        if _pg_available:
+        if _pg_available or _pg_pool is not None:
             try:
                 return await self._pg_patch(table, filter_p, payload)
             except Exception as e:
-                logger.warning(f"[DBAdapter] PG patch({table}) → fallback: {e}")
+                _reset_pg_pool_on_error(e)
+                logger.warning(f"[DBAdapter] PG patch({table}) → fallback: {_short_err(e)}")
         return await self._sb_patch(table, filter_p, payload)
 
     async def delete(self, table: str, params: dict = None) -> bool:
         filter_p = params or {}
-        if _pg_available:
+        if _pg_available or _pg_pool is not None:
             try:
                 return await self._pg_delete(table, filter_p)
             except Exception as e:
-                logger.warning(f"[DBAdapter] PG delete({table}) → fallback: {e}")
+                _reset_pg_pool_on_error(e)
+                logger.warning(f"[DBAdapter] PG delete({table}) → fallback: {_short_err(e)}")
         return await self._sb_delete(table, filter_p)
 
     async def rpc(self, func: str, params: dict) -> object:
-        if _pg_available:
+        if _pg_available or _pg_pool is not None:
             try:
                 return await self._pg_rpc(func, params)
             except Exception as e:
-                logger.warning(f"[DBAdapter] PG rpc({func}) → fallback: {e}")
+                _reset_pg_pool_on_error(e)
+                logger.warning(f"[DBAdapter] PG rpc({func}) → fallback: {_short_err(e)}")
         return await self._sb_rpc(func, params)
 
     # ── Совместимость с Supabase httpx-клиентом ───────────────────────────────
