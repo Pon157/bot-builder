@@ -1238,7 +1238,8 @@ class BotInstance:
         if self.staff_enabled and is_ticket_open and not user.get('assigned_staff_id'):
             staff = self._assign_staff()
             if staff:
-                await self._assign_staff_to_user(user, staff)
+                # В VK нет топиков — передаём admin_chat_id как ориентир для DM стаффера
+                await self._assign_staff_to_user(user, staff, thread_id=self.admin_chat_id)
 
         # Добавляем имя назначенного стаффера в шапку
         staff_note = ""
@@ -1730,11 +1731,18 @@ class BotInstance:
             if new_staff.get('id') == target_user.get('assigned_staff_id'):
                 await self.bot.api.messages.send(peer_id=self.admin_chat_id, message="ℹ️ Этот администратор уже ведёт данное обращение.", random_id=0)
                 return True
-            await self._assign_staff_to_user(target_user, new_staff, thread_id=self.admin_chat_id)
             await self.sync_queue.put(("sync_state", None))
+            # Назначаем напрямую — уведомление пользователю придёт при первом ответе нового стаффера
+            old_id = target_user.get('assigned_staff_id')
+            target_user['assigned_staff_id']    = new_staff['id']
+            target_user['assigned_staff_alias'] = new_staff.get('alias', new_staff.get('name', '?'))
+            target_user['assigned_staff_vk']    = new_staff.get('vk_id')
+            target_user['_staff_first_replied'] = False
+            asyncio.create_task(self._post_staff_stat(new_staff['id'], 'accepted'))
+            if old_id: logger.info(f"[STAFF-VK] Тикет {target_user['id']} перешёл от {old_id} к {new_staff['id']}")
             await self.bot.api.messages.send(
                 peer_id=self.admin_chat_id,
-                message=f"✅ Тикет передан: {new_staff.get('alias', new_staff.get('name'))}. Пользователь уведомлён.",
+                message=f"✅ Тикет передан: {new_staff.get('alias', new_staff.get('name'))}. Пользователь узнает при ответе.",
                 random_id=0
             )
             return True
@@ -1836,21 +1844,39 @@ class BotInstance:
 
                 if target_id:
                     try:
-                        # ── СТАФФ: если первый ответ — уведомляем пользователя именем администратора ──
                         target_user = next((u for u in self.users_list if u.get('id') == target_id), None)
-                        if (target_user and self.staff_enabled
-                                and target_user.get('assigned_staff_alias')
-                                and not target_user.get('_staff_first_replied')):
-                            target_user['_staff_first_replied'] = True
-                            alias = target_user['assigned_staff_alias']
-                            try:
-                                await self.bot.api.messages.send(
-                                    peer_id=target_id,
-                                    message=f"🧑‍💼 Вам ответил: {alias}",
-                                    random_id=0
-                                )
-                            except Exception:
-                                pass
+
+                        if target_user and self.staff_enabled:
+                            sender_vk_id = m.from_id
+                            # Ищем отправителя среди стафф-администраторов
+                            replying_staff = next(
+                                (a for a in self.staff_admins
+                                 if a.get('vk_id') == sender_vk_id and a.get('active')),
+                                None
+                            )
+                            if replying_staff:
+                                # Назначаем если ещё не назначен или назначен другой
+                                if target_user.get('assigned_staff_id') != replying_staff['id']:
+                                    target_user['assigned_staff_id']    = replying_staff['id']
+                                    target_user['assigned_staff_alias'] = replying_staff.get('alias', replying_staff.get('name', '?'))
+                                    target_user['assigned_staff_vk']    = replying_staff.get('vk_id')
+                                    if not target_user.get('_staff_assigned_at'):
+                                        target_user['_staff_assigned_at'] = int(time.time() * 1000)
+                                    asyncio.create_task(self._post_staff_stat(replying_staff['id'], 'accepted'))
+                                    asyncio.create_task(self.sync_queue.put(("sync_state", None)))
+
+                                # Первый ответ → сообщаем пользователю
+                                if not target_user.get('_staff_first_replied'):
+                                    target_user['_staff_first_replied'] = True
+                                    alias = target_user['assigned_staff_alias']
+                                    try:
+                                        await self.bot.api.messages.send(
+                                            peer_id=target_id,
+                                            message=f"🧑‍💼 Вам ответил: {alias}",
+                                            random_id=0
+                                        )
+                                    except Exception:
+                                        pass
 
                         attachment_str = None
                         if m.attachments:
@@ -2053,11 +2079,14 @@ class BotInstance:
                     else:
                         import random as _rnd
                         new_staff = _rnd.choice(candidates)
-                        await self._assign_staff_to_user(user, new_staff)
+                        user['assigned_staff_id']    = new_staff['id']
+                        user['assigned_staff_alias'] = new_staff.get('alias', new_staff.get('name', '?'))
+                        user['assigned_staff_vk']    = new_staff.get('vk_id')
+                        user['_staff_first_replied'] = False
                         await self.sync_queue.put(("sync_state", None))
                         await self.bot.api.messages.send(
                             peer_id=user['id'],
-                            message=f"✅ Обращение передано: {new_staff.get('alias', new_staff.get('name'))}",
+                            message=f"✅ Вы выбрали администратора: {new_staff.get('alias', new_staff.get('name'))}\nОжидайте ответа.",
                             random_id=0
                         )
                     return
@@ -2081,13 +2110,22 @@ class BotInstance:
                         # Открываем тикет
                         user['_in_ticket'] = True
 
-                        # Назначаем с передачей admin_chat_id как "thread_id" для VK
-                        await self._assign_staff_to_user(user, chosen_staff, thread_id=self.admin_chat_id)
+                        # Назначаем напрямую — без старых авто-DM к стафферу
+                        user['assigned_staff_id']    = chosen_staff['id']
+                        user['assigned_staff_alias'] = chosen_staff.get('alias', chosen_staff.get('name', '?'))
+                        user['assigned_staff_vk']    = chosen_staff.get('vk_id')
+                        user['_staff_assigned_at']   = int(time.time() * 1000)
+                        user['_staff_first_replied'] = True  # явно сообщаем ниже
+                        asyncio.create_task(self._post_staff_stat(chosen_staff['id'], 'accepted'))
 
+                        # Пишем пользователю: кто принял + инструкция
                         close_kb = self.build_keyboard_from_buttons([{'text': 'Закрыть обращение'}])
                         await self.bot.api.messages.send(
                             peer_id=user['id'],
-                            message="✅ Вы можете продолжать писать — сообщения будут доставлены оператору.",
+                            message=(
+                                f"👤 Ваше обращение принял: {chosen_staff.get('alias', chosen_staff.get('name'))}\n\n"
+                                f"Вы можете продолжать писать — сообщения будут доставлены оператору."
+                            ),
                             keyboard=close_kb,
                             random_id=0
                         )
@@ -2137,21 +2175,20 @@ class BotInstance:
                     else:
                         import random as _rnd
                         new_staff = _rnd.choice(candidates)
-                        await self._assign_staff_to_user(user, new_staff)
+                        user['assigned_staff_id']    = new_staff['id']
+                        user['assigned_staff_alias'] = new_staff.get('alias', new_staff.get('name', '?'))
+                        user['assigned_staff_vk']    = new_staff.get('vk_id')
+                        user['_staff_first_replied'] = False
                         await self.sync_queue.put(("sync_state", None))
-                        await self.bot.api.messages.send(peer_id=user['id'], message=f"✅ Администратор изменён: {new_staff.get('alias', new_staff.get('name'))}", random_id=0)
+                        await self.bot.api.messages.send(
+                            peer_id=user['id'],
+                            message=f"✅ Вы выбрали администратора: {new_staff.get('alias', new_staff.get('name'))}\nОжидайте ответа.",
+                            random_id=0
+                        )
                     return
 
                 if self.staff_enabled and self.staff_show_list and clean_text == self.staff_list_btn_name:
                     await self._send_staff_list(user['id'])
-                    return
-                    self.clear_ai_context(user['id'])
-                    await self.bot.api.messages.send(
-                        peer_id=user['id'],
-                        message="Главное меню:",
-                        keyboard=self.get_main_keyboard(),
-                        random_id=0
-                    )
                     return
 
                 # ── Закрытие ИИ-диалога (текстовая кнопка, фолбек) ──
