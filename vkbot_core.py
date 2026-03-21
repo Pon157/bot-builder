@@ -10,7 +10,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 try:
     from aiohttp_socks import ProxyConnector as _ProxyConnector  # noqa: ensure aiohttp_socks installed
     def _make_session():
-        _PROXY_URL = os.getenv("TG_PROXY_URL")
+        _PROXY_URL = os.getenv("TG_PROXY_URL", "socks5://ZpqqLu:fsgQGg@45.93.68.226:8000")
         if _PROXY_URL:
             return AiohttpSession(proxy=_PROXY_URL)
         return None
@@ -745,24 +745,37 @@ class BotInstance:
     # KEYBOARD HELPERS
     # ─────────────────────────────────────────────
     def get_main_keyboard(self) -> str:
-        """Главная reply-клавиатура из кнопок + ИИ-кнопка (если нужно)."""
+        """Главная reply-клавиатура из кнопок + ИИ-кнопка + кнопки стафф-системы."""
         active_btns = [b for b in self.buttons if b.get('text')]
         ai_btn_name = self.ai_button_name if self.ai_enabled and self.ai_mode == 'button' else None
-        if not active_btns and not ai_btn_name:
+
+        # ── СТАФФ: кнопки "Список администрации" и "Сменить админа" ──
+        staff_btns = []
+        if self.staff_enabled and self.staff_show_list:
+            staff_btns.append((self.staff_list_btn_name, KeyboardButtonColor.SECONDARY))
+        if self.staff_enabled and self.staff_allow_switch:
+            staff_btns.append(("🔄 Сменить админа", KeyboardButtonColor.SECONDARY))
+
+        if not active_btns and not ai_btn_name and not staff_btns:
             return Keyboard().get_json()
-        
+
         kb = Keyboard(one_time=False, inline=False)
         all_btns = list(active_btns)
         for i, btn in enumerate(all_btns):
             if i % 2 == 0 and i != 0:
                 kb.row()
             kb.add(Text(btn['text']), color=KeyboardButtonColor.PRIMARY)
-        
+
         if ai_btn_name:
             if active_btns:
                 kb.row()
             kb.add(Text(ai_btn_name), color=KeyboardButtonColor.SECONDARY)
-            
+
+        if staff_btns:
+            kb.row()
+            for label, color in staff_btns:
+                kb.add(Text(label), color=color)
+
         return kb.get_json()
 
     def build_keyboard_from_buttons(self, buttons: list) -> str:
@@ -1328,7 +1341,22 @@ class BotInstance:
     # ══════════════════════════════════════════════════════════════════
 
     def _get_active_staff(self) -> list:
-        return [a for a in self.staff_admins if a.get('active', True) and a.get('vk_id')]
+        """Возвращает список активных стафф-администраторов VK (не на отдыхе)."""
+        now = int(time.time() * 1000)
+        result = []
+        for a in self.staff_admins:
+            if not a.get('active', True) or not a.get('vk_id'):
+                continue
+            if a.get('is_on_rest', False):
+                # Автовозврат: если rest_until уже прошёл — снимаем отдых
+                rest_until = a.get('rest_until')
+                if rest_until and now >= rest_until:
+                    a['is_on_rest'] = False
+                    a.pop('rest_until', None)
+                else:
+                    continue
+            result.append(a)
+        return result
 
     def _assign_staff(self) -> dict | None:
         active = self._get_active_staff()
@@ -1368,12 +1396,16 @@ class BotInstance:
         user['assigned_staff_alias'] = staff.get('alias', staff.get('name', '?'))
         user['assigned_staff_vk']    = staff.get('vk_id')
         user['_staff_assigned_at']   = int(time.time() * 1000)
+        user['_staff_first_replied'] = False  # сбрасываем флаг «первый ответ»
 
         if self.staff_notify:
             try:
                 await self.bot.api.messages.send(
                     peer_id=uid,
-                    message=f"👤 Ваше обращение принял: {staff.get('alias', staff.get('name'))}",
+                    message=(
+                        f"👤 Ваше обращение принял: {staff.get('alias', staff.get('name'))}\n\n"
+                        f"Вы можете продолжать писать — сообщения будут доставлены оператору."
+                    ),
                     random_id=0
                 )
             except Exception:
@@ -1792,6 +1824,22 @@ class BotInstance:
 
                 if target_id:
                     try:
+                        # ── СТАФФ: если первый ответ — уведомляем пользователя именем администратора ──
+                        target_user = next((u for u in self.users_list if u.get('id') == target_id), None)
+                        if (target_user and self.staff_enabled
+                                and target_user.get('assigned_staff_alias')
+                                and not target_user.get('_staff_first_replied')):
+                            target_user['_staff_first_replied'] = True
+                            alias = target_user['assigned_staff_alias']
+                            try:
+                                await self.bot.api.messages.send(
+                                    peer_id=target_id,
+                                    message=f"🧑‍💼 Вам ответил: {alias}",
+                                    random_id=0
+                                )
+                            except Exception:
+                                pass
+
                         attachment_str = None
                         if m.attachments:
                             parts = []
@@ -2011,18 +2059,44 @@ class BotInstance:
                 if self.staff_enabled and m.text and m.text.strip().startswith("👤 "):
                     chosen_alias = m.text.strip()[2:].strip()
                     chosen_staff = next(
-                        (a for a in self.staff_admins if a.get('alias', a.get('name', '')) == chosen_alias and a.get('active')),
+                        (a for a in self.staff_admins
+                         if a.get('alias', a.get('name', '')) == chosen_alias
+                         and a.get('active')
+                         and not a.get('is_on_rest', False)),
                         None
                     )
                     if chosen_staff:
                         await self._assign_staff_to_user(user, chosen_staff)
-                        await self.sync_queue.put(("sync_state", None))
+
+                        # ── Открываем тикет ──
+                        user['_in_ticket'] = True
+                        close_kb = self.build_keyboard_from_buttons([{'text': 'Закрыть обращение'}])
                         await self.bot.api.messages.send(
                             peer_id=user['id'],
-                            message=f"✅ Обращение принял: {chosen_staff.get('alias', chosen_staff.get('name'))}",
-                            keyboard=self.get_main_keyboard(),
+                            message="✅ Вы можете продолжать писать — сообщения будут доставлены оператору.",
+                            keyboard=close_kb,
                             random_id=0
                         )
+
+                        # ── Уведомляем чат администраторов ──
+                        if self.admin_chat_id:
+                            try:
+                                user_name   = user.get('first_name', f"User#{user['id']}")
+                                staff_alias = chosen_staff.get('alias', chosen_staff.get('name', '?'))
+                                header = (
+                                    f"🆕 Новое обращение\n"
+                                    f"👤 {user_name} (ID: {user['id']})\n"
+                                    f"🧑‍💼 Назначен: {staff_alias}"
+                                )
+                                await self.bot.api.messages.send(
+                                    peer_id=self.admin_chat_id,
+                                    message=header,
+                                    random_id=0
+                                )
+                            except Exception as e:
+                                logger.warning(f"[STAFF-VK] Не удалось уведомить беседу: {e}")
+
+                        await self.sync_queue.put(("sync_state", None))
                         return
 
                 # Тикет открыт — пересылаем всё админу
