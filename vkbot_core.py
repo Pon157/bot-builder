@@ -8,15 +8,33 @@ from db_adapter import DBAdapter, init_pg_pool
 import hashlib
 from aiogram.client.session.aiohttp import AiohttpSession
 try:
-    from aiohttp_socks import ProxyConnector as _ProxyConnector  # noqa: ensure aiohttp_socks installed
-    def _make_session():
-        _PROXY_URL = os.getenv("TG_PROXY_URL")
-        if _PROXY_URL:
-            return AiohttpSession(proxy=_PROXY_URL)
-        return None
+    from aiohttp_socks import ProxyConnector as _ProxyConnector
+    _SOCKS_OK = True
 except ImportError:
-    def _make_session():
-        return None
+    _SOCKS_OK = False
+
+def _make_session():
+    """
+    Создаёт сессию для Telegram-бота (используется в VK-боте для Aiogram уведомлений).
+    Поддерживает SOCKS5/SOCKS4/HTTP прокси через TG_PROXY_URL.
+    """
+    _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
+    if not _PROXY_URL:
+        return AiohttpSession()
+
+    is_socks = _PROXY_URL.startswith(("socks5://", "socks4://", "socks5h://"))
+    if is_socks and _SOCKS_OK:
+        try:
+            connector = _ProxyConnector.from_url(_PROXY_URL)
+            return AiohttpSession(connector=connector)
+        except Exception as e:
+            logger.warning(f"[Proxy] SOCKS-коннектор не создан: {e}, fallback без прокси")
+            return AiohttpSession()
+    elif is_socks:
+        logger.warning("[Proxy] SOCKS прокси задан, но aiohttp-socks не установлен. pip install aiohttp-socks")
+        return AiohttpSession()
+    else:
+        return AiohttpSession(proxy=_PROXY_URL)
 
 import time
 import re
@@ -382,7 +400,7 @@ class BotInstance:
         self.sb_url = self.sb_url.rstrip('/')
         
         # Инициализация бота VK
-        self.bot = Bot(token=self.token, session=_make_session() or AiohttpSession())
+        self.bot = Bot(token=self.token, session=_make_session())
         self.bot.api.bot_instance_ref = self
         
         self.msg_map = {} 
