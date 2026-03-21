@@ -32,35 +32,32 @@ except ImportError:
 def _make_session():
     import aiohttp as _aiohttp
     from aiogram.client.session.aiohttp import AiohttpSession
-    
+    from aiohttp_socks import ProxyConnector
+
+    # Настраиваем таймауты правильно
     _timeout = _aiohttp.ClientTimeout(total=30, connect=5, sock_read=30)
     _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
+
+    # Чистим URL от 'h', если она там есть
+    if _PROXY_URL:
+        _PROXY_URL = _PROXY_URL.replace("socks5h://", "socks5://")
 
     if not _PROXY_URL:
         return AiohttpSession(timeout=_timeout)
 
-    # Убираем 'h' из схемы, так как python-socks её не знает
-    # Мы включим удаленный DNS через rdns=True ниже
-    proxy_for_socks = _PROXY_URL.replace("socks5h://", "socks5://")
-    
-    is_socks = proxy_for_socks.startswith(("socks5", "socks4"))
-
-    if is_socks:
-        if not _SOCKS_OK:
-            logging.error("[NET] Пакет aiohttp-socks не установлен!")
-            return AiohttpSession(timeout=_timeout)
-        
-        try:
-            # rdns=True — это и есть аналог схемы socks5h (Remote DNS)
-            connector = _ProxyConnector.from_url(proxy_for_socks, rdns=True)
-            logging.info(f"[NET] SOCKS коннектор создан для: {proxy_for_socks[:20]}...")
+    try:
+        # Для SOCKS5 (rdns=True заменяет socks5h)
+        if _PROXY_URL.startswith("socks"):
+            connector = ProxyConnector.from_url(_PROXY_URL, rdns=True)
+            # В aiogram 3.x коннектор передается именно так:
             return AiohttpSession(connector=connector, timeout=_timeout)
-        except Exception as e:
-            logging.error(f"[NET] Ошибка прокси: {e}")
-            return AiohttpSession(timeout=_timeout)
-    else:
-        # Для HTTP прокси используем proxy_url вместо proxy
-        return AiohttpSession(proxy_url=_PROXY_URL, timeout=_timeout)
+        else:
+            # Для HTTP прокси
+            return AiohttpSession(proxy_url=_PROXY_URL, timeout=_timeout)
+            
+    except Exception as e:
+        logging.error(f"[NET] Ошибка создания сессии: {e}")
+        return AiohttpSession(timeout=_timeout)
 
 from dotenv import load_dotenv
 load_dotenv()
