@@ -36,33 +36,30 @@ def _make_session():
     _timeout = _aiohttp.ClientTimeout(total=30, connect=5, sock_read=30)
     _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
 
-    # ЛОГ 1: Проверяем, прочитан ли конфиг
     if not _PROXY_URL:
-        logging.warning("[NET] TG_PROXY_URL не найден в .env! Бот идет НАПРЯМУЮ (могут быть блокировки)")
         return AiohttpSession(timeout=_timeout)
 
-    logging.info(f"[NET] Попытка запуска через прокси: {_PROXY_URL[:15]}***")
-
-    is_socks = _PROXY_URL.startswith(("socks5", "socks4"))
+    # Убираем 'h' из схемы, так как python-socks её не знает
+    # Мы включим удаленный DNS через rdns=True ниже
+    proxy_for_socks = _PROXY_URL.replace("socks5h://", "socks5://")
+    
+    is_socks = proxy_for_socks.startswith(("socks5", "socks4"))
 
     if is_socks:
         if not _SOCKS_OK:
-            logging.error("[NET] Ошибка: выбран SOCKS, но пакет aiohttp-socks НЕ установлен!")
+            logging.error("[NET] Пакет aiohttp-socks не установлен!")
             return AiohttpSession(timeout=_timeout)
         
         try:
-            # Принудительно ставим socks5h для удаленного DNS
-            proxy_fixed = _PROXY_URL.replace("socks5://", "socks5h://")
-            connector = _ProxyConnector.from_url(proxy_fixed, rdns=True)
-            
-            logging.info("[NET] SOCKS-коннектор успешно создан (DNS через прокси включен)")
+            # rdns=True — это и есть аналог схемы socks5h (Remote DNS)
+            connector = _ProxyConnector.from_url(proxy_for_socks, rdns=True)
+            logging.info(f"[NET] SOCKS коннектор создан для: {proxy_for_socks[:20]}...")
             return AiohttpSession(connector=connector, timeout=_timeout)
         except Exception as e:
-            logging.error(f"[NET] Критическая ошибка SOCKS коннектора: {e}")
+            logging.error(f"[NET] Ошибка прокси: {e}")
             return AiohttpSession(timeout=_timeout)
     else:
-        # Для HTTP прокси
-        logging.info("[NET] Используется HTTP-прокси режим")
+        # Для HTTP прокси используем proxy_url вместо proxy
         return AiohttpSession(proxy_url=_PROXY_URL, timeout=_timeout)
 
 from dotenv import load_dotenv
