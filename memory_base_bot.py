@@ -152,28 +152,38 @@ async def sb_update_queue(row_id, upd: dict):
 async def sb_save_cache(user_id: int, username: str,
                         status: str, reasons: List[str], raw_text: str):
     expires = (datetime.now(timezone.utc) + timedelta(seconds=CACHE_TTL)).isoformat()
+    
+    # ФИКС: Если список пустой, передаем None. 
+    # Это предотвратит ошибку "got type 'str'" в DBAdapter
+    db_reasons = reasons if reasons else None
+
     payload = {
         "user_id":    user_id,
         "username":   username or "",
         "status":     status,
-        "reasons":    reasons,
+        "reasons":    db_reasons,
         "raw_text":   raw_text[:2000],
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "expires_at": expires,
     }
+    
     try:
-        # Пробуем INSERT, при конфликте (уже есть запись) — UPDATE
+        # Пробуем INSERT
         result = await _db.post("memory_base_cache", payload)
+        
+        # Если result пустой (например, 409 Conflict), пробуем PATCH
         if not result:
             await _db.patch("memory_base_cache", {"user_id": f"eq.{user_id}"}, payload)
+            
         logger.info(f"[MB] ✅ Cached uid={user_id} status={status} reasons={reasons}")
+        
     except Exception as e:
-        # Если INSERT упал на дубликат — пробуем PATCH
+        # Финальная попытка апдейта, если первый блок совсем упал
         try:
             await _db.patch("memory_base_cache", {"user_id": f"eq.{user_id}"}, payload)
             logger.info(f"[MB] ✅ Cached (upsert) uid={user_id} status={status}")
         except Exception as e2:
-            logger.error(f"[MB] sb_save_cache exception: {e2}")
+            logger.error(f"[MB] ❌ sb_save_cache FATAL: {e2}")
 
 
 async def sb_reset_stale_processing():
