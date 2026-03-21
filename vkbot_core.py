@@ -15,8 +15,8 @@ except ImportError:
 
 def _make_session():
     """
-    Создаёт сессию для Telegram-бота (используется в VK-боте для Aiogram уведомлений).
-    Поддерживает SOCKS5/SOCKS4/HTTP прокси через TG_PROXY_URL.
+    Создаёт aiogram-сессию с прокси и корректными таймаутами.
+    TG_PROXY_URL: socks5://user:pass@host:port | http://user:pass@host:port
     """
     _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
     if not _PROXY_URL:
@@ -25,10 +25,10 @@ def _make_session():
     is_socks = _PROXY_URL.startswith(("socks5://", "socks4://", "socks5h://"))
     if is_socks and _SOCKS_OK:
         try:
-            connector = _ProxyConnector.from_url(_PROXY_URL)
+            connector = _ProxyConnector.from_url(_PROXY_URL, rdns=True)
             return AiohttpSession(connector=connector)
         except Exception as e:
-            logger.warning(f"[Proxy] SOCKS-коннектор не создан: {e}, fallback без прокси")
+            logger.warning(f"[Proxy] SOCKS-коннектор не создан ({e}), запуск без прокси")
             return AiohttpSession()
     elif is_socks:
         logger.warning("[Proxy] SOCKS прокси задан, но aiohttp-socks не установлен. pip install aiohttp-socks")
@@ -633,71 +633,67 @@ class BotInstance:
                 await asyncio.sleep(60)
 
     async def database_sync_worker(self):
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            if not self.sb_url or not self.sb_url.startswith("http"):
-                logger.warning(f"⚠️ SUPABASE_URL некорректен ('{self.sb_url}'). Восстановление...")
-                self.sb_url = os.getenv("SERVER_URL", "http://localhost:8000").rstrip('/')
+        SYNC_DEBOUNCE = 15.0
+        _last_sync: float = 0.0
+        _pending_sync: bool = False
 
-            headers = {
-                "apikey": self.sb_key,
-                "Authorization": f"Bearer {self.sb_key}",
-                "Content-Type": "application/json",
-                "Prefer": "return=minimal"
-            }
-            
-            while self.is_running:
-                try:
-                    item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
-                    if not isinstance(item, tuple):
-                        self.sync_queue.task_done()
-                        continue
+        async def _do_sync():
+            nonlocal _last_sync, _pending_sync
+            try:
+                rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
+                if rows:
+                    remote_data   = rows[0]
+                    remote_config = remote_data.get("config", {}) or {}
+                    new_config = {
+                        **remote_config,
+                        "connectedUsers": self.users_list,
+                        "admin_chat_id":  self.admin_chat_id,
+                        "adminChatId":    self.admin_chat_id,
+                        "vk_group_id":    self.vk_group_id,
+                        "vkGroupId":      self.vk_group_id,
+                    }
+                    await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {
+                        "config": new_config, "stats": self.stats_data
+                    })
+                    saved_users = self.users_list
+                    saved_stats = self.stats_data
+                    self.apply_config({**remote_data, "config": remote_config}, is_initial=False)
+                    self.users_list = saved_users
+                    self.stats_data = saved_stats
+            except Exception as e:
+                logger.error(f"🚨 VK Sync Worker _do_sync error: {e}")
+            finally:
+                _last_sync    = time.time()
+                _pending_sync = False
 
-                    action, payload = item
-
-                    if action == "log_message":
-                        if self.sb_url.startswith("http"):
-                            await self.db.post("bot_messages", payload)
-
-                    elif action == "sync_state":
-                        if not self.sb_url or not self.sb_url.startswith("http"):
-                            self.sync_queue.task_done()
-                            continue
-        
-                        rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
-
-                        if rows:
-                            remote_data = rows[0]
-                            remote_config = remote_data.get("config", {}) or {}
-
-                            new_config = {
-                                **remote_config,
-                                "connectedUsers": self.users_list,
-                                "admin_chat_id": self.admin_chat_id,
-                                "adminChatId": self.admin_chat_id,
-                                "vk_group_id": self.vk_group_id,
-                                "vkGroupId": self.vk_group_id,
-                            }
-
-                            await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"config": new_config, "stats": self.stats_data})
-
-                            # Обновляем только кнопки/триггеры/настройки из БД,
-                            # НЕ трогая users_list и stats в памяти
-                            saved_users = self.users_list
-                            saved_stats = self.stats_data
-                            self.apply_config({**remote_data, "config": remote_config}, is_initial=False)
-                            self.users_list = saved_users
-                            self.stats_data = saved_stats
-
+        while self.is_running:
+            try:
+                item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
+                if not isinstance(item, tuple):
                     self.sync_queue.task_done()
-                    
-                except asyncio.TimeoutError:
                     continue
-                except Exception as e:
-                    logger.error(f"🚨 VK Sync Worker Error: {e}")
-                    try:
-                        self.sync_queue.task_done()
-                    except:
-                        pass
+
+                action, _ = item
+
+                if action == "sync_state":
+                    now = time.time()
+                    if now - _last_sync >= SYNC_DEBOUNCE:
+                        await _do_sync()
+                    else:
+                        _pending_sync = True
+
+                self.sync_queue.task_done()
+
+            except asyncio.TimeoutError:
+                if _pending_sync and (time.time() - _last_sync >= SYNC_DEBOUNCE):
+                    await _do_sync()
+                continue
+            except Exception as e:
+                logger.error(f"🚨 VK Sync Worker Error: {e}")
+                try:
+                    self.sync_queue.task_done()
+                except:
+                    pass
 
     # ─────────────────────────────────────────────
     # AI / TIMEWEB INTEGRATION
@@ -1198,23 +1194,29 @@ class BotInstance:
         return False
 
     async def log_and_update(self, uid: int, name: str, text: str, is_admin: bool = False):
-        await self.sync_queue.put(("log_message", {
-            "bot_id": self.bot_id, 
-            "user_id": uid, 
-            "first_name": name,
-            "message_text": text[:950] if text else "[Медиа]", 
-            "is_from_admin": is_admin
-        }))
-        
+        """Логирование и статистика. БД-запись — fire-and-forget, не блокирует обработчик."""
         if not is_admin:
             for u in self.users_list:
                 if u['id'] == uid:
                     u['last_seen'] = int(time.time())
-                    u['first_name'] = name 
+                    u['first_name'] = name
                     break
-        
+
         await self.update_stats(is_incoming=not is_admin)
-        await self.sync_queue.put(("sync_state", None))
+
+        async def _write_log():
+            try:
+                await self.db.post("bot_messages", {
+                    "bot_id": self.bot_id,
+                    "user_id": uid,
+                    "first_name": name,
+                    "message_text": text[:950] if text else "[Медиа]",
+                    "is_from_admin": is_admin
+                })
+            except Exception:
+                pass
+        asyncio.create_task(_write_log())
+        asyncio.create_task(self.sync_queue.put(("sync_state", None)))
 
     async def get_user_state(self, m: Message):
         uid = m.from_id
@@ -1376,7 +1378,21 @@ class BotInstance:
         return None
 
     async def _post_staff_stat(self, staff_id: str, event: str, value: int = 1):
-        """Обновляет статистику стафф-администратора напрямую в БД."""
+        """Обновляет статистику стафф-администратора.
+        Событие 'message' — только в памяти. Остальные — пишем в БД.
+        """
+        if event == "message":
+            for adm in self.staff_admins:
+                if adm.get("id") == staff_id:
+                    st = adm.setdefault("stats", {
+                        "ticketsAccepted": 0, "ticketsClosed": 0,
+                        "messagesSent": 0, "avgResponseMs": 0
+                    })
+                    st["messagesSent"] = st.get("messagesSent", 0) + 1
+                    break
+            asyncio.create_task(self.sync_queue.put(("sync_state", None)))
+            return
+
         try:
             rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
             if not rows:
@@ -1395,8 +1411,6 @@ class BotInstance:
                     st["ticketsAccepted"] = st.get("ticketsAccepted", 0) + 1
                 elif event == "closed":
                     st["ticketsClosed"] = st.get("ticketsClosed", 0) + 1
-                elif event == "message":
-                    st["messagesSent"] = st.get("messagesSent", 0) + 1
                 elif event == "response_ms":
                     n = st.get("ticketsAccepted", 1) or 1
                     old_avg = st.get("avgResponseMs", 0)
@@ -1406,6 +1420,12 @@ class BotInstance:
             if updated:
                 cfg["staffAdmins"] = staff_list
                 await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"config": cfg})
+                for adm in self.staff_admins:
+                    if adm.get("id") == staff_id:
+                        db_adm = next((a for a in staff_list if a.get("id") == staff_id), None)
+                        if db_adm:
+                            adm["stats"] = db_adm.get("stats", {})
+                        break
         except Exception as e:
             logger.warning(f"[STAFF-VK] Не удалось обновить статистику: {e}")
 
