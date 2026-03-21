@@ -199,6 +199,19 @@ export const api = {
     } catch { return { staffAdmins: [] }; }
   },
 
+  /** Переключить режим отдыха для конкретного администратора */
+  toggleStaffRest: async (botId: string, staffId: string, isOnRest: boolean, restUntil?: number): Promise<{ ok: boolean } | null> => {
+    try {
+      const body: Record<string, unknown> = { is_on_rest: isOnRest };
+      if (restUntil) body.rest_until = restUntil;
+      const response = await fetchWithTimeout(
+        `${getApiBase()}/bots/${botId}/staff/${staffId}/rest`,
+        { method: 'POST', body: JSON.stringify(body) }
+      );
+      return response.ok ? await response.json() : null;
+    } catch { return null; }
+  },
+
   /** Получить статистику конкретного стафф-администратора */
   getStaffAdminStat: async (botId: string, staffId: string): Promise<any | null> => {
     try {
