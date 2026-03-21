@@ -1333,7 +1333,12 @@ async def get_active_ad(bot_id: str = ""):
     _ad_roundrobin[bot_id] = post["id"]
 
     try:
-        await _rpc_local("record_ad_impression", {"p_post_id": post["id"]})
+        # Увеличиваем счётчик показов напрямую (без RPC функции)
+        db = _db()
+        current = await db.get("ad_posts", {"id": f"eq.{post['id']}"})
+        if current:
+            cur_imp = (current[0].get("impressions") or 0) + 1
+            await db.patch("ad_posts", {"id": f"eq.{post['id']}"}, {"impressions": cur_imp})
     except Exception as e:
         _logger().error(f"record_ad_impression error: {e}")
 
