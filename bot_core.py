@@ -1010,8 +1010,10 @@ class BotInstance:
         except Exception as e:
             logger.warning(f"[STAFF] Не удалось обновить стату: {e}")
 
-    async def _assign_staff_to_user(self, user: dict, staff: dict, m=None):
-        """Привязывает стафф-admin к пользователю, уведомляет обе стороны."""
+    async def _assign_staff_to_user(self, user: dict, staff: dict, m=None, thread_id: int = None):
+        """Привязывает стафф-admin к пользователю, уведомляет обе стороны.
+        thread_id — если уже известен (например, создан заранее в on_choose_staff).
+        """
         uid = user['id']
         old_staff_id = user.get('assigned_staff_id')
 
@@ -1034,8 +1036,8 @@ class BotInstance:
                 pass
 
         # Уведомляем нового стафф-admin в личку
+        # thread_id передаётся снаружи когда он уже известен (чтобы не было устаревшей ссылки)
         try:
-            thread_id = user.get('last_topic_id')
             topic_link = f"\nТопик: #{thread_id}" if thread_id else ""
             user_name = user.get('first_name', f"User#{uid}")
             username  = f" (@{user.get('username')})" if user.get('username') else ""
@@ -1067,18 +1069,24 @@ class BotInstance:
         return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=False)
 
     async def _handle_staff_list_request(self, uid: int):
-        """Отправляет пользователю inline-список активных администраторов."""
+        """Отправляет пользователю inline-список активных администраторов.
+        Порядок: если assignMode='least' — сначала наименее загруженный.
+        """
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
         active = self._get_active_staff()
         if not active:
             await self.bot.send_message(uid, "😔 В данный момент нет доступных администраторов.", parse_mode="HTML")
             return
+        # Сортировка по нагрузке (принятые тикеты) если режим 'least'
+        if self.staff_assign_mode == 'least':
+            active = sorted(active, key=lambda a: a.get('stats', {}).get('ticketsAccepted', 0))
         buttons = []
         for a in active:
-            buttons.append([InlineKeyboardButton(
-                text=f"👤 {a.get('alias', a.get('name', '?'))}",
-                callback_data=f"choose_staff:{a['id']}"
-            )])
+            load = a.get('stats', {}).get('ticketsAccepted', 0)
+            label = f"👤 {a.get('alias', a.get('name', '?'))}"
+            if self.staff_assign_mode == 'least':
+                label += f"  · {load} тик."
+            buttons.append([InlineKeyboardButton(text=label, callback_data=f"choose_staff:{a['id']}")])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
         await self.bot.send_message(uid, "👥 <b>Выберите администратора:</b>", reply_markup=kb, parse_mode="HTML")
 
@@ -1923,18 +1931,13 @@ class BotInstance:
     async def forward_to_admin(self, m: Message, user: dict, is_first: bool = False, btn_text: str = "", is_ai_request: bool = False):
         if not self.admin_chat_id: return
 
-        # ── Стафф-система: назначаем администратора при первом сообщении/тикете ──
-        if self.staff_enabled and is_first and not user.get('assigned_staff_id'):
+        # ── Стафф-система: назначаем администратора при первом сообщении ИЛИ при открытии тикета кнопкой ──
+        # is_first = первое сообщение вообще; btn_text != "" = тикет открыт через кнопку-запрос
+        is_ticket_open = is_first or bool(btn_text)
+        if self.staff_enabled and is_ticket_open and not user.get('assigned_staff_id'):
             staff = self._assign_staff()
             if staff:
                 await self._assign_staff_to_user(user, staff, m)
-                # Добавляем кнопки "Сменить админа" / "Список администрации" к клавиатуре пользователя
-                kb = await self._staff_keyboard_for_user(user)
-                if kb:
-                    try:
-                        await self.bot.send_message(user['id'], "ℹ️ Выберите действие:", reply_markup=kb, parse_mode="HTML")
-                    except Exception:
-                        pass
 
         # Добавляем имя назначенного стафф-admin в заголовок для панели
         if self.staff_enabled and user.get('assigned_staff_alias'):
@@ -2258,8 +2261,8 @@ class BotInstance:
             if uid_from_map:
                 target_user = next((u for u in self.users_list if int(u['id']) == int(uid_from_map)), None)
 
-        # В) Поиск по прямому ID в аргументе команды: /ban 123456789
-        if not target_user and len(cmd_parts) > 1:
+        # В) Поиск по прямому ID в аргументе — ТОЛЬКО не для /give (его аргумент — псевдоним стаффа)
+        if not target_user and command != 'give' and len(cmd_parts) > 1:
             try:
                 direct_id = int(cmd_parts[1])
                 target_user = next((u for u in self.users_list if int(u['id']) == direct_id), None)
@@ -2284,7 +2287,14 @@ class BotInstance:
 
         # Если команда модерации, но юзер не определен — выходим
         if not target_user:
-            return False 
+            if command == 'give':
+                await m.reply(
+                    "❌ <b>Не удалось определить пользователя.</b>\n\n"
+                    "Используйте <code>/give</code> в топике пользователя или ответом (reply) на его сообщение.\n\n"
+                    "Пример: <code>/give Иван</code> или <code>/give 123456</code>"
+                )
+                return True
+            return False
 
         uid = target_user['id']
         ban_limit = self.config.get("settings", {}).get("autoBanThreshold", 3)
@@ -2424,25 +2434,36 @@ class BotInstance:
         # ── СТАФФ: /give <id|псевдоним> — передать тикет другому администратору ──
         if command == "give":
             if not self.staff_enabled:
-                return False
+                await m.reply("❌ Система администраторов отключена.")
+                return True
             if len(cmd_parts) < 2:
                 await m.reply(
                     "🔄 <b>Передача тикета:</b>\n\n"
-                    "/give <code>ID</code> или /give <code>псевдоним</code>\n\n"
-                    "<i>Используйте в топике пользователя или с реплаем на его сообщение.</i>"
+                    "/give <code>псевдоним</code> или /give <code>ID</code>\n\n"
+                    "<i>Используйте в топике пользователя или реплаем на его сообщение.</i>"
                 )
                 return True
             new_staff = self._find_staff_by_arg(cmd_parts[1])
             if not new_staff:
-                await m.reply(f"❌ Администратор <code>{cmd_parts[1]}</code> не найден.\nПроверьте ID или псевдоним.")
+                await m.reply(f"❌ Администратор <code>{cmd_parts[1]}</code> не найден.\nПроверьте псевдоним или ID.")
                 return True
             if not new_staff.get('active'):
-                await m.reply(f"⚠️ Администратор <b>{new_staff.get('alias', new_staff.get('name'))}</b> сейчас неактивен.")
+                await m.reply(f"⚠️ Администратор <b>{new_staff.get('alias', new_staff.get('name'))}</b> неактивен.")
                 return True
-            await self._assign_staff_to_user(target_user, new_staff)
-            await self._save_to_db(headers)
+            if new_staff.get('is_on_rest'):
+                await m.reply(f"🌙 Администратор <b>{new_staff.get('alias', new_staff.get('name'))}</b> сейчас на отдыхе.")
+                return True
+            if new_staff.get('id') == target_user.get('assigned_staff_id'):
+                await m.reply(f"ℹ️ Этот администратор уже ведёт данное обращение.")
+                return True
+
+            # Узнаём thread_id для DM-уведомления
+            thread_id = target_user.get('last_topic_id')
+            await self._assign_staff_to_user(target_user, new_staff, thread_id=thread_id)
+            await self.sync_queue.put(("sync_state", None))
+
             await m.reply(
-                f"✅ Тикет передан администратору <b>{new_staff.get('alias', new_staff.get('name'))}</b>.\n"
+                f"✅ Тикет передан: <b>{new_staff.get('alias', new_staff.get('name'))}</b>.\n"
                 f"Пользователь уведомлён."
             )
             return True
@@ -2705,7 +2726,7 @@ class BotInstance:
                         try:
                             await self.bot.send_message(
                                 target_id,
-                                f"<b>Вам ответил:</b> {alias}",
+                                f"🧑‍💼 <b>Вам ответил:</b> {alias}",
                                 parse_mode="HTML"
                             )
                         except Exception:
@@ -3276,19 +3297,28 @@ class BotInstance:
                 await cb.answer("Этот администратор сейчас на отдыхе.", show_alert=True)
                 return
 
-            await self._assign_staff_to_user(user_cb, staff, None)
+            # ── 1. Создаём/находим топик ДО уведомлений, чтобы ссылка была актуальной ──
+            # topic_per_req = каждое обращение — новый топик; иначе — переиспользуем существующий
+            force_new_topic = self.topic_per_req or not user_cb.get('last_topic_id')
+            thread_id = await self.resolve_thread(user_cb, force_new=force_new_topic)
 
-            # ── Открываем тикет ──
+            # ── 2. Назначаем стаффера (с правильным thread_id для DM) ──
+            await self._assign_staff_to_user(user_cb, staff, None, thread_id=thread_id)
+
+            # ── 3. Открываем тикет ──
             user_cb['_in_ticket'] = True
 
-            close_kb = ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text="Закрыть обращение")]],
-                resize_keyboard=True
-            )
+            # ── 4. Удаляем сообщение со списком ──
             try:
                 await cb.message.delete()
             except Exception:
                 pass
+
+            # ── 5. Пишем пользователю подтверждение ──
+            close_kb = ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="Закрыть обращение")]],
+                resize_keyboard=True
+            )
             try:
                 await self.bot.send_message(
                     uid_cb,
@@ -3299,12 +3329,11 @@ class BotInstance:
             except Exception:
                 pass
 
-            # ── Уведомляем чат администраторов ──
+            # ── 6. Уведомляем чат администраторов ──
             if self.admin_chat_id:
                 try:
-                    thread_id = await self.resolve_thread(user_cb, force_new=not user_cb.get('last_topic_id'))
-                    user_name  = user_cb.get('first_name', f"User#{uid_cb}")
-                    username   = f" (@{user_cb.get('username')})" if user_cb.get('username') else ""
+                    user_name   = user_cb.get('first_name', f"User#{uid_cb}")
+                    username    = f" (@{user_cb.get('username')})" if user_cb.get('username') else ""
                     staff_alias = staff.get('alias', staff.get('name', '?'))
                     header = (
                         f"🆕 <b>Новое обращение</b>\n"
