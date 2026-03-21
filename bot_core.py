@@ -30,42 +30,36 @@ except ImportError:
     _SOCKS_OK = False
 
 def _make_session():
-    """
-    Создаёт aiogram-сессию с прокси (для обхода блокировок TG API в РФ) и корректными таймаутами.
-
-    TG_PROXY_URL в .env:
-      socks5://user:pass@host:port   — SOCKS5 (рекомендуется, нужен pip install aiohttp-socks)
-      socks4://host:port             — SOCKS4
-      http://user:pass@host:port     — HTTP прокси
-
-    Без TG_PROXY_URL — подключение напрямую (работает если сервер вне РФ).
-    """
     import aiohttp as _aiohttp
-
-    # Таймауты соединения: connect=5s, read=35s (чуть больше TG long-poll 30s)
-    _timeout = _aiohttp.ClientTimeout(total=None, connect=5, sock_connect=5, sock_read=35)
+    
+    # 1. ТАЙМАУТЫ: Добавляем жесткий лимит, чтобы бот не "висел" по минуте
+    _timeout = _aiohttp.ClientTimeout(total=30, connect=5, sock_connect=5, sock_read=30)
 
     _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
     if not _PROXY_URL:
-        return AiohttpSession()
+        return AiohttpSession(timeout=_timeout)
+
+    # 2. ФИКС DNS: Используем socks5h:// (если в .env просто socks5:// — меняем на лету)
+    # Это заставляет прокси само резолвить api.telegram.org
+    if _PROXY_URL.startswith("socks5://"):
+        _PROXY_URL = _PROXY_URL.replace("socks5://", "socks5h://")
 
     is_socks = _PROXY_URL.startswith(("socks5://", "socks4://", "socks5h://"))
 
     if is_socks and _SOCKS_OK:
         try:
+            # rdns=True — КРИТИЧНО для РФ, чтобы DNS не блокировался
             connector = _ProxyConnector.from_url(_PROXY_URL, rdns=True)
-            return AiohttpSession(connector=connector)
+            return AiohttpSession(connector=connector, timeout=_timeout)
         except Exception as e:
-            logger.warning(f"[Proxy] SOCKS-коннектор не создан ({e}), запуск без прокси")
-            return AiohttpSession()
-    elif is_socks:
-        logger.warning("[Proxy] TG_PROXY_URL задан как SOCKS, но aiohttp-socks не установлен! "
-                       "pip install aiohttp-socks  — запуск без прокси")
-        return AiohttpSession()
-    else:
-        # HTTP/HTTPS прокси — поддерживается нативно
-        return AiohttpSession(proxy=_PROXY_URL)
-
+            logging.error(f"[Proxy] Ошибка коннектора: {e}")
+            return AiohttpSession(timeout=_timeout)
+    
+    elif not is_socks and _PROXY_URL:
+        # 3. ФИКС HTTP: В aiogram 3.x нет аргумента proxy, нужно proxy_url!
+        return AiohttpSession(proxy_url=_PROXY_URL, timeout=_timeout)
+        
+    return AiohttpSession(timeout=_timeout)
 
 from dotenv import load_dotenv
 load_dotenv()
