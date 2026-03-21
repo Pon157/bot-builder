@@ -151,14 +151,14 @@ async def sb_update_queue(row_id, upd: dict):
 
 async def sb_save_cache(user_id: int, username: str,
                         status: str, reasons: List[str], raw_text: str):
-    expires = (datetime.now(timezone.utc) + timedelta(seconds=CACHE_TTL)).isoformat()
+    expires = datetime.now(timezone.utc) + timedelta(seconds=CACHE_TTL)
     payload = {
         "user_id":    user_id,
         "username":   username or "",
         "status":     status,
         "reasons":    reasons,
         "raw_text":   raw_text[:2000],
-        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "checked_at": datetime.now(timezone.utc),
         "expires_at": expires,
     }
     try:
@@ -179,7 +179,7 @@ async def sb_save_cache(user_id: int, username: str,
 async def sb_reset_stale_processing():
     """Сбрасываем задачи зависшие в processing > 2 мин обратно в pending."""
     try:
-        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
         ok = await _db.patch(
             "mb_check_queue",
             {"status": "eq.processing", "updated_at": f"lt.{cutoff}"},
