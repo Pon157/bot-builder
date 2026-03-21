@@ -37,15 +37,39 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 from aiogram.client.session.aiohttp import AiohttpSession
 try:
-    from aiohttp_socks import ProxyConnector as _ProxyConnector  # noqa: ensure aiohttp_socks installed
-    def _make_session():
-        _PROXY_URL = os.getenv("TG_PROXY_URL")
-        if _PROXY_URL:
-            return AiohttpSession(proxy=_PROXY_URL)
-        return None
+    from aiohttp_socks import ProxyConnector as _ProxyConnector
+    _SOCKS_OK = True
 except ImportError:
-    def _make_session():
-        return None
+    _SOCKS_OK = False
+
+def _make_session():
+    _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
+    
+    # Базовый таймаут, чтобы бот не вис на минуту
+    _timeout = aiohttp.ClientTimeout(total=30, connect=10)
+
+    if not _PROXY_URL:
+        return AiohttpSession(timeout=_timeout)
+
+    # Если это SOCKS прокси
+    if _PROXY_URL.startswith(("socks5", "socks4")):
+        if not _SOCKS_OK:
+            print("Критическая ошибка: TG_PROXY_URL указан как SOCKS, но пакет aiohttp-socks не установлен!")
+            return AiohttpSession(timeout=_timeout)
+        
+        # Убираем 'h' из схемы, так как ProxyConnector её не любит,
+        # но включаем rdns=True (это и есть аналог socks5h)
+        clean_proxy = _PROXY_URL.replace("socks5h://", "socks5://")
+        connector = _ProxyConnector.from_url(clean_proxy, rdns=True)
+        
+        # В aiogram 3.x коннектор передается первым позиционным аргументом или через connector=
+        return AiohttpSession(connector=connector, timeout=_timeout)
+
+    # Если это HTTP прокси
+    elif _PROXY_URL.startswith("http"):
+        return AiohttpSession(proxy_url=_PROXY_URL, timeout=_timeout)
+
+    return AiohttpSession(timeout=_timeout)
 
 
 from dotenv import load_dotenv
