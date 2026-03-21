@@ -2705,7 +2705,7 @@ class BotInstance:
                         try:
                             await self.bot.send_message(
                                 target_id,
-                                f"🧑‍💼 <b>Вам ответил:</b> {alias}",
+                                f"<b>Вам ответил:</b> {alias}",
                                 parse_mode="HTML"
                             )
                         except Exception:
