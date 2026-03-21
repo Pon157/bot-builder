@@ -31,16 +31,20 @@ except ImportError:
 
 def _make_session():
     """
-    Создаёт сессию с прокси для обхода блокировок Telegram API в РФ.
+    Создаёт aiogram-сессию с прокси (для обхода блокировок TG API в РФ) и корректными таймаутами.
 
-    Порядок приоритетов:
-      1. TG_PROXY_URL — любой прокси (socks5://, socks4://, http://)
-         Пример: TG_PROXY_URL=socks5://user:pass@1.2.3.4:1080
-      2. Если не задан — сессия без прокси (работает если сервер вне РФ)
+    TG_PROXY_URL в .env:
+      socks5://user:pass@host:port   — SOCKS5 (рекомендуется, нужен pip install aiohttp-socks)
+      socks4://host:port             — SOCKS4
+      http://user:pass@host:port     — HTTP прокси
 
-    Для SOCKS5/4 требуется пакет aiohttp-socks:
-      pip install aiohttp-socks
+    Без TG_PROXY_URL — подключение напрямую (работает если сервер вне РФ).
     """
+    import aiohttp as _aiohttp
+
+    # Таймауты соединения: connect=5s, read=35s (чуть больше TG long-poll 30s)
+    _timeout = _aiohttp.ClientTimeout(total=None, connect=5, sock_connect=5, sock_read=35)
+
     _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
     if not _PROXY_URL:
         return AiohttpSession()
@@ -49,19 +53,17 @@ def _make_session():
 
     if is_socks and _SOCKS_OK:
         try:
-            connector = _ProxyConnector.from_url(_PROXY_URL)
-            import aiohttp as _aiohttp
-            session_obj = _aiohttp.ClientSession(connector=connector)
+            connector = _ProxyConnector.from_url(_PROXY_URL, rdns=True)
             return AiohttpSession(connector=connector)
         except Exception as e:
-            logger.warning(f"[Proxy] Не удалось создать SOCKS-коннектор: {e}, fallback без прокси")
+            logger.warning(f"[Proxy] SOCKS-коннектор не создан ({e}), запуск без прокси")
             return AiohttpSession()
-    elif is_socks and not _SOCKS_OK:
+    elif is_socks:
         logger.warning("[Proxy] TG_PROXY_URL задан как SOCKS, но aiohttp-socks не установлен! "
-                       "Установи: pip install aiohttp-socks. Запуск без прокси.")
+                       "pip install aiohttp-socks  — запуск без прокси")
         return AiohttpSession()
     else:
-        # HTTP/HTTPS прокси — aiogram поддерживает нативно
+        # HTTP/HTTPS прокси — поддерживается нативно
         return AiohttpSession(proxy=_PROXY_URL)
 
 
@@ -1029,7 +1031,25 @@ class BotInstance:
         return next((a for a in self.staff_admins if a.get('id') == sid), None)
 
     async def _post_staff_stat(self, staff_id: str, event: str, value: int = 1):
-        """Обновляет статистику стафф-администратора напрямую в БД (без HTTP-вызова сервера)."""
+        """Обновляет статистику стафф-администратора напрямую в БД.
+        Событие 'message' НЕ пишется в БД на каждом сообщении — только в памяти (stats_data).
+        """
+        # Событие 'message' — просто обновляем счётчик в памяти через sync_state
+        # чтобы не делать GET+PATCH на каждое сообщение пользователя
+        if event == "message":
+            # Обновляем в памяти через staffAdmins списка
+            for adm in self.staff_admins:
+                if adm.get("id") == staff_id:
+                    st = adm.setdefault("stats", {
+                        "ticketsAccepted": 0, "ticketsClosed": 0,
+                        "messagesSent": 0, "avgResponseMs": 0
+                    })
+                    st["messagesSent"] = st.get("messagesSent", 0) + 1
+                    break
+            asyncio.create_task(self.sync_queue.put(("sync_state", None)))
+            return
+
+        # Остальные события (accepted, closed, response_ms) — пишем в БД
         try:
             rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
             if not rows:
@@ -1048,8 +1068,6 @@ class BotInstance:
                     st["ticketsAccepted"] = st.get("ticketsAccepted", 0) + 1
                 elif event == "closed":
                     st["ticketsClosed"] = st.get("ticketsClosed", 0) + 1
-                elif event == "message":
-                    st["messagesSent"] = st.get("messagesSent", 0) + 1
                 elif event == "response_ms":
                     n = st.get("ticketsAccepted", 1) or 1
                     old_avg = st.get("avgResponseMs", 0)
@@ -1059,6 +1077,13 @@ class BotInstance:
             if updated:
                 cfg["staffAdmins"] = staff_list
                 await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"config": cfg})
+                # Синхронизируем в памяти тоже
+                for adm in self.staff_admins:
+                    if adm.get("id") == staff_id:
+                        db_adm = next((a for a in staff_list if a.get("id") == staff_id), None)
+                        if db_adm:
+                            adm["stats"] = db_adm.get("stats", {})
+                        break
         except Exception as e:
             logger.warning(f"[STAFF] Не удалось обновить статистику: {e}")
 
@@ -1756,11 +1781,7 @@ class BotInstance:
                 item = await asyncio.wait_for(self.sync_queue.get(), timeout=1.0)
                 action, payload = item
 
-                if action == "log_message":
-                    # Лог — всегда немедленно
-                    await self.db.post("bot_messages", payload)
-
-                elif action == "sync_state":
+                if action == "sync_state":
                     now = time.time()
                     if now - _last_sync >= SYNC_DEBOUNCE:
                         await _do_sync_state()
@@ -1871,31 +1892,35 @@ class BotInstance:
         return False
 
     async def log_and_update(self, uid: int, name: str, text: str, is_admin: bool = False):
-        """Логирование и обновление статистики для графиков"""
-        # Лог сообщения
-        await self.sync_queue.put(("log_message", {
-            "bot_id": self.bot_id, 
-            "user_id": uid, 
-            "first_name": name,
-            "message_text": text[:950] if text else "[Медиа]", 
-            "is_from_admin": is_admin
-        }))
-        
-        # Обновление счетчиков
+        """Логирование и обновление статистики. БД-запись — fire-and-forget через create_task."""
+        # Обновление счётчиков (синхронно, в памяти — мгновенно)
         self.stats_data["totalMessages"] = self.stats_data.get("totalMessages", 0) + 1
         stat_key = "outgoingToday" if is_admin else "incomingToday"
         self.stats_data[stat_key] = self.stats_data.get(stat_key, 0) + 1
-        
-        # Обновление пользователя
+
         if not is_admin:
             for u in self.users_list:
                 if u['id'] == uid:
                     u['last_seen'] = int(time.time())
-                    u['name'] = name # Обновляем имя, если изменилось
+                    u['name'] = name
                     break
-        
-        # Сразу пушим обновление для графиков
-        await self.sync_queue.put(("sync_state", None))
+
+        # Запись лога в БД — не ждём, не блокируем обработчик
+        async def _write_log():
+            try:
+                await self.db.post("bot_messages", {
+                    "bot_id": self.bot_id,
+                    "user_id": uid,
+                    "first_name": name,
+                    "message_text": text[:950] if text else "[Медиа]",
+                    "is_from_admin": is_admin
+                })
+            except Exception:
+                pass
+        asyncio.create_task(_write_log())
+
+        # Дебаунс-синхронизация состояния (тоже не ждём)
+        asyncio.create_task(self.sync_queue.put(("sync_state", None)))
 
     async def get_user_state(self, m: Message):
         uid = m.from_user.id
@@ -3449,11 +3474,29 @@ class BotInstance:
         try:
             # Сбрасываем webhook — иначе getUpdates (polling) даёт TelegramConflictError
             await self.bot.delete_webhook(drop_pending_updates=True)
-            await self.dp.start_polling(
-                self.bot,
-                drop_pending_updates=True,
-                allowed_updates=["message", "edited_message", "callback_query", "my_chat_member", "message_reaction"]
-            )
+
+            # polling_timeout=25 — long-poll окно (TG держит 25с, потом отдаёт пустой ответ).
+            # handle_signals=False — бот запущен как subprocess server.py, сигналы обрабатывает родитель.
+            # Reconnect при обрыве — aiogram делает сам через exponential backoff.
+            try:
+                from aiogram.utils.backoff import BackoffConfig
+                _backoff = BackoffConfig(min_delay=1.0, max_delay=20.0, factor=1.5, jitter=0.1)
+                await self.dp.start_polling(
+                    self.bot,
+                    drop_pending_updates=True,
+                    allowed_updates=["message", "edited_message", "callback_query", "my_chat_member", "message_reaction"],
+                    handle_signals=False,
+                    polling_timeout=25,
+                    backoff_config=_backoff,
+                )
+            except TypeError:
+                # Старая версия aiogram без backoff_config / polling_timeout — базовый вызов
+                await self.dp.start_polling(
+                    self.bot,
+                    drop_pending_updates=True,
+                    allowed_updates=["message", "edited_message", "callback_query", "my_chat_member", "message_reaction"],
+                    handle_signals=False,
+                )
         finally:
             self.is_running = False
             await self.bot.session.close()
