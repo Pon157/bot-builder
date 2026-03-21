@@ -29,44 +29,56 @@ try:
 except ImportError:
     _SOCKS_OK = False
 
+import os
+import aiohttp
+from aiogram.client.session.aiohttp import AiohttpSession
+
+# --- НАШ КАСТОМНЫЙ КЛАСС (ОБХОД ОШИБОК AIOGRAM 3.24) ---
+class CustomProxySession(AiohttpSession):
+    def __init__(self, connector: aiohttp.BaseConnector):
+        # Вызываем конструктор aiogram БЕЗ аргументов (ошибок не будет)
+        super().__init__()
+        self._custom_connector = connector
+
+    # Принудительно встраиваем коннектор прямо в ядро aiohttp
+    async def create_session(self) -> aiohttp.ClientSession:
+        return aiohttp.ClientSession(
+            connector=self._custom_connector,
+            json_serialize=self.json_dumps,
+            timeout=aiohttp.ClientTimeout(total=40, connect=15)
+        )
+# ---------------------------------------------------------
+
 def _make_session():
-    import os
-    import aiohttp
-    from aiogram.client.session.aiohttp import AiohttpSession
-    
+    # Берем токен из .env файла
     _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
     
-    # В 3.24.0 таймаут лучше передавать в объекте Bot, но здесь оставим для совместимости
+    # Таймауты для стабильности
     _timeout = aiohttp.ClientTimeout(total=40, connect=15)
 
-    # Если прокси нет — просто пустая сессия
+    # Если прокси нет — стандартная сессия
     if not _PROXY_URL:
-        return AiohttpSession()
+        return AiohttpSession(timeout=_timeout)
 
     try:
-        # 1. Если это SOCKS (socks5, socks4)
-        if _PROXY_URL.startswith(("socks5", "socks4")):
-            from aiohttp_socks import ProxyConnector
-            clean_proxy = _PROXY_URL.replace("socks5h://", "socks5://")
-            
-            # ВНИМАНИЕ: В версии 3.24.0 для SOCKS используется ТОЛЬКО такой синтаксис:
-            # Мы не пишем connector=..., мы создаем сессию БЕЗ аргументов, 
-            # а коннектор aiogram подхватит сам через проброс в aiohttp.
-            connector = ProxyConnector.from_url(clean_proxy, rdns=True)
-            
-            # Самый стабильный способ для 3.24.0:
-            return AiohttpSession(proxy_connector=connector)
+        if not _SOCKS_OK:
+            print("[NET] Ошибка: библиотека aiohttp_socks не установлена. Запуск без прокси.")
+            return AiohttpSession(timeout=_timeout)
+
+        # aiohttp_socks отлично работает и с SOCKS, и с HTTP.
+        # Поэтому мы просто отдаем ему любой URL.
+        clean_proxy = _PROXY_URL.replace("socks5h://", "socks5://")
         
-        # 2. Если это HTTP/HTTPS
-        elif _PROXY_URL.startswith("http"):
-            # В версии 3.24.0 аргумент называется 'proxy' (без _url)
-            return AiohttpSession(proxy=_PROXY_URL)
+        # Создаем коннектор
+        connector = _ProxyConnector.from_url(clean_proxy, rdns=True)
+        
+        # ВОЗВРАЩАЕМ НАШ КЛАСС, а не стандартный AiohttpSession
+        return CustomProxySession(connector=connector)
             
     except Exception as e:
-        # Если даже это не сработает (что вряд ли), откатываемся на пустую сессию
         print(f"Ошибка конфигурации сессии: {e}")
     
-    return AiohttpSession()
+    return AiohttpSession(timeout=_timeout)
     
 from dotenv import load_dotenv
 load_dotenv()
