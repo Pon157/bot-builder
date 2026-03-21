@@ -54,41 +54,21 @@ def _make_session():
         return AiohttpSession()
 
     try:
+        # Если это SOCKS
         if _PROXY_URL.startswith(("socks5", "socks4")):
             from aiohttp_socks import ProxyConnector
             clean_proxy = _PROXY_URL.replace("socks5h://", "socks5://")
-            # Передаем коннектор как единственный аргумент
-            return AiohttpSession(connector=ProxyConnector.from_url(clean_proxy, rdns=True))
-        
-        elif _PROXY_URL.startswith("http"):
-            return AiohttpSession(proxy_url=_PROXY_URL)
-            
-    except Exception as e:
-        # Мы оставляем этот принт, чтобы видеть, если прокси отвалится
-        print(f"Запуск без прокси (ошибка: {e})")
-    
-    return AiohttpSession()
-    try:
-        # 1. Если это SOCKS (socks5, socks5h, socks4)
-        if _PROXY_URL.startswith(("socks5", "socks4")):
-            if not _HAS_SOCKS:
-                print("Ошибка: SOCKS прокси указан, но aiohttp-socks не установлен!")
-                return AiohttpSession()
-            
-            # Чистим URL от буквы 'h' (rdns=True сделает её работу)
-            clean_proxy = _PROXY_URL.replace("socks5h://", "socks5://")
+            # ВНИМАНИЕ: Аргумент называется proxy_connector, а не connector!
             connector = ProxyConnector.from_url(clean_proxy, rdns=True)
-            
-            # ВАЖНО: Передаем ТОЛЬКО connector. 
-            # Не добавляем сюда timeout=aiohttp.ClientTimeout, чтобы не было ошибки "+"
-            return AiohttpSession(connector=connector)
-
-        # 2. Если это HTTP/HTTPS прокси
+            return AiohttpSession(proxy_connector=connector)
+        
+        # Если это HTTP
         elif _PROXY_URL.startswith("http"):
             return AiohttpSession(proxy_url=_PROXY_URL)
-
+            
     except Exception as e:
-        print(f"Ошибка при создании прокси-сессии: {e}")
+        # Теперь эта ошибка должна исчезнуть
+        print(f"Запуск без прокси (ошибка конфигурации: {e})")
     
     return AiohttpSession()
 
