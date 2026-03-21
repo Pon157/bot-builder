@@ -950,8 +950,22 @@ class BotInstance:
     # ══════════════════════════════════════════════════════════════════
 
     def _get_active_staff(self) -> list:
-        """Возвращает список активных стафф-администраторов."""
-        return [a for a in self.staff_admins if a.get('active', True) and a.get('tg_id')]
+        """Возвращает список активных стафф-администраторов (не на отдыхе)."""
+        now = int(time.time() * 1000)
+        result = []
+        for a in self.staff_admins:
+            if not a.get('active', True) or not a.get('tg_id'):
+                continue
+            if a.get('is_on_rest', False):
+                # Автовозврат: если rest_until уже прошёл — снимаем отдых
+                rest_until = a.get('rest_until')
+                if rest_until and now >= rest_until:
+                    a['is_on_rest'] = False
+                    a.pop('rest_until', None)
+                else:
+                    continue
+            result.append(a)
+        return result
 
     def _assign_staff(self) -> dict | None:
         """Назначить администратора согласно режиму (random / least)."""
@@ -1004,15 +1018,16 @@ class BotInstance:
         user['assigned_staff_id'] = staff['id']
         user['assigned_staff_alias'] = staff.get('alias', staff.get('name', '?'))
         user['assigned_staff_tg'] = staff.get('tg_id')
-        # Засекаем время назначения для расчёта avg response
         user['_staff_assigned_at'] = int(time.time() * 1000)
+        user['_staff_first_replied'] = False  # сбрасываем флаг «первый ответ»
 
         # Уведомляем пользователя
         if self.staff_notify:
             try:
                 await self.bot.send_message(
                     uid,
-                    f"👤 <b>Ваше обращение принял:</b> {staff.get('alias', staff.get('name'))}",
+                    f"👤 <b>Ваше обращение принял:</b> {staff.get('alias', staff.get('name'))}\n\n"
+                    f"Вы можете продолжать писать — сообщения будут доставлены оператору.",
                     parse_mode="HTML"
                 )
             except Exception:
@@ -1036,7 +1051,6 @@ class BotInstance:
         # Статистика: принято
         asyncio.create_task(self._post_staff_stat(staff['id'], 'accepted'))
 
-        # Если был старый и он другой — обновляем его стату (закрытие не считаем, просто логируем)
         if old_staff_id and old_staff_id != staff['id']:
             logger.info(f"[STAFF] Тикет {uid} перешёл от {old_staff_id} к {staff['id']}")
 
@@ -2681,6 +2695,22 @@ class BotInstance:
             
             if target_id:
                 try:
+                    # ── СТАФФ: если это первый ответ администратора — уведомляем пользователя ──
+                    target_user = next((u for u in self.users_list if u.get('id') == target_id), None)
+                    if (target_user and self.staff_enabled
+                            and target_user.get('assigned_staff_alias')
+                            and not target_user.get('_staff_first_replied')):
+                        target_user['_staff_first_replied'] = True
+                        alias = target_user['assigned_staff_alias']
+                        try:
+                            await self.bot.send_message(
+                                target_id,
+                                f"🧑‍💼 <b>Вам ответил:</b> {alias}",
+                                parse_mode="HTML"
+                            )
+                        except Exception:
+                            pass
+
                     sent = await self.bot.copy_message(target_id, m.chat.id, m.message_id)
                     if sent:
                         # admin_msg_id → target_id, и (target_id, user_msg_id) → admin_msg_id
@@ -3242,16 +3272,57 @@ class BotInstance:
             if not staff.get('active'):
                 await cb.answer("Этот администратор сейчас недоступен.", show_alert=True)
                 return
+            if staff.get('is_on_rest'):
+                await cb.answer("Этот администратор сейчас на отдыхе.", show_alert=True)
+                return
 
             await self._assign_staff_to_user(user_cb, staff, None)
-            await self.sync_queue.put(("sync_state", None))
 
+            # ── Открываем тикет ──
+            user_cb['_in_ticket'] = True
+
+            close_kb = ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="Закрыть обращение")]],
+                resize_keyboard=True
+            )
             try:
                 await cb.message.delete()
             except Exception:
                 pass
             try:
-                await cb.answer(f"✅ Обращение принял: {staff.get('alias', staff.get('name'))}")
+                await self.bot.send_message(
+                    uid_cb,
+                    "✅ Вы можете продолжать писать — сообщения будут доставлены оператору.",
+                    reply_markup=close_kb,
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+            # ── Уведомляем чат администраторов ──
+            if self.admin_chat_id:
+                try:
+                    thread_id = await self.resolve_thread(user_cb, force_new=not user_cb.get('last_topic_id'))
+                    user_name  = user_cb.get('first_name', f"User#{uid_cb}")
+                    username   = f" (@{user_cb.get('username')})" if user_cb.get('username') else ""
+                    staff_alias = staff.get('alias', staff.get('name', '?'))
+                    header = (
+                        f"🆕 <b>Новое обращение</b>\n"
+                        f"👤 <b>{user_name}{username}</b> (<code>{uid_cb}</code>)\n"
+                        f"🧑‍💼 Назначен: <b>{staff_alias}</b>"
+                    )
+                    await self.bot.send_message(
+                        self.admin_chat_id,
+                        header,
+                        message_thread_id=thread_id,
+                        parse_mode="HTML"
+                    )
+                except Exception as e:
+                    logger.warning(f"[STAFF] Не удалось уведомить чат администраторов: {e}")
+
+            await self.sync_queue.put(("sync_state", None))
+            try:
+                await cb.answer(f"✅ Принято: {staff.get('alias', staff.get('name'))}")
             except Exception:
                 pass
 
@@ -3265,10 +3336,22 @@ class BotInstance:
         # Добавляем AI-кнопку если режим 'button'
         if self.ai_enabled and self.ai_mode == 'button' and self.ai_button_name:
             active_btns = active_btns + [{'text': self.ai_button_name}]
-        if not active_btns: return ReplyKeyboardRemove()
+        
+        # ── СТАФФ: кнопки "Список администрации" и "Сменить админа" ──
+        staff_row = []
+        if self.staff_enabled and self.staff_show_list:
+            staff_row.append(KeyboardButton(text=self.staff_list_btn_name))
+        if self.staff_enabled and self.staff_allow_switch:
+            staff_row.append(KeyboardButton(text="🔄 Сменить админа"))
+
+        if not active_btns and not staff_row:
+            return ReplyKeyboardRemove()
+        
         keyboard_rows = []
         for i in range(0, len(active_btns), 2):
             keyboard_rows.append([KeyboardButton(text=b['text']) for b in active_btns[i:i+2]])
+        if staff_row:
+            keyboard_rows.append(staff_row)
         return ReplyKeyboardMarkup(keyboard=keyboard_rows, resize_keyboard=True)
 
     async def run_instance(self):
