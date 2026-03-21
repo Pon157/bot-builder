@@ -1743,8 +1743,11 @@ class BotInstance:
 
     async def database_sync_worker(self):
         # Дебаунс: не чаще раза в 15 сек для sync_state.
-        # log_message — всегда немедленно (важно для лога).
+        # Стартовый jitter: каждый бот-процесс начинает синк в случайный момент (0..15с)
+        # чтобы все боты не долбили БД одновременно (thundering herd).
+        import random as _random
         SYNC_DEBOUNCE = 15.0
+        await asyncio.sleep(_random.uniform(0, SYNC_DEBOUNCE))  # stagger
         _last_sync: float = 0.0
         _pending_sync: bool = False
 
