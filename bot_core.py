@@ -38,18 +38,21 @@ def _make_session():
         return AiohttpSession()
 
     try:
+        # Если это SOCKS
         if _PROXY_URL.startswith(("socks5", "socks4")):
             from aiohttp_socks import ProxyConnector
             clean_proxy = _PROXY_URL.replace("socks5h://", "socks5://")
-            # Передаем коннектор как единственный аргумент
-            return AiohttpSession(connector=ProxyConnector.from_url(clean_proxy, rdns=True))
+            # ВНИМАНИЕ: Аргумент называется proxy_connector, а не connector!
+            connector = ProxyConnector.from_url(clean_proxy, rdns=True)
+            return AiohttpSession(proxy_connector=connector)
         
+        # Если это HTTP
         elif _PROXY_URL.startswith("http"):
             return AiohttpSession(proxy_url=_PROXY_URL)
             
     except Exception as e:
-        # Мы оставляем этот принт, чтобы видеть, если прокси отвалится
-        print(f"Запуск без прокси (ошибка: {e})")
+        # Теперь эта ошибка должна исчезнуть
+        print(f"Запуск без прокси (ошибка конфигурации: {e})")
     
     return AiohttpSession()
 
