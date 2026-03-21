@@ -47,22 +47,27 @@ except ImportError:
 
 def _make_session():
     import os
-    import aiohttp
     from aiogram.client.session.aiohttp import AiohttpSession
     
-    # Пытаемся импортировать коннектор для SOCKS
-    try:
-        from aiohttp_socks import ProxyConnector
-        _HAS_SOCKS = True
-    except ImportError:
-        _HAS_SOCKS = False
-
     _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
-
-    # Если прокси нет — возвращаем чистую сессию
     if not _PROXY_URL:
         return AiohttpSession()
 
+    try:
+        if _PROXY_URL.startswith(("socks5", "socks4")):
+            from aiohttp_socks import ProxyConnector
+            clean_proxy = _PROXY_URL.replace("socks5h://", "socks5://")
+            # Передаем коннектор как единственный аргумент
+            return AiohttpSession(connector=ProxyConnector.from_url(clean_proxy, rdns=True))
+        
+        elif _PROXY_URL.startswith("http"):
+            return AiohttpSession(proxy_url=_PROXY_URL)
+            
+    except Exception as e:
+        # Мы оставляем этот принт, чтобы видеть, если прокси отвалится
+        print(f"Запуск без прокси (ошибка: {e})")
+    
+    return AiohttpSession()
     try:
         # 1. Если это SOCKS (socks5, socks5h, socks4)
         if _PROXY_URL.startswith(("socks5", "socks4")):
