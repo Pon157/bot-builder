@@ -31,38 +31,40 @@ except ImportError:
 
 def _make_session():
     import os
+    import aiohttp
     from aiogram.client.session.aiohttp import AiohttpSession
-    from aiohttp import ClientSession
+    from aiohttp import TCPConnector
     
     _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
+    
+    # В aiogram 3.24 таймаут передается как обычный объект aiohttp
+    _timeout = aiohttp.ClientTimeout(total=40, connect=15)
+
+    # Если прокси нет — создаем стандартную сессию
     if not _PROXY_URL:
-        return AiohttpSession()
+        return AiohttpSession(timeout=_timeout)
 
     try:
-        # Если это SOCKS
+        # 1. Если это SOCKS (socks5, socks4)
         if _PROXY_URL.startswith(("socks5", "socks4")):
             from aiohttp_socks import ProxyConnector
             clean_proxy = _PROXY_URL.replace("socks5h://", "socks5://")
             
-            # Создаем коннектор
+            # В 3.24.0 объект ProxyConnector передается в аргумент connector
             connector = ProxyConnector.from_url(clean_proxy, rdns=True)
-            
-            # ВНИМАНИЕ: В новых aiogram сессия создается так.
-            # Мы НЕ передаем коннектор в Init, мы позволяем aiogram самому 
-            # внедрить его в aiohttp.
-            return AiohttpSession(
-                proxy_url=None, # Явно обнуляем, если используем коннектор
-                proxy_connector=connector 
-            )
+            return AiohttpSession(connector=connector, timeout=_timeout)
         
-        # Если это HTTP
+        # 2. Если это HTTP/HTTPS
         elif _PROXY_URL.startswith("http"):
-            return AiohttpSession(proxy_url=_PROXY_URL)
+            # Для HTTP прокси в новых версиях aiogram 
+            # мы НЕ передаем proxy_url в сессию, а используем встроенный механизм aiohttp
+            # ВАЖНО: В 3.24.0 для HTTP прокси используется именно этот синтаксис:
+            return AiohttpSession(proxy=_PROXY_URL, timeout=_timeout)
             
     except Exception as e:
-        print(f"Запуск без прокси (ошибка: {e})")
+        print(f"Ошибка инициализации сессии: {e}")
     
-    return AiohttpSession()
+    return AiohttpSession(timeout=_timeout)
     
 from dotenv import load_dotenv
 load_dotenv()
