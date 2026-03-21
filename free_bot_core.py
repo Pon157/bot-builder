@@ -22,6 +22,7 @@ import os
 import sys
 import hashlib
 import time
+import aiohttp  # <--- КРИТИЧЕСКИЙ ИМПОРТ, КОТОРОГО НЕ ХВАТАЛО
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List, Any, Callable
 
@@ -36,6 +37,8 @@ from aiogram.types import (
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 from aiogram.client.session.aiohttp import AiohttpSession
+
+# Пытаемся импортировать поддержку SOCKS-прокси
 try:
     from aiohttp_socks import ProxyConnector as _ProxyConnector
     _SOCKS_OK = True
@@ -43,32 +46,41 @@ except ImportError:
     _SOCKS_OK = False
 
 def _make_session():
+    """
+    Создает сессию aiohttp с поддержкой SOCKS5/HTTP прокси и правильными таймаутами.
+    """
     _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
     
-    # Базовый таймаут, чтобы бот не вис на минуту
+    # Устанавливаем таймауты: 
+    # total=30 (общее время), connect=10 (время на установку связи)
     _timeout = aiohttp.ClientTimeout(total=30, connect=10)
 
+    # Если прокси не задан в .env, возвращаем обычную сессию
     if not _PROXY_URL:
         return AiohttpSession(timeout=_timeout)
 
-    # Если это SOCKS прокси
-    if _PROXY_URL.startswith(("socks5", "socks4")):
-        if not _SOCKS_OK:
-            print("Критическая ошибка: TG_PROXY_URL указан как SOCKS, но пакет aiohttp-socks не установлен!")
-            return AiohttpSession(timeout=_timeout)
-        
-        # Убираем 'h' из схемы, так как ProxyConnector её не любит,
-        # но включаем rdns=True (это и есть аналог socks5h)
-        clean_proxy = _PROXY_URL.replace("socks5h://", "socks5://")
-        connector = _ProxyConnector.from_url(clean_proxy, rdns=True)
-        
-        # В aiogram 3.x коннектор передается первым позиционным аргументом или через connector=
-        return AiohttpSession(connector=connector, timeout=_timeout)
+    try:
+        # 1. Работа с SOCKS (socks5, socks5h, socks4)
+        if _PROXY_URL.startswith(("socks5", "socks4")):
+            if not _SOCKS_OK:
+                logging.error("Критическая ошибка: TG_PROXY_URL указан как SOCKS, но пакет aiohttp-socks не установлен!")
+                return AiohttpSession(timeout=_timeout)
+            
+            # Очищаем URL: библиотека не любит 'h' в начале, 
+            # но мы заменяем её параметром rdns=True (удаленный DNS)
+            clean_proxy = _PROXY_URL.replace("socks5h://", "socks5://")
+            connector = _ProxyConnector.from_url(clean_proxy, rdns=True)
+            
+            return AiohttpSession(connector=connector, timeout=_timeout)
 
-    # Если это HTTP прокси
-    elif _PROXY_URL.startswith("http"):
-        return AiohttpSession(proxy_url=_PROXY_URL, timeout=_timeout)
+        # 2. Работа с HTTP/HTTPS прокси
+        elif _PROXY_URL.startswith("http"):
+            return AiohttpSession(proxy_url=_PROXY_URL, timeout=_timeout)
 
+    except Exception as e:
+        logging.error(f"[NET] Ошибка при настройке прокси: {e}")
+    
+    # Если что-то пошло не так, возвращаем сессию без прокси (как запасной вариант)
     return AiohttpSession(timeout=_timeout)
 
 
