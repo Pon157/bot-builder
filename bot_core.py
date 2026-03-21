@@ -42,20 +42,21 @@ def _make_session():
         if _PROXY_URL.startswith(("socks5", "socks4")):
             from aiohttp_socks import ProxyConnector
             clean_proxy = _PROXY_URL.replace("socks5h://", "socks5://")
-            # ВНИМАНИЕ: Аргумент называется proxy_connector, а не connector!
             connector = ProxyConnector.from_url(clean_proxy, rdns=True)
-            return AiohttpSession(proxy_connector=connector)
+            
+            # Передаем просто первым аргументом, aiogram сам поймет, что это коннектор
+            return AiohttpSession(connector)
         
         # Если это HTTP
         elif _PROXY_URL.startswith("http"):
+            # Для HTTP прокси аргумент обычно всегда proxy_url
             return AiohttpSession(proxy_url=_PROXY_URL)
             
     except Exception as e:
-        # Теперь эта ошибка должна исчезнуть
-        print(f"Запуск без прокси (ошибка конфигурации: {e})")
+        print(f"Запуск без прокси (ошибка: {e})")
     
     return AiohttpSession()
-
+    
 from dotenv import load_dotenv
 load_dotenv()
 from db_adapter import DBAdapter, init_pg_pool
