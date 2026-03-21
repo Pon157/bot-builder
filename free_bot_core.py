@@ -46,43 +46,46 @@ except ImportError:
     _SOCKS_OK = False
 
 def _make_session():
-    """
-    Создает сессию aiohttp с поддержкой SOCKS5/HTTP прокси и правильными таймаутами.
-    """
-    _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
+    import os
+    import aiohttp
+    from aiogram.client.session.aiohttp import AiohttpSession
     
-    # Устанавливаем таймауты: 
-    # total=30 (общее время), connect=10 (время на установку связи)
-    _timeout = aiohttp.ClientTimeout(total=30, connect=10)
+    # Пытаемся импортировать коннектор для SOCKS
+    try:
+        from aiohttp_socks import ProxyConnector
+        _HAS_SOCKS = True
+    except ImportError:
+        _HAS_SOCKS = False
 
-    # Если прокси не задан в .env, возвращаем обычную сессию
+    _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
+
+    # Если прокси нет — возвращаем чистую сессию
     if not _PROXY_URL:
-        return AiohttpSession(timeout=_timeout)
+        return AiohttpSession()
 
     try:
-        # 1. Работа с SOCKS (socks5, socks5h, socks4)
+        # 1. Если это SOCKS (socks5, socks5h, socks4)
         if _PROXY_URL.startswith(("socks5", "socks4")):
-            if not _SOCKS_OK:
-                logging.error("Критическая ошибка: TG_PROXY_URL указан как SOCKS, но пакет aiohttp-socks не установлен!")
-                return AiohttpSession(timeout=_timeout)
+            if not _HAS_SOCKS:
+                print("Ошибка: SOCKS прокси указан, но aiohttp-socks не установлен!")
+                return AiohttpSession()
             
-            # Очищаем URL: библиотека не любит 'h' в начале, 
-            # но мы заменяем её параметром rdns=True (удаленный DNS)
+            # Чистим URL от буквы 'h' (rdns=True сделает её работу)
             clean_proxy = _PROXY_URL.replace("socks5h://", "socks5://")
-            connector = _ProxyConnector.from_url(clean_proxy, rdns=True)
+            connector = ProxyConnector.from_url(clean_proxy, rdns=True)
             
-            return AiohttpSession(connector=connector, timeout=_timeout)
+            # ВАЖНО: Передаем ТОЛЬКО connector. 
+            # Не добавляем сюда timeout=aiohttp.ClientTimeout, чтобы не было ошибки "+"
+            return AiohttpSession(connector=connector)
 
-        # 2. Работа с HTTP/HTTPS прокси
+        # 2. Если это HTTP/HTTPS прокси
         elif _PROXY_URL.startswith("http"):
-            return AiohttpSession(proxy_url=_PROXY_URL, timeout=_timeout)
+            return AiohttpSession(proxy_url=_PROXY_URL)
 
     except Exception as e:
-        logging.error(f"[NET] Ошибка при настройке прокси: {e}")
+        print(f"Ошибка при создании прокси-сессии: {e}")
     
-    # Если что-то пошло не так, возвращаем сессию без прокси (как запасной вариант)
-    return AiohttpSession(timeout=_timeout)
-
+    return AiohttpSession()
 
 from dotenv import load_dotenv
 load_dotenv()
