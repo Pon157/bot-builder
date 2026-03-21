@@ -782,6 +782,10 @@ async def get_user_bots(user_id: str):
             bot["requiredSubEnabled"] = cfg.get("requiredSubEnabled", False)
             bot["requiredChannels"]   = cfg.get("requiredChannels",   [])
 
+            # ── СТАФФ-СИСТЕМА: распаковываем в корень бота, чтобы фронтенд читал при перезагрузке ──
+            bot["staffAdmins"]   = cfg.get("staffAdmins", [])
+            bot["staffSettings"] = cfg.get("staffSettings", {})
+
             # --- КРИТИЧНО ДЛЯ АНАЛИТИКИ ---
             # Статистика может быть в колонке stats ИЛИ внутри config.stats.
             # Объединяем оба источника и кладём в bot.stats, чтобы фронтенд видел данные.
@@ -1133,6 +1137,55 @@ async def get_staff_stat(bid: str, staff_id: str = ""):
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# СТАФФ-СИСТЕМА: Режим отдыха
+# Вызывается из панели управления (кнопка "На отдых" / "Вернуть")
+# ──────────────────────────────────────────────────────────────────────────────
+@app.post("/api/bots/{bid}/staff/{staff_id}/rest")
+async def toggle_staff_rest(bid: str, staff_id: str, req: dict):
+    """
+    Тело запроса: {
+      "is_on_rest": true,            # true = на отдых, false = вернуть
+      "rest_until": 1234567890000    # опционально: ms-timestamp автовозврата
+    }
+    """
+    try:
+        r_list = await db.get("bots", {"id": f"eq.{bid}"})
+        if not r_list:
+            raise HTTPException(404, "Бот не найден")
+
+        cfg        = r_list[0].get("config", {}) or {}
+        staff_list = cfg.get("staffAdmins", [])
+
+        updated = False
+        for adm in staff_list:
+            if adm.get("id") == staff_id:
+                adm["is_on_rest"] = bool(req.get("is_on_rest", False))
+                if "rest_until" in req:
+                    adm["rest_until"] = req["rest_until"]
+                elif not adm["is_on_rest"]:
+                    adm.pop("rest_until", None)   # сбрасываем дату при выходе из отдыха
+                updated = True
+                break
+
+        if not updated:
+            raise HTTPException(404, f"Администратор {staff_id} не найден в боте {bid}")
+
+        cfg["staffAdmins"] = staff_list
+        ok = await db.patch("bots", {"id": f"eq.{bid}"}, {"config": cfg})
+        if not ok:
+            raise HTTPException(500, "Ошибка записи в БД")
+
+        logger.info(f"[STAFF] Бот {bid}: администратор {staff_id} → is_on_rest={adm['is_on_rest']}")
+        return {"ok": True, "staff_id": staff_id, "is_on_rest": adm["is_on_rest"]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[STAFF] Ошибка toggle_rest: {e}", exc_info=True)
         raise HTTPException(500, str(e))
 
         
@@ -1650,22 +1703,11 @@ async def get_admin_dashboard(x_admin_token: str = Header(None)):
 
     try:
         # 1. Считаем пользователей
-        u_req = await db.get("users", {"select": "count"})
-        # Supabase возвращает count в заголовке Content-Range, если запросить с head/count, 
-        # но через простой get JSON вернет весь список. 
-        # Для оптимизации лучше использовать count=exact, но пока загрузим списки (если база небольшая)
-        
         users = await db.get("users") or []
         bots  = await db.get("bots")  or []
         keys  = await db.get("issued_keys") or []
-        
-        # Считаем сообщения за сегодня для статистики
         today_start = datetime.now().replace(hour=0, minute=0, second=0).isoformat()
-        msgs_today_req = await db.get("bot_messages", params={"created_at": f"gte.{today_start}", "select": "count"})
-        # Если API Supabase настроен верно, можно получить count. Если нет - берем длину.
-        # Для надежности в рамках текущего кода (где db.get возвращает json):
-        
-        # ПРИМЕЧАНИЕ: При большой БД это нужно переделать на select=count
+        msgs_today = await db.get("bot_messages", params={"created_at": f"gte.{today_start}"}) or []
         
         active_bots_count = len([b for b in bots if b.get('status') == 'RUNNING'])
         
@@ -1675,7 +1717,7 @@ async def get_admin_dashboard(x_admin_token: str = Header(None)):
             "active_bots": active_bots_count,
             "total_keys": len(keys),
             "revenue": len([k for k in keys if k.get('used')]) * 10, # Пример: $10 за ключ
-            "msg_traffic": "N/A" # Сложно посчитать без count(*) запроса
+            "msg_traffic": len(msgs_today)
         }
     except Exception as e:
         logger.error(f"Dashboard error: {e}")
@@ -1714,8 +1756,16 @@ async def admin_ban_user(d: dict, x_admin_token: str = Header(None)):
 async def get_all_bots(x_admin_token: str = Header(None)):
     if not verify_admin_token(x_admin_token): raise HTTPException(403)
     # Тянем ботов с инфой о владельце через join
-    r = await db.get("bots", {"select": "*, owner:users(email, username)", "order": "created_at.desc"})
-    return r
+    bots = await db.get("bots", {"order": "created_at.desc"}) or []
+    owner_ids = list({b.get("owner_id") for b in bots if b.get("owner_id")})
+    users_map = {}
+    for oid in owner_ids:
+        rows = await db.get("users", {"id": f"eq.{oid}", "select": "id,email,username"})
+        if rows:
+            users_map[oid] = rows[0]
+    for b in bots:
+        b["owner"] = users_map.get(b.get("owner_id"), {})
+    return bots
 
 @app.post("/api/admin/bot/action")
 async def admin_bot_action(d: dict, x_admin_token: str = Header(None)):
@@ -1873,11 +1923,10 @@ async def get_admin_logs(x_admin_token: str = Header(None)):
     # Берем последние 20 сообщений из bot_messages как "Логи системы"
     # join не обязателен, но полезен
     r = await db.get("bot_messages", {
-        "select": "*, bots(name)",
         "order": "created_at.desc",
-        "limit": 20
+        "limit": "20"
     })
-    return r
+    return r or []
 
 @app.get("/api/admin/bot/{bot_id}")
 async def get_bot_for_admin(bot_id: str, x_admin_token: str = Header(None)):
