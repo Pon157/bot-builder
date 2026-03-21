@@ -131,6 +131,8 @@ export interface BotStaffAdmin {
   alias: string;        // Псевдоним, показываемый пользователям
   name: string;         // Внутреннее имя для панели
   active: boolean;      // Включён ли сейчас
+  is_on_rest?: boolean; // 🌙 На отдыхе (временно не принимает тикеты)
+  rest_until?: number;  // ms-timestamp автовозврата из отдыха (опционально)
   stats?: {
     ticketsAccepted: number;
     ticketsClosed: number;
