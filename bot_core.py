@@ -24,15 +24,45 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 from aiogram.client.session.aiohttp import AiohttpSession
 try:
-    from aiohttp_socks import ProxyConnector as _ProxyConnector  # noqa: ensure aiohttp_socks installed
-    def _make_session():
-        _PROXY_URL = os.getenv("TG_PROXY_URL")
-        if _PROXY_URL:
-            return AiohttpSession(proxy=_PROXY_URL)
-        return None
+    from aiohttp_socks import ProxyConnector as _ProxyConnector
+    _SOCKS_OK = True
 except ImportError:
-    def _make_session():
-        return None
+    _SOCKS_OK = False
+
+def _make_session():
+    """
+    Создаёт сессию с прокси для обхода блокировок Telegram API в РФ.
+
+    Порядок приоритетов:
+      1. TG_PROXY_URL — любой прокси (socks5://, socks4://, http://)
+         Пример: TG_PROXY_URL=socks5://user:pass@1.2.3.4:1080
+      2. Если не задан — сессия без прокси (работает если сервер вне РФ)
+
+    Для SOCKS5/4 требуется пакет aiohttp-socks:
+      pip install aiohttp-socks
+    """
+    _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
+    if not _PROXY_URL:
+        return AiohttpSession()
+
+    is_socks = _PROXY_URL.startswith(("socks5://", "socks4://", "socks5h://"))
+
+    if is_socks and _SOCKS_OK:
+        try:
+            connector = _ProxyConnector.from_url(_PROXY_URL)
+            import aiohttp as _aiohttp
+            session_obj = _aiohttp.ClientSession(connector=connector)
+            return AiohttpSession(connector=connector)
+        except Exception as e:
+            logger.warning(f"[Proxy] Не удалось создать SOCKS-коннектор: {e}, fallback без прокси")
+            return AiohttpSession()
+    elif is_socks and not _SOCKS_OK:
+        logger.warning("[Proxy] TG_PROXY_URL задан как SOCKS, но aiohttp-socks не установлен! "
+                       "Установи: pip install aiohttp-socks. Запуск без прокси.")
+        return AiohttpSession()
+    else:
+        # HTTP/HTTPS прокси — aiogram поддерживает нативно
+        return AiohttpSession(proxy=_PROXY_URL)
 
 
 from dotenv import load_dotenv
@@ -850,7 +880,7 @@ class BotInstance:
         }
         
         # Берем токен из конфига/окружения
-        self.bot = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML), session=_make_session() or AiohttpSession())
+        self.bot = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML), session=_make_session())
         self.dp = Dispatcher()
         self.router = Router()
         
