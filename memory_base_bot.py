@@ -151,37 +151,36 @@ async def sb_update_queue(row_id, upd: dict):
 
 async def sb_save_cache(user_id: int, username: str,
                         status: str, reasons: List[str], raw_text: str):
-    expires = (datetime.now(timezone.utc) + timedelta(seconds=CACHE_TTL)).isoformat()
+    # ВАЖНО: Работаем с объектами datetime, НЕ вызываем .isoformat()
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(seconds=CACHE_TTL)
     
-    # ФИКС: Если список пустой, передаем None. 
-    # Это предотвратит ошибку "got type 'str'" в DBAdapter
-    db_reasons = reasons if reasons else None
-
     payload = {
         "user_id":    user_id,
         "username":   username or "",
         "status":     status,
-        "reasons":    db_reasons,
+        "reasons":    reasons, # Теперь можно слать просто список []
         "raw_text":   raw_text[:2000],
-        "checked_at": datetime.now(timezone.utc).isoformat(),
-        "expires_at": expires,
+        "checked_at": now,     # Передаем объект datetime
+        "expires_at": expires, # Передаем объект datetime
     }
     
     try:
         # Пробуем INSERT
+        # Если в БД настроен Unique Constraint на user_id, 
+        # при дубликате post может вернуть пустой результат или ошибку
         result = await _db.post("memory_base_cache", payload)
         
-        # Если result пустой (например, 409 Conflict), пробуем PATCH
         if not result:
             await _db.patch("memory_base_cache", {"user_id": f"eq.{user_id}"}, payload)
             
-        logger.info(f"[MB] ✅ Cached uid={user_id} status={status} reasons={reasons}")
+        logger.info(f"[MB] ✅ Cached uid={user_id} status={status}")
         
     except Exception as e:
-        # Финальная попытка апдейта, если первый блок совсем упал
+        # Если INSERT упал (например, из-за 409 Conflict), пробуем обновить существующую запись
         try:
             await _db.patch("memory_base_cache", {"user_id": f"eq.{user_id}"}, payload)
-            logger.info(f"[MB] ✅ Cached (upsert) uid={user_id} status={status}")
+            logger.info(f"[MB] ✅ Updated cache uid={user_id}")
         except Exception as e2:
             logger.error(f"[MB] ❌ sb_save_cache FATAL: {e2}")
 
