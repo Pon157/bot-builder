@@ -134,7 +134,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
     { id: 'settings',   label: 'Основные',     icon: Settings,  show: true          },
     { id: 'interface',  label: 'Интерфейс',    icon: Ticket,    show: isSupportBot  },
     { id: 'logic',      label: 'Логика',       icon: Zap,       show: isSupportBot  },
-    { id: 'staff',      label: 'Персонал (скоро)',           icon: Users,     show: isSupportBot  },
+    { id: 'staff',      label: 'Персонал',           icon: Users,     show: isSupportBot  },
     { id: 'ai',         label: 'ИИ-Ассистент', icon: Brain,     show: isSupportBot  },
     { id: 'miniapps',   label: 'Мини-апп',     icon: AppWindow, show: isSupportBot  },
     { id: 'stats',      label: 'Аналитика',    icon: BarChart3, show: true          },
@@ -3479,8 +3479,10 @@ const StaffTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isV
                   <ArrowLeftRight className="w-3.5 h-3.5" /> Режим назначения
                 </label>
                 <div className="flex gap-2">
-                  {([['random', 'Случайный', 'Рандомный активный администратор'],
-                     ['least',  'По нагрузке', 'Тому у кого меньше открытых тикетов']] as const).map(([val, label, hint]) => (
+                  {([
+                    ['random', 'Случайный',   'Рандомный свободный администратор'],
+                    ['least',  'По нагрузке', 'Первым в списке — с наименьшим числом тикетов'],
+                  ] as const).map(([val, label, hint]) => (
                     <button
                       key={val}
                       onClick={() => updSettings({ assignMode: val })}
