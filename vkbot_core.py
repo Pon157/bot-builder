@@ -10,7 +10,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 try:
     from aiohttp_socks import ProxyConnector as _ProxyConnector  # noqa: ensure aiohttp_socks installed
     def _make_session():
-        _PROXY_URL = os.getenv("TG_PROXY_URL", "socks5://ZpqqLu:fsgQGg@45.93.68.226:8000")
+        _PROXY_URL = os.getenv("TG_PROXY_URL")
         if _PROXY_URL:
             return AiohttpSession(proxy=_PROXY_URL)
         return None
@@ -1834,7 +1834,7 @@ class BotInstance:
                             try:
                                 await self.bot.api.messages.send(
                                     peer_id=target_id,
-                                    message=f"🧑‍💼 Вам ответил: {alias}",
+                                    message=f"Вам ответил: {alias}",
                                     random_id=0
                                 )
                             except Exception:
