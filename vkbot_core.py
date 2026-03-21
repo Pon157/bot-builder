@@ -10,7 +10,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 try:
     from aiohttp_socks import ProxyConnector as _ProxyConnector  # noqa: ensure aiohttp_socks installed
     def _make_session():
-        _PROXY_URL = os.getenv("TG_PROXY_URL", "socks5://ZpqqLu:fsgQGg@45.93.68.226:8000")
+        _PROXY_URL = os.getenv("TG_PROXY_URL")
         if _PROXY_URL:
             return AiohttpSession(proxy=_PROXY_URL)
         return None
@@ -1233,15 +1233,7 @@ class BotInstance:
         if not self.admin_chat_id:
             return
 
-        # ── Стафф-система: назначаем при первом обращении ИЛИ при открытии тикета кнопкой ──
-        is_ticket_open = is_first or bool(btn_text)
-        if self.staff_enabled and is_ticket_open and not user.get('assigned_staff_id'):
-            staff = self._assign_staff()
-            if staff:
-                # В VK нет топиков — передаём admin_chat_id как ориентир для DM стаффера
-                await self._assign_staff_to_user(user, staff, thread_id=self.admin_chat_id)
-
-        # Добавляем имя назначенного стаффера в шапку
+        # Добавляем имя назначенного стаффера в шапку (если уже назначен вручную)
         staff_note = ""
         if self.staff_enabled and user.get('assigned_staff_alias'):
             staff_note = f"\n🧑‍💼 Администратор: {user['assigned_staff_alias']}"
@@ -1366,51 +1358,53 @@ class BotInstance:
         return None
 
     async def _post_staff_stat(self, staff_id: str, event: str, value: int = 1):
+        """Обновляет статистику стафф-администратора напрямую в БД."""
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                sb_base = self.sb_url.replace('/rest/v1', '')
-                await client.post(
-                    f"{sb_base}/api/bots/{self.bot_id}/staff/stat",
-                    json={"staff_id": staff_id, "event": event, "value": value},
-                    headers={"apikey": self.sb_key}
-                )
+            rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
+            if not rows:
+                return
+            cfg = rows[0].get("config", {}) or {}
+            staff_list = cfg.get("staffAdmins", [])
+            updated = False
+            for adm in staff_list:
+                if adm.get("id") != staff_id:
+                    continue
+                st = adm.setdefault("stats", {
+                    "ticketsAccepted": 0, "ticketsClosed": 0,
+                    "messagesSent": 0, "avgResponseMs": 0
+                })
+                if event == "accepted":
+                    st["ticketsAccepted"] = st.get("ticketsAccepted", 0) + 1
+                elif event == "closed":
+                    st["ticketsClosed"] = st.get("ticketsClosed", 0) + 1
+                elif event == "message":
+                    st["messagesSent"] = st.get("messagesSent", 0) + 1
+                elif event == "response_ms":
+                    n = st.get("ticketsAccepted", 1) or 1
+                    old_avg = st.get("avgResponseMs", 0)
+                    st["avgResponseMs"] = int((old_avg * (n - 1) + int(value)) / n)
+                updated = True
+                break
+            if updated:
+                cfg["staffAdmins"] = staff_list
+                await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"config": cfg})
         except Exception as e:
-            logger.warning(f"[STAFF-VK] Ошибка обновления статы: {e}")
+            logger.warning(f"[STAFF-VK] Не удалось обновить статистику: {e}")
 
     async def _assign_staff_to_user(self, user: dict, staff: dict, thread_id: int = None):
+        """Привязывает стафф-admin к пользователю. НЕ отправляет никаких сообщений.
+        Пользователь узнает кто ответил только при первом реальном ответе администратора.
+        """
         uid = user['id']
+        old_staff_id = user.get('assigned_staff_id')
         user['assigned_staff_id']    = staff['id']
         user['assigned_staff_alias'] = staff.get('alias', staff.get('name', '?'))
         user['assigned_staff_vk']    = staff.get('vk_id')
         user['_staff_assigned_at']   = int(time.time() * 1000)
-        user['_staff_first_replied'] = False  # сбрасываем флаг «первый ответ»
-
-        if self.staff_notify:
-            try:
-                await self.bot.api.messages.send(
-                    peer_id=uid,
-                    message=(
-                        f"👤 Ваше обращение принял: {staff.get('alias', staff.get('name'))}\n\n"
-                        f"Вы можете продолжать писать — сообщения будут доставлены оператору."
-                    ),
-                    random_id=0
-                )
-            except Exception:
-                pass
-
-        # Уведомляем стаффера в личку — thread_id передаётся снаружи когда уже известен
-        try:
-            user_name  = user.get('first_name', f"User#{uid}")
-            topic_link = f"\nID беседы: {thread_id}" if thread_id else ""
-            await self.bot.api.messages.send(
-                peer_id=staff['vk_id'],
-                message=f"📨 Новое обращение!\nПользователь: {user_name} (ID: {uid}){topic_link}",
-                random_id=0
-            )
-        except Exception:
-            pass
-
+        user['_staff_first_replied'] = False
         asyncio.create_task(self._post_staff_stat(staff['id'], 'accepted'))
+        if old_staff_id and old_staff_id != staff['id']:
+            logger.info(f"[STAFF-VK] Тикет {uid} перешёл от {old_staff_id} к {staff['id']}")
 
     async def _staff_keyboard_buttons(self) -> list:
         """Возвращает доп. кнопки стафф-системы для клавиатуры пользователя."""
