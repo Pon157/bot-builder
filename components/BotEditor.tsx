@@ -134,7 +134,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
     { id: 'settings',   label: 'Основные',     icon: Settings,  show: true          },
     { id: 'interface',  label: 'Интерфейс',    icon: Ticket,    show: isSupportBot  },
     { id: 'logic',      label: 'Логика',       icon: Zap,       show: isSupportBot  },
-    { id: 'staff',      label: 'Персонал (soon)',     icon: Users,     show: isSupportBot  },
+    { id: 'staff',      label: 'Персонал (скоро)',           icon: Users,     show: isSupportBot  },
     { id: 'ai',         label: 'ИИ-Ассистент', icon: Brain,     show: isSupportBot  },
     { id: 'miniapps',   label: 'Мини-апп',     icon: AppWindow, show: isSupportBot  },
     { id: 'stats',      label: 'Аналитика',    icon: BarChart3, show: true          },
@@ -3328,6 +3328,9 @@ const StaffTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isV
   // Стата — развёрнутый айди
   const [expandedStat, setExpandedStat] = React.useState<string | null>(null);
 
+  // Загрузка кнопки отдыха
+  const [restLoading, setRestLoading] = React.useState<string | null>(null);
+
   const upd = (patch: Partial<BotConfig>) => onUpdate({ ...bot, ...patch });
   const updSettings = (patch: Partial<StaffSettings>) =>
     upd({ staffSettings: { ...staffSettings, ...patch } });
@@ -3352,6 +3355,7 @@ const StaffTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isV
       alias,
       name,
       active: true,
+      is_on_rest: false,
       ...(isVK ? { vk_id: numId } : { tg_id: numId }),
       stats: { ticketsAccepted: 0, ticketsClosed: 0, messagesSent: 0, avgResponseMs: 0 },
     };
@@ -3363,6 +3367,21 @@ const StaffTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isV
 
   const toggleActive = (id: string) =>
     updAdmins(staffAdmins.map(a => a.id === id ? { ...a, active: !a.active } : a));
+
+  // Кнопка «На отдых / Вернуть» — сохраняет в БД мгновенно (не ждёт общего Save)
+  const toggleRest = async (adminId: string, currentRest: boolean) => {
+    setRestLoading(adminId);
+    // Оптимистичное обновление локально
+    updAdmins(staffAdmins.map(a => a.id === adminId ? { ...a, is_on_rest: !currentRest } : a));
+    try {
+      await api.toggleStaffRest(bot.id, adminId, !currentRest);
+    } catch {
+      // Откатываем при ошибке
+      updAdmins(staffAdmins.map(a => a.id === adminId ? { ...a, is_on_rest: currentRest } : a));
+    } finally {
+      setRestLoading(null);
+    }
+  };
 
   const startEdit = (a: BotStaffAdmin) => { setEditingId(a.id); setEditBuf({ alias: a.alias, name: a.name, tg_id: a.tg_id, vk_id: a.vk_id }); };
   const saveEdit = (id: string) => {
@@ -3539,12 +3558,24 @@ const StaffTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isV
         ) : (
           <div className="space-y-3">
             {staffAdmins.map(admin => (
-              <div key={admin.id} className={`border rounded-2xl transition-all ${admin.active ? 'border-zinc-700 bg-[#0d0d0d]' : 'border-zinc-800 bg-[#0a0a0a] opacity-60'}`}>
+              <div key={admin.id} className={`border rounded-2xl transition-all ${
+                admin.is_on_rest
+                  ? 'border-yellow-500/30 bg-[#0d0d0d] opacity-75'
+                  : admin.active
+                    ? 'border-zinc-700 bg-[#0d0d0d]'
+                    : 'border-zinc-800 bg-[#0a0a0a] opacity-60'
+              }`}>
 
                 {/* Основная строка */}
                 <div className="flex items-center gap-3 p-4">
                   {/* Аватар-заглушка */}
-                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center font-black text-sm shrink-0 ${admin.active ? 'bg-indigo-500/20 text-indigo-400' : 'bg-zinc-800 text-zinc-600'}`}>
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center font-black text-sm shrink-0 ${
+                    admin.is_on_rest
+                      ? 'bg-yellow-500/15 text-yellow-400'
+                      : admin.active
+                        ? 'bg-indigo-500/20 text-indigo-400'
+                        : 'bg-zinc-800 text-zinc-600'
+                  }`}>
                     {admin.alias.charAt(0).toUpperCase()}
                   </div>
 
@@ -3565,10 +3596,15 @@ const StaffTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isV
                   ) : (
                     /* ── Отображение ── */
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-sm font-bold text-white truncate">{admin.name}</span>
                         <span className="text-xs text-zinc-500">·</span>
                         <span className="text-xs text-indigo-400 truncate">@{admin.alias}</span>
+                        {admin.is_on_rest && (
+                          <span className="text-[10px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-yellow-500/15 text-yellow-400 border border-yellow-500/20">
+                            🌙 Отдыхает
+                          </span>
+                        )}
                       </div>
                       <div className="text-[11px] text-zinc-600 mt-0.5">
                         {isVK ? `VK: ${admin.vk_id}` : `TG: ${admin.tg_id}`}
@@ -3595,6 +3631,19 @@ const StaffTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isV
                         <button onClick={() => startEdit(admin)} className="p-1.5 rounded-lg bg-zinc-800 text-zinc-400 hover:text-blue-400 transition-colors" title="Редактировать">
                           <Settings className="w-3.5 h-3.5" />
                         </button>
+                        {/* Кнопка «На отдых / Вернуть» */}
+                        <button
+                          onClick={() => toggleRest(admin.id, !!admin.is_on_rest)}
+                          disabled={restLoading === admin.id}
+                          className={`p-1.5 rounded-lg transition-colors text-sm ${
+                            admin.is_on_rest
+                              ? 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30'
+                              : 'bg-zinc-800 text-zinc-500 hover:bg-yellow-500/10 hover:text-yellow-400'
+                          } ${restLoading === admin.id ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          title={admin.is_on_rest ? 'Вернуть из отдыха' : 'Отправить на отдых'}
+                        >
+                          {restLoading === admin.id ? '…' : '🌙'}
+                        </button>
                         <button
                           onClick={() => toggleActive(admin.id)}
                           className={`p-1.5 rounded-lg transition-colors ${admin.active ? 'bg-green-500/10 text-green-400 hover:bg-red-500/10 hover:text-red-400' : 'bg-zinc-800 text-zinc-600 hover:bg-green-500/10 hover:text-green-400'}`}
@@ -3613,6 +3662,13 @@ const StaffTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isV
                 {/* Блок статистики (раскрывается) */}
                 {expandedStat === admin.id && admin.stats && (
                   <div className="border-t border-zinc-800 px-4 pb-4 pt-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {/* Бейдж «На отдыхе» */}
+                    {admin.is_on_rest && (
+                      <div className="col-span-full flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/20 rounded-xl px-4 py-2">
+                        <span className="text-base">🌙</span>
+                        <span className="text-xs font-semibold text-yellow-400">Администратор на отдыхе — новые тикеты не назначаются</span>
+                      </div>
+                    )}
                     {[
                       { icon: Ticket,       label: 'Принято',        value: admin.stats.ticketsAccepted },
                       { icon: Check,        label: 'Закрыто',        value: admin.stats.ticketsClosed   },
