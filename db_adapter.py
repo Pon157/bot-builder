@@ -213,7 +213,7 @@ def _parse_sb_params(params: dict, start_idx: int = 1):
             v_str  = str_val
 
         if op_str in _SB_OPS:
-            v = _cast_value(v_str) # <--- ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ ЗДЕСЬ
+            v = v_str if key == "code" else _cast_value(v_str) # <--- ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ ЗДЕСЬ
             conditions.append(f'"{key}" {_SB_OPS[op_str]} ${idx}')
             values.append(v)
             idx += 1
