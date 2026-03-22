@@ -2975,28 +2975,52 @@ async def chat_admin_set_online(site_id: str, admin_id: str, d: dict):
 @app.post("/api/chat/site/{slug}/verify-email")
 async def chat_request_email_verify(slug: str, d: dict):
     email = (d.get("email") or "").strip().lower()
-    if not email or "@" not in email: raise HTTPException(400, "Некорректный email")
+    if not email or "@" not in email: 
+        raise HTTPException(400, "Некорректный email")
 
+    # 1. Получаем сайт (используем адаптер)
     sites = await _sb_get("chat_sites", {"slug": f"eq.{slug}"})
-    if not sites: raise HTTPException(404)
+    if not sites: 
+        raise HTTPException(404)
     site = sites[0]
 
     code = str(random.randint(100000, 999999))
-    await _sb_patch("chat_verify_codes",
-        {"email": f"eq.{email}", "site_id": f"eq.{site['id']}"},
-        {"code": code, "created_at": int(time.time() * 1000)})
+    now_ms = int(time.time() * 1000)
 
-    # Upsert
+    # 2. Сначала работаем через адаптер (он пойдет в Postgres, если тот жив)
+    # Пытаемся сделать PATCH. Если записи нет — делаем POST.
+    # Это гарантирует, что в ПРИОРИТЕТНОЙ базе данные появятся первыми.
+    updated = await _sb_patch("chat_verify_codes",
+        {"email": f"eq.{email}", "site_id": f"eq.{site['id']}"},
+        {"code": code, "created_at": now_ms})
+    
+    if not updated:
+        await _sb_post("chat_verify_codes", {
+            "email": email, 
+            "site_id": site["id"], 
+            "code": code, 
+            "created_at": now_ms
+        })
+
+    # 3. Твой принудительный Upsert в Supabase
+    # Он гарантирует, что в Supabase код тоже будет, даже если PG не упала.
     async with httpx.AsyncClient() as c:
         await c.post(f"{S_URL}/rest/v1/chat_verify_codes",
             headers={**_cs_h(), "Prefer": "resolution=merge-duplicates"},
-            json={"email": email, "site_id": site["id"], "code": code, "created_at": int(time.time() * 1000)})
+            json={
+                "email": email, 
+                "site_id": site["id"], 
+                "code": code, 
+                "created_at": now_ms
+            })
 
+    # 4. Отправка письма
     success = await run_in_threadpool(
         send_chat_verification_email, email, code, site.get("name", "Чат")
     )
     if not success:
         raise HTTPException(500, "Ошибка отправки письма")
+        
     return {"ok": True}
 
 
