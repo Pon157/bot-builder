@@ -178,21 +178,39 @@ async def process_name(message: Message, state: FSMContext):
 @router.callback_query(F.data == "my_bots")
 async def process_my_bots(callback: CallbackQuery):
     user_id = str(callback.from_user.id)
+    logging.info(f"🔍 Ищем ботов для owner_id: {user_id}")
+    
+    # Запрашиваем список ботов
     bots = await api_request("GET", f"/api/free/bots/{user_id}")
     
-    if not bots:
+    # Логируем ответ от сервера для отладки
+    logging.info(f"📡 Ответ сервера: {bots}")
+
+    # Проверяем, что пришел именно список и он не пуст
+    if not bots or not isinstance(bots, list) or len(bots) == 0:
         try:
-            await callback.message.edit_text("У тебя пока нет ботов.", reply_markup=main_menu_kb())
+            await callback.message.edit_text(
+                f"У тебя пока нет ботов. (Твой ID: {user_id})", 
+                reply_markup=main_menu_kb()
+            )
         except TelegramBadRequest:
-            pass # Игнорируем ошибку, если текст не изменился
-        
-        await callback.answer() # Снимаем состояние загрузки с кнопки
+            pass
+        await callback.answer()
         return
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{b.get('name', 'Bot')} ({b.get('status', 'IDLE')})", callback_data=f"manage_{b['id']}")]
-        for b in bots
-    ] + [[InlineKeyboardButton(text="Главное меню", callback_data="main_menu")]])
+    # Формируем кнопки
+    buttons = []
+    for b in bots:
+        bot_name = b.get('name', 'Без названия')
+        bot_status = b.get('status', 'IDLE')
+        buttons.append([InlineKeyboardButton(
+            text=f"{bot_name} [{bot_status}]", 
+            callback_data=f"manage_{b['id']}"
+        )])
+    
+    buttons.append([InlineKeyboardButton(text="Главное меню", callback_data="main_menu")])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     
     try:
         await callback.message.edit_text("Твои боты:", reply_markup=kb)
@@ -200,16 +218,6 @@ async def process_my_bots(callback: CallbackQuery):
         pass
     
     await callback.answer()
-
-@router.callback_query(F.data == "main_menu")
-async def go_main_menu(callback: CallbackQuery):
-    try:
-        await callback.message.edit_text("Главное меню:", reply_markup=main_menu_kb())
-    except TelegramBadRequest:
-        pass
-    
-    await callback.answer()
-
 # --- Меню управления ботом ---
 @router.callback_query(F.data.startswith("manage_"))
 async def process_manage_bot(callback: CallbackQuery, state: FSMContext):
