@@ -284,28 +284,23 @@ async def free_update_bot_config(bot_id: str, d: dict):
 @router.get("/api/free/bots/{user_id}")
 async def free_get_user_bots(user_id: str):
     db = _db()
-    # Логируем, чтобы увидеть запрос в консоли сервера
-    print(f"DEBUG SERVER: Request bots for user_id='{user_id}'")
+    # Принудительно приводим к строке, на всякий случай
+    u_id = str(user_id) 
     
-    # Убираем лишние фильтры для теста или делаем их точными
-    # Важно: убедись, что в базе owner_id именно строка "5883703466"
-    all_bots = await db.get("bots", params={
-        "owner_id": f"eq.{user_id}"
-    })
+    # Исправляем формат параметра для DBAdapter
+    # Вместо f"eq.{user_id}" попробуй передать чистое значение, 
+    # либо убедись, что оно уходит как строка в кавычках для PG
+    all_bots = await db.get("bots", params={"owner_id": f"eq.{u_id}"})
     
     if not all_bots:
-        print(f"DEBUG SERVER: No bots found for user {user_id}")
         return []
 
-    # Фильтруем только телеграм и фри-план (если это критично)
+    # Фильтруем TG ботов на фри-плане
     bots = [
         b for b in all_bots 
-        if b.get("platform") != "vk" and b.get("is_free_plan") == True
+        if b.get("platform") != "vk" and b.get("is_free_plan") is True
     ]
-    
-    print(f"DEBUG SERVER: Found {len(bots)} bots for user {user_id}")
     return bots
-
 
 @router.get("/api/free/bots/{bot_id}/stats")
 async def free_bot_stats(bot_id: str, user_id: str):
