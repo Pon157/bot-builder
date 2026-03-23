@@ -9,6 +9,58 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command
 
+import os
+import aiohttp
+from aiogram.client.session.aiohttp import AiohttpSession
+
+# --- НАШ КАСТОМНЫЙ КЛАСС (ОБХОД ОШИБОК AIOGRAM 3.24) ---
+class CustomProxySession(AiohttpSession):
+    def __init__(self, connector: aiohttp.BaseConnector):
+        # Вызываем конструктор aiogram БЕЗ аргументов (ошибок не будет)
+        super().__init__()
+        self._custom_connector = connector
+
+    # Принудительно встраиваем коннектор прямо в ядро aiohttp
+    async def create_session(self) -> aiohttp.ClientSession:
+        return aiohttp.ClientSession(
+            connector=self._custom_connector,
+            json_serialize=self.json_dumps,
+            timeout=aiohttp.ClientTimeout(total=40, connect=15)
+        )
+# ---------------------------------------------------------
+
+def _make_session():
+    # Берем токен из .env файла
+    _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
+    
+    # Таймауты для стабильности
+    _timeout = aiohttp.ClientTimeout(total=40, connect=15)
+
+    # Если прокси нет — стандартная сессия
+    if not _PROXY_URL:
+        return AiohttpSession(timeout=_timeout)
+
+    try:
+        if not _SOCKS_OK:
+            print("[NET] Ошибка: библиотека aiohttp_socks не установлена. Запуск без прокси.")
+            return AiohttpSession(timeout=_timeout)
+
+        # aiohttp_socks отлично работает и с SOCKS, и с HTTP.
+        # Поэтому мы просто отдаем ему любой URL.
+        clean_proxy = _PROXY_URL.replace("socks5h://", "socks5://")
+        
+        # Создаем коннектор
+        connector = _ProxyConnector.from_url(clean_proxy, rdns=True)
+        
+        # ВОЗВРАЩАЕМ НАШ КЛАСС, а не стандартный AiohttpSession
+        return CustomProxySession(connector=connector)
+            
+    except Exception as e:
+        print(f"Ошибка конфигурации сессии: {e}")
+    
+    return AiohttpSession(timeout=_timeout)
+    
+
 # Загружаем переменные из .env согласно правилам безопасности
 load_dotenv()
 
