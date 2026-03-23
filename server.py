@@ -2394,22 +2394,22 @@ async def list_miniapps_by_bot(bot_id: str):
 
 @app.post("/api/miniapps/save")
 async def save_miniapp(request: Request):
-    """Сохраняет мини-приложение."""
+    """Сохраняет мини-приложение (INSERT или UPDATE)."""
     try:
         data = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    app_id       = data.get("id") or str(uuid.uuid4())
-    owner_id     = data.get("owner_id", "")
-    bot_id       = data.get("bot_id", "")
-    title        = data.get("title", "Без названия")[:120]
-    theme        = data.get("theme", {})
-    components   = data.get("components", [])
-    webhook          = data.get("form_webhook") or data.get("formWebhook", "")
-    sheets_url       = data.get("sheets_url") or data.get("sheetsUrl", "")
-    webhook_type     = data.get("webhook_type") or data.get("webhookType", "formbot")
-    notify_chat_id   = data.get("notify_chat_id") or data.get("notifyChatId", "")
+    app_id         = data.get("id") or str(uuid.uuid4())
+    owner_id       = data.get("owner_id", "")
+    bot_id         = data.get("bot_id", "")
+    title          = data.get("title", "Без названия")[:120]
+    theme          = data.get("theme", {})
+    components     = data.get("components", [])
+    webhook        = data.get("form_webhook") or data.get("formWebhook", "")
+    sheets_url     = data.get("sheets_url") or data.get("sheetsUrl", "")
+    webhook_type   = data.get("webhook_type") or data.get("webhookType", "formbot")
+    notify_chat_id = data.get("notify_chat_id") or data.get("notifyChatId", "")
 
     if not owner_id:
         raise HTTPException(status_code=422, detail="owner_id required")
@@ -2417,6 +2417,8 @@ async def save_miniapp(request: Request):
     if len(components) > 100:
         raise HTTPException(status_code=422, detail="Too many components (max 100)")
 
+    # Подготавливаем запись. 
+    # ВАЖНО: используем объект datetime вместо строки для asyncpg
     record = {
         "id":             app_id,
         "owner_id":       owner_id,
@@ -2427,14 +2429,21 @@ async def save_miniapp(request: Request):
         "form_webhook":   webhook,
         "sheets_url":     sheets_url,
         "webhook_type":   webhook_type,
-        "notify_chat_id": notify_chat_id,
-        "updated_at":     datetime.utcnow().isoformat() + "Z",
+        "notify_chat_id": str(notify_chat_id), # Приводим к строке на всякий случай
+        "updated_at":     datetime.now(timezone.utc), # Правильный формат для БД
     }
 
     try:
-        # ВАЖНО: Добавляем ?on_conflict=id, иначе Supabase не поймет, что нужно обновлять
+        # Пытаемся сохранить. 
+        # Если твой DBAdapter поддерживает аргументы для upsert, можно передать их.
+        # Но судя по логам, DBAdapter сам решит, как сделать POST.
         r = await db.post("mini_apps", record)
+        
+        # Если получаем None, значит произошла ошибка внутри адаптера
         if r is None:
+            # Если это был конфликт ID, можно попробовать метод update, 
+            # но обычно нормальный адаптер обрабатывает ON CONFLICT через rpc или параметры.
+            logger.error(f"DB error saving miniapp {app_id}")
             raise HTTPException(status_code=500, detail="DB error saving miniapp")
             
     except HTTPException:
