@@ -2400,7 +2400,7 @@ async def save_miniapp(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    # Получаем ID или генерируем новый через твой _gen_id
+    # Получаем ID или генерируем новый
     app_id = data.get("id") or _gen_id("app")
     owner_id = data.get("owner_id", "")
     
@@ -2410,10 +2410,9 @@ async def save_miniapp(request: Request):
     if len(data.get("components", [])) > 100:
         raise HTTPException(status_code=422, detail="Too many components (max 100)")
 
-    # Текущее время объектом (для asyncpg/Postgres)
+    # Текущее время объектом
     now_dt = datetime.now(timezone.utc)
 
-    # Формируем словарь данных
     record = {
         "id":             app_id,
         "owner_id":       owner_id,
@@ -2429,23 +2428,22 @@ async def save_miniapp(request: Request):
     }
 
     try:
-        # ШАГ 1: Проверяем, существует ли уже такое приложение в базе
-        # Это предотвращает ошибку "duplicate key value violates unique constraint"
-        existing = await db.fetch_one("mini_apps", {"id": app_id})
+        # Ищем существующую запись методом get (он возвращает список)
+        existing_list = await db.get("mini_apps", {"id": app_id})
+        exists = isinstance(existing_list, list) and len(existing_list) > 0
         
-        if existing:
+        if exists:
             # Если запись есть — ОБНОВЛЯЕМ (UPDATE)
             r = await db.update("mini_apps", {"id": app_id}, record)
         else:
             # Если записи нет — СОЗДАЕМ (INSERT)
             r = await db.post("mini_apps", record)
         
-        # ШАГ 2: Обработка Fallback (если Postgres вернул ошибку, адаптер пробует Supabase REST)
-        # Если r == None, значит возникла ошибка сериализации datetime для JSON
+        # Обработка Fallback для Supabase (если r == None)
         if r is None:
-            logger.warning(f"🔄 Попытка повторного сохранения {app_id} с текстовой датой (Fallback)")
-            record["updated_at"] = now_dt.isoformat() # Превращаем дату в строку для Supabase
-            if existing:
+            logger.warning(f"🔄 Fallback: сохранение {app_id} с текстовой датой")
+            record["updated_at"] = now_dt.isoformat()
+            if exists:
                 r = await db.update("mini_apps", {"id": app_id}, record)
             else:
                 r = await db.post("mini_apps", record)
@@ -2459,7 +2457,7 @@ async def save_miniapp(request: Request):
         logger.error(f"❌ Miniapp save exception: {e}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
-    logger.info(f"💾 Мини-приложение сохранено: {app_id} ({record['title']}) owner={owner_id}")
+    logger.info(f"💾 Мини-приложение сохранено: {app_id} owner={owner_id}")
     return {"ok": True, "id": app_id}
 
 
