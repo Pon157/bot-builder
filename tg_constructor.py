@@ -12,6 +12,7 @@ from aiogram.filters import Command
 import os
 import aiohttp
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.exceptions import TelegramBadRequest
 
 # --- НАШ КАСТОМНЫЙ КЛАСС (ОБХОД ОШИБОК AIOGRAM 3.24) ---
 class CustomProxySession(AiohttpSession):
@@ -180,7 +181,12 @@ async def process_my_bots(callback: CallbackQuery):
     bots = await api_request("GET", f"/api/free/bots/{user_id}")
     
     if not bots:
-        await callback.message.edit_text("У тебя пока нет ботов.", reply_markup=main_menu_kb())
+        try:
+            await callback.message.edit_text("У тебя пока нет ботов.", reply_markup=main_menu_kb())
+        except TelegramBadRequest:
+            pass # Игнорируем ошибку, если текст не изменился
+        
+        await callback.answer() # Снимаем состояние загрузки с кнопки
         return
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -188,11 +194,21 @@ async def process_my_bots(callback: CallbackQuery):
         for b in bots
     ] + [[InlineKeyboardButton(text="Главное меню", callback_data="main_menu")]])
     
-    await callback.message.edit_text("Твои боты:", reply_markup=kb)
+    try:
+        await callback.message.edit_text("Твои боты:", reply_markup=kb)
+    except TelegramBadRequest:
+        pass
+    
+    await callback.answer()
 
 @router.callback_query(F.data == "main_menu")
 async def go_main_menu(callback: CallbackQuery):
-    await callback.message.edit_text("Главное меню:", reply_markup=main_menu_kb())
+    try:
+        await callback.message.edit_text("Главное меню:", reply_markup=main_menu_kb())
+    except TelegramBadRequest:
+        pass
+    
+    await callback.answer()
 
 # --- Меню управления ботом ---
 @router.callback_query(F.data.startswith("manage_"))
