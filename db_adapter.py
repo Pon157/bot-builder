@@ -548,6 +548,12 @@ class DBAdapter:
                 logger.warning(f"[DBAdapter] PG rpc({func}) → fallback: {_short_err(e)}")
         return await self._sb_rpc(func, params)
 
+    async def update(self, table: str, params: dict = None, json: dict = None, 
+                     data: dict = None, headers: dict = None) -> bool:
+        """Псевдоним для patch(), чтобы код был более интуитивным."""
+        return await self.patch(table, params=params, json=json, data=data, headers=headers)
+
+    
     # ── Совместимость с Supabase httpx-клиентом ───────────────────────────────
 
     async def raw_get(self, path: str, params: dict = None) -> httpx.Response:
