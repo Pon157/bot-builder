@@ -2400,59 +2400,66 @@ async def save_miniapp(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    app_id         = data.get("id") or str(uuid.uuid4())
-    owner_id       = data.get("owner_id", "")
-    bot_id         = data.get("bot_id", "")
-    title          = data.get("title", "Без названия")[:120]
-    theme          = data.get("theme", {})
-    components     = data.get("components", [])
-    webhook        = data.get("form_webhook") or data.get("formWebhook", "")
-    sheets_url     = data.get("sheets_url") or data.get("sheetsUrl", "")
-    webhook_type   = data.get("webhook_type") or data.get("webhookType", "formbot")
-    notify_chat_id = data.get("notify_chat_id") or data.get("notifyChatId", "")
-
+    # Получаем ID или генерируем новый через твой _gen_id
+    app_id = data.get("id") or _gen_id("app")
+    owner_id = data.get("owner_id", "")
+    
     if not owner_id:
         raise HTTPException(status_code=422, detail="owner_id required")
 
-    if len(components) > 100:
+    if len(data.get("components", [])) > 100:
         raise HTTPException(status_code=422, detail="Too many components (max 100)")
 
-    # Подготавливаем запись. 
-    # ВАЖНО: используем объект datetime вместо строки для asyncpg
+    # Текущее время объектом (для asyncpg/Postgres)
+    now_dt = datetime.now(timezone.utc)
+
+    # Формируем словарь данных
     record = {
         "id":             app_id,
         "owner_id":       owner_id,
-        "bot_id":         bot_id,
-        "title":          title,
-        "theme":          theme,
-        "components":     components,
-        "form_webhook":   webhook,
-        "sheets_url":     sheets_url,
-        "webhook_type":   webhook_type,
-        "notify_chat_id": str(notify_chat_id), # Приводим к строке на всякий случай
-        "updated_at":     datetime.now(timezone.utc), # Правильный формат для БД
+        "bot_id":         data.get("bot_id", ""),
+        "title":          data.get("title", "Без названия")[:120],
+        "theme":          data.get("theme", {}),
+        "components":     data.get("components", []),
+        "form_webhook":   data.get("form_webhook") or data.get("formWebhook", ""),
+        "sheets_url":     data.get("sheets_url") or data.get("sheetsUrl", ""),
+        "webhook_type":   data.get("webhook_type") or data.get("webhookType", "formbot"),
+        "notify_chat_id": str(data.get("notify_chat_id") or data.get("notifyChatId", "")),
+        "updated_at":     now_dt, 
     }
 
     try:
-        # Пытаемся сохранить. 
-        # Если твой DBAdapter поддерживает аргументы для upsert, можно передать их.
-        # Но судя по логам, DBAdapter сам решит, как сделать POST.
-        r = await db.post("mini_apps", record)
+        # ШАГ 1: Проверяем, существует ли уже такое приложение в базе
+        # Это предотвращает ошибку "duplicate key value violates unique constraint"
+        existing = await db.fetch_one("mini_apps", {"id": app_id})
         
-        # Если получаем None, значит произошла ошибка внутри адаптера
+        if existing:
+            # Если запись есть — ОБНОВЛЯЕМ (UPDATE)
+            r = await db.update("mini_apps", {"id": app_id}, record)
+        else:
+            # Если записи нет — СОЗДАЕМ (INSERT)
+            r = await db.post("mini_apps", record)
+        
+        # ШАГ 2: Обработка Fallback (если Postgres вернул ошибку, адаптер пробует Supabase REST)
+        # Если r == None, значит возникла ошибка сериализации datetime для JSON
         if r is None:
-            # Если это был конфликт ID, можно попробовать метод update, 
-            # но обычно нормальный адаптер обрабатывает ON CONFLICT через rpc или параметры.
-            logger.error(f"DB error saving miniapp {app_id}")
-            raise HTTPException(status_code=500, detail="DB error saving miniapp")
+            logger.warning(f"🔄 Попытка повторного сохранения {app_id} с текстовой датой (Fallback)")
+            record["updated_at"] = now_dt.isoformat() # Превращаем дату в строку для Supabase
+            if existing:
+                r = await db.update("mini_apps", {"id": app_id}, record)
+            else:
+                r = await db.post("mini_apps", record)
+
+        if r is None:
+            raise HTTPException(status_code=500, detail="DB error: failed to save record")
             
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Miniapp save exception: {e}")
-        raise HTTPException(status_code=500, detail="Server error")
+        logger.error(f"❌ Miniapp save exception: {e}")
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
-    logger.info(f"💾 Мини-приложение сохранено: {app_id} ({title}) owner={owner_id}")
+    logger.info(f"💾 Мини-приложение сохранено: {app_id} ({record['title']}) owner={owner_id}")
     return {"ok": True, "id": app_id}
 
 
