@@ -284,18 +284,22 @@ async def free_update_bot_config(bot_id: str, d: dict):
 @router.get("/api/free/bots/{user_id}")
 async def free_get_user_bots(user_id: str):
     db = _db()
-    # Принудительно приводим к строке, на всякий случай
-    u_id = str(user_id) 
     
-    # Исправляем формат параметра для DBAdapter
-    # Вместо f"eq.{user_id}" попробуй передать чистое значение, 
-    # либо убедись, что оно уходит как строка в кавычках для PG
-    all_bots = await db.get("bots", params={"owner_id": f"eq.{u_id}"})
+    # Чтобы DBAdapter не путал строку с числом, 
+    # оборачиваем ID в дополнительные кавычки для SQL
+    safe_user_id = f"'{user_id}'"
     
+    # Пробуем запросить с явным указанием, что это строка
+    all_bots = await db.get("bots", params={"owner_id": f"eq.{safe_user_id}"})
+    
+    # Если поиск по 'ID' не дал результата, пробуем обычный (на всякий случай)
+    if not all_bots:
+        all_bots = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
+
     if not all_bots:
         return []
 
-    # Фильтруем TG ботов на фри-плане
+    # Фильтруем только Telegram и Free план
     bots = [
         b for b in all_bots 
         if b.get("platform") != "vk" and b.get("is_free_plan") is True
