@@ -43,7 +43,7 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # ==========================================
 # 0. КОНСТАНТЫ И ГЕНЕРАТОРЫ
