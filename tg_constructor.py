@@ -221,37 +221,55 @@ async def process_my_bots(callback: CallbackQuery):
 # --- Меню управления ботом ---
 @router.callback_query(F.data.startswith("manage_"))
 async def process_manage_bot(callback: CallbackQuery):
-    # 1. СРАЗУ отвечаем Telegram, чтобы кнопка не зависла
-    try:
-        await callback.answer()
-    except:
-        pass
-
-    bot_id = callback.data.split("_")[1]
+    # Сразу отвечаем, чтобы убрать индикатор загрузки
+    await callback.answer()
+    
+    # Получаем ID из callback_data (это всегда строка)
+    bot_id_from_button = str(callback.data.split("_")[1])
     user_id = str(callback.from_user.id)
 
-    # 2. Делаем запрос (теперь мы знаем, что он работает)
-    # Если он долгий, Telegram уже не выбьет ошибку answerCallbackQuery
+    # Запрашиваем список ботов (тот самый, где их 3 штуки)
     bots = await api_request("GET", f"/api/free/bots/{user_id}")
     
-    # Ищем конкретного бота в списке
-    bot = next((b for b in bots if str(b['id']) == bot_id), None)
-
-    if not bot:
-        try:
-            await callback.message.edit_text("Бот не найден или был удален.", reply_markup=main_menu_kb())
-        except:
-            await callback.answer("Бот не найден", show_alert=True)
+    if not bots:
+        await callback.message.edit_text("Список ботов пуст.", reply_markup=main_menu_kb())
         return
 
-    # Отображаем меню управления ботом
-    text = f"🤖 Управление ботом: <b>{bot.get('name')}</b>\nСтатус: {bot.get('status')}"
+    # ВАЖНО: Приводим оба ID к строке при поиске
+    target_bot = None
+    for b in bots:
+        if str(b.get('id')) == bot_id_from_button:
+            target_bot = b
+            break
+
+    if not target_bot:
+        # Если мы здесь, значит ID из кнопки "manage_XXX" не нашелся в списке от API
+        logging.error(f"DEBUG: Не нашли bot_id {bot_id_from_button} в списке {bots}")
+        await callback.message.edit_text(
+            f"Бот не найден.\nID кнопки: {bot_id_from_button}", 
+            reply_markup=main_menu_kb()
+        )
+        return
+
+    # Если нашли — рисуем меню управления
+    bot_name = target_bot.get('name', 'Без названия')
+    status = target_bot.get('status', 'IDLE')
+    
+    text = (
+        f"<b>Управление ботом</b>\n\n"
+        f"<b>Имя:</b> {bot_name}\n"
+        f"<b>Статус:</b> {status}\n"
+        f"<b>ID:</b> <code>{bot_id_from_button}</code>"
+    )
     
     try:
-        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=manage_bot_kb(bot_id))
+        await callback.message.edit_text(
+            text, 
+            parse_mode="HTML", 
+            reply_markup=manage_bot_kb(bot_id_from_button)
+        )
     except Exception as e:
-        logging.error(f"Ошибка отрисовки меню управления: {e}")
-
+        logging.error(f"Ошибка отрисовки: {e}")
 # --- Запуск / Остановка ---
 @router.callback_query(F.data.startswith("start_"))
 async def start_bot_handler(callback: CallbackQuery):
