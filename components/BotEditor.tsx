@@ -13,7 +13,8 @@ import {
   Type, MousePointerClick, Link2, TextCursorInput, Minus,
   MoveVertical, Check, ChevronUp, Copy, Eye, EyeOff,
   Calendar, AlertTriangle, RefreshCw, ToggleLeft, ToggleRight,
-  UserPlus, Shield, ArrowLeftRight, Clock, TrendingUp, Award
+  UserPlus, Shield, ArrowLeftRight, Clock, TrendingUp, Award, ShieldCheck, 
+  ExternalLink
 } from 'lucide-react';
 
 interface BotEditorProps {
