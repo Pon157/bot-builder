@@ -148,31 +148,27 @@ async def free_create_bot(d: dict):
 
 
 @router.put("/api/free/bots/{bot_id}/config")
-async def free_update_bot_config(bot_id: str, request: Request):
-    # Читаем JSON явно через Request, чтобы избежать ошибок валидации FastAPI
-    try:
-        d = await request.json()
-    except Exception:
-        raise HTTPException(400, "Invalid JSON body")
-
-    # ПРИНУДИТЕЛЬНО ПРИВОДИМ К СТРОКЕ (решает ошибку "expected str, got int")
+async def free_update_bot_config(bot_id: str, d: dict):
+    """
+    ИСПРАВЛЕНО:
+    - buttons/triggers сохраняются в КОРЕНЬ config (не вложенно в settings).
+    - adminChatId сохраняется в корень config.
+    - settings мержатся правильно.
+    - При сохранении НЕ затираем connectedUsers и stats.
+    """
     user_id = str(d.get("user_id", "")).strip()
-    if not user_id or user_id == "None":
+    if not user_id:
         raise HTTPException(400, "user_id обязателен")
 
     db = _db()
-    # Запрашиваем бота. Важно: owner_id теперь точно строка.
     r = await db.get("bots", params={
         "id": f"eq.{bot_id}",
         "owner_id": f"eq.{user_id}",
         "is_free_plan": "eq.true"
     })
-    
     if not r:
-        # Логируем для отладки, если не нашли
-        logging.warning(f"Бот {bot_id} не найден для пользователя {user_id}")
         raise HTTPException(404, "Free-бот не найден или нет прав")
-      
+
     existing_bot = r[0]
     existing_cfg = existing_bot.get("config") or {}
 
@@ -289,30 +285,27 @@ async def free_update_bot_config(bot_id: str, request: Request):
 async def free_get_user_bots(user_id: str):
     db = _db()
     
-    # 1. Запрашиваем ВСЕХ ботов, у которых включен free_plan.
-    # Тут нет фильтра по ID, поэтому DBAdapter не увидит число и не выдаст ошибку!
-    all_free_bots = await db.get("bots", params={"is_free_plan": "eq.true"})
+    # Чтобы DBAdapter не путал строку с числом, 
+    # оборачиваем ID в дополнительные кавычки для SQL
+    safe_user_id = f"'{user_id}'"
     
-    if not all_free_bots:
-        print("DEBUG: В базе вообще нет ботов с is_free_plan = true")
+    # Пробуем запросить с явным указанием, что это строка
+    all_bots = await db.get("bots", params={"owner_id": f"eq.{safe_user_id}"})
+    
+    # Если поиск по 'ID' не дал результата, пробуем обычный (на всякий случай)
+    if not all_bots:
+        all_bots = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
+
+    if not all_bots:
         return []
 
-    # 2. Фильтруем владельца уже средствами Python.
-    # Python — умный: он спокойно сравнит строку с числом, если мы их приведем к str.
-    user_bots = []
-    target_owner = str(user_id).strip()
-    
-    for bot in all_free_bots:
-        # Берем owner_id из базы и тоже на всякий случай в строку
-        current_owner = str(bot.get("owner_id", "")).strip()
-        
-        # Сравниваем ID и отсекаем ВК (так как ВК идут через другой эндпоинт)
-        if current_owner == target_owner and bot.get("platform") != "vk":
-            user_bots.append(bot)
-            
-    print(f"DEBUG: После фильтрации в Python найдено {len(user_bots)} ботов для {target_owner}")
-    return user_bots
-  
+    # Фильтруем только Telegram и Free план
+    bots = [
+        b for b in all_bots 
+        if b.get("platform") != "vk" and b.get("is_free_plan") is True
+    ]
+    return bots
+
 @router.get("/api/free/bots/{bot_id}/stats")
 async def free_bot_stats(bot_id: str, user_id: str):
     """
