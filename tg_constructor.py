@@ -9,10 +9,16 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command
 
-import os
 import aiohttp
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramBadRequest
+
+# Пытаемся импортировать поддержку SOCKS прокси
+try:
+    from aiohttp_socks import ProxyConnector as _ProxyConnector
+    _SOCKS_OK = True
+except ImportError:
+    _SOCKS_OK = False
 
 # --- НАШ КАСТОМНЫЙ КЛАСС (ОБХОД ОШИБОК AIOGRAM 3.24) ---
 class CustomProxySession(AiohttpSession):
@@ -31,13 +37,10 @@ class CustomProxySession(AiohttpSession):
 # ---------------------------------------------------------
 
 def _make_session():
-    # Берем токен из .env файла
+    # Берем токен и прокси из .env файла
     _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
-    
-    # Таймауты для стабильности
     _timeout = aiohttp.ClientTimeout(total=40, connect=15)
 
-    # Если прокси нет — стандартная сессия
     if not _PROXY_URL:
         return AiohttpSession(timeout=_timeout)
 
@@ -46,14 +49,8 @@ def _make_session():
             print("[NET] Ошибка: библиотека aiohttp_socks не установлена. Запуск без прокси.")
             return AiohttpSession(timeout=_timeout)
 
-        # aiohttp_socks отлично работает и с SOCKS, и с HTTP.
-        # Поэтому мы просто отдаем ему любой URL.
         clean_proxy = _PROXY_URL.replace("socks5h://", "socks5://")
-        
-        # Создаем коннектор
         connector = _ProxyConnector.from_url(clean_proxy, rdns=True)
-        
-        # ВОЗВРАЩАЕМ НАШ КЛАСС, а не стандартный AiohttpSession
         return CustomProxySession(connector=connector)
             
     except Exception as e:
@@ -62,7 +59,7 @@ def _make_session():
     return AiohttpSession(timeout=_timeout)
     
 
-# Загружаем переменные из .env согласно правилам безопасности
+# Загружаем переменные из .env (включая админ-доступы и токены)
 load_dotenv()
 
 TOKEN = os.getenv("CONSTRUCTOR_BOT_TOKEN")
@@ -72,7 +69,7 @@ if not TOKEN:
     raise ValueError("Токен CONSTRUCTOR_BOT_TOKEN не найден в файле .env!")
 
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=TOKEN)
+bot = Bot(token=TOKEN, session=_make_session())
 dp = Dispatcher()
 router = Router()
 
@@ -92,8 +89,12 @@ class BotEditStates(StatesGroup):
     waiting_for_broadcast = State()
 
 # ==========================================
-# HTTP API Клиент к основному серверу
+# Утилиты
 # ==========================================
+def extract_id(callback_data: str, prefix: str) -> str:
+    """Надежно извлекает ID бота из callback_data, игнорируя лишние подчеркивания"""
+    return callback_data[len(prefix):]
+
 async def api_request(method: str, endpoint: str, json_data: dict = None, params: dict = None):
     async with httpx.AsyncClient() as client:
         url = f"{API_URL}{endpoint}"
@@ -119,7 +120,14 @@ def main_menu_kb():
         [InlineKeyboardButton(text="Мои боты", callback_data="my_bots")]
     ])
 
-def bot_manage_kb(bot_id: str, status: str):
+def bot_manage_kb(bot_data: dict):
+    bot_id = bot_data['id']
+    status = bot_data.get('status', 'IDLE')
+    
+    # Достаем текущее состояние топиков из конфига
+    use_topics = bot_data.get('config', {}).get('settings', {}).get('useTopics', False)
+    topic_text = "ВКЛ" if use_topics else "ВЫКЛ ❌"
+    
     start_stop_btn = InlineKeyboardButton(text="⏹ Остановить", callback_data=f"stop_{bot_id}") if status == "RUNNING" else InlineKeyboardButton(text="▶️ Запустить", callback_data=f"start_{bot_id}")
     
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -128,6 +136,7 @@ def bot_manage_kb(bot_id: str, status: str):
          InlineKeyboardButton(text="1-е сообщение", callback_data=f"edit_firstmsg_{bot_id}")],
         [InlineKeyboardButton(text="Добавить триггер", callback_data=f"add_trigger_{bot_id}"),
          InlineKeyboardButton(text="Админ-чат", callback_data=f"edit_admin_{bot_id}")],
+        [InlineKeyboardButton(text=f"Топики (Форум): {topic_text}", callback_data=f"toggle_topics_{bot_id}")],
         [InlineKeyboardButton(text="Сделать рассылку", callback_data=f"broadcast_{bot_id}")],
         [InlineKeyboardButton(text="Назад к списку", callback_data="my_bots")]
     ])
@@ -164,7 +173,6 @@ async def process_name(message: Message, state: FSMContext):
     
     msg = await message.answer("Создаю бота в базе...")
     
-    # Отправляем запрос на основной сервер (создаст free-бота с рекламой)
     payload = {"user_id": user_id, "name": message.text.strip(), "token": data['token']}
     res = await api_request("POST", "/api/free/bots/create", json_data=payload)
     
@@ -178,19 +186,13 @@ async def process_name(message: Message, state: FSMContext):
 @router.callback_query(F.data == "my_bots")
 async def process_my_bots(callback: CallbackQuery):
     user_id = str(callback.from_user.id)
-    logging.info(f"🔍 Ищем ботов для owner_id: {user_id}")
-    
-    # Запрашиваем список ботов
     bots = await api_request("GET", f"/api/free/bots/{user_id}")
     
-    # Логируем ответ от сервера для отладки
-    logging.info(f"📡 Ответ сервера: {bots}")
-
-    # Проверяем, что пришел именно список и он не пуст
     if not bots or not isinstance(bots, list) or len(bots) == 0:
         try:
             await callback.message.edit_text(
-                f"У тебя пока нет ботов. (Твой ID: {user_id})", 
+                f"У тебя пока нет ботов. (Твой ID: <code>{user_id}</code>)", 
+                parse_mode="HTML",
                 reply_markup=main_menu_kb()
             )
         except TelegramBadRequest:
@@ -198,18 +200,17 @@ async def process_my_bots(callback: CallbackQuery):
         await callback.answer()
         return
 
-    # Формируем кнопки
     buttons = []
     for b in bots:
         bot_name = b.get('name', 'Без названия')
         bot_status = b.get('status', 'IDLE')
+        # Передаем полный ID без обрезки
         buttons.append([InlineKeyboardButton(
-            text=f"{bot_name} [{bot_status}]", 
+            text=f"🤖 {bot_name} [{bot_status}]", 
             callback_data=f"manage_{b['id']}"
         )])
     
     buttons.append([InlineKeyboardButton(text="Главное меню", callback_data="main_menu")])
-    
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     
     try:
@@ -218,40 +219,34 @@ async def process_my_bots(callback: CallbackQuery):
         pass
     
     await callback.answer()
+
 # --- Меню управления ботом ---
 @router.callback_query(F.data.startswith("manage_"))
 async def process_manage_bot(callback: CallbackQuery):
-    # Сразу отвечаем, чтобы убрать индикатор загрузки
-    await callback.answer()
+    try:
+        await callback.answer()
+    except:
+        pass
     
-    # Получаем ID из callback_data (это всегда строка)
-    bot_id_from_button = str(callback.data.split("_")[1])
+    bot_id_from_button = extract_id(callback.data, "manage_")
     user_id = str(callback.from_user.id)
 
-    # Запрашиваем список ботов (тот самый, где их 3 штуки)
     bots = await api_request("GET", f"/api/free/bots/{user_id}")
     
     if not bots:
         await callback.message.edit_text("Список ботов пуст.", reply_markup=main_menu_kb())
         return
 
-    # ВАЖНО: Приводим оба ID к строке при поиске
-    target_bot = None
-    for b in bots:
-        if str(b.get('id')) == bot_id_from_button:
-            target_bot = b
-            break
+    target_bot = next((b for b in bots if str(b.get('id')) == bot_id_from_button), None)
 
     if not target_bot:
-        # Если мы здесь, значит ID из кнопки "manage_XXX" не нашелся в списке от API
-        logging.error(f"DEBUG: Не нашли bot_id {bot_id_from_button} в списке {bots}")
         await callback.message.edit_text(
-            f"Бот не найден.\nID кнопки: {bot_id_from_button}", 
+            f"❌ Бот не найден.\nID: <code>{bot_id_from_button}</code>", 
+            parse_mode="HTML",
             reply_markup=main_menu_kb()
         )
         return
 
-    # Если нашли — рисуем меню управления
     bot_name = target_bot.get('name', 'Без названия')
     status = target_bot.get('status', 'IDLE')
     
@@ -266,27 +261,57 @@ async def process_manage_bot(callback: CallbackQuery):
         await callback.message.edit_text(
             text, 
             parse_mode="HTML", 
-            reply_markup=manage_bot_kb(bot_id_from_button)
+            reply_markup=bot_manage_kb(target_bot)
         )
     except Exception as e:
         logging.error(f"Ошибка отрисовки: {e}")
+
 # --- Запуск / Остановка ---
 @router.callback_query(F.data.startswith("start_"))
 async def start_bot_handler(callback: CallbackQuery):
-    bot_id = callback.data.split("_")[1]
+    bot_id = extract_id(callback.data, "start_")
     await callback.answer("Запускаю...")
     res = await api_request("POST", f"/api/free/bots/{bot_id}/start")
+    
     if res and res.get("status") == "ok":
-        await process_manage_bot(callback, FSMContext(storage=dp.storage, key=callback.message.chat.id))
+        # Эмулируем нажатие на "manage_", чтобы обновить меню
+        callback.data = f"manage_{bot_id}"
+        await process_manage_bot(callback)
     else:
         await callback.message.answer("Ошибка запуска.")
 
 @router.callback_query(F.data.startswith("stop_"))
 async def stop_bot_handler(callback: CallbackQuery):
-    bot_id = callback.data.split("_")[1]
+    bot_id = extract_id(callback.data, "stop_")
     await callback.answer("Останавливаю...")
     await api_request("POST", f"/api/free/bots/{bot_id}/stop")
-    await process_manage_bot(callback, FSMContext(storage=dp.storage, key=callback.message.chat.id))
+    
+    callback.data = f"manage_{bot_id}"
+    await process_manage_bot(callback)
+
+# --- Переключение топиков ---
+@router.callback_query(F.data.startswith("toggle_topics_"))
+async def toggle_topics_handler(callback: CallbackQuery):
+    await callback.answer()
+    bot_id = extract_id(callback.data, "toggle_topics_")
+    user_id = str(callback.from_user.id)
+
+    # Получаем текущий конфиг
+    bots = await api_request("GET", f"/api/free/bots/{user_id}")
+    bot_data = next((b for b in (bots or []) if str(b["id"]) == bot_id), None)
+    
+    if not bot_data:
+        return
+
+    current_use_topics = bot_data.get("config", {}).get("settings", {}).get("useTopics", False)
+    new_val = not current_use_topics
+
+    # Обновляем на сервере
+    await fetch_and_update_config(user_id, bot_id, {"settings": {"useTopics": new_val}})
+    
+    # Обновляем меню
+    callback.data = f"manage_{bot_id}"
+    await process_manage_bot(callback)
 
 # --- Редактирование параметров (config) ---
 async def fetch_and_update_config(user_id: str, bot_id: str, updates: dict):
@@ -295,7 +320,6 @@ async def fetch_and_update_config(user_id: str, bot_id: str, updates: dict):
     if not bot_data: return False
     
     current_cfg = bot_data.get("config", {})
-    # Мержим обновления в текущий конфиг
     for k, v in updates.items():
         if k == "settings":
             current_cfg["settings"] = {**current_cfg.get("settings", {}), **v}
@@ -310,6 +334,8 @@ async def fetch_and_update_config(user_id: str, bot_id: str, updates: dict):
 
 @router.callback_query(F.data.startswith("edit_welcome_"))
 async def edit_welcome(callback: CallbackQuery, state: FSMContext):
+    bot_id = extract_id(callback.data, "edit_welcome_")
+    await state.update_data(current_bot_id=bot_id)
     await state.set_state(BotEditStates.waiting_for_welcome)
     await callback.message.answer("Отправь новый текст приветственного сообщения:")
 
@@ -318,38 +344,46 @@ async def save_welcome(message: Message, state: FSMContext):
     data = await state.get_data()
     bot_id = data.get("current_bot_id")
     if await fetch_and_update_config(str(message.from_user.id), bot_id, {"welcomeMessage": message.text}):
-        await message.answer("✅Приветствие обновлено!")
+        await message.answer("Приветствие обновлено!")
     await state.clear()
 
 @router.callback_query(F.data.startswith("edit_firstmsg_"))
 async def edit_first_msg(callback: CallbackQuery, state: FSMContext):
+    bot_id = extract_id(callback.data, "edit_firstmsg_")
+    await state.update_data(current_bot_id=bot_id)
     await state.set_state(BotEditStates.waiting_for_first_msg)
     await callback.message.answer("Отправь заголовок/текст, который будет прикрепляться перед первым обращением юзера к админу:")
 
 @router.message(BotEditStates.waiting_for_first_msg)
 async def save_first_msg(message: Message, state: FSMContext):
     data = await state.get_data()
-    if await fetch_and_update_config(str(message.from_user.id), data["current_bot_id"], {"settings": {"firstMessageHeader": message.text}}):
+    bot_id = data.get("current_bot_id")
+    if await fetch_and_update_config(str(message.from_user.id), bot_id, {"settings": {"firstMessageHeader": message.text}}):
         await message.answer("Текст первого обращения обновлен!")
     await state.clear()
 
 @router.callback_query(F.data.startswith("edit_admin_"))
 async def edit_admin(callback: CallbackQuery, state: FSMContext):
+    bot_id = extract_id(callback.data, "edit_admin_")
+    await state.update_data(current_bot_id=bot_id)
     await state.set_state(BotEditStates.waiting_for_admin_chat)
     await callback.message.answer("Отправь ID чата или перешли сообщение из группы, куда должны падать заявки:")
 
 @router.message(BotEditStates.waiting_for_admin_chat)
 async def save_admin(message: Message, state: FSMContext):
     data = await state.get_data()
+    bot_id = data.get("current_bot_id")
     chat_id = str(message.forward_from_chat.id) if message.forward_from_chat else message.text.strip()
     
-    if await fetch_and_update_config(str(message.from_user.id), data["current_bot_id"], {"adminChatId": chat_id}):
+    if await fetch_and_update_config(str(message.from_user.id), bot_id, {"adminChatId": chat_id}):
         await message.answer(f"Админ-чат обновлен на: {chat_id}")
     await state.clear()
 
 # --- Триггеры ---
 @router.callback_query(F.data.startswith("add_trigger_"))
 async def add_trigger_start(callback: CallbackQuery, state: FSMContext):
+    bot_id = extract_id(callback.data, "add_trigger_")
+    await state.update_data(current_bot_id=bot_id)
     await state.set_state(BotEditStates.waiting_for_trigger_keyword)
     await callback.message.answer("Отправь ключевое слово (на что должен реагировать бот):")
 
@@ -362,15 +396,18 @@ async def add_trigger_keyword(message: Message, state: FSMContext):
 @router.message(BotEditStates.waiting_for_trigger_reply)
 async def add_trigger_reply(message: Message, state: FSMContext):
     data = await state.get_data()
+    bot_id = data.get("current_bot_id")
     trigger = {"keyword": data["trigger_kw"], "reply": message.text.strip(), "matchType": "exact"}
     
-    if await fetch_and_update_config(str(message.from_user.id), data["current_bot_id"], {"triggers_append": trigger}):
+    if await fetch_and_update_config(str(message.from_user.id), bot_id, {"triggers_append": trigger}):
         await message.answer(f"Триггер «{data['trigger_kw']}» успешно добавлен!")
     await state.clear()
 
 # --- Рассылка ---
 @router.callback_query(F.data.startswith("broadcast_"))
 async def broadcast_start(callback: CallbackQuery, state: FSMContext):
+    bot_id = extract_id(callback.data, "broadcast_")
+    await state.update_data(current_bot_id=bot_id)
     await state.set_state(BotEditStates.waiting_for_broadcast)
     await callback.message.answer("Отправь сообщение, которое нужно разослать всем пользователям этого бота:")
 
@@ -379,7 +416,7 @@ async def broadcast_send(message: Message, state: FSMContext):
     data = await state.get_data()
     bot_id = data.get("current_bot_id")
     
-    msg = await message.answer("⏳ Рассылаю...")
+    msg = await message.answer("Рассылаю...")
     res = await api_request("POST", "/api/bots/broadcast", json_data={"botIds": [bot_id], "message": message.text})
     
     if res:
@@ -387,7 +424,6 @@ async def broadcast_send(message: Message, state: FSMContext):
     else:
         await msg.edit_text("Ошибка при рассылке.")
     await state.clear()
-
 
 async def main():
     dp.include_router(router)
