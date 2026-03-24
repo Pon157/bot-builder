@@ -20,44 +20,54 @@ try:
 except ImportError:
     _SOCKS_OK = False
 
-# --- НАШ КАСТОМНЫЙ КЛАСС (ОБХОД ОШИБОК AIOGRAM 3.24) ---
+# --- НАШ КАСТОМНЫЙ КЛАСС (ИСПРАВЛЕННЫЙ: ОБХОД ОШИБОК AIOGRAM 3.24 + ТАЙМАУТЫ) ---
 class CustomProxySession(AiohttpSession):
-    def __init__(self, connector: aiohttp.BaseConnector):
-        # Вызываем конструктор aiogram БЕЗ аргументов (ошибок не будет)
-        super().__init__()
+    def __init__(self, connector: aiohttp.BaseConnector, timeout: float = 40.0):
+        # ВАЖНО: передаем в aiogram просто число (40.0). 
+        # Это исключит ошибку TypeError: unsupported operand type(s) for +: 'ClientTimeout' and 'int'
+        super().__init__(timeout=timeout)
         self._custom_connector = connector
 
     # Принудительно встраиваем коннектор прямо в ядро aiohttp
     async def create_session(self) -> aiohttp.ClientSession:
+        # А здесь, для внутреннего aiohttp, уже создаем объект ClientTimeout из нашего числа
         return aiohttp.ClientSession(
             connector=self._custom_connector,
             json_serialize=self.json_dumps,
-            timeout=aiohttp.ClientTimeout(total=40, connect=15)
+            timeout=aiohttp.ClientTimeout(total=self.timeout, connect=15)
         )
 # ---------------------------------------------------------
 
 def _make_session():
-    # Берем токен и прокси из .env файла
+    # Берем настройки прокси из .env согласно правилам безопасности
     _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
-    _timeout = aiohttp.ClientTimeout(total=40, connect=15)
+    
+    # Используем число float. Aiogram сам прибавит к нему polling_timeout
+    timeout_val = 40.0
 
+    # Если прокси не задан — возвращаем стандартную сессию с числовым таймаутом
     if not _PROXY_URL:
-        return AiohttpSession(timeout=_timeout)
+        return AiohttpSession(timeout=timeout_val)
 
     try:
+        # Проверка наличия библиотеки aiohttp_socks
         if not _SOCKS_OK:
-            print("[NET] Ошибка: библиотека aiohttp_socks не установлена. Запуск без прокси.")
-            return AiohttpSession(timeout=_timeout)
+            logging.warning("[NET] Библиотека aiohttp_socks не найдена. Запуск без прокси.")
+            return AiohttpSession(timeout=timeout_val)
 
+        # Обработка протокола (aiohttp_socks любит socks5:// вместо socks5h://)
         clean_proxy = _PROXY_URL.replace("socks5h://", "socks5://")
+        
+        # Создаем коннектор через URL
         connector = _ProxyConnector.from_url(clean_proxy, rdns=True)
-        return CustomProxySession(connector=connector)
+        
+        # Возвращаем наш кастомный класс с поддержкой прокси и числовым таймаутом
+        return CustomProxySession(connector=connector, timeout=timeout_val)
             
     except Exception as e:
-        print(f"Ошибка конфигурации сессии: {e}")
+        logging.error(f"Ошибка конфигурации сессии: {e}")
     
-    return AiohttpSession(timeout=_timeout)
-    
+    return AiohttpSession(timeout=timeout_val)
 
 # Загружаем переменные из .env (включая админ-доступы и токены)
 load_dotenv()
