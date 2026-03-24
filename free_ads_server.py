@@ -148,27 +148,31 @@ async def free_create_bot(d: dict):
 
 
 @router.put("/api/free/bots/{bot_id}/config")
-async def free_update_bot_config(bot_id: str, d: dict):
-    """
-    ИСПРАВЛЕНО:
-    - buttons/triggers сохраняются в КОРЕНЬ config (не вложенно в settings).
-    - adminChatId сохраняется в корень config.
-    - settings мержатся правильно.
-    - При сохранении НЕ затираем connectedUsers и stats.
-    """
+async def free_update_bot_config(bot_id: str, request: Request):
+    # Читаем JSON явно через Request, чтобы избежать ошибок валидации FastAPI
+    try:
+        d = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON body")
+
+    # ПРИНУДИТЕЛЬНО ПРИВОДИМ К СТРОКЕ (решает ошибку "expected str, got int")
     user_id = str(d.get("user_id", "")).strip()
-    if not user_id:
+    if not user_id or user_id == "None":
         raise HTTPException(400, "user_id обязателен")
 
     db = _db()
+    # Запрашиваем бота. Важно: owner_id теперь точно строка.
     r = await db.get("bots", params={
         "id": f"eq.{bot_id}",
         "owner_id": f"eq.{user_id}",
         "is_free_plan": "eq.true"
     })
+    
     if not r:
+        # Логируем для отладки, если не нашли
+        logging.warning(f"Бот {bot_id} не найден для пользователя {user_id}")
         raise HTTPException(404, "Free-бот не найден или нет прав")
-
+      
     existing_bot = r[0]
     existing_cfg = existing_bot.get("config") or {}
 
