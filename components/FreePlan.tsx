@@ -7,7 +7,8 @@ import {
   Info, Wifi, WifiOff, User, Image, Send, ShieldAlert,
   CheckSquare, Square as SquareIcon, Lock, ToggleLeft, ToggleRight,
   Users, Hash, Eye, EyeOff, Upload, RefreshCw, Link, Type,
-  ChevronDown, ChevronUp, ExternalLink, Copy, CheckCheck
+  ChevronDown, ChevronUp, ExternalLink, Copy, CheckCheck, ShieldCheck, 
+  ExternalLink
 } from 'lucide-react';
 
 const FREE_API  = (path: string) => `/api/free${path}`;
