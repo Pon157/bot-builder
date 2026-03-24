@@ -121,6 +121,65 @@ async def api_request(method: str, endpoint: str, json_data: dict = None, params
             logging.error(f"API Error ({endpoint}): {e}")
             return None
 
+async def show_bot_management_menu(callback: CallbackQuery, bot_id: str):
+    """Единая функция для отрисовки меню управления ботом (без изменения callback.data)"""
+    user_id = str(callback.from_user.id)
+    bots = await api_request("GET", f"/api/free/bots/{user_id}")
+    
+    if not bots:
+        await callback.message.edit_text("Список ботов пуст.", reply_markup=main_menu_kb())
+        return
+
+    target_bot = next((b for b in bots if str(b.get('id')) == bot_id), None)
+
+    if not target_bot:
+        await callback.message.edit_text(
+            f"❌ Бот не найден.\nID: <code>{bot_id}</code>", 
+            parse_mode="HTML",
+            reply_markup=main_menu_kb()
+        )
+        return
+
+    bot_name = target_bot.get('name', 'Без названия')
+    status = target_bot.get('status', 'IDLE')
+    
+    text = (
+        f"<b>Управление ботом</b>\n\n"
+        f"<b>Имя:</b> {bot_name}\n"
+        f"<b>Статус:</b> {status}\n"
+        f"<b>ID:</b> <code>{bot_id}</code>"
+    )
+    
+    try:
+        await callback.message.edit_text(
+            text, 
+            parse_mode="HTML", 
+            reply_markup=bot_manage_kb(target_bot)
+        )
+    except TelegramBadRequest:
+        pass # Игнорируем ошибку "Message is not modified"
+
+async def fetch_and_update_config(user_id: str, bot_id: str, updates: dict):
+    bots = await api_request("GET", f"/api/free/bots/{user_id}")
+    bot_data = next((b for b in (bots or []) if str(b["id"]) == bot_id), None)
+    if not bot_data: return False
+    
+    current_cfg = bot_data.get("config", {})
+    if not isinstance(current_cfg, dict):
+        current_cfg = {}
+
+    for k, v in updates.items():
+        if k == "settings":
+            current_cfg["settings"] = {**current_cfg.get("settings", {}), **v}
+        elif k == "triggers_append":
+            current_cfg.setdefault("triggers", []).append(v)
+        else:
+            current_cfg[k] = v
+
+    payload = {"user_id": user_id, "config": current_cfg}
+    res = await api_request("PUT", f"/api/free/bots/{bot_id}/config", json_data=payload)
+    return bool(res)
+
 # ==========================================
 # Клавиатуры
 # ==========================================
@@ -131,7 +190,7 @@ def main_menu_kb():
     ])
 
 def bot_manage_kb(bot_data: dict):
-    bot_id = bot_data['id']
+    bot_id = str(bot_data['id'])
     status = bot_data.get('status', 'IDLE')
     
     # Достаем текущее состояние топиков из конфига
@@ -230,6 +289,14 @@ async def process_my_bots(callback: CallbackQuery):
     
     await callback.answer()
 
+@router.callback_query(F.data == "main_menu")
+async def process_main_menu(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "Главное меню конструктора:", 
+        reply_markup=main_menu_kb()
+    )
+    await callback.answer()
+
 # --- Меню управления ботом ---
 @router.callback_query(F.data.startswith("manage_"))
 async def process_manage_bot(callback: CallbackQuery):
@@ -239,42 +306,7 @@ async def process_manage_bot(callback: CallbackQuery):
         pass
     
     bot_id_from_button = extract_id(callback.data, "manage_")
-    user_id = str(callback.from_user.id)
-
-    bots = await api_request("GET", f"/api/free/bots/{user_id}")
-    
-    if not bots:
-        await callback.message.edit_text("Список ботов пуст.", reply_markup=main_menu_kb())
-        return
-
-    target_bot = next((b for b in bots if str(b.get('id')) == bot_id_from_button), None)
-
-    if not target_bot:
-        await callback.message.edit_text(
-            f"❌ Бот не найден.\nID: <code>{bot_id_from_button}</code>", 
-            parse_mode="HTML",
-            reply_markup=main_menu_kb()
-        )
-        return
-
-    bot_name = target_bot.get('name', 'Без названия')
-    status = target_bot.get('status', 'IDLE')
-    
-    text = (
-        f"<b>Управление ботом</b>\n\n"
-        f"<b>Имя:</b> {bot_name}\n"
-        f"<b>Статус:</b> {status}\n"
-        f"<b>ID:</b> <code>{bot_id_from_button}</code>"
-    )
-    
-    try:
-        await callback.message.edit_text(
-            text, 
-            parse_mode="HTML", 
-            reply_markup=bot_manage_kb(target_bot)
-        )
-    except Exception as e:
-        logging.error(f"Ошибка отрисовки: {e}")
+    await show_bot_management_menu(callback, bot_id_from_button)
 
 # --- Запуск / Остановка ---
 @router.callback_query(F.data.startswith("start_"))
@@ -284,9 +316,7 @@ async def start_bot_handler(callback: CallbackQuery):
     res = await api_request("POST", f"/api/free/bots/{bot_id}/start")
     
     if res and res.get("status") == "ok":
-        # Эмулируем нажатие на "manage_", чтобы обновить меню
-        callback.data = f"manage_{bot_id}"
-        await process_manage_bot(callback)
+        await show_bot_management_menu(callback, bot_id)
     else:
         await callback.message.answer("Ошибка запуска.")
 
@@ -296,8 +326,7 @@ async def stop_bot_handler(callback: CallbackQuery):
     await callback.answer("Останавливаю...")
     await api_request("POST", f"/api/free/bots/{bot_id}/stop")
     
-    callback.data = f"manage_{bot_id}"
-    await process_manage_bot(callback)
+    await show_bot_management_menu(callback, bot_id)
 
 # --- Переключение топиков ---
 @router.callback_query(F.data.startswith("toggle_topics_"))
@@ -319,29 +348,10 @@ async def toggle_topics_handler(callback: CallbackQuery):
     # Обновляем на сервере
     await fetch_and_update_config(user_id, bot_id, {"settings": {"useTopics": new_val}})
     
-    # Обновляем меню
-    callback.data = f"manage_{bot_id}"
-    await process_manage_bot(callback)
+    # Обновляем меню через функцию, НЕ ТРОГАЯ callback.data
+    await show_bot_management_menu(callback, bot_id)
 
 # --- Редактирование параметров (config) ---
-async def fetch_and_update_config(user_id: str, bot_id: str, updates: dict):
-    bots = await api_request("GET", f"/api/free/bots/{user_id}")
-    bot_data = next((b for b in (bots or []) if b["id"] == bot_id), None)
-    if not bot_data: return False
-    
-    current_cfg = bot_data.get("config", {})
-    for k, v in updates.items():
-        if k == "settings":
-            current_cfg["settings"] = {**current_cfg.get("settings", {}), **v}
-        elif k == "triggers_append":
-            current_cfg.setdefault("triggers", []).append(v)
-        else:
-            current_cfg[k] = v
-
-    payload = {"user_id": user_id, "config": current_cfg}
-    res = await api_request("PUT", f"/api/free/bots/{bot_id}/config", json_data=payload)
-    return bool(res)
-
 @router.callback_query(F.data.startswith("edit_welcome_"))
 async def edit_welcome(callback: CallbackQuery, state: FSMContext):
     bot_id = extract_id(callback.data, "edit_welcome_")
