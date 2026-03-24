@@ -285,27 +285,30 @@ async def free_update_bot_config(bot_id: str, d: dict):
 async def free_get_user_bots(user_id: str):
     db = _db()
     
-    # Чтобы DBAdapter не путал строку с числом, 
-    # оборачиваем ID в дополнительные кавычки для SQL
-    safe_user_id = f"'{user_id}'"
+    # 1. Запрашиваем ВСЕХ ботов, у которых включен free_plan.
+    # Тут нет фильтра по ID, поэтому DBAdapter не увидит число и не выдаст ошибку!
+    all_free_bots = await db.get("bots", params={"is_free_plan": "eq.true"})
     
-    # Пробуем запросить с явным указанием, что это строка
-    all_bots = await db.get("bots", params={"owner_id": f"eq.{safe_user_id}"})
-    
-    # Если поиск по 'ID' не дал результата, пробуем обычный (на всякий случай)
-    if not all_bots:
-        all_bots = await db.get("bots", params={"owner_id": f"eq.{user_id}"})
-
-    if not all_bots:
+    if not all_free_bots:
+        print("DEBUG: В базе вообще нет ботов с is_free_plan = true")
         return []
 
-    # Фильтруем только Telegram и Free план
-    bots = [
-        b for b in all_bots 
-        if b.get("platform") != "vk" and b.get("is_free_plan") is True
-    ]
-    return bots
-
+    # 2. Фильтруем владельца уже средствами Python.
+    # Python — умный: он спокойно сравнит строку с числом, если мы их приведем к str.
+    user_bots = []
+    target_owner = str(user_id).strip()
+    
+    for bot in all_free_bots:
+        # Берем owner_id из базы и тоже на всякий случай в строку
+        current_owner = str(bot.get("owner_id", "")).strip()
+        
+        # Сравниваем ID и отсекаем ВК (так как ВК идут через другой эндпоинт)
+        if current_owner == target_owner and bot.get("platform") != "vk":
+            user_bots.append(bot)
+            
+    print(f"DEBUG: После фильтрации в Python найдено {len(user_bots)} ботов для {target_owner}")
+    return user_bots
+  
 @router.get("/api/free/bots/{bot_id}/stats")
 async def free_bot_stats(bot_id: str, user_id: str):
     """
