@@ -835,6 +835,32 @@ const FreeBotEditor: React.FC<{
           </div>
         </Section>
 
+        {/* ══ ПАРТНЕРСКИЙ БЛОК (ДОП. ЗАЩИТА) ══ */}
+<section className="bg-gradient-to-br from-[#1a1a1a] to-[#111] border border-rose-500/20 p-8 rounded-[2.5rem] space-y-4 shadow-lg shadow-rose-500/5">
+  <div className="flex items-center gap-3">
+    <div className="p-2 bg-rose-500/10 rounded-xl">
+      <ShieldCheck className="w-5 h-5 text-rose-500" />
+    </div>
+    <h3 className="text-xs font-black text-white uppercase tracking-wider">
+      Дополнительная защита
+    </h3>
+  </div>
+  
+  <p className="text-[10px] text-zinc-400 leading-relaxed">
+    Нужна максимальная безопасность для крупных сетей? Купить доп. защиту ваших проектов можно у наших проверенных партнеров.
+  </p>
+
+  <a 
+    href="https://t.me/spasitevashbot_bot" 
+    target="_blank" 
+    rel="noreferrer"
+    className="flex items-center justify-center gap-2 w-full py-4 bg-rose-500 hover:bg-rose-600 text-white rounded-2xl text-[10px] font-black uppercase transition-all active:scale-[0.98] shadow-lg shadow-rose-500/20"
+  >
+    <ExternalLink className="w-3 h-3" />
+    Перейти в @spasitevashbot_bot
+  </a>
+</section>
+
         <Section title={`Кнопки (${buttons.length})`} icon={<Zap size={13} className="text-blue-400" />}>
           {buttons.length === 0 && <p className="text-center text-zinc-600 text-xs py-2">Нет кнопок</p>}
           <div className="space-y-3">
