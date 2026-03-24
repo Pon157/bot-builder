@@ -160,26 +160,35 @@ async def show_bot_management_menu(callback: CallbackQuery, bot_id: str):
         pass # Игнорируем ошибку "Message is not modified"
 
 async def fetch_and_update_config(user_id: str, bot_id: str, updates: dict):
-    bots = await api_request("GET", f"/api/free/bots/{user_id}")
-    bot_data = next((b for b in (bots or []) if str(b["id"]) == bot_id), None)
-    if not bot_data: return False
+    user_id = str(user_id) # Гарантируем строку
     
-    current_cfg = bot_data.get("config", {})
-    if not isinstance(current_cfg, dict):
-        current_cfg = {}
+    # 1. Получаем текущие данные бота
+    bots = await api_request("GET", f"/api/free/bots/{user_id}")
+    if not bots or not isinstance(bots, list):
+        logging.error(f"Не удалось получить список ботов для {user_id}")
+        return False
+        
+    bot_data = next((b for b in bots if str(b.get("id")) == bot_id), None)
+    if not bot_data:
+        logging.error(f"Бот {bot_id} не найден в списке пользователя")
+        return False
+    
+    # 2. Формируем конфиг (как того ожидает сервер)
+    # Твой сервер v6 ждет, что мы пришлем user_id и объект config
+    payload = {
+        "user_id": user_id,
+        "config": updates # Сервер сам смержит это с existing_cfg внутри
+    }
 
-    for k, v in updates.items():
-        if k == "settings":
-            current_cfg["settings"] = {**current_cfg.get("settings", {}), **v}
-        elif k == "triggers_append":
-            current_cfg.setdefault("triggers", []).append(v)
-        else:
-            current_cfg[k] = v
-
-    payload = {"user_id": user_id, "config": current_cfg}
-    res = await api_request("PUT", f"/api/free/bots/{bot_id}/config", json_data=payload)
-    return bool(res)
-
+    # ВНИМАНИЕ: Если 404 не исчезнет, попробуй убрать "/api" из начала пути ниже:
+    endpoint = f"/api/free/bots/{bot_id}/config"
+    
+    res = await api_request("PUT", endpoint, json_data=payload)
+    
+    if res:
+        logging.info(f"Конфиг бота {bot_id} успешно обновлен")
+        return True
+    return False
 # ==========================================
 # Клавиатуры
 # ==========================================
