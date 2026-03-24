@@ -220,27 +220,37 @@ async def process_my_bots(callback: CallbackQuery):
     await callback.answer()
 # --- Меню управления ботом ---
 @router.callback_query(F.data.startswith("manage_"))
-async def process_manage_bot(callback: CallbackQuery, state: FSMContext):
+async def process_manage_bot(callback: CallbackQuery):
+    # 1. СРАЗУ отвечаем Telegram, чтобы кнопка не зависла
+    try:
+        await callback.answer()
+    except:
+        pass
+
     bot_id = callback.data.split("_")[1]
     user_id = str(callback.from_user.id)
-    
+
+    # 2. Делаем запрос (теперь мы знаем, что он работает)
+    # Если он долгий, Telegram уже не выбьет ошибку answerCallbackQuery
     bots = await api_request("GET", f"/api/free/bots/{user_id}")
-    bot_data = next((b for b in (bots or []) if b["id"] == bot_id), None)
     
-    if not bot_data:
-        await callback.answer("Бот не найден", show_alert=True)
+    # Ищем конкретного бота в списке
+    bot = next((b for b in bots if str(b['id']) == bot_id), None)
+
+    if not bot:
+        try:
+            await callback.message.edit_text("Бот не найден или был удален.", reply_markup=main_menu_kb())
+        except:
+            await callback.answer("Бот не найден", show_alert=True)
         return
 
-    await state.update_data(current_bot_id=bot_id)
-    cfg = bot_data.get("config", {})
-    status = bot_data.get("status", "IDLE")
+    # Отображаем меню управления ботом
+    text = f"🤖 Управление ботом: <b>{bot.get('name')}</b>\nСтатус: {bot.get('status')}"
     
-    text = (f"<b>Управление ботом:</b> {bot_data.get('name')}\n"
-            f"Статус: <b>{status}</b>\n\n"
-            f"Админ-чат: <code>{cfg.get('adminChatId') or 'Не задан'}</code>\n"
-            f"Триггеров: {len(cfg.get('triggers', []))}\n")
-    
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=bot_manage_kb(bot_id, status))
+    try:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=manage_bot_kb(bot_id))
+    except Exception as e:
+        logging.error(f"Ошибка отрисовки меню управления: {e}")
 
 # --- Запуск / Остановка ---
 @router.callback_query(F.data.startswith("start_"))
