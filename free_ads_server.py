@@ -1194,50 +1194,72 @@ async def ads_payment_webhook(request: Request):
 
 @router.post("/api/ads/payments/create")
 async def ads_create_payment(d: dict, authorization: str = Header(...)):
+    # 1. Авторизация и проверка суммы
     agent = await _auth_agent(authorization)
     amount = float(d.get("amount", 0))
     if amount < 10:
         raise HTTPException(400, "Минимальная сумма пополнения — 10 ₽")
 
+    # 2. Проверка ключей ЮKassa
     yk_shop_id = os.getenv("YOOKASSA_SHOP_ID", "")
     yk_secret  = os.getenv("YOOKASSA_SECRET_KEY", "")
     if not yk_shop_id or not yk_secret:
         raise HTTPException(503, "YOOKASSA_SHOP_ID / YOOKASSA_SECRET_KEY не настроены")
 
-    return_url  = os.getenv("FRONTEND_URL", os.getenv("SERVER_BASE_URL", "https://dialogengine.webtm.ru")) + "/ads?payment=success"
+    # 3. Подготовка ссылки возврата и полезной нагрузки
+    base_url = os.getenv("FRONTEND_URL", os.getenv("SERVER_BASE_URL", "https://dialogengine.webtm.ru"))
+    return_url  = base_url + "/ads?payment=success"
     idempotency = str(uuid.uuid4())
 
     payload = {
         "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
         "confirmation": {"type": "redirect", "return_url": return_url},
-        "capture":     True,
+        "capture":      True,
         "description": f"Пополнение рекламного баланса BotEngine — агент {agent['id']}",
         "metadata":    {"agent_id": agent["id"]}
     }
 
     try:
+        # 4. Запрос к API ЮKassa
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.post(
                 "https://api.yookassa.ru/v3/payments",
                 auth=(yk_shop_id, yk_secret),
-                headers={"Idempotence-Key": idempotency, "Content-Type": "application/json"},
+                headers={
+                    "Idempotence-Key": idempotency, 
+                    "Content-Type": "application/json"
+                },
                 json=payload
             )
-        if not r:
-            raise HTTPException(502, "Ошибка создания платежа в ЮКассе")
+        
+        # 5. ПРОВЕРКА ОТВЕТА (Важно!)
+        if r.status_code not in [200, 201]:
+            # Если ЮKassa вернула ошибку, выводим её в лог и отдаем 502
+            print(f"ЮKassa Error Response: {r.text}")
+            raise HTTPException(502, f"Ошибка ЮKassa ({r.status_code})")
 
-        resp = r
+        # 6. ПРЕВРАЩАЕМ ОТВЕТ В СЛОВАРЬ (Исправление основной ошибки)
+        resp = r.json() 
+        
         conf_url = resp.get("confirmation", {}).get("confirmation_url", "")
-        if not conf_url:
-            raise HTTPException(502, "ЮКасса не вернула confirmation_url")
+        payment_id = resp.get("id")
 
-        return {"payment_id": resp.get("id"), "confirmation_url": conf_url, "amount": amount}
+        if not conf_url or not payment_id:
+            raise HTTPException(502, "ЮКасса не вернула данные для оплаты")
+
+        # Возвращаем данные на фронтенд
+        return {
+            "payment_id": payment_id, 
+            "confirmation_url": conf_url, 
+            "amount": amount
+        }
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(502, f"Ошибка: {e}")
-
+        # Выводим ошибку в консоль сервера (pm2 logs), чтобы понимать, что случилось
+        print(f"Ошибка в ads_create_payment: {str(e)}")
+        raise HTTPException(502, f"Внутренняя ошибка сервера: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ADMIN: модерация
