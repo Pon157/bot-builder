@@ -1137,45 +1137,58 @@ async def ads_payment_webhook(request: Request):
     if event != "payment.succeeded":
         return {"ok": True}
 
-    obj        = data.get("object", {})
+    obj = data.get("object", {})
     payment_id = obj.get("id", "")
     amount_obj = obj.get("amount", {})
-    amount     = float(amount_obj.get("value", 0))
-    metadata   = obj.get("metadata", {})
-    agent_id   = metadata.get("agent_id", "")
+    amount = float(amount_obj.get("value", 0))
+    metadata = obj.get("metadata", {})
+    agent_id = metadata.get("agent_id", "")
 
     if not agent_id or amount <= 0 or not payment_id:
         return {"ok": True}
 
+    # 1. Проверка платежа через API ЮKassa (защита от фейковых вебхуков)
     yk_shop_id = os.getenv("YOOKASSA_SHOP_ID", "")
-    yk_secret  = os.getenv("YOOKASSA_SECRET_KEY", "")
+    yk_secret = os.getenv("YOOKASSA_SECRET_KEY", "")
     if yk_shop_id and yk_secret:
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.get(
                     f"https://api.yookassa.ru/v3/payments/{payment_id}",
                     auth=(yk_shop_id, yk_secret)
                 )
                 if r.status_code != 200:
+                    _logger().error(f"ЮKassa verification failed: {r.text}")
                     raise HTTPException(400, "Payment verification failed")
+                
                 real = r.json()
                 if real.get("status") != "succeeded":
                     return {"ok": True}
+                
                 real_amount = float(real.get("amount", {}).get("value", 0))
-                real_agent  = real.get("metadata", {}).get("agent_id", "")
-                if real_agent != agent_id or abs(real_amount - amount) > 0.01:
+                real_agent = real.get("metadata", {}).get("agent_id", "")
+                
+                if str(real_agent) != str(agent_id) or abs(real_amount - amount) > 0.01:
+                    _logger().error(f"Mismatch! Real agent: {real_agent}, Real amount: {real_amount}")
                     raise HTTPException(400, "Payment data mismatch")
-        except HTTPException:
-            raise
         except Exception as e:
-            _logger().warning(f"ЮКасса verify error: {e}")
+            _logger().error(f"Verify error: {e}")
+            raise HTTPException(500, "Internal verification error")
 
+    # 2. Зачисление денег через RPC
+    # ВНИМАНИЕ: Используем SQL-функцию, которая умеет проверять yk_payment_id на дубликаты!
     rpc_r = await _rpc_local("topup_ad_agent_balance", {
-        "p_agent_id": agent_id,
-        "p_amount":   amount,
-        "p_yk_id":    payment_id
+        "p_agent_id": str(agent_id),
+        "p_amount": amount,
+        "p_yk_id": payment_id,
+        "p_descr": f"Пополнение Ads (ЮKassa: {payment_id})"
     })
-    _logger().info(f"✅ Агент {agent_id} пополнил баланс на {amount}₽ (payment={payment_id})")
+
+    if rpc_r and isinstance(rpc_r, dict) and rpc_r.get("error") == "Already processed":
+        _logger().info(f"Платеж {payment_id} уже был обработан ранее.")
+        return {"ok": True}
+
+    _logger().info(f"✅ Агент {agent_id} пополнил баланс на {amount}₽")
     return {"ok": True}
 
 
