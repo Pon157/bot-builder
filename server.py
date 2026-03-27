@@ -4084,8 +4084,8 @@ YK_SHOP_ID   = os.getenv("YOOKASSA_SHOP_ID", "")
 YK_SECRET    = os.getenv("YOOKASSA_SECRET_KEY", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "")
 # Публичный URL сервера (используется для return_url платежей)
-# Примеры: https://dialogengine.ru
-SERVER_PUBLIC_URL = os.getenv("SERVER_BASE_URL", FRONTEND_URL or "https://dialogengine..ru")
+# Примеры: https://dialogengine.ru (новый), https://dialogengine.webtm.ru (старый, продолжает работать)
+SERVER_PUBLIC_URL = os.getenv("SERVER_BASE_URL", FRONTEND_URL or "https://dialogengine.ru")
 
 if YK_SHOP_ID and YK_SECRET:
     Configuration.account_id = YK_SHOP_ID
@@ -4266,6 +4266,7 @@ async def yookassa_callback(request: Request):
 
     Webhook URL в Личном кабинете ЮKassa:
     https://dialogengine.ru/api/payments/yookassa/callback
+    (старый домен также работает: https://dialogengine.webtm.ru/api/payments/yookassa/callback)
     Событие: payment.succeeded
 
     Маршрутизация по metadata:
