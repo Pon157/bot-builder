@@ -1207,7 +1207,7 @@ async def ads_create_payment(d: dict, authorization: str = Header(...)):
         raise HTTPException(503, "YOOKASSA_SHOP_ID / YOOKASSA_SECRET_KEY не настроены")
 
     # 3. Подготовка ссылки возврата и полезной нагрузки
-    base_url = os.getenv("FRONTEND_URL", os.getenv("SERVER_BASE_URL", "https://dialogengine.webtm.ru"))
+    base_url = os.getenv("FRONTEND_URL", os.getenv("SERVER_BASE_URL", "https://dialogengine.ru"))
     return_url  = base_url + "/ads?payment=success"
     idempotency = str(uuid.uuid4())
 
