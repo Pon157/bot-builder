@@ -707,9 +707,14 @@ class FreeBotInstance:
             return existing_tid
 
         try:
-            name  = user.get("first_name") or "Пользователь"
-            uname = user.get("username")
-            topic_name = f"{name}" + (f" (@{uname})" if uname else f" [{user.get('id')}]")
+            is_anon = self.settings.get("anonymousTopics", False)
+            if is_anon:
+                anon_tag = get_anon_id(user["id"])
+                topic_name = f"Аноним #{anon_tag}"
+            else:
+                name  = user.get("first_name") or "Пользователь"
+                uname = user.get("username")
+                topic_name = f"{name}" + (f" (@{uname})" if uname else f" [{user.get('id')}]")
             if len(topic_name) > 128:
                 topic_name = topic_name[:128]
             topic = await self.bot.create_forum_topic(self.admin_chat_id, topic_name)
