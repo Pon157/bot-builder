@@ -17,6 +17,7 @@ import ChatPlatform from './components/ChatPlatform';
 import ChatSiteApp from './components/ChatSiteApp';
 import RefundPolicy from './components/RefundPolicy'; 
 import Contacts from './components/Contacts';
+import QuestTerminal from './components/QuestTerminal';
 import SuccessPage from './components/Success';
 import { api } from './services/apiService';
 import { Menu, X, ArrowLeft, ShieldAlert } from 'lucide-react';
@@ -357,6 +358,9 @@ const App: React.FC = () => {
         {/* --- АДМИН-ЗОНА --- */}
         <Route path="/admin-zone" element={<AdminPanel onLogout={() => window.location.href = '/auth'} />} />
         <Route path="/admin/editor/:botId" element={<AdminBotEditorWrapper />} />
+
+        {/* --- КВЕСТ РОУТ --- */}
+        <Route path="/terminal" element={<QuestTerminal />} />
 
         {/* --- ЗАЩИЩЁННЫЕ РОУТЫ --- */}
         <Route 
