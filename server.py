@@ -346,11 +346,11 @@ async def login(d: dict):
 async def request_ver(d: dict):
     email = d['email'].lower()
     code = str(random.randint(100000, 999999))
-    
-    # Сохраняем код для регистрации
-    await db.post("temp_codes", {
-        "email": email, "code": code, "type": "VERIFY"
-    }, headers={"Prefer": "resolution=merge-duplicates"})
+
+    # DELETE → INSERT: избегаем duplicate key на PK(email).
+    # db.post с Prefer:merge-duplicates игнорируется PG-адаптером.
+    await db.delete("temp_codes", {"email": f"eq.{email}"})
+    await db.post("temp_codes", {"email": email, "code": code, "type": "VERIFY"})
     
     # Используем run_in_threadpool, так как smtplib внутри EmailService — синхронный
     success = await run_in_threadpool(EmailService.send_verification_code, email, code)
@@ -453,9 +453,9 @@ async def forgot_p(d: dict):
     
     code = str(random.randint(100000, 999999))
     
-    # Сохраняем код в базу
-    await db.post("temp_codes", {"email": email, "code": code, "type": "RESET"}, 
-                  headers={"Prefer": "resolution=merge-duplicates"})
+    # DELETE → INSERT: избегаем duplicate key на PK(email).
+    await db.delete("temp_codes", {"email": f"eq.{email}"})
+    await db.post("temp_codes", {"email": email, "code": code, "type": "RESET"})
     
     # ОТПРАВКА ПИСЬМА: Обязательно через run_in_threadpool
     # так как smtplib внутри EmailService блокирует поток
@@ -3001,32 +3001,17 @@ async def chat_request_email_verify(slug: str, d: dict):
     code = str(random.randint(100000, 999999))
     now_ms = int(time.time() * 1000)
 
-    # 2. Сначала работаем через адаптер (он пойдет в Postgres, если тот жив)
-    # Пытаемся сделать PATCH. Если записи нет — делаем POST.
-    # Это гарантирует, что в ПРИОРИТЕТНОЙ базе данные появятся первыми.
-    updated = await _sb_patch("chat_verify_codes",
-        {"email": f"eq.{email}", "site_id": f"eq.{site['id']}"},
-        {"code": code, "created_at": now_ms})
-    
-    if not updated:
-        await _sb_post("chat_verify_codes", {
-            "email": email, 
-            "site_id": site["id"], 
-            "code": code, 
-            "created_at": now_ms
-        })
-
-    # 3. Твой принудительный Upsert в Supabase
-    # Он гарантирует, что в Supabase код тоже будет, даже если PG не упала.
-    async with httpx.AsyncClient() as c:
-        await c.post(f"{S_URL}/rest/v1/chat_verify_codes",
-            headers={**_cs_h(), "Prefer": "resolution=merge-duplicates"},
-            json={
-                "email": email, 
-                "site_id": site["id"], 
-                "code": code, 
-                "created_at": now_ms
-            })
+    # 2. DELETE → INSERT через единый адаптер (PG + Supabase fallback).
+    # Избегаем split-brain: раньше прямой POST в Supabase создавал код там,
+    # а чтение шло через адаптер в PG — записи не было → 400 при регистрации.
+    await _sb_delete("chat_verify_codes",
+        {"email": f"eq.{email}", "site_id": f"eq.{site['id']}"})
+    await _sb_post("chat_verify_codes", {
+        "email": email,
+        "site_id": site["id"],
+        "code": code,
+        "created_at": now_ms,
+    })
 
     # 4. Отправка письма
     success = await run_in_threadpool(
