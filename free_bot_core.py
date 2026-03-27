@@ -1043,7 +1043,7 @@ class FreeBotInstance:
                                 f"{f' <b>@{bot_username}</b>' if bot_username else ''}.\n\n"
                                 f"✅ Бот был автоматически <b>остановлен</b> для защиты.\n\n"
                                 f"Восстановите работу на: "
-                                f"<a href=\"https://dialogengine.webtm.ru\">dialogengine.webtm.ru</a>"
+                                f"<a href=\"https://dialogengine.ru\">dialogengine.ru</a>"
                             )
                             await self.db.patch("dvr_events", {"id": f"eq.{ev['id']}"}, {"status": "done"})
                             logger.info(f"[DVR] ✅ Notify sent to {self.admin_chat_id}")
