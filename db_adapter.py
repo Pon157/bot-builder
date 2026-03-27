@@ -158,6 +158,24 @@ _SB_OPS = {
     "ilike": "ILIKE",
 }
 
+# Поля, которые ВСЕГДА хранятся как текст — их нельзя приводить к int/bool/float,
+# даже если значение выглядит числом (например, 6-значный код верификации).
+_STR_FIELDS: frozenset[str] = frozenset({
+    "code",          # коды подтверждения / сброса пароля
+    "type",          # строковый тип записи (VERIFY/RESET/REGISTER…)
+    "status",        # статусы (RUNNING/IDLE/pending…)
+    "key",           # API-ключи / лицензионные ключи
+    "key_code",      # альтернативное название ключа
+    "referral_code", # реферальные коды
+    "slug",          # URL-slug
+    "platform",      # telegram / vk
+    "email",         # e-mail
+    "username",      # имя пользователя
+    "token",         # токены ботов
+    "name",          # названия
+    "plan",          # free / pro
+})
+
 def _cast_value(val_str: str) -> object:
     """Умное приведение типов: строка -> bool / int / float / datetime / str."""
     if val_str == "true":
@@ -213,7 +231,7 @@ def _parse_sb_params(params: dict, start_idx: int = 1):
             v_str  = str_val
 
         if op_str in _SB_OPS:
-            v = v_str if key == "code" else _cast_value(v_str) # <--- ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ ЗДЕСЬ
+            v = v_str if key in _STR_FIELDS else _cast_value(v_str)
             conditions.append(f'"{key}" {_SB_OPS[op_str]} ${idx}')
             values.append(v)
             idx += 1
