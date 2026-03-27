@@ -592,7 +592,7 @@ async def get_referral_stats(user_id: str):
             "earned_from": earned_from
         })
 
-    frontend_url = os.getenv("FRONTEND_URL", "https://dialogengine.webtm.ru")
+    frontend_url = os.getenv("FRONTEND_URL", "https://dialogengine.ru")
     return {
         "referral_code": ref_code,
         "referral_link": f"{frontend_url}?ref={ref_code}",
@@ -1266,7 +1266,7 @@ async def dvr_notify_handler(bid: str, x_admin_token: str = Header(None)):
                         f"{f' <b>@{bot_username}</b>' if bot_username else ''}.\n\n"
                         f"✅ Бот был автоматически <b>остановлен</b> для защиты.\n\n"
                         f"Восстановите работу на: "
-                        f"<a href=\"https://dialogengine.webtm.ru\">dialogengine.webtm.ru</a>"
+                        f"<a href=\"https://dialogengine.ru\">dialogengine.ru</a>"
                     ),
                     "parse_mode": "HTML",
                     "disable_web_page_preview": True,
@@ -3058,7 +3058,7 @@ async def chat_register(slug: str, d: dict):
     if config.get("requireEmailVerification") and email:
         if not verify_code: raise HTTPException(400, "Требуется код подтверждения email")
         codes = await _sb_get("chat_verify_codes", {"email": f"eq.{email}", "site_id": f"eq.{site['id']}"})
-        if not codes or codes[0]["code"] != verify_code:
+        if not codes or str(codes[0]["code"]) != str(verify_code):
             raise HTTPException(400, "Неверный код подтверждения")
         # Удаляем использованный код
         await _sb_delete("chat_verify_codes", {"email": f"eq.{email}", "site_id": f"eq.{site['id']}"})
@@ -4084,8 +4084,8 @@ YK_SHOP_ID   = os.getenv("YOOKASSA_SHOP_ID", "")
 YK_SECRET    = os.getenv("YOOKASSA_SECRET_KEY", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "")
 # Публичный URL сервера (используется для return_url платежей)
-# Примеры: https://dialogengine.webtm.ru
-SERVER_PUBLIC_URL = os.getenv("SERVER_BASE_URL", FRONTEND_URL or "https://dialogengine.webtm.ru")
+# Примеры: https://dialogengine.ru
+SERVER_PUBLIC_URL = os.getenv("SERVER_BASE_URL", FRONTEND_URL or "https://dialogengine..ru")
 
 if YK_SHOP_ID and YK_SECRET:
     Configuration.account_id = YK_SHOP_ID
@@ -4265,7 +4265,7 @@ async def yookassa_callback(request: Request):
     ЮKassa шлёт POST-уведомление при изменении статуса платежа.
 
     Webhook URL в Личном кабинете ЮKassa:
-    https://dialogengine.webtm.ru/api/payments/yookassa/callback
+    https://dialogengine.ru/api/payments/yookassa/callback
     Событие: payment.succeeded
 
     Маршрутизация по metadata:
