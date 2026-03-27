@@ -808,13 +808,15 @@ async def ads_send_code(d: dict):
     now_ms     = int(time.time() * 1000)
     expires_ms = now_ms + 15 * 60 * 1000
 
+    # DELETE → INSERT: избегаем duplicate key на PK(email, type).
+    await db.delete("ad_email_codes", {"email": f"eq.{email}", "type": f"eq.{code_type}"})
     await db.post("ad_email_codes", json={
         "email":      email,
         "code":       code,
         "type":       code_type,
         "expires_at": expires_ms,
         "used":       False,
-    }, headers={"Prefer": "resolution=merge-duplicates"})
+    })
 
     s = _get_server()
     email_svc = getattr(s, 'EmailService', None)
