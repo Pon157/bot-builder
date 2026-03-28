@@ -10,12 +10,10 @@ const fetchWithTimeout = async (url: string, options: any = {}, timeout = 30000)
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   
-  // Определяем заголовки по умолчанию
   const defaultHeaders: any = {
     'Accept': 'application/json',
   };
 
-  // Если мы НЕ отправляем FormData, добавляем Content-Type: application/json
   if (!(options.body instanceof FormData)) {
     defaultHeaders['Content-Type'] = 'application/json';
   }
@@ -37,6 +35,21 @@ const fetchWithTimeout = async (url: string, options: any = {}, timeout = 30000)
   }
 };
 
+/**
+ * Безопасно парсит JSON из ответа.
+ * Если сервер вернул не-JSON (например, 502 от nginx или HTML-страницу ошибки) —
+ * возвращает null вместо того чтобы упасть с SyntaxError.
+ */
+const safeJson = async (response: Response): Promise<any> => {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
+
 export const api = {
   checkConnection: async () => {
     try {
@@ -45,25 +58,24 @@ export const api = {
     } catch (e) { return false; }
   },
 
-  // --- НОВЫЙ МЕТОД ДЛЯ ЗАГРУЗКИ ФОТО ---
   uploadFile: async (file: File): Promise<{ url: string } | null> => {
-  try {
-    const formData = new FormData();
-    formData.append('file', file);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
 
-    const response = await fetch(`${getApiBase()}/chat/media/upload`, {
-      method: 'POST',
-      body: formData,
-      // НИКАКИХ headers здесь быть не должно, браузер сам подставит boundary
-    });
+      const response = await fetch(`${getApiBase()}/chat/media/upload`, {
+        method: 'POST',
+        body: formData,
+      });
 
-    if (!response.ok) return null;
-    return await response.json();
-  } catch (e) {
-    console.error("Ошибка загрузки:", e);
-    return null;
-  }
-},
+      if (!response.ok) return null;
+      return await response.json();
+    } catch (e) {
+      console.error("Ошибка загрузки:", e);
+      return null;
+    }
+  },
+
   getUser: async (userId: string): Promise<User | null> => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/auth/user/${userId}`, { method: 'GET' });
@@ -171,16 +183,15 @@ export const api = {
   },
 
   getBotStats: async (botId: string): Promise<any> => {
-  try {
-    const response = await fetchWithTimeout(`${getApiBase()}/bots/stats/${botId}`, { method: 'GET' });
-    if (!response.ok) return { stats: { total_messages: 0, active_users: 0 } }; // Заглушка при ошибке
-    return await response.json();
-  } catch (e) { 
-    return { stats: { total_messages: 0, active_users: 0 } }; 
-  }
-},
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/bots/stats/${botId}`, { method: 'GET' });
+      if (!response.ok) return { stats: { total_messages: 0, active_users: 0 } };
+      return await response.json();
+    } catch (e) { 
+      return { stats: { total_messages: 0, active_users: 0 } }; 
+    }
+  },
 
-  // Обновленный sendBroadcast с поддержкой фото
   sendBroadcast: async (botIds: string[], message: string, photoUrl?: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/bots/broadcast`, {
       method: 'POST',
@@ -191,7 +202,6 @@ export const api = {
 
   // ── СТАФФ-СИСТЕМА ──────────────────────────────────────────────────
 
-  /** Получить статистику всех стафф-администраторов бота */
   getStaffStats: async (botId: string): Promise<{ staffAdmins: any[] }> => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/bots/${botId}/staff/stat`, { method: 'GET' });
@@ -199,7 +209,6 @@ export const api = {
     } catch { return { staffAdmins: [] }; }
   },
 
-  /** Переключить режим отдыха для конкретного администратора */
   toggleStaffRest: async (botId: string, staffId: string, isOnRest: boolean, restUntil?: number): Promise<{ ok: boolean } | null> => {
     try {
       const body: Record<string, unknown> = { is_on_rest: isOnRest };
@@ -212,7 +221,6 @@ export const api = {
     } catch { return null; }
   },
 
-  /** Получить статистику конкретного стафф-администратора */
   getStaffAdminStat: async (botId: string, staffId: string): Promise<any | null> => {
     try {
       const response = await fetchWithTimeout(
@@ -223,7 +231,6 @@ export const api = {
     } catch { return null; }
   },
 
-  /** Обновить статистику стафф-администратора (вызывается из бота, но может пригодиться для ручного сброса) */
   updateStaffStat: async (
     botId: string,
     staffId: string,
@@ -242,17 +249,15 @@ export const api = {
   // ── конец СТАФФ-СИСТЕМЫ ────────────────────────────────────────────
 
   // --- ADMIN API ---
-adminLogin: async (login: string, pass: string) => {
+  adminLogin: async (login: string, pass: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/login`, {
       method: 'POST',
       body: JSON.stringify({ login, password: pass })
     });
     if (!response.ok) throw new Error("Неверный логин или пароль");
     const data = await response.json();
-    
-    // Сохраняем токен сразу, чтобы не потерять при редиректе
     if (data.token) {
-        localStorage.setItem('admin_token', data.token);
+      localStorage.setItem('admin_token', data.token);
     }
     return data; 
   },
@@ -282,7 +287,6 @@ adminLogin: async (login: string, pass: string) => {
     return response.json();
   },
 
-  // Новый метод: Бан пользователя
   adminBanUser: async (token: string, userId: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/user/ban`, {
       method: 'POST',
@@ -292,7 +296,6 @@ adminLogin: async (login: string, pass: string) => {
     return response.ok;
   },
 
-  // Улучшенный метод: Управление ботами (теперь поддерживает start)
   adminBotAction: async (token: string, botId: string, action: 'stop' | 'delete' | 'start') => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/bot/action`, {
       method: 'POST',
@@ -302,7 +305,6 @@ adminLogin: async (login: string, pass: string) => {
     return response.ok;
   },
 
-  // Прямой старт бота (через передачу объекта)
   adminStartBotDirect: async (token: string, botConfig: BotConfig) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/bots/start`, {
       method: 'POST',
@@ -312,7 +314,6 @@ adminLogin: async (login: string, pass: string) => {
     return response.json();
   },
   
-// 1. Генерация ключа (по названию бота)
   generateKey: async (token: string, months: number, botName: string) => {
     console.log("🚀 Отправка названия бота на сервер:", botName);
     const response = await fetchWithTimeout(`${getApiBase()}/admin/generate_key`, {
@@ -334,7 +335,6 @@ adminLogin: async (login: string, pass: string) => {
     return await response.json();
   },
 
-  // 2. Создание временного доступа
   createTempAccess: async (botId: string, key: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/temp-access`, {
       method: 'POST',
@@ -343,7 +343,6 @@ adminLogin: async (login: string, pass: string) => {
     return response.ok;
   },
 
-  // 3. Получить системные логи
   getSystemLogs: async (token: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/system-logs`, {
       method: 'GET',
@@ -352,7 +351,6 @@ adminLogin: async (login: string, pass: string) => {
     return response.json();
   },
 
-  // Отклики на вакансии (для администратора)
   getApplications: async (token: string) => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/applications/list`, {
@@ -363,7 +361,6 @@ adminLogin: async (login: string, pass: string) => {
     } catch { return []; }
   },
 
-  // 4. Бан/Разбан пользователя
   adminToggleBan: async (token: string, userId: string, isBanned: boolean) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/user/ban`, {
       method: 'POST',
@@ -373,7 +370,6 @@ adminLogin: async (login: string, pass: string) => {
     return response.ok;
   },
 
-  // 5. Получить данные бота (для админа)
   getBotAsAdmin: async (token: string, botId: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/bot/${botId}`, {
       method: 'GET',
@@ -382,17 +378,11 @@ adminLogin: async (login: string, pass: string) => {
     return response.ok ? await response.json() : null;
   },
 
-  // 6. ПРОВЕРКА КЛЮЧА (Исправлено: без дублей и ошибок синтаксиса)
   verifyAccessKey: async (key: string, botId: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/verify_access_key`, {
       method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json' 
-      },
-      body: JSON.stringify({ 
-        key: key.trim(), 
-        bot_id: botId 
-      })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: key.trim(), bot_id: botId })
     });
 
     if (!response.ok) {
@@ -400,10 +390,9 @@ adminLogin: async (login: string, pass: string) => {
       throw new Error(errorData.detail || "Неверный ключ доступа");
     }
 
-    return await response.json(); // Ожидаем { "ok": true }
+    return await response.json();
   },
 
-  // 7. Сохранить изменения бота (для админа)
   saveBotAsAdmin: async (token: string, bot: any) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/bot/save`, {
       method: 'POST',
@@ -415,7 +404,6 @@ adminLogin: async (login: string, pass: string) => {
 
   // --- VK SPECIFIC ---
   
-  // Получение информации о сообществе ВК (чтобы в админке видеть название и аватарку группы)
   getVkGroupInfo: async (token: string, groupId: string) => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/vk/group-info`, {
@@ -426,46 +414,36 @@ adminLogin: async (login: string, pass: string) => {
     } catch (e) { return null; }
   },
 
-  // Проверка Callback API / Long Poll (правильно ли настроены ключи в ВК)
   testVkConnection: async (botId: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/bots/vk-test/${botId}`, { method: 'GET' });
     return response.ok ? await response.json() : { status: 'error' };
   },
 
-  // Ответ пользователю из админ-панели (если ты делаешь чат внутри сайта)
   sendVkMessage: async (botId: string, peerId: number, message: string, replyTo?: number) => {
     const response = await fetchWithTimeout(`${getApiBase()}/bots/vk-send`, {
       method: 'POST',
-      body: JSON.stringify({ 
-        bot_id: botId, 
-        peer_id: peerId, 
-        message,
-        reply_to: replyTo // Тот самый реплай, о котором мы говорили
-      })
+      body: JSON.stringify({ bot_id: botId, peer_id: peerId, message, reply_to: replyTo })
     });
     return response.ok;
   },
 
   // --- AI KEYS MANAGEMENT ---
   
-  // Получить список всех выданных AI ключей из базы
   getAiKeys: async () => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/ai-keys`, { 
       method: 'GET',
       headers: {
-        'x-admin-token': localStorage.getItem('ADMIN_SECRET') || '' // передаем секрет админа
+        'x-admin-token': localStorage.getItem('ADMIN_SECRET') || ''
       }
     });
     if (!response.ok) return [];
     return await response.json();
   },
 
-  // Проверить статус конкретного ключа или баланс
   checkAiKeyStatus: async (key: string) => {
     const response = await fetchWithTimeout(`${getApiBase()}/admin/ai-key-info/${key}`, { method: 'GET' });
     return response.ok ? await response.json() : null;
   },
-
 
   submitReview: async (reviewData: { name: string, role: string, text: string, rating: number }) => {
     try {
@@ -481,7 +459,6 @@ adminLogin: async (login: string, pass: string) => {
     }
   },
 
-  // Получить список одобренных отзывов для лендинга
   getApprovedReviews: async () => {
     try {
       const response = await fetch(`${getApiBase()}/reviews/list`);
@@ -500,11 +477,11 @@ adminLogin: async (login: string, pass: string) => {
         method: 'POST',
         body: JSON.stringify({
           id: appData.id,
-          owner_id: appData.owner_id, // Обязательно для вашей БД (NOT NULL)
+          owner_id: appData.owner_id,
           title: appData.title || 'Без названия',
           theme: appData.theme,
           components: appData.components,
-          form_webhook: appData.formWebhook || '' // Мапим camelCase в snake_case для БД
+          form_webhook: appData.formWebhook || ''
         })
       });
       return response.ok;
@@ -514,7 +491,6 @@ adminLogin: async (login: string, pass: string) => {
     }
   },
 
-  // Получение MiniApp по ID
   getMiniApp: async (appId: string) => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/miniapps/${appId}`);
@@ -553,21 +529,17 @@ adminLogin: async (login: string, pass: string) => {
   },
 
   submitForm: async (appId: string, formData: any) => {
-  try {
-    const response = await fetchWithTimeout(`${getApiBase()}/forms/submit`, {
-      method: 'POST',
-      body: JSON.stringify({
-        app_id: appId,
-        form_data: formData
-      })
-    });
-    return await response.json();
-  } catch (e) {
-    console.error("submitForm error:", e);
-    // В JS/TS пишем false с маленькой буквы!
-    return { ok: false, error: 'Ошибка сети' }; 
-  }
-},
+    try {
+      const response = await fetchWithTimeout(`${getApiBase()}/forms/submit`, {
+        method: 'POST',
+        body: JSON.stringify({ app_id: appId, form_data: formData })
+      });
+      return await response.json();
+    } catch (e) {
+      console.error("submitForm error:", e);
+      return { ok: false, error: 'Ошибка сети' }; 
+    }
+  },
 
   // ─── CHAT PLATFORM ─────────────────────────────────────────────────────────
 
@@ -604,7 +576,7 @@ adminLogin: async (login: string, pass: string) => {
     },
   },
 
-// ─── Баланс и транзакции ─────────────────────────────────────────────────────
+  // ─── Баланс и транзакции ─────────────────────────────────────────────────────
 
   getBalance: async (userId: string): Promise<{ balance: number; transactions: any[] }> => {
     try {
@@ -627,28 +599,61 @@ adminLogin: async (login: string, pass: string) => {
         method: 'POST',
         body: JSON.stringify({ user_id: userId, amount })
       });
-      return await r.json();
-    } catch { return null; }
-  },
-
-  buyService: async (userId: string, serviceKey: string, targetId: string): Promise<any> => {
-    try {
-      const r = await fetchWithTimeout(`${getApiBase()}/payments/buy`, {
-        method: 'POST',
-        body: JSON.stringify({ user_id: userId, service_key: serviceKey, target_id: targetId })
-      });
-      
-      const data = await r.json();
+      const data = await safeJson(r);
       if (!r.ok) {
-        // Если сервер ответил ошибкой (например, 402 или 500)
-        throw new Error(data.detail || `Ошибка сервера: ${r.status}`);
+        throw new Error(data?.detail || `Ошибка при создании платежа (${r.status})`);
       }
       return data;
     } catch (error: any) {
-      // Выводим в консоль для отладки
-      console.error("API Error [buyService]:", error);
-      throw error; // Пробрасываем ошибку в компонент
+      console.error("API Error [initiateTopup]:", error);
+      throw error;
     }
+  },
+
+  /**
+   * Покупка услуги за баланс.
+   *
+   * Коды ответов сервера:
+   *   200 — успех, возвращает { status, new_balance, expires_at, ... }
+   *   402 — недостаточно средств
+   *   404 — пользователь или услуга не найдены
+   *   500 — ошибка БД
+   *
+   * Метод всегда бросает исключение при ошибке, так что вызывающий код
+   * должен использовать try/catch и показывать e.message пользователю.
+   */
+  buyService: async (userId: string, serviceKey: string, targetId: string): Promise<any> => {
+    let r: Response;
+    try {
+      r = await fetchWithTimeout(`${getApiBase()}/payments/buy`, {
+        method: 'POST',
+        body: JSON.stringify({ user_id: userId, service_key: serviceKey, target_id: targetId })
+      });
+    } catch (networkError: any) {
+      // Потеря сети, таймаут, CORS и т.д.
+      throw new Error('Нет соединения с сервером. Проверьте интернет и попробуйте снова.');
+    }
+
+    // Пробуем прочитать тело — сервер может вернуть HTML при 502/504
+    const data = await safeJson(r);
+
+    if (!r.ok) {
+      // Формируем внятное сообщение из ответа сервера
+      const serverMessage: string =
+        data?.detail ||
+        data?.message ||
+        data?.error ||
+        `Ошибка сервера (${r.status})`;
+
+      // Для 402 добавляем подсказку про пополнение баланса
+      if (r.status === 402) {
+        throw new Error(`${serverMessage}. Пополните баланс в разделе Профиль.`);
+      }
+
+      throw new Error(serverMessage);
+    }
+
+    return data;
   },
 
   adminGetAdPosts: async (token: string, status: string = 'pending') => {
@@ -683,9 +688,8 @@ adminLogin: async (login: string, pass: string) => {
     return r.ok ? await r.json() : null;
   },
 
-    // --- РЕФЕРАЛЬНАЯ СИСТЕМА ---
+  // --- РЕФЕРАЛЬНАЯ СИСТЕМА ---
 
-  // Получить статистику рефералов пользователя
   getReferralStats: async (userId: string) => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/referrals/stats/${userId}`, { method: 'GET' });
@@ -693,7 +697,6 @@ adminLogin: async (login: string, pass: string) => {
     } catch (e) { return null; }
   },
 
-  // Получить имя пригласившего по реферальному коду
   getReferrerByCode: async (code: string) => {
     try {
       const response = await fetchWithTimeout(`${getApiBase()}/referrals/referrer/${code}`, { method: 'GET' });
@@ -703,7 +706,6 @@ adminLogin: async (login: string, pass: string) => {
   
   // --- BOT MANAGEMENT ---
 
-  // --- ДОБАВИТЬ В api.ts ---
   createBot: async (
     userId: string,
     name: string,
@@ -716,7 +718,7 @@ adminLogin: async (login: string, pass: string) => {
           owner_id: userId,
           name,
           token,
-          platform: 'telegram', // дефолт, пользователь меняет в BotEditor
+          platform: 'telegram',
           adminIds:   [],
           channelId:  '',
           lotChannel: '',
