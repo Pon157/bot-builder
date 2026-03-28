@@ -794,6 +794,7 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                           { id: 'bad_behavior', label: 'Петушара / Нарушитель 🐔', color: 'yellow' },
                           { id: 'spammer',      label: 'Спамер 🚫',              color: 'red'    },
                           { id: 'raider',       label: 'Рейдер 💥',              color: 'purple' },
+                          { id: 'quest',       label: '8890',              color: 'green' },
                         ].map(({ id, label, color }) => {
                           const reasons: string[] = (safeSettings as any).memoryBaseBlockReasons || [];
                           const active = reasons.includes(id);
