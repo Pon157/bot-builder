@@ -2679,7 +2679,8 @@ reply_text = (
   },
   {
     label: 'Случайная цитата',
-    code: `r = requests.get('http://api.quotable.io/random')
+    code: `#Для квеста 63729136
+    r = requests.get('http://api.quotable.io/random')
 if r.status_code == 200:
     q = r.json()
     reply_text = f'"{q["content"]}"\\n— {q["author"]}'
