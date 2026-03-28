@@ -253,7 +253,7 @@ const Landing = () => {
               <div>
                 <p className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-500 mb-1">Открытые вакансии · 3 позиции</p>
                 <h3 className="text-xl font-bold text-white">Присоединяйтесь к команде</h3>
-                <p className="text-slate-400 text-sm mt-0.5">SMM, специалисты по работе с ботами, тех. администраторы</p>
+                <p className="text-slate-400 text-sm mt-0.5">4555 SMM, специалисты по работе с ботами, тех. администраторы</p>
               </div>
             </div>
             <a
