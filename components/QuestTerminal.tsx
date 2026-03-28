@@ -95,7 +95,7 @@ const QuestTerminal: React.FC = () => {
       <div className="c-p" data-o="11" data-c="4" style={{ display: 'none' }}></div>
 
       <div style={{ border: '2px solid #0f0', padding: '50px', background: '#000', textAlign: 'center', width: '450px', zIndex: 10, boxShadow: '0 0 30px rgba(0,255,0,0.2)' }}>
-        <h1 style={{ marginBottom: '30px', letterSpacing: '8px', fontSize: '20px', color: '#0f0' }}>ТЕРМИНАЛ_ЯДРА_V12</h1>
+        <h1 style={{ marginBottom: '30px', letterSpacing: '8px', fontSize: '20px', color: '#0f0' }}>Quest Room</h1>
         
         <form onSubmit={handleAuth} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           <input type="text" placeholder="ID_СЕССИИ" style={{ background: '#000', border: '1px solid #005500', color: '#0f0', width: '100%', padding: '12px', outline: 'none' }} />
