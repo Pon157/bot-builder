@@ -4372,6 +4372,16 @@ async def buy_service(d: dict):
     else:
         service_type = "other"
 
+    # ── Двойная защита: проверяем баланс на Python-уровне ──────────────────
+    # Это второй барьер (первый — FOR UPDATE в SQL). Защищает от очевидных
+    # случаев нехватки средств и отвечает внятной ошибкой ещё до RPC.
+    u_check = await db.get("users", {"id": f"eq.{user_id}", "select": "id,balance"})
+    if not u_check:
+        raise HTTPException(404, "Пользователь не найден")
+    current_balance = float(u_check[0].get("balance") or 0)
+    if current_balance < price:
+        raise HTTPException(402, f"Недостаточно средств. Нужно {price:.2f}₽, у вас {current_balance:.2f}₽")
+
     # Атомарное списание через RPC
     rpc_r = await _rpc("spend_user_balance", {
         "p_user_id":     user_id,
