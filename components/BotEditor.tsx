@@ -1373,16 +1373,13 @@ const BotEditor: React.FC<BotEditorProps> = ({ bot, onUpdate, onDelete, isAdminM
                 setIsProcessing(true);
                 try {
                   const res = await api.buyService(bot.owner_id, pkg.id, bot.id);
-                  if (res && res.status === 'ok') {
-                    // Обновляем баланс AI после покупки
-                    const newBal = await fetch(`/api/ai/balance/${bot.id}`).then(r => r.json());
-                    setAiBalance(newBal);
-                    alert(`✅ Пакет ${pkg.label} успешно активирован!`);
-                  } else {
-                    alert(res?.detail || 'Недостаточно средств на балансе');
-                  }
-                } catch (e) {
-                  alert('Ошибка соединения с сервером');
+                  // api.buyService бросает исключение при ошибке (402, 500 и т.д.)
+                  // Если мы здесь — значит покупка прошла успешно
+                  const newBal = await fetch(`/api/ai/balance/${bot.id}`).then(r => r.json());
+                  setAiBalance(newBal);
+                  alert(`✅ Пакет ${pkg.label} успешно активирован!`);
+                } catch (e: any) {
+                  alert(e.message || 'Ошибка соединения с сервером');
                 } finally {
                   setIsProcessing(false);
                 }
@@ -2227,23 +2224,18 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
                 // 1. Вызываем API покупки
                 const res = await api.buyService(bot.owner_id, 'miniapp_30d', bot.id);
                 
-                if (res && res.status === 'ok') {
-                  // Берём expires_at из ответа сервера, или считаем локально как fallback
-                  const addMs = 30 * 86400000;
-                  const currentExp = bot.license_expires_at || Date.now();
-                  const newExp = res.expires_at || (Math.max(currentExp, Date.now()) + addMs);
+                // api.buyService бросает исключение при ошибке — если здесь, значит ок
+                const addMs = 30 * 86400000;
+                const currentExp = bot.license_expires_at || Date.now();
+                const newExp = res.expires_at || (Math.max(currentExp, Date.now()) + addMs);
 
-                  // Обновляем родительский компонент чтобы данные сохранились
-                  onUpdate({ ...bot, license_expires_at: newExp });
-                  setLicenseActive(true);
-                  setLicenseExpiry(newExp);
-                  alert('Мини-приложения успешно активированы!');
-                } else {
-                  alert(res?.detail || 'Недостаточно средств на балансе. Пополните его в профиле.');
-                }
-              } catch (e) {
+                onUpdate({ ...bot, license_expires_at: newExp });
+                setLicenseActive(true);
+                setLicenseExpiry(newExp);
+                alert('Мини-приложения успешно активированы!');
+              } catch (e: any) {
                 console.error('Ошибка активации:', e);
-                alert('Ошибка при связи с сервером. Попробуйте позже.');
+                alert(e.message || 'Ошибка при связи с сервером. Попробуйте позже.');
               } finally {
                 setActivatingKey(false);
               }
@@ -2336,19 +2328,16 @@ const MiniAppsTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; 
                   setIsProcessing(true);
                   try {
                     const res = await api.buyService(bot.owner_id, pkg.id, bot.id);
-                    if (res?.status === 'ok') {
-                      const days = pkg.id === 'miniapp_30d' ? 30 : 90;
-                      const currentExp = bot.license_expires_at || Date.now();
-                      const newExp = res.expires_at || (Math.max(currentExp, Date.now()) + (days * 86400000));
-                      onUpdate({ ...bot, license_expires_at: newExp });
-                      setLicenseActive(true);
-                      setLicenseExpiry(newExp);
-                      alert('Подписка продлена!');
-                    } else {
-                      alert(res?.detail || 'Недостаточно средств');
-                    }
-                  } catch (e) {
-                    alert('Ошибка сервера');
+                    // api.buyService бросает исключение при ошибке — если здесь, значит ок
+                    const days = pkg.id === 'miniapp_30d' ? 30 : 90;
+                    const currentExp = bot.license_expires_at || Date.now();
+                    const newExp = res.expires_at || (Math.max(currentExp, Date.now()) + (days * 86400000));
+                    onUpdate({ ...bot, license_expires_at: newExp });
+                    setLicenseActive(true);
+                    setLicenseExpiry(newExp);
+                    alert('Подписка продлена!');
+                  } catch (e: any) {
+                    alert(e.message || 'Недостаточно средств или ошибка сервера');
                   } finally {
                     setIsProcessing(false);
                   }
