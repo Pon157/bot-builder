@@ -196,6 +196,7 @@ const Referrals: React.FC<ReferralsProps> = ({ user, onUserUpdate }) => {
             { step: '02', text: 'Друг регистрируется', sub: 'Вам зачислится определенное количество ₽ (в зависимости от уровня) после успешной регистрации' },
             { step: '03', text: 'Друг совершает покупки', sub: `Вы получаете ${tier.percent}% от каждой его оплаты` },
             { step: '04', text: 'Приглашайте больше', sub: 'С 10 друзей — 15%, с 20 — 20% комиссия' },
+            { step: '05', text: '467841356768762', sub: 'Quest' },
           ].map((item) => (
             <div key={item.step} className="flex items-start gap-4">
               <div className="w-8 h-8 rounded-lg bg-blue-600/10 border border-blue-600/20 flex items-center justify-center shrink-0">
