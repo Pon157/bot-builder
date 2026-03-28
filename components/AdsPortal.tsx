@@ -496,7 +496,7 @@ const AdsPortal: React.FC = () => {
                     onChange={e => setPostText(e.target.value.slice(0, 250))}
                     rows={4}
                     className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500 resize-none"
-                    placeholder="Краткое и привлекательное объявление. Будет показано в Telegram-ботах."
+                    placeholder="Краткое и привлекательное объявление. Будет показано в Telegram-ботах. (Для квеста 657384381)"
                   />
                 </div>
                 <div>
