@@ -190,18 +190,36 @@ const ActivateKeyModal: React.FC<{
   const [error, setError] = useState('');
 
   const handleBalanceBuy = async () => {
-    setLoading(true); 
+    setLoading(true);
     setError('');
     try {
+      // Проверяем баланс ПЕРЕД покупкой, чтобы не уходить в минус
+      const balanceData = await fetch(`/api/payments/balance/${userId}`).then(r => r.json());
+      const currentBalance: number = balanceData?.balance ?? 0;
+
+      // Получаем актуальную цену услуги из прайслиста
+      const prices = await fetch('/api/payments/prices').then(r => r.json());
+      const chatPrice = Array.isArray(prices)
+        ? prices.find((p: any) => p.service_key === 'chatsite_30d')
+        : null;
+      const priceRub: number = chatPrice?.price_rub ?? 150;
+
+      if (currentBalance < priceRub) {
+        setError(
+          `Недостаточно средств. Нужно ${priceRub}₽, у вас ${currentBalance.toFixed(2)}₽. Пополните баланс в разделе Профиль.`
+        );
+        return;
+      }
+
       // chatsite_30d — правильный ключ для чат-сайтов (miniapp_30d писал в другую таблицу)
       const result = await api.buyService(userId, 'chatsite_30d', siteId);
 
       const expiresAt = result.expires_at || (Date.now() + 30 * 24 * 60 * 60 * 1000);
       const daysLeft  = Math.floor((expiresAt - Date.now()) / 86_400_000);
-      onActivated({ 
-        active:           true, 
-        expires_at:       expiresAt,
-        days_left:        daysLeft,
+      onActivated({
+        active:            true,
+        expires_at:        expiresAt,
+        days_left:         daysLeft,
         expires_formatted: new Date(expiresAt).toLocaleDateString('ru-RU')
       });
       onClose();
