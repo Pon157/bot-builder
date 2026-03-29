@@ -3446,7 +3446,7 @@ const StaffTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isV
                 value={staffSettings.allowUserSwitch}
                 onChange={v => updSettings({ allowUserSwitch: v })}
                 label="Кнопка «Сменить админа»"
-                sub="Пользователь может попросить другого администратора (случайный выбор)"
+                sub="Появляется в тикете рядом с кнопкой закрытия — пользователь может попросить другого администратора"
               />
 
               <Toggle
@@ -3700,7 +3700,7 @@ const StaffTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isV
               ['/give <id или псевдоним>', 'Передать текущий тикет другому администратору (в топике/реплае)'],
               ['/stat <id или псевдоним>', 'Посмотреть статистику конкретного администратора'],
               ['/stat', 'Посмотреть свою статистику (если пишет сам администратор)'],
-              [isVK ? '«Сменить админа»' : '«Сменить админа»', 'Кнопка у пользователя — переназначает случайного активного администратора'],
+              [isVK ? '«Сменить админа»' : '«Сменить админа»', 'Кнопка в тикете (рядом с «Закрыть обращение») — переназначает случайного активного администратора'],
             ].map(([cmd, desc]) => (
               <div key={cmd} className="flex items-start gap-3 bg-[#0d0d0d] rounded-xl px-4 py-3">
                 <code className="text-xs font-mono text-indigo-300 shrink-0 mt-0.5">{cmd}</code>
