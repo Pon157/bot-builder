@@ -1167,13 +1167,18 @@ class BotInstance:
             return
         # Сортировка по нагрузке (принятые тикеты) если режим 'least'
         if self.staff_assign_mode == 'least':
-            active = sorted(active, key=lambda a: a.get('stats', {}).get('ticketsAccepted', 0))
+            # Сортируем по активным (незакрытым) тикетам, а не по общему числу принятых
+            active = sorted(active, key=lambda a: a.get('stats', {}).get(
+                'activeTickets',
+                max(0, a.get('stats', {}).get('ticketsAccepted', 0) - a.get('stats', {}).get('ticketsClosed', 0))
+            ))
         buttons = []
         for a in active:
-            load = a.get('stats', {}).get('ticketsAccepted', 0)
+            st    = a.get('stats', {})
+            load  = st.get('activeTickets', max(0, st.get('ticketsAccepted', 0) - st.get('ticketsClosed', 0)))
             label = f"👤 {a.get('alias', a.get('name', '?'))}"
             if self.staff_assign_mode == 'least':
-                label += f"  · {load} тик."
+                label += f"  · {load} акт."
             buttons.append([InlineKeyboardButton(text=label, callback_data=f"choose_staff:{a['id']}")])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
         await self.bot.send_message(uid, "👥 <b>Выберите администратора:</b>", reply_markup=kb, parse_mode="HTML")
@@ -2030,7 +2035,7 @@ class BotInstance:
 
         # ── Добавляем имя назначенного стафф-admin в заголовок для панели (если уже назначен) ──
         if self.staff_enabled and user.get('assigned_staff_alias'):
-            staff_note = f"\n🧑‍💼 Администратор: <b>{user['assigned_staff_alias']}</b>"
+            staff_note = f"\nАдминистратор: <b>{user['assigned_staff_alias']}</b>\n"
         else:
             staff_note = ""
 
@@ -2891,7 +2896,7 @@ class BotInstance:
                         try:
                             await self.bot.send_message(
                                 target_id,
-                                f"🧑‍💼 <b>Вам ответил:</b> {alias}",
+                                f"<b>Вам ответил:</b> {alias}",
                                 parse_mode="HTML"
                             )
                         except Exception:
@@ -3502,7 +3507,7 @@ class BotInstance:
             try:
                 await self.bot.send_message(
                     uid_cb,
-                    f"👤 <b>Ваше обращение принял:</b> {staff.get('alias', staff.get('name'))}\n\n"
+                    f"Ваше обращение принял: {staff.get('alias', staff.get('name'))}\n\n"
                     f"Вы можете продолжать писать — сообщения будут доставлены оператору.",
                     reply_markup=self._build_ticket_keyboard(),
                     parse_mode="HTML"
@@ -3517,9 +3522,9 @@ class BotInstance:
                     username    = f" (@{user_cb.get('username')})" if user_cb.get('username') else ""
                     staff_alias = staff.get('alias', staff.get('name', '?'))
                     header = (
-                        f"🆕 <b>Новое обращение</b>\n"
-                        f"👤 <b>{user_name}{username}</b> (<code>{uid_cb}</code>)\n"
-                        f"🧑‍💼 Назначен: <b>{staff_alias}</b>"
+                        f"Новое обращение\n"
+                        f"{user_name}{username}</b> (<code>{uid_cb}</code>)\n"
+                        f"Назначен: <b>{staff_alias}</b>"
                     )
                     await self.bot.send_message(
                         self.admin_chat_id,
