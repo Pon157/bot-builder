@@ -2629,13 +2629,13 @@ class BotInstance:
             avg_str = f"{round(avg_ms / 60000)}м"
         status_icon = "🌙 Отдыхает" if staff.get('is_on_rest') else ("🟢 Активен" if staff.get('active') else "⭕ Неактивен")
         return (
-            f"📊 <b>Статистика: {staff.get('alias', staff.get('name', '?'))}</b>\n"
+            f"<b>Статистика: {staff.get('alias', staff.get('name', '?'))}</b>\n"
             f"<i>{status_icon}</i>\n\n"
-            f"🟡 Активных тикетов: <b>{active}</b>\n"
-            f"🎫 Принято всего: <b>{accepted}</b>\n"
-            f"✅ Закрыто: <b>{closed}</b>\n"
-            f"💬 Отправлено сообщений: <b>{msgs}</b>\n"
-            f"⏱ Среднее время ответа: <b>{avg_str}</b>"
+            f"Активных тикетов: <b>{active}</b>\n"
+            f"Принято всего: <b>{accepted}</b>\n"
+            f"Закрыто: <b>{closed}</b>\n"
+            f"Отправлено сообщений: <b>{msgs}</b>\n"
+            f"Среднее время ответа: <b>{avg_str}</b>"
         )
 
     async def _save_to_db(self, headers=None):
