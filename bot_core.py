@@ -1044,53 +1044,78 @@ class BotInstance:
         return next((a for a in self.staff_admins if a.get('id') == sid), None)
 
     async def _post_staff_stat(self, staff_id: str, event: str, value: int = 1):
-        """Обновляет статистику стафф-администратора напрямую в БД.
-        Событие 'message' НЕ пишется в БД на каждом сообщении — только в памяти (stats_data).
+        """Обновляет статистику стафф-администратора.
+
+        Все события обновляются сначала в памяти (self.staff_admins),
+        а затем ставятся в очередь синхронизации. Дополнительный GET+PATCH
+        в БД делается только для событий accepted/closed/response_ms,
+        чтобы защититься от потери данных при рестарте бота.
         """
-        # Событие 'message' — просто обновляем счётчик в памяти через sync_state
-        # чтобы не делать GET+PATCH на каждое сообщение пользователя
+        # ── 1. Обновляем в памяти (для всех событий) ─────────────────────────
+        _DEFAULT_STATS = {
+            "ticketsAccepted": 0, "ticketsClosed": 0,
+            "messagesSent": 0, "avgResponseMs": 0, "activeTickets": 0
+        }
+        for adm in self.staff_admins:
+            if adm.get("id") != staff_id:
+                continue
+            st = adm.setdefault("stats", dict(_DEFAULT_STATS))
+            # Добиваем недостающие поля (старые записи без activeTickets)
+            for k, v in _DEFAULT_STATS.items():
+                st.setdefault(k, v)
+
+            if event == "message":
+                st["messagesSent"] = st.get("messagesSent", 0) + 1
+            elif event == "accepted":
+                st["ticketsAccepted"] = st.get("ticketsAccepted", 0) + 1
+                st["activeTickets"]   = max(0, st.get("activeTickets", 0) + 1)
+            elif event == "closed":
+                st["ticketsClosed"]  = st.get("ticketsClosed", 0) + 1
+                st["activeTickets"]  = max(0, st.get("activeTickets", 0) - 1)
+            elif event == "response_ms":
+                n = st.get("ticketsAccepted", 1) or 1
+                st["avgResponseMs"] = int(
+                    (st.get("avgResponseMs", 0) * (n - 1) + int(value)) / n
+                )
+            break
+
+        # ── 2. Для 'message' достаточно debounce-синка через очередь ─────────
         if event == "message":
-            # Обновляем в памяти через staffAdmins списка
-            for adm in self.staff_admins:
-                if adm.get("id") == staff_id:
-                    st = adm.setdefault("stats", {
-                        "ticketsAccepted": 0, "ticketsClosed": 0,
-                        "messagesSent": 0, "avgResponseMs": 0
-                    })
-                    st["messagesSent"] = st.get("messagesSent", 0) + 1
-                    break
             asyncio.create_task(self.sync_queue.put(("sync_state", None)))
             return
 
-        # Остальные события (accepted, closed, response_ms) — пишем в БД
+        # ── 3. Для остальных событий — немедленная запись в БД ───────────────
         try:
             rows = await self.db.get("bots", {"id": f"eq.{self.bot_id}"})
             if not rows:
                 return
-            cfg = rows[0].get("config", {}) or {}
+            cfg        = rows[0].get("config", {}) or {}
             staff_list = cfg.get("staffAdmins", [])
-            updated = False
+            updated    = False
             for adm in staff_list:
                 if adm.get("id") != staff_id:
                     continue
-                st = adm.setdefault("stats", {
-                    "ticketsAccepted": 0, "ticketsClosed": 0,
-                    "messagesSent": 0, "avgResponseMs": 0
-                })
+                st = adm.setdefault("stats", dict(_DEFAULT_STATS))
+                for k, v in _DEFAULT_STATS.items():
+                    st.setdefault(k, v)
                 if event == "accepted":
                     st["ticketsAccepted"] = st.get("ticketsAccepted", 0) + 1
+                    st["activeTickets"]   = max(0, st.get("activeTickets", 0) + 1)
                 elif event == "closed":
                     st["ticketsClosed"] = st.get("ticketsClosed", 0) + 1
+                    st["activeTickets"] = max(0, st.get("activeTickets", 0) - 1)
                 elif event == "response_ms":
                     n = st.get("ticketsAccepted", 1) or 1
-                    old_avg = st.get("avgResponseMs", 0)
-                    st["avgResponseMs"] = int((old_avg * (n - 1) + int(value)) / n)
+                    st["avgResponseMs"] = int(
+                        (st.get("avgResponseMs", 0) * (n - 1) + int(value)) / n
+                    )
                 updated = True
                 break
+
             if updated:
                 cfg["staffAdmins"] = staff_list
                 await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"config": cfg})
-                # Синхронизируем в памяти тоже
+                # Синхронизируем поля в памяти из только что записанного конфига
                 for adm in self.staff_admins:
                     if adm.get("id") == staff_id:
                         db_adm = next((a for a in staff_list if a.get("id") == staff_id), None)
@@ -2489,6 +2514,59 @@ class BotInstance:
             await m.reply(f"✅ Приоритет установлен: {pinfo['prefix']} <b>{pinfo['label']}</b>\nПользователь уведомлён.")
             return True
 
+
+        # ── /close — закрыть тикет пользователя (команда администратора) ──
+        if command == "close":
+            if not target_user:
+                await m.reply(
+                    "❌ <b>Не удалось определить пользователя.</b>\n\n"
+                    "Используйте <code>/close</code> в топике или ответом (reply) на его сообщение."
+                )
+                return True
+            uid_close = target_user["id"]
+            if not target_user.get("_in_ticket"):
+                await m.reply("ℹ️ У этого пользователя нет открытого обращения.")
+                return True
+            target_user.pop("_in_ticket", None)
+            target_user.pop("_ticket_close_label", None)
+            await self.sync_queue.put(("sync_state", None))
+            try:
+                await self.bot.send_message(
+                    uid_close,
+                    "✅ <b>Ваше обращение закрыто оператором.</b>\nЕсли потребуется помощь — обратитесь снова.",
+                    reply_markup=self.get_main_keyboard(),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            if self.staff_enabled and target_user.get("assigned_staff_id"):
+                asyncio.create_task(self._post_staff_stat(target_user["assigned_staff_id"], "closed"))
+                assigned_at = target_user.get("_staff_assigned_at")
+                if assigned_at:
+                    elapsed_ms = int(time.time() * 1000) - assigned_at
+                    asyncio.create_task(self._post_staff_stat(target_user["assigned_staff_id"], "response_ms", elapsed_ms))
+                target_user.pop("assigned_staff_id", None)
+                target_user.pop("assigned_staff_alias", None)
+                target_user.pop("assigned_staff_tg", None)
+                target_user.pop("_staff_assigned_at", None)
+            await self._save_to_db(headers)
+            thread_id = target_user.get("last_topic_id")
+            uname = target_user.get("username")
+            user_line = f"<b>{target_user.get('first_name', str(uid_close))}</b>"
+            if uname:
+                user_line += f" (@{uname})"
+            user_line += f" | ID: <code>{uid_close}</code>"
+            try:
+                if thread_id and self.use_topics:
+                    await self.bot.send_message(
+                        self.admin_chat_id,
+                        f"✅ Обращение закрыто оператором.\n{user_line}",
+                        message_thread_id=thread_id, parse_mode="HTML"
+                    )
+            except Exception:
+                pass
+            await m.reply(f"✅ Обращение пользователя <code>{uid_close}</code> закрыто.")
+            return True
         # ── СТАФФ: /give <id|псевдоним> — передать тикет другому администратору ──
         if command == "give":
             if not self.staff_enabled:
@@ -2534,19 +2612,23 @@ class BotInstance:
 
     async def _format_staff_stat(self, staff: dict) -> str:
         """Форматирует статистику стафф-администратора."""
-        st = staff.get('stats', {})
+        st        = staff.get('stats', {})
         accepted  = st.get('ticketsAccepted', 0)
         closed    = st.get('ticketsClosed', 0)
+        active    = st.get('activeTickets', max(0, accepted - closed))
         msgs      = st.get('messagesSent', 0)
         avg_ms    = st.get('avgResponseMs', 0)
         if avg_ms < 60000:
             avg_str = f"{round(avg_ms / 1000)}с" if avg_ms else "—"
         else:
             avg_str = f"{round(avg_ms / 60000)}м"
+        status_icon = "🌙 Отдыхает" if staff.get('is_on_rest') else ("🟢 Активен" if staff.get('active') else "⭕ Неактивен")
         return (
-            f"📊 <b>Статистика: {staff.get('alias', staff.get('name', '?'))}</b>\n\n"
-            f"🎫 Принято тикетов: <b>{accepted}</b>\n"
-            f"✅ Закрыто тикетов: <b>{closed}</b>\n"
+            f"📊 <b>Статистика: {staff.get('alias', staff.get('name', '?'))}</b>\n"
+            f"<i>{status_icon}</i>\n\n"
+            f"🟡 Активных тикетов: <b>{active}</b>\n"
+            f"🎫 Принято всего: <b>{accepted}</b>\n"
+            f"✅ Закрыто: <b>{closed}</b>\n"
             f"💬 Отправлено сообщений: <b>{msgs}</b>\n"
             f"⏱ Среднее время ответа: <b>{avg_str}</b>"
         )
@@ -2563,8 +2645,11 @@ class BotInstance:
                     **remote_config,
                     "connectedUsers": self.users_list,
                     "stats":          self.stats_data,
+                    "staffAdmins":    self.staff_admins,   # ← обязательно, иначе messagesSent теряется
                 }
                 await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"config": new_config})
+                # Дублируем stats в top-level колонку
+                await self.db.patch("bots", {"id": f"eq.{self.bot_id}"}, {"stats": self.stats_data})
             await self.sync_queue.put(("sync_state", None))
         except Exception as e:
             logging.error(f"❌ Ошибка сохранения в БД: {e}")
@@ -2778,8 +2863,26 @@ class BotInstance:
             
             if target_id:
                 try:
-                    # ── СТАФФ: если это первый ответ администратора — уведомляем пользователя ──
                     target_user = next((u for u in self.users_list if u.get('id') == target_id), None)
+
+                    # ── СТАФФ: автоназначение при первом ответе ──────────────────
+                    # Если стафф-система включена, но к тикету ещё никто не прикреплён —
+                    # ищем отвечающего по tg_id среди staffAdmins и закрепляем автоматически.
+                    if target_user and self.staff_enabled and not target_user.get('assigned_staff_id'):
+                        auto_staff = next(
+                            (a for a in self.staff_admins if a.get('tg_id') == m.from_user.id and a.get('active')),
+                            None
+                        )
+                        if auto_staff:
+                            target_user['assigned_staff_id']    = auto_staff['id']
+                            target_user['assigned_staff_alias'] = auto_staff.get('alias', auto_staff.get('name', '?'))
+                            target_user['assigned_staff_tg']    = auto_staff.get('tg_id')
+                            target_user['_staff_assigned_at']   = int(time.time() * 1000)
+                            target_user['_staff_first_replied'] = True  # первый ответ — уведомление ниже
+                            asyncio.create_task(self._post_staff_stat(auto_staff['id'], 'accepted'))
+                            logger.info(f"[STAFF] Auto-assigned {auto_staff['id']} to ticket {target_id}")
+
+                    # ── СТАФФ: первый ответ — уведомляем пользователя ────────────
                     if (target_user and self.staff_enabled
                             and target_user.get('assigned_staff_alias')
                             and not target_user.get('_staff_first_replied')):
@@ -2796,9 +2899,15 @@ class BotInstance:
 
                     sent = await self.bot.copy_message(target_id, m.chat.id, m.message_id)
                     if sent:
-                        # admin_msg_id → target_id, и (target_id, user_msg_id) → admin_msg_id
                         self.msg_map[m.message_id] = target_id
                         self.user_to_admin_map[(target_id, sent.message_id)] = m.message_id
+
+                    # ── СТАФФ: считаем отправленное сообщение ────────────────────
+                    if target_user and self.staff_enabled and target_user.get('assigned_staff_id'):
+                        asyncio.create_task(
+                            self._post_staff_stat(target_user['assigned_staff_id'], 'message')
+                        )
+
                     await self.log_and_update(target_id, "Admin", m.text or "[Медиа]", is_admin=True)
                 except TelegramForbiddenError:
                     await m.reply("❌ <b>Ошибка:</b> Пользователь заблокировал бота.")
