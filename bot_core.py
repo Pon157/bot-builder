@@ -1465,15 +1465,10 @@ class BotInstance:
         # Пересылаем сообщение в чат администраторов
         await self.forward_to_admin(m, user, btn_text=btn_text)
 
-        # Показываем пользователю кнопку закрытия тикета
-        from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-        close_kb = ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text=label)]],
-            resize_keyboard=True
-        )
+        # Показываем пользователю клавиатуру тикета (закрыть + сменить админа)
         await m.answer(
             f"{resp_text}\n\nВы можете продолжать писать — сообщения будут доставлены оператору.",
-            reply_markup=close_kb
+            reply_markup=self._build_ticket_keyboard(label)
         )
         await self.sync_queue.put(("sync_state", None))
 
@@ -1638,13 +1633,9 @@ class BotInstance:
                         reply = reply[:_MAX_REPLY_LEN] + "…"
                     # Если пользователь в тикете — сохраняем кнопку закрытия
                     if user.get('_in_ticket'):
-                        from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
                         _close_label = user.get('_ticket_close_label', 'Закрыть обращение')
-                        _close_kb = ReplyKeyboardMarkup(
-                            keyboard=[[KeyboardButton(text=_close_label)]],
-                            resize_keyboard=True
-                        )
-                        await m.answer(reply, parse_mode="HTML", reply_markup=_close_kb)
+                        await m.answer(reply, parse_mode="HTML",
+                                       reply_markup=self._build_ticket_keyboard(_close_label))
                     else:
                         await m.answer(reply, parse_mode="HTML")
             else:
@@ -1775,17 +1766,24 @@ class BotInstance:
                             **remote_config,
                             "stats":          self.stats_data,
                             "connectedUsers": self.users_list,
+                            "staffAdmins":    self.staff_admins,   # ← сохраняем messagesSent и др.
                             "admin_chat_id":  self.admin_chat_id,
                             "adminChatId":    self.admin_chat_id,
                         }
                         await self.db.patch(
                             "bots", {"id": f"eq.{self.bot_id}"}, {"config": new_config}
                         )
-                        saved_users = self.users_list
-                        saved_stats = self.stats_data
+                        # Дублируем stats в top-level колонку, чтобы сайт читал актуальные данные
+                        await self.db.patch(
+                            "bots", {"id": f"eq.{self.bot_id}"}, {"stats": self.stats_data}
+                        )
+                        saved_users  = self.users_list
+                        saved_stats  = self.stats_data
+                        saved_staff  = self.staff_admins          # ← сохраняем до apply_config
                         self.apply_config({"config": remote_config})
-                        self.users_list = saved_users
-                        self.stats_data = saved_stats
+                        self.users_list   = saved_users
+                        self.stats_data   = saved_stats
+                        self.staff_admins = saved_staff           # ← восстанавливаем после reset
                 except Exception as e:
                     logger.error(f"Sync Worker _do_sync_state error: {e}")
                 finally:
@@ -3136,13 +3134,9 @@ class BotInstance:
                             user['_in_ticket'] = True
                             await self.forward_to_admin(m, user, btn_text=matched_btn['text'])
                             resp_text = matched_btn.get('response', 'Ваше обращение принято. Ожидайте ответа оператора.')
-                            close_ticket_kb = ReplyKeyboardMarkup(
-                                keyboard=[[KeyboardButton(text="Закрыть обращение")]],
-                                resize_keyboard=True
-                            )
                             await m.answer(
                                 f"{resp_text}\n\nВы можете продолжать писать — сообщения будут доставлены оператору.",
-                                reply_markup=close_ticket_kb
+                                reply_markup=self._build_ticket_keyboard()
                             )
                             if inline_kb:
                                 await m.answer("Полезные ссылки:", reply_markup=inline_kb)
@@ -3396,16 +3390,12 @@ class BotInstance:
                 pass
 
             # ── 5. Единственное сообщение пользователю: кто принял + инструкция ──
-            close_kb = ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text="Закрыть обращение")]],
-                resize_keyboard=True
-            )
             try:
                 await self.bot.send_message(
                     uid_cb,
                     f"👤 <b>Ваше обращение принял:</b> {staff.get('alias', staff.get('name'))}\n\n"
                     f"Вы можете продолжать писать — сообщения будут доставлены оператору.",
-                    reply_markup=close_kb,
+                    reply_markup=self._build_ticket_keyboard(),
                     parse_mode="HTML"
                 )
             except Exception:
@@ -3447,13 +3437,13 @@ class BotInstance:
         # Добавляем AI-кнопку если режим 'button'
         if self.ai_enabled and self.ai_mode == 'button' and self.ai_button_name:
             active_btns = active_btns + [{'text': self.ai_button_name}]
-        
-        # ── СТАФФ: кнопки "Список администрации" и "Сменить админа" ──
+
+        # ── СТАФФ: в главное меню только кнопка "Список администрации" ──
+        # "Сменить админа" намеренно отсутствует здесь — она отображается
+        # только внутри активного тикета, рядом с кнопкой закрытия.
         staff_row = []
         if self.staff_enabled and self.staff_show_list:
             staff_row.append(KeyboardButton(text=self.staff_list_btn_name))
-        if self.staff_enabled and self.staff_allow_switch:
-            staff_row.append(KeyboardButton(text="🔄 Сменить админа"))
 
         if not active_btns and not staff_row:
             return ReplyKeyboardRemove()
@@ -3464,6 +3454,17 @@ class BotInstance:
         if staff_row:
             keyboard_rows.append(staff_row)
         return ReplyKeyboardMarkup(keyboard=keyboard_rows, resize_keyboard=True)
+
+    def _build_ticket_keyboard(self, close_label: str = "Закрыть обращение"):
+        """Строит клавиатуру активного тикета.
+        Всегда содержит кнопку закрытия. Если включена стафф-система и
+        разрешена смена — добавляет кнопку «🔄 Сменить админа» в той же строке.
+        """
+        from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+        row = [KeyboardButton(text=close_label)]
+        if self.staff_enabled and self.staff_allow_switch:
+            row.append(KeyboardButton(text="🔄 Сменить админа"))
+        return ReplyKeyboardMarkup(keyboard=[row], resize_keyboard=True)
 
     async def run_instance(self):
         # 1. Инициализируем пул PostgreSQL (приоритетная БД)
