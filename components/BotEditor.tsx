@@ -3666,10 +3666,10 @@ const StaffTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isV
                       </div>
                     )}
                     {[
-                      { icon: Ticket,       label: 'Принято',        value: admin.stats.ticketsAccepted },
-                      { icon: Check,        label: 'Закрыто',        value: admin.stats.ticketsClosed   },
-                      { icon: MessageSquare, label: 'Сообщений',     value: admin.stats.messagesSent    },
-                      { icon: Clock,        label: 'Сред. ответ',    value: fmtMs(admin.stats.avgResponseMs) },
+                      { icon: Ticket,        label: 'Активных',       value: Math.max(0, (admin.stats.ticketsAccepted ?? 0) - (admin.stats.ticketsClosed ?? 0)) },
+                      { icon: Check,         label: 'Закрыто',        value: admin.stats.ticketsClosed   },
+                      { icon: MessageSquare, label: 'Сообщений',      value: admin.stats.messagesSent    },
+                      { icon: Clock,         label: 'Сред. ответ',    value: fmtMs(admin.stats.avgResponseMs) },
                     ].map(({ icon: Icon, label, value }) => (
                       <div key={label} className="bg-[#111] border border-zinc-800 rounded-xl px-3 py-2.5 text-center">
                         <Icon className="w-3.5 h-3.5 text-indigo-400 mx-auto mb-1" />
@@ -3697,6 +3697,7 @@ const StaffTab: React.FC<{ bot: BotConfig; onUpdate: (b: BotConfig) => void; isV
           </div>
           <div className="space-y-2">
             {[
+              ['/close', 'Закрыть тикет пользователя от имени оператора (в топике или реплаем)'],
               ['/give <id или псевдоним>', 'Передать текущий тикет другому администратору (в топике/реплае)'],
               ['/stat <id или псевдоним>', 'Посмотреть статистику конкретного администратора'],
               ['/stat', 'Посмотреть свою статистику (если пишет сам администратор)'],
