@@ -2252,6 +2252,99 @@ class BotInstance:
         except Exception as e:
             logger.error(f"Error in _flush_media_group_retry: {e}")
 
+    async def _run_broadcast(self, m: Message, source_msg_id: int, headers: dict):
+        """
+        FIX: выделен из admin_control_logic для переиспользования в двухшаговом режиме.
+        Рассылает сообщение source_msg_id всем активным (не забаненным) пользователям.
+        Не портит is_active при таймаутах прокси / сетевых ошибках.
+        """
+        # FIX: фильтруем только не забаненных И активных.
+        # Старая версия рассылала ВСЕМ (даже забаненным и заблокировавшим бота),
+        # а при любой ошибке (даже таймауте) ставила is_active=False → порочный круг.
+        active_users = [u for u in self.users_list if not u.get("is_banned") and u.get("is_active", True)]
+
+        if not active_users:
+            inactive_cnt = sum(1 for u in self.users_list if not u.get("is_banned") and not u.get("is_active", True))
+            await m.reply(
+                f"❌ <b>Нет активных пользователей для рассылки.</b>\n\n"
+                f"🔕 Заблокировали бота ранее: <b>{inactive_cnt}</b>\n\n"
+                f"Если перешли с другого плана — отправьте <code>/resetactive</code> чтобы сбросить статус."
+            )
+            return
+
+        sent_count, err_count, blocked_count, timeout_count = 0, 0, 0, 0
+        total = len(active_users)
+        status_msg = await m.reply(f"🚀 <b>Запускаю рассылку...</b>\nЦель: {total} пользователей.")
+
+        # FIX: отдельный список — не меняем is_active в цикле, только ПОСЛЕ.
+        confirmed_blocked: list = []
+
+        for user in active_users:
+            try:
+                u_id = int(user["id"])
+                await self.bot.copy_message(
+                    chat_id=u_id,
+                    from_chat_id=m.chat.id,
+                    message_id=source_msg_id
+                )
+                sent_count += 1
+                if sent_count % 30 == 0:
+                    try:
+                        await status_msg.edit_text(
+                            f"⏳ <b>В процессе...</b>\nУспешно: {sent_count} | Ошибок: {err_count} | Заблок.: {blocked_count}"
+                        )
+                    except Exception:
+                        pass
+                await asyncio.sleep(0.05)
+
+            except TelegramForbiddenError:
+                # Пользователь точно заблокировал бота — запоминаем, пометим после цикла
+                confirmed_blocked.append(user)
+                blocked_count += 1
+
+            except TelegramRetryAfter as e:
+                await asyncio.sleep(e.retry_after + 1)
+                try:
+                    await self.bot.copy_message(chat_id=int(user["id"]), from_chat_id=m.chat.id, message_id=source_msg_id)
+                    sent_count += 1
+                except TelegramForbiddenError:
+                    confirmed_blocked.append(user)
+                    blocked_count += 1
+                except Exception as re:
+                    logger.error(f"[BROADCAST RETRY] {user.get('id')}: {re}")
+                    err_count += 1
+
+            except asyncio.TimeoutError:
+                # FIX: таймаут ≠ ошибка доставки. Прокси медленный, сообщение могло уйти.
+                # НЕ помечаем пользователя заблокировавшим бота.
+                logger.warning(f"[BROADCAST TIMEOUT] uid={user.get('id')}: proxy timeout, likely delivered")
+                timeout_count += 1
+                sent_count += 1  # считаем оптимистично
+
+            except Exception as e:
+                logger.error(f"[BROADCAST ERR] uid={user.get('id')}: {type(e).__name__} | {e}")
+                err_count += 1
+
+        # FIX: помечаем заблокировавших ТОЛЬКО после завершения цикла
+        for blocked_user in confirmed_blocked:
+            blocked_user["is_active"] = False
+        if confirmed_blocked:
+            logger.info(f"[BROADCAST] Marked {len(confirmed_blocked)} users inactive (bot blocked)")
+
+        await self._save_to_db(headers)
+
+        summary_lines = [
+            f"✅ <b>Рассылка завершена!</b>\n",
+            f"👤 Доставлено: <b>{sent_count}</b>",
+            f"🔕 Заблокировали бота: <b>{blocked_count}</b>" if blocked_count else None,
+            f"🚫 Ошибки: <b>{err_count}</b>" if err_count else None,
+            f"⏱ Таймауты прокси: <b>{timeout_count}</b>" if timeout_count else None,
+        ]
+        try:
+            await status_msg.edit_text("\n".join(l for l in summary_lines if l is not None))
+        except Exception:
+            pass
+
     async def admin_control_logic(self, m: Message):
         """
         ЕДИНАЯ ЛОГИКА АДМИН-КОМАНД (Статистика, Рассылка, Бан, Варн, Разбан)
@@ -2275,11 +2368,32 @@ class BotInstance:
         # 📊 СТАТИСТИКА
         if command == "stats":
             total_users = len(self.users_list)
-            banned = self.stats_data.get("bannedCount", 0)
+            banned      = sum(1 for u in self.users_list if u.get("is_banned"))
+            inactive    = sum(1 for u in self.users_list if not u.get("is_banned") and not u.get("is_active", True))
+            active      = sum(1 for u in self.users_list if not u.get("is_banned") and u.get("is_active", True))
             await m.reply(
                 f"📊 <b>Статистика бота:</b>\n\n"
-                f"👥 Всего пользователей: {total_users}\n"
-                f"🚫 Заблокировано: {banned}"
+                f"👥 Всего пользователей: <b>{total_users}</b>\n"
+                f"✅ Активны (получат рассылку): <b>{active}</b>\n"
+                f"🔕 Заблокировали бота: <b>{inactive}</b>\n"
+                f"🚫 Забанено: <b>{banned}</b>"
+            )
+            return True
+
+        # ♻️ СБРОС СТАТУСА АКТИВНОСТИ
+        elif command == "resetactive":
+            # FIX: при переходе с другого плана/токена все юзеры могут быть
+            # is_active=False. Эта команда сбрасывает флаг для всех не забаненных.
+            reset_count = 0
+            for u in self.users_list:
+                if not u.get("is_banned") and not u.get("is_active", True):
+                    u["is_active"] = True
+                    reset_count += 1
+            await self._save_to_db(headers)
+            await m.reply(
+                f"♻️ <b>Статус сброшен.</b>\n\n"
+                f"Активировано: <b>{reset_count}</b> пользователей.\n"
+                f"Теперь /broadcast включит их всех."
             )
             return True
 
@@ -2306,34 +2420,16 @@ class BotInstance:
         elif command == "broadcast":
             if m.reply_to_message:
                 target_msg_id = m.reply_to_message.message_id
-                sent_count, err_count = 0, 0
-                status_msg = await m.reply("🚀 <b>Запускаю полную рассылку...</b>")
-                
-                for user in self.users_list:
-                    try:
-                        u_id = int(user['id'])
-                        await self.bot.copy_message(
-                            chat_id=u_id,
-                            from_chat_id=m.chat.id,
-                            message_id=target_msg_id
-                        )
-                        sent_count += 1
-                        await asyncio.sleep(0.05) # Защита от Flood Limit
-                    except Exception:
-                        err_count += 1
-                        user["is_active"] = False
-
-                await status_msg.edit_text(
-                    f"✅ <b>Рассылка завершена!</b>\n\n"
-                    f"👤 Доставлено: {sent_count}\n"
-                    f"🚫 Ошибки: {err_count}"
-                )
-                await self._save_to_db(headers)
+                await self._run_broadcast(m, target_msg_id, headers)
                 return True
             else:
-                # Если просто ввели /broadcast без реплая
-                self.broadcast_cache[m.from_user.id] = "WAITING"
-                await m.reply("📢 <b>Режим рассылки.</b>\nПришлите сообщение (текст/фото/видео), которое нужно разослать.")
+                # Двухшаговая рассылка: следующее сообщение админа = контент рассылки
+                self.broadcast_cache[m.from_user.id] = {"waiting": True, "headers": headers}
+                await m.reply(
+                    "📢 <b>Режим рассылки.</b>\n"
+                    "Пришлите сообщение (текст/фото/видео), которое нужно разослать.\n\n"
+                    f"👥 Получателей: <b>{sum(1 for u in self.users_list if not u.get('is_banned') and u.get('is_active', True))}</b>"
+                )
                 return True
 
         # --- ГРУППА 2: КОМАНДЫ МОДЕРАЦИИ (ТРЕБУЮТ КОНТЕКСТ ЮЗЕРА) ---
@@ -2852,10 +2948,16 @@ class BotInstance:
         async def admin_input_router(m: Message):
             # Проверяем, является ли сообщение командой
             if m.text and (m.text.startswith("/") or m.text.startswith("!")):
-                # Выполняем логику админки
                 await self.admin_control_logic(m)
-                # ОБЯЗАТЕЛЬНО делаем return, чтобы никакие команды (даже опечатки) 
-                # не улетали обычному пользователю
+                return
+
+            # FIX: двухшаговая рассылка — проверяем broadcast_cache ДО всего остального.
+            # Раньше broadcast_cache[admin_id] = "WAITING" ставился но НИКОГДА не читался,
+            # поэтому /broadcast без реплая полностью не работал.
+            bc = self.broadcast_cache.pop(m.from_user.id, None)
+            if bc and isinstance(bc, dict) and bc.get("waiting"):
+                headers = bc.get("headers", self.headers)
+                await self._run_broadcast(m, m.message_id, headers)
                 return
 
             target_id = None
@@ -3158,6 +3260,25 @@ class BotInstance:
                             f"✅ Вы выбрали администратора: <b>{new_staff.get('alias', new_staff.get('name'))}</b>\n"
                             f"Ожидайте ответа.", parse_mode="HTML"
                         )
+                        # FIX: уведомляем чат администраторов какого конкретно
+                        # админа выбрал пользователь. Раньше это уведомление отсутствовало.
+                        if self.admin_chat_id:
+                            try:
+                                user_name   = user.get('first_name', f"User#{uid}")
+                                username    = f" (@{user.get('username')})" if user.get('username') else ""
+                                staff_alias = new_staff.get('alias', new_staff.get('name', '?'))
+                                old_staff   = next((a for a in self.staff_admins if a.get('id') == current_id), None)
+                                old_alias   = old_staff.get('alias', old_staff.get('name', '?')) if old_staff else "—"
+                                await self.bot.send_message(
+                                    self.admin_chat_id,
+                                    f"🔄 <b>Пользователь сменил администратора</b>\n"
+                                    f"👤 {user_name}{username} (<code>{uid}</code>)\n"
+                                    f"Было: <b>{old_alias}</b> → Стало: <b>{staff_alias}</b>",
+                                    message_thread_id=user.get('last_topic_id'),
+                                    parse_mode="HTML"
+                                )
+                            except Exception as _e:
+                                logger.warning(f"[STAFF] Не удалось уведомить чат адм. о смене: {_e}")
                     return
 
                 # ── СТАФФ: кнопка "Список администрации" ──
@@ -3201,6 +3322,24 @@ class BotInstance:
                             f"✅ Вы выбрали администратора: <b>{new_staff.get('alias', new_staff.get('name'))}</b>\n"
                             f"Ожидайте ответа.", parse_mode="HTML"
                         )
+                        # FIX: уведомляем чат администраторов (вне тикетного режима)
+                        if self.admin_chat_id:
+                            try:
+                                user_name   = user.get('first_name', f"User#{uid}")
+                                username    = f" (@{user.get('username')})" if user.get('username') else ""
+                                staff_alias = new_staff.get('alias', new_staff.get('name', '?'))
+                                old_staff   = next((a for a in self.staff_admins if a.get('id') == current_id), None)
+                                old_alias   = old_staff.get('alias', old_staff.get('name', '?')) if old_staff else "—"
+                                await self.bot.send_message(
+                                    self.admin_chat_id,
+                                    f"🔄 <b>Пользователь сменил администратора</b>\n"
+                                    f"👤 {user_name}{username} (<code>{uid}</code>)\n"
+                                    f"Было: <b>{old_alias}</b> → Стало: <b>{staff_alias}</b>",
+                                    message_thread_id=user.get('last_topic_id'),
+                                    parse_mode="HTML"
+                                )
+                            except Exception as _e:
+                                logger.warning(f"[STAFF] Не удалось уведомить чат адм. о смене: {_e}")
                     return
 
                 if self.staff_enabled and self.staff_show_list and clean_text == self.staff_list_btn_name:
@@ -3521,9 +3660,11 @@ class BotInstance:
                     user_name   = user_cb.get('first_name', f"User#{uid_cb}")
                     username    = f" (@{user_cb.get('username')})" if user_cb.get('username') else ""
                     staff_alias = staff.get('alias', staff.get('name', '?'))
+                    # FIX: был </b> без открывающего <b> → Telegram отклонял всё
+                    # сообщение с TelegramBadRequest, except глотал ошибку молча.
                     header = (
-                        f"Новое обращение\n"
-                        f"{user_name}{username}</b> (<code>{uid_cb}</code>)\n"
+                        f"🆕 <b>Новое обращение</b>\n"
+                        f"<b>{user_name}{username}</b> (<code>{uid_cb}</code>)\n"
                         f"Назначен: <b>{staff_alias}</b>"
                     )
                     await self.bot.send_message(
