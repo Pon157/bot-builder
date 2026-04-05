@@ -60,7 +60,8 @@ class CustomProxySession(AiohttpSession):
         return aiohttp.ClientSession(
             connector=self._custom_connector,
             json_serialize=self.json_dumps,
-            timeout=aiohttp.ClientTimeout(total=40, connect=15)
+            # FIX: увеличен до 90с — синхронизировать с _make_session timeout
+            timeout=aiohttp.ClientTimeout(total=90, connect=20)
         )
 # ---------------------------------------------------------
 
@@ -69,7 +70,9 @@ def _make_session():
     _PROXY_URL = os.getenv("TG_PROXY_URL", "").strip()
     
     # Таймауты для стабильности
-    _timeout = aiohttp.ClientTimeout(total=40, connect=15)
+    # FIX: увеличен total до 90с — прокси может быть медленным, но сообщение
+    # всё равно уходит. При total=40 ответ не успевал вернуться → false error.
+    _timeout = aiohttp.ClientTimeout(total=90, connect=20)
 
     # Если прокси нет — стандартная сессия
     if not _PROXY_URL:
@@ -1155,18 +1158,40 @@ class FreeBotInstance:
 
         # 1. КОМАНДА СТАТИСТИКИ
         if command == "stats":
-            total  = len(self.users_list)
-            banned = sum(1 for u in self.users_list if u.get("is_banned"))
-            # Считаем активными всех, кто не в бане
-            active = sum(1 for u in self.users_list if not u.get("is_banned"))
-            bc_day = self._broadcast_today_count()
+            total    = len(self.users_list)
+            banned   = sum(1 for u in self.users_list if u.get("is_banned"))
+            inactive = sum(1 for u in self.users_list if not u.get("is_banned") and not u.get("is_active", True))
+            active   = sum(1 for u in self.users_list if not u.get("is_banned") and u.get("is_active", True))
+            bc_day   = self._broadcast_today_count()
             
             await m.reply(
                 f"📊 <b>Детальная статистика</b>\n\n"
                 f"👥 Всего в БД: <b>{total}</b>\n"
-                f"✅ Будет отправлено (не в бане): <b>{active}</b>\n"
+                f"✅ Активны (получат рассылку): <b>{active}</b>\n"
+                f"🔕 Заблокировали бота: <b>{inactive}</b>\n"
                 f"🚫 В бане: <b>{banned}</b>\n"
                 f"📢 Рассылок сегодня: <b>{bc_day}</b>"
+            )
+            return True
+
+        # 1а. КОМАНДА СБРОСА СТАТУСА АКТИВНОСТИ
+        elif command == "resetactive":
+            # FIX: При переходе с другого плана/токена все юзеры могут быть
+            # помечены is_active=False. Эта команда сбрасывает флаг для всех,
+            # кто не забанен, чтобы следующая рассылка дошла до них.
+            if not self.is_admin(m.from_user.id):
+                await m.reply("🚫 У вас нет прав.")
+                return True
+            reset_count = 0
+            for u in self.users_list:
+                if not u.get("is_banned") and not u.get("is_active", True):
+                    u["is_active"] = True
+                    reset_count += 1
+            await self._save_to_db()
+            await m.reply(
+                f"♻️ <b>Статус сброшен.</b>\n\n"
+                f"Активировано пользователей: <b>{reset_count}</b>\n"
+                f"Теперь /broadcast включит их всех."
             )
             return True
 
@@ -1176,11 +1201,20 @@ class FreeBotInstance:
                 await m.reply("🚫 У вас нет прав.")
                 return True
             
-            # УБРАЛИ ПРОВЕРКУ is_active, оставляем только проверку на бан
-            active_users = [u for u in self.users_list if not u.get("is_banned")]
+            # FIX: фильтр согласован с admin_input fallback (оба проверяют is_active).
+            # Юзеры с is_active=False — точно заблокировали бота, не пытаемся повторно.
+            active_users = [u for u in self.users_list if not u.get("is_banned") and u.get("is_active", True)]
             
             if not active_users:
-                await m.reply(f"❌ Нет пользователей для рассылки (все в бане или список пуст).")
+                blocked_inactive = sum(1 for u in self.users_list if not u.get("is_banned") and not u.get("is_active", True))
+                all_users = len(self.users_list)
+                await m.reply(
+                    f"❌ <b>Нет активных пользователей для рассылки.</b>\n\n"
+                    f"👥 Всего в базе: <b>{all_users}</b>\n"
+                    f"🔕 Заблокировали бота: <b>{blocked_inactive}</b>\n\n"
+                    f"Если вы только что перешли с другого плана и знаете что пользователи активны — "
+                    f"отправьте <code>/resetactive</code> чтобы сбросить статус и попробовать снова."
+                )
                 return True
 
             if m.reply_to_message:
@@ -1304,9 +1338,7 @@ class FreeBotInstance:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def _do_broadcast(self, m: Message, active_users: list, source_msg_id: int):
-        # ВАЖНО: Все строки ниже должны иметь отступ в 8 пробелов от края файла
-        # (если сама функция находится внутри класса)
-        sent_c, err_c = 0, 0
+        sent_c, err_c, blocked_c, timeout_c = 0, 0, 0, 0
         total_to_send = len(active_users)
         
         logger.info(f"--- [START BROADCAST] Bot: {self.bot_id} | Target: {total_to_send} users ---")
@@ -1319,12 +1351,10 @@ class FreeBotInstance:
         reply = m.reply_to_message
         src = reply if reply and reply.message_id == source_msg_id else m
 
-        # ЛОГИРУЕМ: Что именно бот "видит" в сообщении
         logger.info(f"[DEBUG SRC] source_msg_id: {source_msg_id} | actual_id: {src.message_id}")
         logger.info(f"[DEBUG SRC] text: {bool(src.text)}, photo: {bool(src.photo)}, video: {bool(src.video)}")
 
         async def _send_to(chat_id: int):
-            # Вложенная функция: еще +4 пробела отступа
             if src.photo:
                 await self.bot.send_photo(chat_id, src.photo[-1].file_id, caption=src.caption, parse_mode="HTML")
             elif src.video:
@@ -1344,9 +1374,14 @@ class FreeBotInstance:
             elif src.text:
                 await self.bot.send_message(chat_id, src.text, parse_mode="HTML", disable_web_page_preview=True)
             else:
-                # Если всё остальное не подошло, пробуем копирование
                 logger.debug(f"[DEBUG] Using copy_message for {chat_id}")
                 await self.bot.copy_message(chat_id, m.chat.id, source_msg_id)
+
+        # FIX: Отдельный список для подтверждённо заблокировавших бота.
+        # НЕ меняем is_active прямо в цикле — это провоцировало порочный круг:
+        # broadcast fail → is_active=False для всех → _save_to_db → DB corrupted →
+        # следующая рассылка снова берёт "сломанных" юзеров → снова 0/N → петля.
+        confirmed_blocked: list = []
 
         # 2. ОСНОВНОЙ ЦИКЛ
         if not active_users:
@@ -1361,42 +1396,74 @@ class FreeBotInstance:
                 await _send_to(int(u_id))
                 sent_c += 1
                 
-                # Обновляем статус каждые 30 сообщений для визуала
                 if sent_c % 30 == 0:
-                    await status_msg.edit_text(f"⏳ <b>Рассылка в процессе...</b>\nУспешно: {sent_c}\nОшибок: {err_c}")
+                    await status_msg.edit_text(
+                        f"⏳ <b>Рассылка в процессе...</b>\n"
+                        f"Успешно: {sent_c} | Ошибок: {err_c} | Заблок.: {blocked_c}"
+                    )
                 
-                await asyncio.sleep(0.05) # Безопасный интервал
+                await asyncio.sleep(0.05)
 
             except TelegramForbiddenError:
-                logger.warning(f"[BLOCK] User {u_id} blocked bot")
-                user["is_active"] = False
-                err_c += 1
+                # Пользователь точно заблокировал бота — запоминаем, пометим ПОСЛЕ цикла
+                logger.warning(f"[BLOCK] User {u_id} blocked bot — will mark inactive after broadcast")
+                confirmed_blocked.append(user)
+                blocked_c += 1
+
             except TelegramRetryAfter as e:
-                logger.error(f"[FLOOD] Wait {e.retry_after}s")
+                logger.warning(f"[FLOOD] Rate limit, wait {e.retry_after}s for user {u_id}")
                 await asyncio.sleep(e.retry_after + 1)
                 try:
                     await _send_to(int(u_id))
                     sent_c += 1
-                except:
+                except TelegramForbiddenError:
+                    confirmed_blocked.append(user)
+                    blocked_c += 1
+                except Exception as retry_err:
+                    logger.error(f"[RETRY_ERR] User {u_id}: {type(retry_err).__name__} | {retry_err}")
                     err_c += 1
+
+            except asyncio.TimeoutError:
+                # FIX: таймаут ≠ ошибка доставки. Прокси медленный — сообщение
+                # уже ушло в Telegram, просто ответ не вернулся вовремя.
+                # НЕ помечаем пользователя как заблокировавшего бота.
+                logger.warning(f"[TIMEOUT] User {u_id}: proxy timeout — message likely delivered")
+                timeout_c += 1
+                # Считаем как доставленное (оптимистично) — лучше переоценить чем
+                # убить весь список пользователей ложными is_active=False
+                sent_c += 1
+
             except Exception as e:
                 logger.error(f"[SEND_ERR] User {u_id}: {type(e).__name__} | {e}")
                 err_c += 1
 
+        # FIX: Помечаем заблокировавших ТОЛЬКО ПОСЛЕ завершения цикла.
+        # Так мы не сохраняем промежуточно-сломанное состояние в БД.
+        for blocked_user in confirmed_blocked:
+            blocked_user["is_active"] = False
+        if confirmed_blocked:
+            logger.info(f"[BROADCAST] Marked {len(confirmed_blocked)} users as inactive (bot blocked)")
+
         # 3. ФИНАЛИЗАЦИЯ
-        logger.info(f"--- [FINISHED] Sent: {sent_c}, Errors: {err_c} ---")
+        logger.info(
+            f"--- [FINISHED] Sent: {sent_c}, Errors: {err_c}, "
+            f"Blocked: {blocked_c}, Timeouts(counted as sent): {timeout_c} ---"
+        )
         
         self._broadcast_increment()
         new_today = self._broadcast_today_count()
         await self._save_to_db()
 
         try:
-            await status_msg.edit_text(
-                f"✅ <b>Рассылка завершена!</b>\n\n"
-                f"👤 Доставлено: <b>{sent_c}</b>\n"
-                f"🚫 Ошибки: <b>{err_c}</b>\n"
-                f"📊 Рассылок сегодня: <b>{new_today}</b>"
-            )
+            summary_parts = [
+                f"✅ <b>Рассылка завершена!</b>\n",
+                f"👤 Доставлено: <b>{sent_c}</b>",
+                f"🔕 Заблокировали бота: <b>{blocked_c}</b>" if blocked_c else None,
+                f"🚫 Ошибки: <b>{err_c}</b>" if err_c else None,
+                f"⏱ Таймауты прокси: <b>{timeout_c}</b>" if timeout_c else None,
+                f"📊 Рассылок сегодня: <b>{new_today}</b>",
+            ]
+            await status_msg.edit_text("\n".join(p for p in summary_parts if p is not None))
         except Exception as e:
             logger.error(f"Status update error: {e}")
 
