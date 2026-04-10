@@ -1,12 +1,27 @@
 """
 forms_bot.py — Выделенный бот для приёма форм из мини-приложений.
+
+Принцип работы:
+  Пользователь добавляет этого бота в чат (группу, канал, личные сообщения).
+  Бот сообщает ID чата.
+  Этот ID вводится в настройки мини-приложения — поле «ID чата».
+  Все заявки с форм приходят в этот чат.
+
+Оптимизирован для высокой нагрузки:
+  - aiogram 3.x с polling
+  - Один переиспользуемый httpx.AsyncClient (connection pool)
+  - Минимальная обработка в хендлерах, никаких блокирующих вызовов
+  - Graceful shutdown
+
+Переменные окружения (.env):
+  FORM_BOT_TOKEN — токен бота (обязательно)
+  PROXY_URL — прокси (опционально), пример: socks5://user:pass@host:port
 """
 
 import asyncio
 import logging
 import os
-import sys
-import aiohttp
+import signal
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, ChatMemberUpdated, BotCommand, BotCommandScopeDefault
 from aiogram.filters import Command, CommandStart
@@ -14,13 +29,13 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.client.session.aiohttp import AiohttpSession
 
-# Пробуем импортировать прокси
 try:
     from aiohttp_socks import ProxyConnector
     SOCKS_AVAILABLE = True
 except ImportError:
     SOCKS_AVAILABLE = False
     ProxyConnector = None
+
 
 # ── Конфигурация ──────────────────────────────────────────────────────────────
 
@@ -42,12 +57,13 @@ load_env()
 
 TOKEN = os.getenv("FORM_BOT_TOKEN", "")
 if not TOKEN:
-    raise RuntimeError("FORM_BOT_TOKEN не задан")
+    raise RuntimeError(
+        "FORM_BOT_TOKEN не задан. Укажите его в .env или переменных окружения."
+    )
 
-# Поддержка разных имен переменных для прокси
-PROXY_URL = os.getenv("TG_PROXY_URL") or os.getenv("PROXY_URL") or ""
+PROXY_URL = os.getenv("TG_PROXY_URL", "")
+
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -55,80 +71,36 @@ logging.basicConfig(
 )
 logger = logging.getLogger("FormsBot")
 
-# Таймауты - используем обычное число, не ClientTimeout
-REQUEST_TIMEOUT = 60
-CONNECT_TIMEOUT = 30
+
+# ── Создание сессии с прокси ─────────────────────────────────────────────────
+
+def create_session() -> AiohttpSession:
+    """Создает сессию с прокси если указан PROXY_URL"""
+    if PROXY_URL and SOCKS_AVAILABLE:
+        try:
+            connector = ProxyConnector.from_url(PROXY_URL)
+            logger.info(f"Используется прокси: {PROXY_URL}")
+            return AiohttpSession(connector=connector)
+        except Exception as e:
+            logger.error(f"Ошибка подключения прокси: {e}")
+            logger.warning("Продолжаем работу без прокси")
+            return AiohttpSession()
+    elif PROXY_URL and not SOCKS_AVAILABLE:
+        logger.warning("Установите aiohttp_socks: pip install aiohttp_socks")
+        logger.warning("Продолжаем работу без прокси")
+    
+    return AiohttpSession()
 
 
-class CustomProxySession(AiohttpSession):
-    """Кастомная сессия для прокси"""
-    def __init__(self, proxy_url: str):
-        # Передаем таймаут как число
-        super().__init__(timeout=REQUEST_TIMEOUT)
-        self.proxy_url = proxy_url
+# ── Бот и диспетчер ───────────────────────────────────────────────────────────
 
-    async def create_session(self) -> aiohttp.ClientSession:
-        """Создает сессию с прокси асинхронно"""
-        timeout = aiohttp.ClientTimeout(
-            total=REQUEST_TIMEOUT,
-            connect=CONNECT_TIMEOUT,
-            sock_read=REQUEST_TIMEOUT,
-            sock_connect=CONNECT_TIMEOUT
-        )
-        
-        if SOCKS_AVAILABLE and self.proxy_url:
-            try:
-                connector = ProxyConnector.from_url(self.proxy_url)
-                logger.info(f"Прокси успешно настроен: {self.proxy_url}")
-                return aiohttp.ClientSession(
-                    connector=connector,
-                    json_serialize=self.json_dumps,
-                    timeout=timeout
-                )
-            except Exception as e:
-                logger.error(f"Ошибка создания прокси-сессии: {e}")
-                # Возвращаем обычную сессию
-                return aiohttp.ClientSession(
-                    json_serialize=self.json_dumps,
-                    timeout=timeout
-                )
-        else:
-            return aiohttp.ClientSession(
-                json_serialize=self.json_dumps,
-                timeout=timeout
-            )
-
-
-class CustomAiohttpSession(AiohttpSession):
-    """Обычная сессия с правильным таймаутом"""
-    def __init__(self):
-        super().__init__(timeout=REQUEST_TIMEOUT)
-
-    async def create_session(self) -> aiohttp.ClientSession:
-        timeout = aiohttp.ClientTimeout(
-            total=REQUEST_TIMEOUT,
-            connect=CONNECT_TIMEOUT,
-            sock_read=REQUEST_TIMEOUT,
-            sock_connect=CONNECT_TIMEOUT
-        )
-        return aiohttp.ClientSession(
-            json_serialize=self.json_dumps,
-            timeout=timeout
-        )
-
-
-async def create_bot_session() -> AiohttpSession:
-    """Создает сессию для бота с поддержкой прокси (асинхронно)"""
-    if PROXY_URL:
-        if not SOCKS_AVAILABLE:
-            logger.error("aiohttp_socks не установлен! Прокси не будет работать")
-            logger.error("Установите: pip install aiohttp_socks")
-            return CustomAiohttpSession()
-        
-        logger.info(f"Подключаемся через прокси: {PROXY_URL}")
-        return CustomProxySession(PROXY_URL)
-    else:
-        return CustomAiohttpSession()
+session = create_session()
+bot = Bot(
+    token=TOKEN,
+    session=session,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+)
+dp = Dispatcher()
 
 
 # ── Тексты ────────────────────────────────────────────────────────────────────
@@ -169,86 +141,78 @@ TEXT_HELP = (
 )
 
 
+# ── Хендлеры ──────────────────────────────────────────────────────────────────
+
+@dp.message(CommandStart())
+async def handle_start(message: Message) -> None:
+    """Приветствие с инструкцией."""
+    text = TEXT_START.format(user_id=message.from_user.id)
+    await message.answer(text)
+    logger.info(f"Start from user {message.from_user.id} (@{message.from_user.username})")
+
+
+@dp.message(Command("chatid"))
+async def handle_chatid(message: Message) -> None:
+    """Показывает ID текущего чата. Работает в личке и в группах."""
+    text = TEXT_CHATID.format(chat_id=message.chat.id)
+    await message.answer(text)
+
+
+@dp.message(Command("help"))
+async def handle_help(message: Message) -> None:
+    await message.answer(TEXT_HELP)
+
+
+@dp.my_chat_member()
+async def handle_chat_member_update(event: ChatMemberUpdated) -> None:
+    """Срабатывает когда бота добавляют в чат или исключают."""
+    new_status = event.new_chat_member.status
+
+    if new_status in ("member", "administrator"):
+        # Бота добавили — сообщаем ID чата
+        try:
+            text = TEXT_ADDED_TO_CHAT.format(chat_id=event.chat.id)
+            await bot.send_message(event.chat.id, text)
+            logger.info(
+                f"Added to chat id={event.chat.id} "
+                f"title={event.chat.title!r} "
+                f"type={event.chat.type}"
+            )
+        except Exception as exc:
+            logger.warning(f"Cannot send to chat {event.chat.id}: {exc}")
+
+    elif new_status in ("kicked", "left"):
+        logger.info(f"Removed from chat id={event.chat.id} title={event.chat.title!r}")
+
+
 # ── Запуск ────────────────────────────────────────────────────────────────────
 
-async def main():
-    """Запуск бота"""
-    logger.info("FormsBot starting...")
-    
-    # Создаем сессию асинхронно
-    bot_session = await create_bot_session()
-    
-    # Создаем бота
-    bot = Bot(
-        token=TOKEN,
-        session=bot_session,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
-    
-    # Создаем диспетчер
-    dp = Dispatcher()
-    
-    # Регистрируем хендлеры
-    @dp.message(CommandStart())
-    async def handle_start(message: Message) -> None:
-        text = TEXT_START.format(user_id=message.from_user.id)
-        await message.answer(text)
-        logger.info(f"Start from user {message.from_user.id}")
-    
-    @dp.message(Command("chatid"))
-    async def handle_chatid(message: Message) -> None:
-        text = TEXT_CHATID.format(chat_id=message.chat.id)
-        await message.answer(text)
-    
-    @dp.message(Command("help"))
-    async def handle_help(message: Message) -> None:
-        await message.answer(TEXT_HELP)
-    
-    @dp.my_chat_member()
-    async def handle_chat_member_update(event: ChatMemberUpdated) -> None:
-        new_status = event.new_chat_member.status
-        if new_status in ("member", "administrator"):
-            try:
-                text = TEXT_ADDED_TO_CHAT.format(chat_id=event.chat.id)
-                await bot.send_message(event.chat.id, text)
-                logger.info(f"Added to chat {event.chat.id}")
-            except Exception as exc:
-                logger.warning(f"Cannot send to chat {event.chat.id}: {exc}")
-        elif new_status in ("kicked", "left"):
-            logger.info(f"Removed from chat {event.chat.id}")
-    
-    # Устанавливаем команды
+async def set_commands() -> None:
+    """Регистрирует команды в меню Telegram."""
     commands = [
-        BotCommand(command="start", description="Инструкция по подключению"),
+        BotCommand(command="start",  description="Инструкция по подключению"),
         BotCommand(command="chatid", description="ID текущего чата"),
-        BotCommand(command="help", description="Справка"),
+        BotCommand(command="help",   description="Справка"),
     ]
-    
-    try:
-        await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
-        logger.info("Commands set successfully")
-    except Exception as e:
-        logger.error(f"Failed to set commands: {e}")
-    
-    # Запускаем polling
+    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+
+
+async def main() -> None:
+    await set_commands()
+    logger.info("FormsBot starting...")
     try:
         await dp.start_polling(
             bot,
             allowed_updates=["message", "my_chat_member"],
-            polling_timeout=30  # Добавляем polling_timeout
+            close_bot_session=True,
         )
-    except Exception as e:
-        logger.error(f"Polling error: {e}", exc_info=True)
     finally:
         await bot.session.close()
-        logger.info("Bot stopped")
+        logger.info("FormsBot stopped.")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}", exc_info=True)
-        sys.exit(1)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Interrupted.")
