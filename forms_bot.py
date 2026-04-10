@@ -55,18 +55,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger("FormsBot")
 
-# Таймауты
-TIMEOUT = aiohttp.ClientTimeout(total=60, connect=30)
+# Таймауты - используем обычное число, не ClientTimeout
+REQUEST_TIMEOUT = 60
+CONNECT_TIMEOUT = 30
 
 
 class CustomProxySession(AiohttpSession):
     """Кастомная сессия для прокси"""
     def __init__(self, proxy_url: str):
-        super().__init__(timeout=TIMEOUT)
+        # Передаем таймаут как число
+        super().__init__(timeout=REQUEST_TIMEOUT)
         self.proxy_url = proxy_url
 
     async def create_session(self) -> aiohttp.ClientSession:
         """Создает сессию с прокси асинхронно"""
+        timeout = aiohttp.ClientTimeout(
+            total=REQUEST_TIMEOUT,
+            connect=CONNECT_TIMEOUT,
+            sock_read=REQUEST_TIMEOUT,
+            sock_connect=CONNECT_TIMEOUT
+        )
+        
         if SOCKS_AVAILABLE and self.proxy_url:
             try:
                 connector = ProxyConnector.from_url(self.proxy_url)
@@ -74,20 +83,38 @@ class CustomProxySession(AiohttpSession):
                 return aiohttp.ClientSession(
                     connector=connector,
                     json_serialize=self.json_dumps,
-                    timeout=TIMEOUT
+                    timeout=timeout
                 )
             except Exception as e:
                 logger.error(f"Ошибка создания прокси-сессии: {e}")
                 # Возвращаем обычную сессию
                 return aiohttp.ClientSession(
                     json_serialize=self.json_dumps,
-                    timeout=TIMEOUT
+                    timeout=timeout
                 )
         else:
             return aiohttp.ClientSession(
                 json_serialize=self.json_dumps,
-                timeout=TIMEOUT
+                timeout=timeout
             )
+
+
+class CustomAiohttpSession(AiohttpSession):
+    """Обычная сессия с правильным таймаутом"""
+    def __init__(self):
+        super().__init__(timeout=REQUEST_TIMEOUT)
+
+    async def create_session(self) -> aiohttp.ClientSession:
+        timeout = aiohttp.ClientTimeout(
+            total=REQUEST_TIMEOUT,
+            connect=CONNECT_TIMEOUT,
+            sock_read=REQUEST_TIMEOUT,
+            sock_connect=CONNECT_TIMEOUT
+        )
+        return aiohttp.ClientSession(
+            json_serialize=self.json_dumps,
+            timeout=timeout
+        )
 
 
 async def create_bot_session() -> AiohttpSession:
@@ -96,12 +123,12 @@ async def create_bot_session() -> AiohttpSession:
         if not SOCKS_AVAILABLE:
             logger.error("aiohttp_socks не установлен! Прокси не будет работать")
             logger.error("Установите: pip install aiohttp_socks")
-            return AiohttpSession(timeout=TIMEOUT)
+            return CustomAiohttpSession()
         
         logger.info(f"Подключаемся через прокси: {PROXY_URL}")
         return CustomProxySession(PROXY_URL)
     else:
-        return AiohttpSession(timeout=TIMEOUT)
+        return CustomAiohttpSession()
 
 
 # ── Тексты ────────────────────────────────────────────────────────────────────
@@ -208,6 +235,7 @@ async def main():
         await dp.start_polling(
             bot,
             allowed_updates=["message", "my_chat_member"],
+            polling_timeout=30  # Добавляем polling_timeout
         )
     except Exception as e:
         logger.error(f"Polling error: {e}", exc_info=True)
