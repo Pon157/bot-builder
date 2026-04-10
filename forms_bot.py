@@ -27,6 +27,37 @@ from aiogram.filters import Command, CommandStart
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
+from aiogram.client.default import DefaultBotProperties
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
+from aiogram.client.session.aiohttp import AiohttpSession
+
+try:
+    from aiohttp_socks import ProxyConnector as _ProxyConnector
+    _SOCKS_OK = True
+except ImportError:
+    _SOCKS_OK = False
+
+import os
+import aiohttp
+from aiogram.client.session.aiohttp import AiohttpSession
+
+# --- НАШ КАСТОМНЫЙ КЛАСС (ОБХОД ОШИБОК AIOGRAM 3.24) ---
+class CustomProxySession(AiohttpSession):
+    def __init__(self, connector: aiohttp.BaseConnector):
+        # Вызываем конструктор aiogram БЕЗ аргументов (ошибок не будет)
+        super().__init__()
+        self._custom_connector = connector
+
+    # Принудительно встраиваем коннектор прямо в ядро aiohttp
+    async def create_session(self) -> aiohttp.ClientSession:
+        return aiohttp.ClientSession(
+            connector=self._custom_connector,
+            json_serialize=self.json_dumps,
+            # FIX: увеличен до 90с — синхронизировать с _make_session timeout
+            timeout=aiohttp.ClientTimeout(total=90, connect=20)
+        )
+# ---------------------------------------------------------
+
 
 # ── Конфигурация ──────────────────────────────────────────────────────────────
 
