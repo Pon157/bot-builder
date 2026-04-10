@@ -61,7 +61,7 @@ if not TOKEN:
         "FORM_BOT_TOKEN не задан. Укажите его в .env или переменных окружения."
     )
 
-PROXY_URL = os.getenv("TG_PROXY_URL", "")
+PROXY_URL = os.getenv("PROXY_URL", "")
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -72,9 +72,9 @@ logging.basicConfig(
 logger = logging.getLogger("FormsBot")
 
 
-# ── Создание сессии с прокси ─────────────────────────────────────────────────
+# ── Создание сессии с прокси (асинхронно) ─────────────────────────────────────
 
-def create_session() -> AiohttpSession:
+async def create_session() -> AiohttpSession:
     """Создает сессию с прокси если указан PROXY_URL"""
     if PROXY_URL and SOCKS_AVAILABLE:
         try:
@@ -92,14 +92,9 @@ def create_session() -> AiohttpSession:
     return AiohttpSession()
 
 
-# ── Бот и диспетчер ───────────────────────────────────────────────────────────
+# ── Бот и диспетчер (будут созданы в main) ───────────────────────────────────
 
-session = create_session()
-bot = Bot(
-    token=TOKEN,
-    session=session,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-)
+bot = None
 dp = Dispatcher()
 
 
@@ -198,8 +193,21 @@ async def set_commands() -> None:
 
 
 async def main() -> None:
+    global bot
+    
+    # Создаем сессию асинхронно
+    session = await create_session()
+    
+    # Создаем бота
+    bot = Bot(
+        token=TOKEN,
+        session=session,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+    
     await set_commands()
     logger.info("FormsBot starting...")
+    
     try:
         await dp.start_polling(
             bot,
