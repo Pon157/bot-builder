@@ -15,6 +15,7 @@ forms_bot.py — Выделенный бот для приёма форм из �
 
 Переменные окружения (.env):
   FORM_BOT_TOKEN — токен бота (обязательно)
+  PROXY_URL — прокси (опционально), пример: socks5://user:pass@host:port
 """
 
 import asyncio
@@ -84,6 +85,8 @@ if not TOKEN:
         "FORM_BOT_TOKEN не задан. Укажите его в .env или переменных окружения."
     )
 
+PROXY_URL = os.getenv("PROXY_URL", "")  # Добавлена поддержка прокси
+
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -93,10 +96,33 @@ logging.basicConfig(
 logger = logging.getLogger("FormsBot")
 
 
+# ── Создание сессии бота с поддержкой прокси ─────────────────────────────────
+
+def create_bot_session() -> AiohttpSession:
+    """Создает сессию для бота с поддержкой прокси."""
+    if PROXY_URL and _SOCKS_OK:
+        try:
+            connector = _ProxyConnector.from_url(PROXY_URL)
+            logger.info(f"Используется прокси: {PROXY_URL}")
+            return CustomProxySession(connector)
+        except Exception as e:
+            logger.error(f"Ошибка подключения прокси: {e}")
+            logger.warning("Продолжаем работу без прокси")
+            return AiohttpSession()
+    elif PROXY_URL and not _SOCKS_OK:
+        logger.warning("Установите aiohttp_socks для использования прокси: pip install aiohttp_socks")
+        logger.warning("Продолжаем работу без прокси")
+    
+    return AiohttpSession()
+
+
 # ── Бот и диспетчер ───────────────────────────────────────────────────────────
 
+# Создаем сессию и бота
+bot_session = create_bot_session()
 bot = Bot(
     token=TOKEN,
+    session=bot_session,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 dp = Dispatcher()
