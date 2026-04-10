@@ -142,40 +142,6 @@ TEXT_HELP = (
 )
 
 
-# ── Хендлеры ──────────────────────────────────────────────────────────────────
-
-@dp.message(CommandStart())
-async def handle_start(message: Message) -> None:
-    text = TEXT_START.format(user_id=message.from_user.id)
-    await message.answer(text)
-    logger.info(f"Start from user {message.from_user.id}")
-
-
-@dp.message(Command("chatid"))
-async def handle_chatid(message: Message) -> None:
-    text = TEXT_CHATID.format(chat_id=message.chat.id)
-    await message.answer(text)
-
-
-@dp.message(Command("help"))
-async def handle_help(message: Message) -> None:
-    await message.answer(TEXT_HELP)
-
-
-@dp.my_chat_member()
-async def handle_chat_member_update(event: ChatMemberUpdated) -> None:
-    new_status = event.new_chat_member.status
-    if new_status in ("member", "administrator"):
-        try:
-            text = TEXT_ADDED_TO_CHAT.format(chat_id=event.chat.id)
-            await bot.send_message(event.chat.id, text)
-            logger.info(f"Added to chat {event.chat.id}")
-        except Exception as exc:
-            logger.warning(f"Cannot send to chat {event.chat.id}: {exc}")
-    elif new_status in ("kicked", "left"):
-        logger.info(f"Removed from chat {event.chat.id}")
-
-
 # ── Запуск ────────────────────────────────────────────────────────────────────
 
 async def main():
@@ -192,6 +158,38 @@ async def main():
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     
+    # Создаем диспетчер
+    dp = Dispatcher()
+    
+    # Регистрируем хендлеры
+    @dp.message(CommandStart())
+    async def handle_start(message: Message) -> None:
+        text = TEXT_START.format(user_id=message.from_user.id)
+        await message.answer(text)
+        logger.info(f"Start from user {message.from_user.id}")
+    
+    @dp.message(Command("chatid"))
+    async def handle_chatid(message: Message) -> None:
+        text = TEXT_CHATID.format(chat_id=message.chat.id)
+        await message.answer(text)
+    
+    @dp.message(Command("help"))
+    async def handle_help(message: Message) -> None:
+        await message.answer(TEXT_HELP)
+    
+    @dp.my_chat_member()
+    async def handle_chat_member_update(event: ChatMemberUpdated) -> None:
+        new_status = event.new_chat_member.status
+        if new_status in ("member", "administrator"):
+            try:
+                text = TEXT_ADDED_TO_CHAT.format(chat_id=event.chat.id)
+                await bot.send_message(event.chat.id, text)
+                logger.info(f"Added to chat {event.chat.id}")
+            except Exception as exc:
+                logger.warning(f"Cannot send to chat {event.chat.id}: {exc}")
+        elif new_status in ("kicked", "left"):
+            logger.info(f"Removed from chat {event.chat.id}")
+    
     # Устанавливаем команды
     commands = [
         BotCommand(command="start", description="Инструкция по подключению"),
@@ -207,14 +205,6 @@ async def main():
     
     # Запускаем polling
     try:
-        dp = Dispatcher()
-        
-        # Регистрируем хендлеры
-        dp.message.register(handle_start, CommandStart())
-        dp.message.register(handle_chatid, Command("chatid"))
-        dp.message.register(handle_help, Command("help"))
-        dp.my_chat_member.register(handle_chat_member_update)
-        
         await dp.start_polling(
             bot,
             allowed_updates=["message", "my_chat_member"],
