@@ -21,15 +21,13 @@ forms_bot.py — Выделенный бот для приёма форм из �
 import asyncio
 import logging
 import os
-import signal
+import sys
 import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, ChatMemberUpdated, BotCommand, BotCommandScopeDefault
 from aiogram.filters import Command, CommandStart
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-
-from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 from aiogram.client.session.aiohttp import AiohttpSession
 
@@ -38,28 +36,6 @@ try:
     _SOCKS_OK = True
 except ImportError:
     _SOCKS_OK = False
-
-import os
-import aiohttp
-from aiogram.client.session.aiohttp import AiohttpSession
-
-# --- НАШ КАСТОМНЫЙ КЛАСС (ОБХОД ОШИБОК AIOGRAM 3.24) ---
-class CustomProxySession(AiohttpSession):
-    def __init__(self, connector: aiohttp.BaseConnector):
-        # Вызываем конструктор aiogram БЕЗ аргументов (ошибок не будет)
-        super().__init__()
-        self._custom_connector = connector
-
-    # Принудительно встраиваем коннектор прямо в ядро aiohttp
-    async def create_session(self) -> aiohttp.ClientSession:
-        return aiohttp.ClientSession(
-            connector=self._custom_connector,
-            json_serialize=self.json_dumps,
-            # FIX: увеличен до 90с — синхронизировать с _make_session timeout
-            timeout=aiohttp.ClientTimeout(total=90, connect=20)
-        )
-# ---------------------------------------------------------
-
 
 # ── Конфигурация ──────────────────────────────────────────────────────────────
 
@@ -85,9 +61,10 @@ if not TOKEN:
         "FORM_BOT_TOKEN не задан. Укажите его в .env или переменных окружения."
     )
 
-PROXY_URL = os.getenv("PROXY_URL", "")  # Добавлена поддержка прокси
-
+PROXY_URL = os.getenv("TG_PROXY_URL", "")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# Настройка логирования
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -95,25 +72,51 @@ logging.basicConfig(
 )
 logger = logging.getLogger("FormsBot")
 
+# Увеличиваем лимиты для aiohttp
+TIMEOUT = aiohttp.ClientTimeout(total=120, connect=60, sock_read=60, sock_connect=60)
 
-# ── Создание сессии бота с поддержкой прокси ─────────────────────────────────
+
+# ── КАСТОМНЫЙ КЛАСС ДЛЯ ПРОКСИ ─────────────────────────────────────────────────
+
+class CustomProxySession(AiohttpSession):
+    """Кастомная сессия для работы с прокси с увеличенными таймаутами"""
+    
+    def __init__(self, connector: aiohttp.BaseConnector):
+        super().__init__(timeout=TIMEOUT)
+        self._custom_connector = connector
+
+    async def create_session(self) -> aiohttp.ClientSession:
+        return aiohttp.ClientSession(
+            connector=self._custom_connector,
+            json_serialize=self.json_dumps,
+            timeout=TIMEOUT
+        )
+
+
+class CustomAiohttpSession(AiohttpSession):
+    """Обычная сессия с увеличенными таймаутами"""
+    
+    def __init__(self):
+        super().__init__(timeout=TIMEOUT)
+
 
 def create_bot_session() -> AiohttpSession:
     """Создает сессию для бота с поддержкой прокси."""
     if PROXY_URL and _SOCKS_OK:
         try:
-            connector = _ProxyConnector.from_url(PROXY_URL)
             logger.info(f"Используется прокси: {PROXY_URL}")
+            connector = _ProxyConnector.from_url(PROXY_URL)
+            logger.info("Прокси успешно настроен")
             return CustomProxySession(connector)
         except Exception as e:
             logger.error(f"Ошибка подключения прокси: {e}")
             logger.warning("Продолжаем работу без прокси")
-            return AiohttpSession()
+            return CustomAiohttpSession()
     elif PROXY_URL and not _SOCKS_OK:
         logger.warning("Установите aiohttp_socks для использования прокси: pip install aiohttp_socks")
         logger.warning("Продолжаем работу без прокси")
     
-    return AiohttpSession()
+    return CustomAiohttpSession()
 
 
 # ── Бот и диспетчер ───────────────────────────────────────────────────────────
@@ -219,25 +222,51 @@ async def set_commands() -> None:
         BotCommand(command="chatid", description="ID текущего чата"),
         BotCommand(command="help",   description="Справка"),
     ]
-    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+    try:
+        await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+        logger.info("Команды бота установлены")
+    except Exception as e:
+        logger.error(f"Не удалось установить команды: {e}")
+        raise
 
 
 async def main() -> None:
-    await set_commands()
+    """Основная функция запуска бота."""
     logger.info("FormsBot starting...")
+    
+    # Устанавливаем команды с повторными попытками
+    for attempt in range(3):
+        try:
+            await set_commands()
+            break
+        except Exception as e:
+            logger.error(f"Попытка {attempt + 1}/3 установить команды: {e}")
+            if attempt < 2:
+                await asyncio.sleep(5)
+            else:
+                logger.warning("Продолжаем без установки команд")
+    
+    # Запускаем polling с обработкой ошибок
     try:
         await dp.start_polling(
             bot,
             allowed_updates=["message", "my_chat_member"],
-            close_bot_session=True,
+            close_bot_session=False,  # Не закрываем сессию, чтобы управлять вручную
         )
+    except Exception as e:
+        logger.error(f"Ошибка в polling: {e}", exc_info=True)
     finally:
-        await bot.session.close()
+        # Закрываем сессию бота корректно
+        if not bot.session.closed:
+            await bot.session.close()
         logger.info("FormsBot stopped.")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Interrupted.")
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        sys.exit(1)
